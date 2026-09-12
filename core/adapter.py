@@ -170,6 +170,15 @@ def _cfg_int(key: str, default: int = 0) -> int:
         return default
 
 
+def _log_empty_panel_once() -> None:
+    """面板为空时记一条限流 INFO（排查「钩子没数据」用；60 秒最多一条）。"""
+    now = time.monotonic()
+    if now - getattr(_log_empty_panel_once, "_at", 0.0) < 60.0:
+        return
+    _log_empty_panel_once._at = now
+    logger.info("[larkdeck] 面板无数据（钩子未写入或已清空）")
+
+
 def _remember_selfcheck(ok: bool, detail: str) -> None:
     SELFCHECK["ok"] = ok
     SELFCHECK["detail"] = detail
@@ -277,6 +286,7 @@ class LarkDeckMixin:
                 return None
             snap = _panel.snapshot()
             if not snap:
+                _log_empty_panel_once()
                 return None
             steps = [
                 _cards.tool_step(
@@ -295,7 +305,7 @@ class LarkDeckMixin:
                 max_steps=_cfg_int("max_panel_steps", _cards.MAX_PANEL_STEPS),
             )
         except Exception:
-            logger.debug("[larkdeck] 面板渲染失败，跳过", exc_info=True)
+            logger.warning("[larkdeck] 面板渲染失败，跳过", exc_info=True)
             return None
 
     # ---------------------------------------------------------------- 发送原语

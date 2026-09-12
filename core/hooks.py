@@ -23,6 +23,7 @@ larkdeck 是「平台插件 + 钩子订阅者」：``ctx.register_platform()`` �
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Callable, Dict, Tuple
 
 from . import context as _context
@@ -61,6 +62,15 @@ def _on_stream_delta(**payload: Any) -> None:
         logger.debug("[larkdeck] on_stream_delta 采集忽略了一次异常", exc_info=True)
 
 
+def _log_pre_tool_once(tool_name: str) -> None:
+    """诊断限流：60 秒内只记一条，证明 pre_tool_call 真的触达了本插件。"""
+    now = time.monotonic()
+    if now - getattr(_log_pre_tool_once, "_at", 0.0) < 60.0:
+        return
+    _log_pre_tool_once._at = now  # type: ignore[attr-defined]
+    logger.info("[larkdeck] pre_tool_call 钩子触达（%s）", tool_name)
+
+
 def _on_pre_tool_call(**payload: Any) -> None:
     """工具开始（fail-closed 钩子）：登记一步 ``running``。
 
@@ -68,6 +78,7 @@ def _on_pre_tool_call(**payload: Any) -> None:
     本函数没有任何 return 值，异常也吞掉，确保只观察不干预。
     """
     try:
+        _log_pre_tool_once(str(payload.get("tool_name") or ""))
         _panel.record_tool_started(payload.get("session_id", ""),
                                    payload.get("turn_id", ""),
                                    payload.get("tool_name", ""),

@@ -222,7 +222,7 @@ def footer_line(*, duration: Optional[float] = None, model: str = "",
         parts.append(f"🔧 {tools}")
     if context:
         parts.append(context)
-    if isinstance(duration, (int, float)) and duration > 0:
+    if isinstance(duration, (int, float)) and duration >= 0.1:
         parts.append(f"⏱ {format_elapsed(float(duration))}")
     return " · ".join(parts) or None
 

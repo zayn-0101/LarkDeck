@@ -804,6 +804,7 @@ def test_format_elapsed_and_footer_line() -> None:
     assert cards.footer_line() is None
     assert cards.footer_line(model="m") == "🤖 m"
     assert cards.footer_line(duration=0.0) is None, "0 秒不算耗时（首帧就是这个情况）"
+    assert cards.footer_line(duration=0.05) is None, "不足 0.1s 不显示（native seed 帧）"
     assert cards.footer_line(tools=3) == "🔧 3"
     assert cards.footer_line(tools=0) is None
 
