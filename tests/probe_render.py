@@ -562,6 +562,60 @@ def probe_element_limit(client, chat: str, cards) -> int:
     return 0
 
 
+#: 限流探针的突发次数与目标间隔。官方 `im.v1.message.patch` 文档写的是
+#: **单条消息 5 QPS（≥200ms/帧）**；我们生产用的 `_STREAM_MIN_INTERVAL = 0.25`（4/s）
+#: 就是贴着这个上限取的安全值 —— 但那个「5 QPS」目前**只有文档背书**。
+#: 这里往一张**一次性的探针卡**上打突发，把真实的限流码与阈值量出来。
+_RATE_BURST = 16
+
+
+def probe_rate_limit(client, chat: str, cards) -> int:
+    """**限流实证**：往一张探针卡上打突发 patch，看飞书到底在什么时候、用什么码拒绝。
+
+    为什么要量：`adapter._TRANSIENT_CODES` 里到底该放哪个码，目前是从接口文档推的
+    （`230020` 是 patch 文档明写的频率限制；`99991400` 是通用码）。而「退避重试」这条
+    修复的价值**完全取决于**真实返回的是哪个码 —— 猜错就是一次都不会启动（静默）。
+
+    做法：建一张卡 → 连续 16 次 patch（不留间隔）→ 打印每次的 code 与耗时。
+    只打**这一张探针卡**（频控是单条消息的），跑完随其他探针卡一起被清理。
+    """
+    import time as _time
+
+    body = cards.reply_card("限流探针（这张卡会被连续快速更新，属一次性探针）",
+                            streaming=True, footer="LARKDECK-RENDER-PROBE · 限流探针")
+    code, msg, mid = send(client, chat, body)
+    print(f"{'✅' if code == 0 else '❌'} 限流探针建卡 code={code} msg={msg} id={mid}")
+    if code != 0:
+        return 1
+    _save_sent_ids(_load_sent_ids() + [mid])
+
+    results: list = []
+    for i in range(_RATE_BURST):
+        node = cards.reply_card("限流探针 " + "。" * (i + 1), streaming=True,
+                                footer="LARKDECK-RENDER-PROBE · 限流探针")
+        t0 = _time.perf_counter()
+        pcode, pmsg = patch(client, mid, node)
+        dt_ms = (_time.perf_counter() - t0) * 1000
+        results.append((i + 1, pcode, round(dt_ms, 1), pmsg))
+        if pcode != 0:
+            print(f"  ⛔ 第 {i + 1} 次被拒：code={pcode} msg={pmsg}（前一次耗时 {dt_ms:.0f}ms）")
+            break
+    ok_n = sum(1 for _, c, _, _ in results if c == 0)
+    print(f"  连打 {len(results)} 次，成功 {ok_n} 次；单次耗时 "
+          f"{[r[2] for r in results]}")
+    slowest = max(r[2] for r in results)
+    if slowest > 0:
+        print(f"  → 最快可达节奏 ≈ {1000 / slowest:.1f} 次/秒（这是**本地串行**的往返，"
+              f"不是服务端上限）")
+    bad = [r for r in results if r[1] != 0]
+    if bad:
+        print(f"  → 实测限流码 = {bad[0][1]}（`adapter._TRANSIENT_CODES` 必须包含它）")
+    else:
+        print("  → 16 次连打没被拒：说明 5 QPS 不是硬拒绝，或频控窗口比这更宽 —— "
+              "`_STREAM_MIN_INTERVAL` 保持现状（贴文档上限的安全值）即可")
+    return 0
+
+
 def main(argv: list) -> int:
     clean_only = "--clean-only" in argv
     do_clean = "--no-clean" not in argv
@@ -588,6 +642,8 @@ def main(argv: list) -> int:
         return probe_byte_limit(client, chat, cards)
     if "--elements" in argv:
         return probe_element_limit(client, chat, cards)
+    if "--rate-limit" in argv:
+        return probe_rate_limit(client, chat, cards)
 
     cases = (build_cases(cards) + build_bilingual_cases(cards) + build_footer_cases(cards)
              + build_dialect_probe_cards(cards))

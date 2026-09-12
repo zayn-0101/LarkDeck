@@ -289,8 +289,13 @@
   （`gateway/stream_consumer.py` 里 `if self._use_native_streaming: # No platform edit-rate limit:
   push every delta immediately`），那段带 `edit_interval` 的判定只在 `else` 分支。
   核心对 `send_stream_frame` **没有最小间隔限制**（那个被注释成节流器的字段只写不读，是死代码）。
-- **⇒ 插件侧的 `_STREAM_MIN_INTERVAL` 确实是当前唯一瓶颈，调小**确实**能提高刷新密度。**
-  上限 ≈ `1 / (0.05s + 适配器 RTT)`（核心 pump 循环地板 0.05s + 帧发送串行 await）。
+- ~~**⇒ 插件侧的 `_STREAM_MIN_INTERVAL` 确实是当前唯一瓶颈，调小确实能提高刷新密度。**~~
+  **2026-09-13 真机实测推翻了这一条**（`probe_render.py --rate-limit`，16 次连打一张探针卡）：
+  单次 `message.patch` 往返 **≈ 440~530ms**（偶发 1.5s），16 次连打**一次都没被拒**。
+  ⇒ 天花板是 **API 往返 ≈ 0.5s/帧 ≈ 2 帧/秒**，而我们的节流常量是 0.25s —— **常量不是瓶颈**，
+  调小到 0 也不会更快（串行 await 的往返摆在那里）。
+  ⇒ 想让观感更顺，唯一有效的杠杆是**客户端打字机**（`streaming_config`）：它是客户端动画，
+  与我们推帧的快慢无关。这也把阶段 3 的优先级从「调帧率」改成了「加三行 JSON」。
 - **但真实风险比原方案写的严重得多，而且机制不同**：一帧失败会**永久关掉本回合的 native 流式**
   （`stream_consumer_transport.py` 定义性失败后置 `_use_native_streaming = False`），
   后续输出改走 `send()`（可能变成**多条纯文本消息**）；而**飞书的限流错误不匹配 flood 启发式**
@@ -424,3 +429,11 @@
 **翻 `clarify_dialect` 默认值的前提**（两条都要满足）：
 1. 真机点一次 ⑫ 方言探针卡，日志里出现 `[larkdeck] 探针点击到达 ✅`；
 2. A1（多选）与 A2（输入框错配）的修复已在 `check_clarify_e2e.py` 里被真实判据覆盖（已完成）。
+
+### 真机实测的两个数字（2026-09-13）
+
+| 测什么 | 怎么测 | 结果 |
+|---|---|---|
+| 卡片字节上限 | `probe_render.py --bytes`（20KB→80KB 阶梯 + 同尺寸 PATCH） | **80KB 仍 `code=0`**（create 与 patch 都是）⇒ 40000 的预算有 2 倍余量；第三方流传的「28000 / 30KB」不成立 |
+| 卡片元素数上限 | `probe_render.py --elements`（递归计数阶梯） | 198 收下、**202 拒收**（`230099 / ErrCode 11310 element exceeds the limit`）⇒ 官方 200 成立，且**必须递归数含 `tag` 的对象** |
+| 推送节奏 | `probe_render.py --rate-limit`（16 次连打） | 往返 **≈0.5s/帧**、**零拒绝** ⇒ `_STREAM_MIN_INTERVAL` 不是瓶颈，打字机只能靠客户端动画 |
