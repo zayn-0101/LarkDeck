@@ -26,7 +26,9 @@
     --elements     元素数上限阶梯（飞书硬上限 200）
     --rate-limit   连续 patch 的限流实证（退避重试该收哪个错误码）
     --stop-redraw  **中止重绘的真机端到端**：正文超降载预算但发得出去时，
-                   /stop 必须真的把那张卡重绘成中止色（会加载真适配器）
+                   /stop 必须真的把那张卡重绘成中止色。**两条路径都跑**：
+                   ① 非 native（`send` + `message.patch`）；② 真 native 流式
+                   （`send_stream_frame` 建卡 → 若干帧 → `/stop`）。会加载真适配器
     --clean-only   只清理上次的探针卡
     --no-clean     不清理，直接发（排查清理逻辑时用）
 
@@ -776,6 +778,53 @@ def probe_stop_redraw(client, chat: str, cards) -> int:
     finally:
         adapter._client.im.v1.message.patch = original_patch
         loop.close()
+
+    # ---- 第二条路径：**真 native 流式**（首帧建卡 → 若干帧 → /stop）----------------- #
+    # 第八路审计对这条只剩**推断**（两条重绘路径共用 `_ld_build_card`，所以颜色同样会被
+    # 降载吃掉）。推断不算证据，这里直接驱动官方的 native 契约跑一遍：
+    #   `send_stream_frame("")` 建卡 → 带正文的帧 → `interrupt_session_activity` → 看载荷。
+    print()
+    print("—— 第二条路径：native 流式 + /stop ——")
+    stream_key = f"probe-stream-{int(time.time())}"
+    painted_stream: list = []          # 提前定义：中途 return/抛异常时下面的判定不该炸
+    loop = asyncio.new_event_loop()
+    try:
+        adapter._client.im.v1.message.patch = _counting_patch
+        seed_ok = loop.run_until_complete(adapter.send_stream_frame(
+            "", chat_id=chat, turn_id=stream_key))
+        print(f"   seed 帧建卡 = {seed_ok}")
+        if not seed_ok:
+            print("❌ native seed 帧没建起卡（effect 1a 的前提不成立）")
+            return 1
+        state = adapter._ld_stream_get(f"{chat}:{stream_key}")
+        stream_mid = str((state or {}).get("message_id") or "")
+        print(f"   流式卡 message_id = {stream_mid}")
+        if not stream_mid:
+            print("❌ native 建卡后没有记录 message_id，后续帧无处可去")
+            return 1
+        _save_sent_ids(_load_sent_ids() + [stream_mid])
+        # 正文同样取 60000 字节（超我们自己的降载预算、但飞书收得下）
+        for shrink in (3, 2, 1):
+            ok = loop.run_until_complete(adapter.send_stream_frame(
+                "汉" * (len(body) // shrink), chat_id=chat, turn_id=stream_key))
+            print(f"   帧（{len(body) // shrink * 3} 字节）→ {ok}")
+        patches.clear()
+        loop.run_until_complete(
+            adapter.interrupt_session_activity(stream_key, chat))
+        painted_stream = [(code, payload) for code, payload in patches
+                          if code == 0 and "yellow" in payload]
+        print(f"   /stop 之后的 patch 次数 = {len(patches)}")
+        for code, payload in patches:
+            print(f"     code={code}  载荷 {len(payload.encode('utf-8'))} 字节  含 yellow = "
+                  f"{'yellow' in payload}")
+    finally:
+        adapter._client.im.v1.message.patch = original_patch
+        loop.close()
+    if painted_stream:
+        print("✅ native 路径同样保住了中止色（不再只是推断）")
+    else:
+        print("❌ native 路径的 /stop 载荷里没有黄边（审计那条推断成立，需修）")
+        ok = False
 
     from lark_oapi.api.im.v1 import GetMessageRequest
     got = client.im.v1.message.get(GetMessageRequest.builder().message_id(mid).build())
