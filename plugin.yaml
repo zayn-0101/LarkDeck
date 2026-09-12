@@ -6,8 +6,10 @@ description: >
   Streaming Feishu / Lark cards for Hermes Agent. Shadows the built-in `feishu`
   platform adapter (registry last-writer-wins) and subclasses it, replacing the
   plain-text reply path with a card renderer: one card streams from the first
-  token through the final answer, with a collapsible reasoning + tool panel,
-  interactive clarify buttons and bilingual (zh / en) UI strings.
+  token through the final answer, with a collapsible reasoning + tool panel
+  (model / rounds / tools / elapsed in its header), per-turn status colors on
+  the panel border (green = done, red = failed, yellow = stopped), interactive
+  clarify cards and bilingual (zh / en) UI strings.
 
   No Hermes source file is modified and no monkeypatching is used, so a Hermes
   upgrade never requires reinstalling or re-patching this plugin.
@@ -42,7 +44,7 @@ config_schema:
   streaming_print_ms:
     type: integer
     default: 15
-    description: "客户端打字机的逐字间隔（毫秒，只对流式帧有效）；写 0 关闭打字机"
+    description: "客户端打字机的逐字间隔（毫秒，只对流式帧有效）；写 0 关闭打字机；超出 [1,2000] 退回默认并留 WARNING"
   reactions:
     type: boolean
     default: true
@@ -60,6 +62,7 @@ config_schema:
     default: "text"
     description: "上下文用量样式：text | bar | both"
   model_aliases:
+    type: string
     default: ""
     description: "模型别名：'真名=显示名, ...' 或 {model@base_url: 显示名} 映射"
   max_reasoning_chars:
@@ -69,11 +72,11 @@ config_schema:
   max_tool_result_chars:
     type: integer
     default: 600
-    description: "统一面板中单条工具步骤行上限（超出部分截断并留痕）。面板显示的是参数预览，预览本身已截到 80 字符，所以这项实际极少触发"
+    description: "统一面板中单条工具步骤行上限（超出部分截断并留痕）；写 0 或负数视为用默认值。面板显示的是参数预览，预览本身已截到 80 字符，所以这项实际极少触发"
   max_panel_steps:
     type: integer
     default: 30
-    description: "统一面板步骤数上限（超出保留最近的步骤）"
+    description: "统一面板步骤数上限（超出保留最近的步骤）；写 0 或负数视为用默认值"
   context_max_override:
     type: integer
     default: 0

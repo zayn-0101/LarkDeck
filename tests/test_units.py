@@ -248,8 +248,12 @@ def test_probe_report_warnings_name_the_right_contract():
     所以它们自己绝不能是静默的。
     """
     def _report(**over):
-        base = {"adapter_class": "x.Y", "missing_callback": [], "missing_optional": [],
-                "missing_signal": [], "missing_reactions": []}
+        """造一份**完整**的报告（键从 `compat.PROBE_REPORT_KEYS` 派生，不手写第二份）。"""
+        base = {key: [] for key in compat.PROBE_REPORT_KEYS}
+        base["adapter_class"] = "x.Y"
+        base["hermes_version"] = "test"
+        base["ok"] = True
+        base["session_attribution_ok"] = True
         base.update(over)
         return base
 
@@ -284,7 +288,15 @@ def test_probe_report_warnings_name_the_right_contract():
     with _LogCapture("larkdeck") as records:
         adapter._log_probe_report(broken)
     warnings = [r.getMessage() for r in records if r.levelno >= 30]
-    assert warnings, "报告缺键时必须报警，否则和「契约齐全」无法区分"
+    assert any("missing_reactions" in w for w in warnings), (
+        f"报告缺键时必须点名报警，否则和「契约齐全」无法区分：{warnings}")
+
+    # ⑤ `probe_report()` 自己要能发现「实现漏了一个契约键」：把某个赋值去掉时它会加
+    #    `contract_violation`（而不是静默少一个键）。这里用真实函数验证这条自检存在。
+    full = compat.probe_report(StubAdapter)
+    assert "contract_violation" not in full, full
+    assert set(compat.PROBE_REPORT_KEYS) <= set(full), (
+        "probe_report 的产出必须覆盖契约键；缺了会由 contract_violation 报告出来")
 
 
 def test_clarify_gateway_bridge_degrades_safely():
@@ -2624,6 +2636,10 @@ def test_long_body_still_redraws_on_stop_and_never_degrades_silently():
         assert raw1._ld_state["om_card_1"]["last_text"] == big, "阈值内的大正文被丢掉了"
         _run(raw1.interrupt_session_activity("sk", "oc_big"))
         assert updates1, "超降载预算但发得出去的卡，/stop 时没有重绘"
+        # 而且**载荷里必须有颜色** —— 只数 patch 次数会漏掉另一半缺陷
+        # （真机实测过：patch 发了、code=0、载荷里没有状态色 ⇒ 用户还是看不到变色）。
+        assert "yellow" in updates1[-1]["content"], \
+            "超预算档的 /stop 重绘载荷里没有状态色（降载把承载颜色的面板摘掉了）"
 
         # ② 超过**真阈值**（连飞书都发不出去）：允许不存，但**必须留一条日志**（不许静默）
         panel.reset()
@@ -2638,8 +2654,47 @@ def test_long_body_still_redraws_on_stop_and_never_degrades_silently():
         # 日志的单位口径必须是**字节**（第七路审计：这里曾传字符数，读起来像阈值算错了）
         assert f"正文 {len(huge.encode('utf-8'))} 字节" in text, (
             f"日志口径必须是 utf-8 字节，实得：{text!r}")
+        # 超限时只允许两种结果：**完整保留**或**完全不留** —— 绝不许截断。
+        # 截断的后果是 `/stop` 把屏上 6 万字的答案重绘成 1000 字（用户可见的数据丢失），
+        # 而第八路审计实测：把这里改成 `body[:1000]` 四门禁全绿。
+        stored = (raw2._ld_state.get("om_card_1") or {}).get("last_text")
+        assert stored in ("", huge), f"存了个半截正文（{len(stored or '')} 字符）—— 不许截断"
     finally:
         adapter._STREAM_MIN_INTERVAL = old_interval
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_tracked_text_keeps_a_bounded_number_of_copies():
+    """`_MAX_TEXT_ENTRIES` 的**取值**也要有门禁（第八路审计：改成 1 四门禁全绿）。
+
+    语义（`_ld_note_text` 的清理块）：最多留 `_MAX_TEXT_ENTRIES` 份正文，再多就清掉
+    `last` 最小的那份。改成 1 之后，多会话里只有**最近那一个** chat 的卡能在 `/stop` 变色 ——
+    而这正是「中止后不变色」这个静默缺陷的形态，没有任何别的门禁看得见。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    try:
+        raw = _make()
+        keep = adapter._MAX_TEXT_ENTRIES
+        assert keep >= 8, f"保留份数太少（{keep}）：多会话下只有最近几个 chat 能变色"
+        for index in range(keep):
+            mid = f"om_keep_{index}"
+            raw._ld_state[mid] = {"chat_id": f"oc_{index}", "t0": 0.0,
+                                  "last": float(index), "last_text": ""}
+            raw._ld_note_text(mid, f"正文{index}")
+        for index in range(keep):
+            assert raw._ld_state[f"om_keep_{index}"]["last_text"] == f"正文{index}"
+        # 再来一份：挤掉 `last` 最小的那份（0 号），其余全部留下
+        raw._ld_state["om_new"] = {"chat_id": "oc_new", "t0": 0.0,
+                                   "last": float(keep), "last_text": ""}
+        raw._ld_note_text("om_new", "新正文")
+        survivors = [m for m in raw._ld_state if raw._ld_state[m]["last_text"]]
+        assert len(survivors) == keep, f"保留份数不对：{len(survivors)} != {keep}"
+        assert "om_keep_0" not in survivors, "该被淘汰的是最久没用的那份"
+        assert "om_new" in survivors
+    finally:
         panel.reset()
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)
@@ -2734,8 +2789,31 @@ def _parse_config_schema(yaml_text: str) -> "Dict[str, Any]":
     current = None
     props: "set" = set()
 
+    def _strip_comment(raw: str) -> str:
+        """剥掉**引号外**的行内注释 —— ``default: 15  # 毫秒`` 是合法 YAML。
+
+        第八路审计实测：旧版把它当成字符串 ``'15  # 毫秒'``，于是报「默认值不一致」
+        （**误诊**：真正的问题是解析器不认识行内注释）。
+        """
+        out: "list[str]" = []
+        quote = None
+        for index, ch in enumerate(raw):
+            if quote:
+                out.append(ch)
+                if ch == quote:
+                    quote = None
+                continue
+            if ch in "\"'":
+                quote = ch
+                out.append(ch)
+                continue
+            if ch == "#" and (index == 0 or raw[index - 1] in " \t"):
+                break
+            out.append(ch)
+        return "".join(out).rstrip()
+
     def _scalar(raw: str) -> Any:
-        raw = raw.strip()
+        raw = _strip_comment(raw).strip()
         if raw in ("true", "false"):
             return raw == "true"
         if raw[:1] in ("\"", "'") and raw[-1:] == raw[:1] and len(raw) >= 2:
@@ -2749,11 +2827,24 @@ def _parse_config_schema(yaml_text: str) -> "Dict[str, Any]":
         except ValueError:
             return raw
 
+    def _unsupported(line: str) -> AssertionError:
+        return AssertionError(
+            f"plugin.yaml config_schema 里有本解析器**读不了**的形状：{line!r}\n"
+            "  它故意响亮失败（宁可红也不静默漏判）。两条路：把这段写成简单形状，"
+            "或把本测试改成 `yaml.safe_load`（测试脚本可以依赖 Hermes venv 的 PyYAML）。")
+
     for line in lines:
         if not line.strip() or line.lstrip().startswith("#"):
             continue
-        if not line.startswith(" "):        # 回到顶格 = config_schema 段结束
-            break
+        if not line.startswith(" "):
+            # 回到顶格 = 段结束 —— 但**只有真的顶格键**才算结束。
+            # 第八路审计实测：段尾插一行 tab 缩进的垃圾会被旧版静默 `break` 掉
+            # （116/116 全绿），于是「认不出的行直接失败」这条保证对这类行不成立。
+            if re.match(r"^[A-Za-z_][A-Za-z0-9_.-]*:", line):
+                break
+            raise _unsupported(line)
+        if re.match(r"^ {4,}- ", line):        # 列表项（enum / examples）
+            raise _unsupported(line)
         m = re.match(r"^  ([^\s:][^:]*):$", line)
         if m:
             current = m.group(1).strip()
@@ -2764,18 +2855,51 @@ def _parse_config_schema(yaml_text: str) -> "Dict[str, Any]":
         m = re.match(r"^    ([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$", line)
         if m and current is not None:
             prop, value = m.group(1), m.group(2)
+            if _strip_comment(value).strip() in (">", "|", ">-", "|-", ">+", "|+"):
+                raise _unsupported(line)      # 折叠 / 字面标量
             assert prop not in props, f"plugin.yaml: {current}.{prop} 重复"
             props.add(prop)
             if prop == "default":
                 declared[current] = _scalar(value)
             elif prop == "type":
-                types[current] = value.strip()
+                types[current] = _strip_comment(value).strip()
             continue
-        raise AssertionError(
-            f"plugin.yaml config_schema 里有解析不了的行（旧版解析器会在这里静默漏判）："
-            f"{line!r}")
+        raise _unsupported(line)
 
     return declared, types
+
+
+def test_config_schema_parser_fails_loudly_on_shapes_it_cannot_read():
+    """解析器读不了的形状必须**响亮失败**，而不是静默漏判（第八路审计：这条保证此前零覆盖）。
+
+    实测过两条旧行为：① 段尾插一行 tab 缩进的垃圾 → 被静默 `break` 掉，116/116 全绿；
+    ② 把解析器里那个 `raise AssertionError` 退回 `continue` → 四门禁全绿。
+    也就是说「宁可红也不静默漏判」这句话本身没人守。这条测试守它。
+    """
+    good = "config_schema:\n  a_1-x:\n    type: boolean\n    default: true\n"
+    declared, types = _parse_config_schema(good)
+    assert declared == {"a_1-x": True} and types == {"a_1-x": "boolean"}, (declared, types)
+    # 行内注释是合法 YAML，必须被剥掉而不是当成字符串（旧版会误诊成「默认值不一致」）
+    declared2, _ = _parse_config_schema(
+        "config_schema:\n  a:\n    default: 15  # 毫秒\n    type: integer\n")
+    assert declared2 == {"a": 15}, declared2
+
+    broken_cases = {
+        "段尾 tab 缩进垃圾": good + "\tgarbage: 1\n",
+        "键内 5 空格缩进": "config_schema:\n  a:\n     default: 1\n",
+        "折叠标量": "config_schema:\n  a:\n    default: >\n      x\n",
+        "列表项（enum）": "config_schema:\n  a:\n    enum:\n      - 1\n",
+        "键值同行": "config_schema:\n  a: true\n",
+        "属性行没有键名": "config_schema:\n  a:\n    : 1\n",
+        "顶格垃圾": good + "plain garbage\n",
+    }
+    for label, text in broken_cases.items():
+        try:
+            _parse_config_schema(text)
+        except AssertionError as exc:
+            assert "config_schema" in str(exc), (label, exc)
+        else:
+            raise AssertionError(f"{label} 没有被响亮拒绝 —— 解析器静默放过了一种读不了的形状")
 
 
 def test_config_schema_matches_defaults_exactly():
@@ -2795,6 +2919,15 @@ def test_config_schema_matches_defaults_exactly():
     yaml_text = Path(__file__).resolve().parent.parent.joinpath(
         "plugin.yaml").read_text(encoding="utf-8")
     declared, types = _parse_config_schema(yaml_text)
+
+    # `type:` **缺失**必须被看见（旧版 `if declared_type is None: continue` 是静默空洞 ——
+    # 第八路审计实测：删掉 `type: integer` 四门禁全绿）。2026-09-13 起**每个键都必须声明
+    # type**（`model_aliases` 当时是唯一的例外，已补上），所以这里是个**无例外的等式**：
+    # 漏一个就红，不需要维护什么允许名单。
+    without_type = sorted(set(declared) - set(types))
+    assert without_type == [], (
+        f"这些键没有声明 type：{without_type} —— 每个键都必须声明（配置界面按它渲染控件，"
+        "`integer` 写成 `boolean` 会让输入框变成开关）")
 
     assert set(declared) == set(adapter._DEFAULTS), (
         f"plugin.yaml 与 _DEFAULTS 的键不一致："
@@ -2843,6 +2976,105 @@ def test_invariant_2_fallbacks_survive_exceptions_not_just_failures():
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)
         adapter._apply_metrics_config()
+
+
+def test_card_byte_constants_are_pinned_to_the_measured_envelope():
+    """卡片字节那三个常量**自身**必须有门禁，不能只锁它们之间的关系。
+
+    第八路审计实测（43 条变异矩阵）：新加的形状断言只盯着「阈值 + 开销 ≤ 硬上限」这条
+    **关系**，于是把三个输入分别改坏——`_FEISHU_CARD_BYTE_LIMIT` → 999999、
+    `_CARD_BYTES_OVERHEAD` → 50000（追踪窗口缩到 78000，「/stop 无重绘」区间回归）、
+    `_MAX_TRACKED_TEXT` 手写成 127000——**四门禁全绿**。而 `128000` 这个数字来自真机阶梯
+    （`probe_render.py --bytes`：**128000 仍 code=0**、**160000 被拒**：
+    `230025 The length of the message content reaches its limit`），是整个
+    「发得出去就存得下」口径的地基。机械门禁证明不了那个数字（只有真机探针能），
+    但至少要让改它的人**必须面对那份实测**，而不是随手改大。
+    """
+    assert adapter._FEISHU_CARD_BYTE_LIMIT == cards.FEISHU_CARD_BYTE_LIMIT, "两处常量必须同源"
+    measured_accepted, measured_rejected = 128000, 160000
+    assert measured_accepted <= cards.FEISHU_CARD_BYTE_LIMIT < measured_rejected, (
+        f"硬上限常量 {cards.FEISHU_CARD_BYTE_LIMIT} 落在真机实测包络线 "
+        f"[{measured_accepted}, {measured_rejected}) 之外 —— 要改它先重跑 "
+        f"`probe_render.py --bytes` 并把新的实测值一起写进注释与断言")
+    # 阈值必须是**算出来的**，不是手写数字（手写就等于把口径钉死在一处，改一处忘另一处）
+    assert adapter._MAX_TRACKED_TEXT == (cards.FEISHU_CARD_BYTE_LIMIT
+                                         - adapter._CARD_BYTES_OVERHEAD)
+    # 余量必须是「小余量」：太大等于把「/stop 无重绘」的区间又请回来（审计实测 50000 就全绿）
+    assert adapter._CARD_BYTES_OVERHEAD <= 8192, adapter._CARD_BYTES_OVERHEAD
+    assert adapter._MAX_TRACKED_TEXT >= 100_000, adapter._MAX_TRACKED_TEXT
+    # 而且必须**放得下**状态小面板（它是超预算档唯一还在卡上的装饰）
+    shell_bytes = cards.card_bytes(cards.status_shell(
+        cards.unified_panel(status="stopped")))
+    assert 0 < shell_bytes <= adapter._CARD_BYTES_OVERHEAD, (
+        f"状态小面板 {shell_bytes} 字节 > 余量 {adapter._CARD_BYTES_OVERHEAD} —— "
+        "那「发得出去的卡都存得下正文」就不再成立")
+
+
+def test_status_color_survives_the_byte_budget_degradation():
+    """正文超过字节预算时，**状态色仍然必须留在卡上**（真机实测出来的缺陷）。
+
+    由来（2026-09-13，新加的真机探针 `probe_render.py --stop-redraw` 抓到的，第七路审计
+    那条阻断项的**另一半**）：状态色的载体只有 ``collapsible_panel.border.color``，而正文
+    超过 ``CARD_BYTE_BUDGET`` 时降载阶梯会把面板**整块**摘掉 ⇒ ``/stop`` 的确发出了
+    ``message.patch``（``code=0``），但载荷里**根本没有颜色** ⇒ 用户看到的还是「没变色」。
+    修法是 :func:`cards.status_shell`：这一档只留「带颜色的框 + 一行状态文字」（约 545 字节），
+    且**只受飞书实测硬上限约束**（不受软预算约束，否则等于没修）。
+
+    这条断言的价值在于它盯的是**载荷里的颜色**，不是「有没有发 patch」——
+    后者写在另一条测试里，两者合起来才等于「用户会看到变色」。
+    """
+    panel_of = lambda status: cards.unified_panel(status=status, reasoning="想一下")  # noqa: E731
+    for status in ("ok", "error", "stopped"):
+        color = cards.border_for_status(status)
+        body = "汉" * 20000                     # 60000 字节：远超 40000 软预算
+        node, tier = cards.fit_reply_card(body, panel=panel_of(status))
+        blob = json.dumps(node, ensure_ascii=False)
+        assert tier == "over-budget", tier
+        assert body in blob, "正文被截断了 —— 绝不允许"
+        assert color in blob, (
+            f"{status} 色的卡在超预算档丢了颜色（载荷里连 {color} 都没有）—— "
+            "这正是真机上「patch 发了但没变色」的成因")
+        assert '"collapsible_panel"' in blob, "颜色载体必须是那个小面板"
+        assert cards.count_elements(node) <= cards.FEISHU_ELEMENT_LIMIT, cards.count_elements(node)
+
+    # 小面板**自己**不能是空的：空面板飞书会拒（`unified_panel` 里为同一件事补过状态文字），
+    # 而「只留个彩色空框」等同于什么都没显示。也不能只留颜色、把状态文字丢掉。
+    shells = {status: cards.status_shell(panel_of(status))
+              for status in ("ok", "error", "stopped")}
+    for status, shell in shells.items():
+        assert shell and shell.get("elements"), f"{status} 的状态小面板是空的"
+        assert cards.count_elements(shell) >= 3, (status, cards.count_elements(shell))
+        child = (shell["elements"][0] or {}).get("content") or ""
+        assert child.strip(), (status, shell)
+    assert (shells["ok"]["elements"][0]["content"]
+            != shells["stopped"]["elements"][0]["content"]), \
+        "不同状态的小面板文字必须不同，否则状态色一丢就什么线索都没有了"
+
+    # 没有状态色时不该凭空造一个面板（「不猜」）
+    plain, _ = cards.fit_reply_card("汉" * 20000, panel=panel_of(None))
+    assert '"collapsible_panel"' not in json.dumps(plain, ensure_ascii=False)
+    assert cards.status_shell(None) is None
+    assert cards.status_shell(panel_of(None)) is None
+
+    # 硬上限守卫的**两侧**都要验（只验一侧等于没验）：
+    #   贴边时宁可不要颜色，也不能把一张**本来发得出去**的卡顶成「拒收 → 回落纯文本」；
+    #   有余量时必须把颜色加上，否则这个修复就等于没做。
+    overhead = cards.card_bytes(cards.reply_card("x" * 100)) - 100   # 实测，不猜
+    shell_bytes = cards.card_bytes(cards.status_shell(panel_of("stopped")))
+    assert 0 < shell_bytes < 2000, shell_bytes
+    tight = "x" * (cards.FEISHU_CARD_BYTE_LIMIT - overhead - 20)
+    bare, _ = cards.fit_reply_card(tight)
+    shelled, _ = cards.fit_reply_card(tight, panel=panel_of("stopped"))
+    assert cards.card_bytes(bare) <= cards.FEISHU_CARD_BYTE_LIMIT, cards.card_bytes(bare)
+    assert cards.card_bytes(shelled) <= cards.FEISHU_CARD_BYTE_LIMIT, cards.card_bytes(shelled)
+    assert "yellow" not in json.dumps(shelled, ensure_ascii=False), \
+        f"贴边时必须放弃颜色（这个正文 {len(tight)} 字节，加 {shell_bytes} 字节会超硬墙）"
+
+    roomy = "x" * (cards.FEISHU_CARD_BYTE_LIMIT - overhead - shell_bytes - 50)
+    fitted, _ = cards.fit_reply_card(roomy, panel=panel_of("stopped"))
+    assert cards.card_bytes(fitted) <= cards.FEISHU_CARD_BYTE_LIMIT
+    assert "yellow" in json.dumps(fitted, ensure_ascii=False), \
+        "明确有余量时还不给颜色 ⇒ status_shell 的守卫条件反了"
 
 
 def test_over_budget_tier_keeps_the_typewriter_and_never_truncates_body():
@@ -2916,32 +3148,50 @@ def test_out_of_range_print_frequency_is_logged_not_silent():
     **零日志** —— 与本项目「诊断路径不许静默」的纪律直接冲突（其他同类路径
     `_log_note_text_skipped` / `_log_degrade_once` / `_log_empty_panel_once` 都有限流日志）。
     """
+    from larkdeck.core import adapter as _adapter_module   # noqa: F401 - 只为 lint 友好
+
+    def _value(cfg):
+        adapter.configure(streaming_print_ms=cfg)
+        adapter._log_print_ms_once._at = 0.0          # 清限流窗口
+        with _LogCapture("larkdeck") as records:
+            got = adapter._print_frequency_ms()
+        return got, _log_text(records)
+
     defaults = dict(adapter._DEFAULTS)
     try:
-        for bad in ("5000", 5001, 10 ** 9):
-            adapter.configure(streaming_print_ms=bad)
-            adapter._print_frequency_ms._at = 0.0     # 清限流窗口
-            with _LogCapture("larkdeck") as records:
-                got = adapter._print_frequency_ms()
+        # ① 越界：**边界上下都要打**。`PRINT_FREQUENCY_MAX_MS + 1` 这一条是有判别力的 ——
+        #    第八路审计实测：把 `_print_frequency_ms` 里的上限改成字面量 2001，四门禁全绿
+        #    （两个模块各持一份上限、分叉了没人管）。现在这条会把分叉抓住。
+        for bad in ("5000", 5001, 10 ** 9, cards.PRINT_FREQUENCY_MAX_MS + 1):
+            got, text = _value(bad)
             assert got == cards.DEFAULT_PRINT_FREQUENCY_MS, (bad, got)
-            text = _log_text(records)
-            assert "streaming_print_ms" in text and "退回默认" in text, (bad, text)
+            assert "streaming_print_ms" in text and "退回" in text, (bad, text)
 
-        # 合法值 / 0（= 关掉打字机）不许报警，也别改值
+        # ② **转不动**的值同样不许静默（第八路审计指出的另一半：`_cfg_int` 在范围判断之前
+        #    就把它们塌成默认，于是这条分支永远见不到它们 —— 写 "fast"/""/null/inf 全静默）
+        for junk in ("abc", "", [], {}, float("inf"), float("nan"), "1e999"):
+            got, text = _value(junk)
+            assert got == cards.DEFAULT_PRINT_FREQUENCY_MS, (junk, got)
+            assert "不是可用的数字" in text, (junk, text)
+            # 告警要打**用户写的那个值**，不是 float 舍入后的天文数字
+            assert repr(junk) in text, (junk, text)
+
+        # ③ 合法值 / 0（= 关掉打字机）不许报警，也别改值
         for good in (1, 15, cards.PRINT_FREQUENCY_MAX_MS):
-            adapter.configure(streaming_print_ms=good)
-            adapter._print_frequency_ms._at = 0.0
-            with _LogCapture("larkdeck") as records:
-                assert adapter._print_frequency_ms() == good, good
-            assert _log_text(records) == "", (good, _log_text(records))
-        adapter.configure(streaming_print_ms=0)
-        with _LogCapture("larkdeck") as records:
-            assert adapter._print_frequency_ms() == 0, "0 = 关掉打字机，是正常取值"
-        assert _log_text(records) == "", "0 是合法取值，不许报警"
+            got, text = _value(good)
+            assert got == good and text == "", (good, got, text)
+        for off in (0, -5, "0"):
+            got, text = _value(off)
+            assert got == int(off) and text == "", (off, got, text)
+        # 数字串（config.yaml 里常见的引号写法）与 float 都要照常吃下去
+        for same in ("15", 15.0):
+            got, text = _value(same)
+            assert got == 15 and text == "", (same, got, text)
     finally:
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)
         adapter._apply_metrics_config()
+        adapter._log_print_ms_once._at = 0.0
         adapter._print_frequency_ms._at = 0.0
 
 

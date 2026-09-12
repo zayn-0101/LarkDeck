@@ -105,6 +105,7 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 | 页脚：上下文用量（模型/耗时已并入面板标题） | ✅ 真机渲染已确认 |
 | 上下文用量三样式（纯文字 / 图形条 / 数字+条） | ✅ 真机渲染已确认 |
 | 推理文本 / 工具结果上限 + 元素溢出保护 | ✅ |
+| 打字机逐字显示 | ⏳ **字段已带上、动画未确证**：`streaming_print_ms`（默认 15）把 `streaming_config` 带在流式帧上，飞书 create/patch 都是 `code=0`；但「客户端会不会逐字打」是纯客户端行为，**API 返回码看不到**。证据倾向「`message.patch` 拿不到这个动画」（见「已知限制」里打字机那条），自测用 `tests/probe_render.py --typing` |
 
 > 每项效果**验证到什么程度**（本地门禁 / 真机 API / 肉眼）见
 > [`docs/plan-6-effects.md`](docs/plan-6-effects.md) 的「6 项效果的实施完成度」表 ——
@@ -207,8 +208,15 @@ $PY tests/test_units.py            # 纯单测，零网络零 Hermes 依赖
 $PY tests/check_override.py        # 对真实 Hermes 安装验证平台覆盖 + 插件配置桥接
 $PY tests/check_hooks.py           # 对真实钩子派发器验证指标采集是否接通
 $PY tests/check_clarify_e2e.py     # 澄清卡端到端：发送 → 点击 → 网关解除阻塞
+$PY tests/mutate_check.py          # 变异验证器：撤掉每条修复必须变红（改了断言必跑）
 $PY tests/probe_render.py          # 真发卡片到自己的飞书 DM，验飞书接不接受（要凭据）
 ```
+
+前四个是**门禁**（必须全绿）；`mutate_check.py` 是**验证门禁自己有没有判别力**的元门禁：
+清单里每条变异 = 一处「把某条修复撤掉」的定向改动，判定标准是**至少一个门禁变红**。
+**撤掉修复还全绿 = 那条断言没有判别力** —— 这是本项目头号缺陷类型（见 `docs/lessons.md`
+推论 6~8）。它的由来：第七路审计拿 50 条定向变异各跑一遍，**23 条撤掉修复后门禁仍然全绿**。
+`-k <子串>` 只跑一部分；快照目录必须叫 `larkdeck`，否则会 import 到未变异的基线（曾导致假绿）。
 
 `check_hooks.py` 走的是核心真正使用的派发器（`hermes_cli.lifecycle.invoke_hook`），
 载荷用 Hermes 自己的 `CanonicalUsage` 生成，并带一组**对照组**（不启用插件时钩子必须为空）。
@@ -221,14 +229,19 @@ $PY tests/probe_render.py          # 真发卡片到自己的飞书 DM，验飞�
 
 `probe_render.py` 是唯一**连真实飞书**的测试，也是唯一能判定卡片合法性的手段 ——
 它会先删掉自己上次发的探针卡再发新的。只验渲染，**不验点击**（点击路由要平台被
-LarkDeck 接管后才生效）。
+LarkDeck 接管后才生效）。带参数的几种模式各答一个只有真机能答的问题：`--typing`
+（打字机 A/B 肉眼比）、`--bytes`（字节上限阶梯，create + patch 都打）、`--elements`
+（元素数阶梯，官方硬上限 200）、`--rate-limit`（连续 patch 的限流实证）、
+`--stop-redraw`（**中止重绘的真机端到端**：正文超降载预算但发得出去时，`/stop` 必须真的
+把那张卡重绘成中止色 —— 它用真适配器跑生产路径，断言**载荷里有颜色**而不只是「发了 patch」）、
+`--clean-only` / `--no-clean`（清理控制）。
 
 ---
 
 ## 已知限制
 
 - **必须和官方适配器同一进程**：官方 `feishu` 平台被禁用时，LarkDeck 无处附着。
-- **依赖官方适配器的内部方法**：发送/编辑路径 3 个必需（`_feishu_send_with_retry` 等，启动自检校验，缺了**拒绝覆盖**并保持内置行为），点击回调路径 5 个类属性 + 2 个实例属性（`_on_card_action_trigger`、`_card_response`、`_client` 等）+ 澄清网关内部结构（`_lock` / `_entries` / `mark_awaiting_text`）。全部集中登记在 `compat.py`：`probe_adapter_class()` 守必需项，`probe_report()` 的完整快照在启动时打进日志（缺点击回调会提级 WARNING 并写明「澄清按钮会静默失灵」）—— 官方哪天改了名字，日志会直接说出来，而不是静默失效。
+- **依赖官方适配器的内部方法**：发送/编辑路径 3 个必需（`_feishu_send_with_retry` 等，启动自检校验，缺了**拒绝覆盖**并保持内置行为）+ 1 个可选（`edit_message`，有则用、无则退回内置）；点击回调路径 5 个类属性 + 2 个实例属性（`_on_card_action_trigger`、`_card_response`、`_client` 等）；信号型 1 个（`interrupt_session_activity`，缺了「中止后卡片不变色」）；处理生命周期 1 个（`_reactions_enabled`，缺了 `reactions: false` 静默失效）；澄清网关内部结构（`_lock` / `_entries` / `entry.multi_select` / `mark_awaiting_text` / `resolve_gateway_clarify`）。全部集中登记在 `compat.py`（分七组 + 会话归属公开面）：`probe_adapter_class()` 守必需项，`probe_report()` 的完整快照在启动时打进日志（缺点击回调会提级 WARNING 并写明「澄清按钮会静默失灵」）—— 官方哪天改了名字，日志会直接说出来，而不是静默失效。
 - ~~**`i18n_content` 的元素级支持需真机确认**~~ → **已实测确认**（2026-09-12）：
   文本元素同时带 `content` 与 `i18n_content`，1.0 与 2.0 卡均被飞书接受；
   1.0 的 header title 与按钮 text 也接受且生效。**互换实验**（把 `zh_cn` 分支里放英文）
@@ -255,9 +268,16 @@ LarkDeck 接管后才生效）。
 - **状态色的可信范围**：颜色来自 `on_session_end`（每回合一次，含非流式路径）。
   `/stop` 那一帧由插件自己重绘（核心不会再有收尾帧）。若某回合连一次流式帧都没有
   （没建卡），自然也没有卡可上色 —— 那时看到的仍是官方纯文本。
+  正文超过字节预算（40000）时，状态色由 `cards.status_shell()` 保住（只带边框色的小面板，
+  ≈545 字节，见上一条）；只有正文贴近飞书硬上限（128000）时才会为了「发得出去」放弃它。
+  真机自测：`tests/probe_render.py --stop-redraw`。
 - **卡片级 header 已去掉**（决策 D2）：模型名/轮数/工具数/耗时全在面板标题行。
-  面板被关（`unified_panel: false`）或被字节预算降载时，这些信息与状态色都会一起消失
-  （正文永远完整，见上面的降载策略）。
+  面板被关（`unified_panel: false`）或正文超过字节预算（40000）时，**这些信息会消失，
+  但状态色不会** —— 超预算档会保留一个只带边框色的小面板（`cards.status_shell`）。
+  这条是 2026-09-13 真机实测补出来的：早先那一档把面板整块摘掉，于是「正文发得出去、
+  卡片也在，但 `/stop` 之后不变色」（载荷里连颜色都没有）。代价约 545 字节；
+  正文大到贴近飞书硬上限（128000）时才会放弃这个色块，那时优先保发送成功。
+  正文永远完整（见上面的降载策略）。真机自测：`tests/probe_render.py --stop-redraw`。
 
 ---
 

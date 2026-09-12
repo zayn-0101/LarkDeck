@@ -92,7 +92,9 @@ _MAX_TRACKED = 512
 #: 更糟的是 `tests/test_units.py` 那条回归的 fixture 正好卡在 40000 上，所以它**当时的绿
 #: 恰恰来自这行赋值**。教训：改常量口径必须 grep 全部同名赋值，且回归的 fixture
 #: 要贴着**新**阈值写。现在只有一个定义处，`tests/test_units.py` 有一条形状断言守着。
-_FEISHU_CARD_BYTE_LIMIT = 128000
+#: 飞书卡片 JSON 的**实测硬上限** —— 单一事实来源在 `cards.py`（它决定 `status_shell`
+#: 那一档要不要加），这里只引用，不再各写一份数字。
+_FEISHU_CARD_BYTE_LIMIT = _cards.FEISHU_CARD_BYTE_LIMIT
 #: 卡片 JSON 的固定开销（header/面板骨架/页脚…）实测 ≈426 字节，与正文长度无关。
 #: 想保证「发得出去就存得下」，比的就是 `正文字节 + 固定开销 ≤ _FEISHU_CARD_BYTE_LIMIT`。
 _CARD_BYTES_OVERHEAD = 1024
@@ -267,8 +269,13 @@ def _cfg(key: str) -> bool:
     return bool(value)
 
 
-def _cfg_int(key: str, default: int = 0) -> int:
-    """取整数配置；坏值一律退回 ``default``，**绝不抛**。
+def _as_int(value: Any) -> Optional[int]:
+    """把配置值归一成 ``int``；**不可用**（转不动 / ``nan`` / ``inf``）返回 ``None``。
+
+    与 :func:`_cfg_int` 拆开是为了让调用方能**区分「没配」与「配了个不可用的值」** ——
+    第八路审计实测：`_cfg_int` 会把坏值悄悄塌成默认，于是
+    ``if value > high`` 那类范围检查永远见不到它们，写 ``streaming_print_ms: "fast"``
+    与什么都不写完全无法区分（零日志）。
 
     ⚠️ 必须接住 ``OverflowError``：``int(float("inf"))`` 抛的是它。配置里写
     ``inf`` / ``1e999`` / ``.inf``（YAML 都合法）时，这个值会经 ``configure()``
@@ -276,12 +283,21 @@ def _cfg_int(key: str, default: int = 0) -> int:
     **静默退回纯文本**，正是本项目最怕的失败模式（已实测复现）。
     """
     try:
-        number = float(_cfg_raw(key))
-        if number != number or number in (float("inf"), float("-inf")):
-            return default
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    try:
         return int(number)
     except (TypeError, ValueError, OverflowError):
-        return default
+        return None
+
+
+def _cfg_int(key: str, default: int = 0) -> int:
+    """取整数配置；坏值（含没配）一律退回 ``default``，**绝不抛**。"""
+    value = _as_int(_cfg_raw(key))
+    return default if value is None else value
 
 
 def _print_frequency_ms() -> int:
@@ -292,20 +308,34 @@ def _print_frequency_ms() -> int:
     时得到的是 15ms（视觉上等于没有动画）—— 第七路审计实测这时**零日志**，
     排查方向会被完全带反。所以这里按本项目对诊断日志的约定（限流 60 秒一条）如实报出来。
     """
-    value = _cfg_int("streaming_print_ms", _cards.DEFAULT_PRINT_FREQUENCY_MS)
-    if value <= 0:
-        # 0/负数 = 关掉打字机（`cards.card()` 那边 `_positive` 判掉这个字段）—— 是正常取值，不报警
-        return value
-    low, high = 1, _cards.PRINT_FREQUENCY_MAX_MS
+    default = _cards.DEFAULT_PRINT_FREQUENCY_MS
+    high = _cards.PRINT_FREQUENCY_MAX_MS
+    raw = _cfg_raw("streaming_print_ms")
+    value = _as_int(raw)
+    if value is None and raw is not None:
+        # 配了个**转不动**的值（"fast" / "" / [] / {} / inf / nan / 1e999）：
+        # 与「什么都没配」必须能区分开，否则用户改了半天配置看不到任何反应
+        _log_print_ms_once(f"{raw!r} 不是可用的数字", default)
+        return default
+    if value is None or value <= 0:
+        # 没配 / 0 / 负数：0 = 关掉打字机（`cards.card()` 那边 `_positive` 判掉这个字段），
+        # 是**正常取值**，不报警
+        return default if value is None else value
     if value > high:
-        now = time.monotonic()
-        if now - getattr(_print_frequency_ms, "_at", 0.0) >= 60.0:
-            _print_frequency_ms._at = now  # type: ignore[attr-defined]
-            logger.warning("[larkdeck] streaming_print_ms=%s 超出 [%d,%d]ms，"
-                           "已退回默认 %dms（0 才是「关掉打字机」）",
-                           value, low, high, _cards.DEFAULT_PRINT_FREQUENCY_MS)
-        return _cards.DEFAULT_PRINT_FREQUENCY_MS
+        # `5000` 的语义是用户想要「最慢」，实际会退回 15ms（视觉上等于没有动画）
+        _log_print_ms_once(f"{raw!r} 超出 [1,{high}]ms", default)
+        return default
     return value
+
+
+def _log_print_ms_once(why: str, fallback: int) -> None:
+    """`streaming_print_ms` 取值有问题的限流告警（60 秒一条，绝不静默）。"""
+    now = time.monotonic()
+    if now - getattr(_log_print_ms_once, "_at", 0.0) < 60.0:
+        return
+    _log_print_ms_once._at = now  # type: ignore[attr-defined]
+    logger.warning("[larkdeck] streaming_print_ms 配置有问题：%s —— 已退回 %dms"
+                   "（打字机逐字间隔；0 才是「关掉打字机」）", why, fallback)
 
 
 def _log_note_text_skipped(size: int) -> None:
@@ -324,7 +354,7 @@ def _log_note_text_skipped(size: int) -> None:
                    size, _MAX_TRACKED_TEXT)
 
 
-def _log_degrade_once(tier: str, elements: int = 0) -> None:
+def _log_degrade_once(tier: str, elements: int = 0, size: int = 0) -> None:
     """卡片降载日志 —— **限流**：60 秒最多一条。
 
     降载是在每个流式帧上判定的，不限流的话超预算期间每秒会刷 4 条
@@ -333,13 +363,18 @@ def _log_degrade_once(tier: str, elements: int = 0) -> None:
     ``elements`` 是这张卡递归数出来的元素数（飞书硬上限 200，真机实测 202 就被
     ``230099/11310`` 拒）。必须打出来：光看档位名分不出降载是**字节**触发的还是
     **元素数**触发的，而两者的处置完全不同（后者要收轮数 / 步数，不是收长度）。
+
+    ``size`` 是这张卡的 utf-8 字节数（与软预算一起打）—— 第八路审计指出：只打
+    「元素 1/200」读起来像「还有很大余量」，看不出到底撞的是哪堵墙。
     """
     now = time.monotonic()
     if now - getattr(_log_degrade_once, "_at", 0.0) < 60.0:
         return
     _log_degrade_once._at = now
-    logger.warning("[larkdeck] 卡片超限（元素 %d/200），降载档位=%s"
-                   "（正文不截断；若仍发不出会回落官方分块）", elements, tier)
+    logger.warning("[larkdeck] 卡片降载：档位=%s · 元素 %d/%d · 字节 %d/%d"
+                   "（正文不截断；若仍发不出会回落官方分块）",
+                   tier, elements, _cards.FEISHU_ELEMENT_LIMIT, size,
+                   _cards.CARD_BYTE_BUDGET)
 
 
 def _log_empty_panel_once() -> None:
@@ -590,7 +625,7 @@ class LarkDeckMixin:
             # 把元素数一起打出来：降载可能是**字节**触发的、也可能是**元素数**触发的
             # （飞书硬上限 200，真机实测 202 就被 230099/11310 拒），
             # 光看档位名分不出是哪一种，而两者的处置完全不同（后者要收轮数/步数）。
-            _log_degrade_once(tier, _cards.count_elements(card))
+            _log_degrade_once(tier, _cards.count_elements(card), _cards.card_bytes(card))
         return card
 
     # ---------------------------------------------------------------- 发送原语
@@ -1356,9 +1391,17 @@ def _log_probe_report(report: Dict[str, Any]) -> None:
     `report.get(k) or []` 把两者混成一件事 —— 于是删掉 `probe_report` 里的
     `missing_reactions`，启动自检**一声不响**，而它修的恰恰就是「静默失灵」。
     """
-    absent = [key for key in ("missing_optional", "missing_callback",
-                              "missing_signal", "missing_reactions")
-              if key not in report]
+    # 缺键清单从 `compat.PROBE_REPORT_KEYS` **派生**（第八路审计：这里是第三份手写字面量，
+    # 删掉一项没有任何门禁看得见）。探测自身失效的路径（`cls is None`，报告里带 `error`）
+    # 不算缺键 —— 那条路已经有一条更准确的告警。
+    if "error" in report:
+        absent = []
+    else:
+        absent = [key for key in _compat.PROBE_REPORT_KEYS if key not in report]
+    violation = list(report.get("contract_violation") or [])
+    if violation:
+        logger.warning("[larkdeck] 能力探测报告的契约没对齐：缺 %s —— "
+                       "`probe_report()` 与 `PROBE_REPORT_KEYS` 不同步", violation)
     if absent:
         logger.warning("[larkdeck] 能力探测报告缺少 %s —— 探测本身失效，"
                        "上游契约改名会在启动自检里静默漏报", absent)

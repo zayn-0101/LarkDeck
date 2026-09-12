@@ -17,8 +17,18 @@
 
 它不做什么
 ----------
-不启动 Hermes、不加载插件、不碰 HFC、不改任何配置。**按钮点击不会被处理**
-（点击路由仍在 HFC 手里），本探针**只验渲染**。
+默认模式不启动 Hermes、不加载插件、不改任何配置，**按钮点击不会被处理**，只验渲染。
+
+带参数的模式会做更多事（各自在自己的 docstring 里写清了为什么必须真机跑）::
+
+    --typing       打字机 A/B（两张卡交替长大，肉眼比；动画只能靠眼睛）
+    --bytes        卡片字节上限阶梯（create + patch 都打）
+    --elements     元素数上限阶梯（飞书硬上限 200）
+    --rate-limit   连续 patch 的限流实证（退避重试该收哪个错误码）
+    --stop-redraw  **中止重绘的真机端到端**：正文超降载预算但发得出去时，
+                   /stop 必须真的把那张卡重绘成中止色（会加载真适配器）
+    --clean-only   只清理上次的探针卡
+    --no-clean     不清理，直接发（排查清理逻辑时用）
 
 用法::
 
@@ -647,6 +657,159 @@ def probe_rate_limit(client, chat: str, cards) -> int:
     return 0
 
 
+def probe_stop_redraw(client, chat: str, cards) -> int:
+    """**中止重绘的真机端到端**（第七路审计那条阻断项的现场复现与回归）。
+
+    要回答的问题：正文大到「**飞书收得下**、但超过我们自己的降载预算（`CARD_BYTE_BUDGET`
+    = 40000）」时，本回合若掉过 native，`/stop` 之后那张卡**必须真的变成中止色**。
+
+    为什么必须在真机上跑：这条路径的失效形态是**完全静默**的 —— 一次 patch 都不发、
+    卡片不变色、零日志。单测只能证明我们的分支逻辑，证明不了「patch 真的被飞书接受、
+    真的把颜色画上去了」。而第七路审计的阻断项恰恰长在这个缝里：阈值被同文件随后一句
+    旧赋值覆盖成 40000 ⇒ 60000 字节的正文被丢掉 ⇒ 这里会看到 **patch 数 = 0**。
+
+    它用的是**真适配器**（经 Hermes 插件加载器拿到的那个类），所以走的是生产路径：
+    ``send()`` → 卡片纳入追踪 → ``interrupt_session_activity()`` → ``_ld_redraw_stopped()``
+    → ``message.patch``。跑完的卡会记进探针账本，下次默认跑探针时一起清掉。
+    """
+    import asyncio
+
+    try:
+        from hermes_cli.plugins import discover_plugins
+        from gateway.platform_registry import platform_registry
+        from gateway.config import PlatformConfig
+    except Exception as exc:                       # pragma: no cover - 环境问题
+        print(f"⚠️ 这个探针需要 Hermes 环境（用 ~/.hermes/hermes-agent/venv/bin/python3 跑）：{exc!r}")
+        return 1
+
+    install = pathlib.Path(os.environ.get("HERMES_INSTALL_DIR")
+                           or (pathlib.Path.home() / ".hermes" / "hermes-agent"))
+    if str(install) not in sys.path:
+        sys.path.insert(0, str(install))
+    os.environ.setdefault("HERMES_HOME", str(pathlib.Path.home() / ".hermes"))
+    discover_plugins()
+    entry = platform_registry.get("feishu")
+    factory = getattr(entry, "adapter_factory", None) if entry else None
+    if factory is None:
+        print("⚠️ 注册表里没有 feishu 平台，跑不了这个探针")
+        return 1
+    adapter = factory(PlatformConfig(enabled=True, extra={}))
+    print(f"适配器类 = {type(adapter).__module__}.{type(adapter).__qualname__}")
+    if "LarkDeckMixin" not in [c.__name__ for c in type(adapter).__mro__]:
+        print("⚠️ 这个适配器不是 larkdeck 的子类 —— 探针会在官方实现上跑，结论无意义")
+        return 1
+    if not isinstance(getattr(adapter, "_ld_state", None), dict):
+        print("⚠️ 适配器没有 `_ld_state`（`_ld_setup()` 没跑），无法验证追踪")
+        return 1
+    # 适配器的 `_client` 正常由内置的 `_prepare_client()` 在 connect 时建好。这里是一个探针
+    # 进程、**故意不 connect**（网关正连着同一个应用，抢连接没意义），所以把上面**已经建好的
+    # 同一个** lark 客户端挂进去 —— `_client` 是 `compat.CALLBACK_INSTANCE_ATTRS` 里登记过的
+    # 实例契约名，插件的发送/更新都只经它。
+    adapter._client = client
+
+    # ⚠️ 官方适配器把 SDK 的请求构造类（`CreateMessageRequest` …）**懒绑定**在 connect 时机
+    # （`_load_lark_oapi()`，见官方模块顶部注释）。不 connect 的话那些名字还是 None，
+    # 请求构造器会退化成 SimpleNamespace，SDK 直接报 `token_types` 属性错误 ——
+    # 也就是说这里必须显式触发一次绑定，否则本探针证不了任何东西。
+    # 这是**探针脚本**对 Hermes 私有名的唯一一处使用，不进插件本体（不变量 3 仍然只约束 core/）。
+    base_module = sys.modules.get(type(adapter).__mro__[2].__module__)
+    loader = getattr(base_module, "_load_lark_oapi", None)
+    if loader is None or not loader():
+        print("⚠️ 绑不上 lark_oapi 的请求构造器（Hermes 版本变了或 SDK 缺失）—— 探针结论不可信")
+        return 1
+
+    # 正文：20k 汉字 = 60000 字节。**两个条件都要满足**：飞书收得下（实测硬上限 128000）、
+    # 但超过我们自己的降载预算（40000）—— 后者正是「卡在、却存不下正文」的那个区间。
+    body = "汉" * 20000
+    body_bytes = len(body.encode("utf-8"))
+    node, tier = cards.fit_reply_card(body)
+    print(f"正文 {body_bytes} 字节（降载档位={tier}，卡片 {cards.card_bytes(node)} 字节）")
+    if tier == "ok":
+        print("⚠️ 这版 `fit_reply_card` 没有降载 —— 探针的前提（超预算但发得出去）不成立")
+
+    # 统计真实 patch（只包一层计数 + 抄下请求体，不改行为）。
+    # **必须看请求体**：2.0 卡在飞书里存成 cardkit 实体，用 API 读回来只剩一句
+    # 「请升级至最新版本客户端，以查看内容」，看不到边框颜色（`clean_previous` 的注释
+    # 早就记过这件事）。所以「颜色有没有画上去」只能由**我们发出去的载荷 + code=0**
+    # 共同证明 —— 剩下那一点点「客户端真的画成黄色」只能靠眼睛。
+    patches: list = []
+
+    def _payload(request):
+        body = getattr(request, "request_body", None) or getattr(request, "body", None)
+        return (getattr(body, "content", None) or "") if body is not None else ""
+
+    original_patch = adapter._client.im.v1.message.patch
+
+    def _counting_patch(request):
+        result = original_patch(request)
+        patches.append((getattr(result, "code", None), _payload(request)))
+        return result
+
+    adapter._client.im.v1.message.patch = _counting_patch
+
+    loop = asyncio.new_event_loop()
+    try:
+        result = loop.run_until_complete(adapter.send(chat, body))
+        mid = getattr(result, "message_id", None)
+        print(f"{'✅' if mid else '❌'} 建卡 message_id={mid}")
+        if not mid:
+            print(f"   发送结果：{result!r}（卡片没发出去，无法验证中止重绘）")
+            return 1
+        _save_sent_ids(_load_sent_ids() + [mid])
+
+        ld_module = sys.modules.get(type(adapter).__module__)
+        limit = getattr(ld_module, "_MAX_TRACKED_TEXT", None)
+        kept = (adapter._ld_state.get(mid) or {}).get("last_text") or ""
+        print(f"   追踪到的正文 = {len(kept.encode('utf-8'))} 字节"
+              f"（阈值 {limit} 字节；必须等于正文，否则 /stop 会无色）")
+        if len(kept.encode("utf-8")) != body_bytes:
+            print("❌ 正文没有被保留 —— 这就是阻断项的症状（/stop 一次 patch 都不会发）")
+            return 1
+
+        patches.clear()
+        loop.run_until_complete(
+            adapter.interrupt_session_activity(f"probe-stop-{int(time.time())}", chat))
+        print(f"   /stop 之后的 patch 次数 = {len(patches)}")
+        for code, payload in patches:
+            print(f"     code={code}  载荷 {len(payload.encode('utf-8'))} 字节  含 yellow = "
+                  f"{'yellow' in payload}")
+    finally:
+        adapter._client.im.v1.message.patch = original_patch
+        loop.close()
+
+    from lark_oapi.api.im.v1 import GetMessageRequest
+    got = client.im.v1.message.get(GetMessageRequest.builder().message_id(mid).build())
+    content = ""
+    try:
+        content = (got.data.items[0].body.content or "")
+    except Exception:                              # pragma: no cover - 读回失败
+        pass
+    print(f"   读回消息 {len(content)} 字节（2.0 卡是 cardkit 实体，读回来通常是占位文案，"
+          f"所以它证明不了颜色）")
+    print()
+    # ⚠️ 断言必须同时看**两件事**，否则会漏掉一半的缺陷（这正是本探针存在的理由）：
+    #   ① 正文有没有留住（第七路阻断项：阈值被覆盖 ⇒ 正文被丢 ⇒ 一次 patch 都不发）；
+    #   ② **载荷里有没有颜色**（同日实测的第二半：正文留住之后，降载阶梯仍然把承载
+    #      状态色的面板整块摘掉 ⇒ patch 发了、code=0、但载荷里没有任何颜色 ⇒ 用户还是
+    #      看不到变色。只查 patch 次数的话这一半永远抓不到）。
+    painted = [(code, payload) for code, payload in patches
+               if code == 0 and "yellow" in payload]
+    kept_ok = len(kept.encode("utf-8")) == body_bytes
+    if kept_ok and painted:
+        print(f"✅ 中止重绘真机通过：{body_bytes} 字节正文保住了，"
+              f"/stop 把带黄边的载荷发了出去且飞书 code=0")
+        print("   （客户端是否把这 300 多字节的小面板画成黄框，仍要眼睛确认一次）")
+        return 0
+    if not kept_ok:
+        print("❌ 正文没被保留（第七路阻断项的症状：/stop 一次 patch 都不会发）")
+    elif not patches:
+        print("❌ /stop 之后一次 patch 都没发（中止重绘整条失效）")
+    elif not painted:
+        print("❌ patch 发出去了但**载荷里没有状态色** —— 降载阶梯把承载颜色的面板"
+              "整块摘掉了（`status_shell` 就是修这个的）")
+    return 1
+
+
 def main(argv: list) -> int:
     clean_only = "--clean-only" in argv
     do_clean = "--no-clean" not in argv
@@ -675,6 +838,8 @@ def main(argv: list) -> int:
         return probe_element_limit(client, chat, cards)
     if "--rate-limit" in argv:
         return probe_rate_limit(client, chat, cards)
+    if "--stop-redraw" in argv:
+        return probe_stop_redraw(client, chat, cards)
 
     cases = (build_cases(cards) + build_bilingual_cases(cards) + build_footer_cases(cards)
              + build_dialect_probe_cards(cards))
@@ -716,7 +881,7 @@ def main(argv: list) -> int:
     else:
         print("有卡片被拒 ❌ —— 按上面飞书给的 msg 改")
     print("注意：按钮点击不会被处理（本探针只验渲染，不验点击）；"
-          "打字机单独跑：`--typing`。")
+          "打字机单独跑：`--typing`；中止重绘单独跑：`--stop-redraw`。")
     return 0 if ok else 1
 
 

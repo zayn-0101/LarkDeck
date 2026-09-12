@@ -138,8 +138,23 @@ def probe_adapter_class(cls: type) -> Tuple[bool, List[str]]:
     return (not missing), missing
 
 
+#: :func:`probe_report` **必须**产出的键（契约本身）。这是唯一事实来源 ——
+#: 门禁、启动自检的告警都从它派生，**不再各自抄一份字面量**。
+#: 第八路审计实测：`check_override.py` 里那份手写的键清单被删掉一项，四个门禁全绿
+#: （门禁自己的覆盖清单没人守）；`core/adapter.py` 的 `_log_probe_report` 里还有第三份。
+PROBE_REPORT_KEYS: Tuple[str, ...] = (
+    "hermes_version", "adapter_class", "ok", "missing_required", "missing_optional",
+    "missing_callback", "missing_signal", "missing_reactions", "session_attribution_ok",
+)
+
+
 def probe_report(cls: Optional[type]) -> Dict[str, Any]:
-    """可读的能力快照，供启动自检与 ``doctor`` 输出使用。"""
+    """可读的能力快照，供启动自检与 ``doctor`` 输出使用。
+
+    返回前**自检契约**：少一个 :data:`PROBE_REPORT_KEYS` 里的键就在报告里加一条
+    ``contract_violation``（而不是静默少一个键 —— 「探测自己失效」与「契约齐全」
+    必须能区分开，那正是这些键存在的意义）。刻意**不抛**：这个函数跑在插件注册路径上，
+    抛出去就是「插件整体不生效」，比少上报一个键糟得多（不变量 2）。"""
     report: Dict[str, Any] = {"hermes_version": hermes_version(), "adapter_class": None}
     if cls is None:
         report["ok"] = False
@@ -157,6 +172,10 @@ def probe_report(cls: Optional[type]) -> Dict[str, Any]:
     report["missing_reactions"] = [n for n in REACTION_ADAPTER_ATTRS if not _has(cls, n)]
     # 会话归属是「卡片能否确定属于哪个会话」的前提，缺了只是退回旧行为（不阻断卡片）
     report["session_attribution_ok"] = session_attribution_available()
+    # 自检：契约里的键一个都不能少（改这个函数时忘同步 PROBE_REPORT_KEYS 就会被抓）
+    absent = [key for key in PROBE_REPORT_KEYS if key not in report]
+    if absent:
+        report["contract_violation"] = absent
     return report
 
 

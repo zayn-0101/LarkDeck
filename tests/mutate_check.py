@@ -50,13 +50,13 @@ MUTATIONS = [
      "        size = len(body)",
      "test_units"),
     # ---- P2：越界静默 -------------------------------------------------------- #
-    ("P2-删掉越界告警", "core/adapter.py",
-     "            logger.warning(\"[larkdeck] streaming_print_ms=%s 超出 [%d,%d]ms，\"",
-     "            logger.debug(\"[larkdeck] streaming_print_ms=%s 超出 [%d,%d]ms，\"",
+    ("P2-越界告警降级成 debug", "core/adapter.py",
+     '    logger.warning("[larkdeck] streaming_print_ms 配置有问题：%s —— 已退回 %dms"',
+     '    logger.debug("[larkdeck] streaming_print_ms 配置有问题：%s —— 已退回 %dms"',
      "test_units"),
-    ("P2-合法值也报警", "core/adapter.py",
-     "    if value <= 0:\n        # 0/负数 = 关掉打字机",
-     "    if value >= 0:\n        # 0/负数 = 关掉打字机",
+    ("P2b-坏值（转不动）不再报警", "core/adapter.py",
+     "    if value is None and raw is not None:",
+     "    if False:",
      "test_units"),
     # ---- P3：config_schema 解析漏判 ------------------------------------------ #
     ("P3a-加一个含连字符的 yaml-only 键", "plugin.yaml",
@@ -112,6 +112,71 @@ MUTATIONS = [
      "REACTION_ADAPTER_ATTRS: Tuple[str, ...] = (\n    \"_reactions_enabled\",\n)",
      "REACTION_ADAPTER_ATTRS: Tuple[str, ...] = ()",
      "test_units"),
+    # ---- 第十四轮（真机 --stop-redraw 抓到的）状态色载体 --------------------- #
+    ("S1-超预算档不再补状态小面板", "core/cards.py",
+     "        if card_bytes(with_shell) <= FEISHU_CARD_BYTE_LIMIT:",
+     "        if False:",
+     "test_units"),
+    ("S2-小面板不受硬上限约束", "core/cards.py",
+     "        if card_bytes(with_shell) <= FEISHU_CARD_BYTE_LIMIT:",
+     "        if True:",
+     "test_units"),
+    ("S3-status_shell 不认状态色", "core/cards.py",
+     "    if not color or color == BORDER_NEUTRAL:",
+     "    if not color or color == BORDER_NEUTRAL or True:",
+     "test_units"),
+    ("S4-status_shell 丢掉状态文字", "core/cards.py",
+     "    return collapsible(title, [md(_i18n.t(_STATUS_TEXT_KEYS.get(status, \"panel.title\")))],\n                       expanded=False, border_color=color)",
+     "    return collapsible(title, [], expanded=False, border_color=color)",
+     "test_units"),
+    # ---- 第八路审计的 43 条变异里「全绿」的那些，逐条补上门禁 ------------------ #
+    ("A01-硬上限改到远超实测包络", "core/cards.py",
+     "FEISHU_CARD_BYTE_LIMIT = 128000", "FEISHU_CARD_BYTE_LIMIT = 999999",
+     "test_units"),
+    ("A03-余量放大到 50000（窗口被压小）", "core/adapter.py",
+     "_CARD_BYTES_OVERHEAD = 1024", "_CARD_BYTES_OVERHEAD = 50000",
+     "test_units"),
+    ("A05-余量缩到实测开销 298", "core/adapter.py",
+     "_CARD_BYTES_OVERHEAD = 1024", "_CARD_BYTES_OVERHEAD = 298",
+     "test_units"),
+    ("A07-阈值改成手写死值", "core/adapter.py",
+     "_MAX_TRACKED_TEXT = _FEISHU_CARD_BYTE_LIMIT - _CARD_BYTES_OVERHEAD",
+     "_MAX_TRACKED_TEXT = 127000",
+     "test_units"),
+    ("A08-正文只留 1 份", "core/adapter.py",
+     "_MAX_TEXT_ENTRIES = 16", "_MAX_TEXT_ENTRIES = 1",
+     "test_units"),
+    ("B14-超限改成截断正文", "core/adapter.py",
+     "            body = """, "            body = body[:1000]",
+     "test_units"),
+    ("C18-上限改成字面量 2001（与 cards 分叉）", "core/adapter.py",
+     "    high = _cards.PRINT_FREQUENCY_MAX_MS", "    high = 2001",
+     "test_units"),
+    ("C24-坏值不再报警", "core/adapter.py",
+     '        _log_print_ms_once(f"{raw!r} 不是可用的数字", default)',
+     "        pass",
+     "test_units"),
+    ("D24-删掉一个键的 type 声明", "plugin.yaml",
+     "  streaming_print_ms:\n    type: integer\n", "  streaming_print_ms:\n",
+     "test_units"),
+    ("D25-对照：default 加行内注释（合法 YAML，应当全绿）", "plugin.yaml",
+     "    default: 15\n", "    default: 15  # 毫秒\n",
+     "test_units"),
+    ("D26-default 改折叠标量", "plugin.yaml",
+     "    default: 15\n", "    default: >\n      15\n",
+     "test_units"),
+    ("D27-解析器不再响亮失败", "tests/test_units.py",
+     "            raise _unsupported(line)\n        if re.match(r\"^ {4,}- \", line):",
+     "            continue\n        if re.match(r\"^ {4,}- \", line):",
+     "test_units"),
+    ("D28-段尾顶格行静默 break", "tests/test_units.py",
+     "            if re.match(r\"^[A-Za-z_][A-Za-z0-9_.-]*:\", line):\n                break\n            raise _unsupported(line)",
+     "            break",
+     "test_units"),
+    ("E37-PROBE_REPORT_KEYS 少一项", "core/compat.py",
+     "    \"missing_callback\", \"missing_signal\", \"missing_reactions\", \"session_attribution_ok\",\n)",
+     "    \"missing_callback\", \"missing_signal\", \"session_attribution_ok\",\n)",
+     "test_units"),
     # ---- P6：黄金路径耗时 ---------------------------------------------------- #
     ("P6-轮耗时恒为 0", "core/panel.py",
      "    current[\"elapsed_ms\"] = max(0, int((now - float(current.get(\"started\") or now)) * 1000))",
@@ -128,6 +193,25 @@ def _prepare(dest_parent: Path) -> Path:
     return dest
 
 
+#: 门禁失败的两种形态必须分开看：**断言失败**是判别力证据，**崩溃**（语法错误 / import 炸）
+#: 只是「你把代码弄坏了」—— 第八路审计实测：语法错误型变异会让四个门禁全红
+#: （`invalid syntax (adapter.py, line 99)`），如果把它也算「抓住了」，那这个验证器就在骗人。
+_CRASH_MARKERS = ("SyntaxError", "invalid syntax", "IndentationError", "Traceback (most recent call last)")
+_ASSERT_MARKERS = ("AssertionError", "FAIL", "FAILED", "passed")
+
+
+def _classify(proc: "subprocess.CompletedProcess") -> str:
+    """``red-assert``（真有判别力）/ ``red-crash``（只是崩了，不算证据）/ ``green``。"""
+    if proc.returncode == 0:
+        return "green"
+    blob = (proc.stdout or "") + (proc.stderr or "")
+    crashed = any(marker in blob for marker in _CRASH_MARKERS)
+    asserted = any(marker in blob for marker in _ASSERT_MARKERS)
+    if crashed and not asserted:
+        return "red-crash"
+    return "red-assert"
+
+
 def _run_gates(repo: Path) -> "dict[str, tuple[int, str]]":
     out = {}
     for script in ("test_units.py", "check_override.py", "check_hooks.py",
@@ -136,7 +220,7 @@ def _run_gates(repo: Path) -> "dict[str, tuple[int, str]]":
                               capture_output=True, text=True, cwd=str(repo.parent),
                               env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
         tail = (proc.stdout or proc.stderr).strip().splitlines()
-        out[script] = (proc.returncode, tail[-1] if tail else "")
+        out[script] = (_classify(proc), tail[-1] if tail else "")
     return out
 
 
@@ -147,7 +231,20 @@ def main() -> int:
     args = ap.parse_args()
 
     picked = [m for m in MUTATIONS if args.k in m[0]]
-    print(f"基线自校验：{_run_gates(REPO)}")
+
+    # ⚠️ **基线守卫**（第八路审计实测出来的假绿源头）：基线自己就是红的时候，
+    # 每条变异当然都「变红」—— 于是这个验证器会满口「全部被门禁抓住 ✅」。
+    # 实测复现：把历史阻断项那句老赋值塞回基线（test_units 115/116），再跑 `-k P1`
+    # 依然报全绿 + exit 0。所以基线必须是绿的，否则直接退出、不给结论。
+    baseline = _run_gates(REPO)
+    print(f"基线自校验：{baseline}")
+    baseline_red = {k: v for k, v in baseline.items() if v[0] != "green"}
+    if baseline_red:
+        print("❌ 基线不是绿的，本次不给任何结论（否则每条变异都会「被抓住」）：")
+        for name, (kind, last) in baseline_red.items():
+            print(f"   {name}: {kind} · {last}")
+        print("   注意：本验证器跑的是**工作树**，未提交的改动会一起被验。")
+        return 2
 
     bad = []
     tmp_root = Path(tempfile.mkdtemp(prefix="larkdeck-mut-"))
@@ -164,14 +261,30 @@ def main() -> int:
                 continue
             target.write_text(text.replace(old, new, 1), encoding="utf-8")
             results = _run_gates(repo)
-            red = [k for k, (code, _) in results.items() if code != 0]
+            red = [k for k, (kind, _) in results.items() if kind != "green"]
+            crashed = [k for k, (kind, _) in results.items() if kind == "red-crash"]
+            evidence = [k for k in red if k not in crashed]
             expect_script = expect if expect.endswith(".py") else expect + ".py"
-            status = "🔴 变红" if red else "🟢 全绿（**断言没有判别力！**）"
-            print(f"{status} {name}  期望={expect} 实红={red}")
+            control = "对照" in name
+            if control:
+                status = "⚪ 对照全绿（符合预期）" if not red else "❌ 对照项居然变红了（假红！）"
+                print(f"{status} {name}  实红={red}")
+                if red:
+                    bad.append(f"{name}: 对照变异（行为等价）竟然让门禁变红 —— 门禁有假红")
+                continue
+            if not red:
+                status = "🟢 全绿（**断言没有判别力！**）"
+            elif not evidence:
+                status = "💥 只有崩溃（语法错误 / import 炸），**不算判别力证据**"
+            else:
+                status = "🔴 断言失败"
+            print(f"{status} {name}  期望={expect} 实红={red} 断言红={evidence}")
             if not red:
                 bad.append(f"{name}: 撤掉修复后四门禁仍然全绿 —— 断言没有判别力")
-            elif expect_script not in red:
-                print(f"   ⚠️ 期望 {expect} 变红，实际是 {red}（也算被守住了，但归因不准）")
+            elif not evidence:
+                bad.append(f"{name}: 只有崩溃、没有断言失败 —— 不能算被门禁抓住")
+            elif expect_script not in evidence:
+                print(f"   ⚠️ 期望 {expect} 变红，实际是 {evidence}（也算被守住了，但归因不准）")
     finally:
         if args.keep:
             print(f"临时目录保留在 {tmp_root}")

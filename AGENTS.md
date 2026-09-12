@@ -14,17 +14,21 @@
    宁可退回纯文本，也不能因为卡片报错而丢消息。改 `adapter.py` 时逐条保住这个性质。
    native streaming（`SUPPORTS_NATIVE_STREAMING` + `send_stream_frame`）的帧失败由核心
    自动回退 edit/send —— 这条 fail-open 链是官方契约，别绕过、别在帧里吞掉回落。
-3. **Hermes 私有接口只允许出现在 `compat.py`。** 目前分五组登记
-   （会话归属那一组见 `SESSION_ATTRIBUTION_API` 与「约定」里的归属条目）：
+3. **Hermes 私有接口只允许出现在 `compat.py`。** 目前分七组登记
+   （会话归属与澄清网关另见 `SESSION_ATTRIBUTION_API` 与「约定」里的归属条目）：
    适配器必需 3 个（`REQUIRED_ADAPTER_ATTRS`，`probe_adapter_class()` 运行时校验，
-   缺了拒绝覆盖）；点击回调路径 5 个类属性（`CALLBACK_ADAPTER_ATTRS`）+ 1 个实例属性
-   （`CALLBACK_INSTANCE_ATTRS`）；**信号型契约 1 个**（`SIGNAL_ADAPTER_ATTRS` ——
+   缺了拒绝覆盖）；适配器可选 1 个（`OPTIONAL_ADAPTER_ATTRS` —— `edit_message`，
+   有则用、无则退回内置）；点击回调路径 5 个类属性（`CALLBACK_ADAPTER_ATTRS`）+ 2 个实例属性
+   （`CALLBACK_INSTANCE_ATTRS` —— 实例属性在类上探不到，只在运行时 `AttributeError` 时回落）；
+   **信号型契约 1 个**（`SIGNAL_ADAPTER_ATTRS` ——
    核心在 `/stop`、`/new` 路径**主动调我们**的 `interrupt_session_activity`，
-   缺了不致命但「中止后卡片不变色」是静默失灵）；澄清网关内部结构
-   （`_lock` / `_entries` / `mark_awaiting_text` / `resolve_gateway_clarify`，
+   缺了不致命但「中止后卡片不变色」是静默失灵）；**处理生命周期 1 个**
+   （`REACTION_ADAPTER_ATTRS` —— `_reactions_enabled`，覆盖它必须**尊重父类**语义，
+   缺了 `reactions: false` 静默失效）；澄清网关内部结构
+   （`_lock` / `_entries` / `entry.multi_select` / `mark_awaiting_text` / `resolve_gateway_clarify`，
    已封装成 `clarify_multi_select()` 等函数）；会话归属公开面
    （`SESSION_ATTRIBUTION_API`）。订阅的钩子清单也在本文件（`OBSERVED_HOOKS`，
-   文档/门禁/自检都读它）。新增依赖一律先登记。
+   文档/门禁/自检都读它，同步规矩见「约定」）。新增依赖一律先登记。
 4. **不假设版本。** Mac 与 NAS 都跑 Hermes 0.21.1（NAS 是镜像内固定版本），升级随时会发生。
    能力一律运行时探测，不写死版本号分支。
 5. **卡片方言不可混用 —— 但「2.0 的回调到不了服务端」是错的，2026-09-12 更正。**
@@ -87,6 +91,10 @@ tests/        见「验证」
   `configure()`（它只是自有运行时入口，单测在用）。取值优先级：环境变量
   `LARKDECK_<KEY>` > config.yaml settings > `_DEFAULTS`。新增配置项必须同时加到
   `_DEFAULTS` 和 `plugin.yaml` 的 `config_schema`；未接入业务的配置项要在 README 标 no-op。
+- **钩子清单有两处，必须一一对应**：`hooks.SUBSCRIPTIONS`（真正订阅的）与
+  `compat.OBSERVED_HOOKS`（登记/文档/自检读的）。新增或删除观察型钩子时**两处一起改**，
+  由 `check_override.py` 核对（不一致直接失败）—— 只改一处的结果是「文档说有、代码没订阅」
+  这种静默失灵。清单本身是唯一事实来源，别在别处再抄一份字面量。
 - 运行时只 import 标准库与 Hermes 环境；不新增第三方依赖。
 - native 流式是官方契约：`send_stream_frame(text, ...)` 的 `text` 是**累积全文**
   （不是增量），整卡替换到同一张卡；回合状态挂 `self._ld_streams`
@@ -118,6 +126,10 @@ python3 tests/mutate_check.py      # 变异验证器：撤掉每条修复必须�
 这类恒真断言。`-k <子串>` 只跑一部分。
 ⚠️ 它自己踩过的坑：快照目录**必须叫 `larkdeck`**，否则 `import larkdeck` 会解析到未变异的
 基线（曾导致一批假绿）。
+⚠️ **它退出码非 0 有两种，都算红**：① 变异跑完了但没被门禁抓住（断言假绿）；
+② **锚点失效**（`❓ 锚点没找到` —— 源码改了、清单里那条变异的原文串已不存在）。
+第 ② 种**不是**「跳过一条」，而是「清单与源码脱节」：跑不到的变异等于没验，
+所以必须把锚点重新对准当前源码，**绝不允许把跑不到当通过**。
 
 没有 CI / lint / formatter，这五个脚本就是全部验证。系统 `python3` 跑不动时用 Hermes
 自带解释器 `/Users/Zayn/.hermes/hermes-agent/venv/bin/python3`。
@@ -131,6 +143,12 @@ python3 tests/mutate_check.py      # 变异验证器：撤掉每条修复必须�
   （从 `~/.hermes/.env` 读凭据，把探针卡真发到自己的飞书 DM：功能卡 + 双语互换实验 +
   页脚样式对照，自动先清理上次的探针卡）。
   本地单测只能验结构，卡片合法性由飞书 API 返回码说了算。它只验渲染，不验点击。
+  带参数的几种模式各答一个「只有真机能答」的问题：`--typing`（打字机 A/B，动画只能肉眼判）、
+  `--bytes`（字节上限阶梯，create + patch 都打）、`--elements`（元素数阶梯，官方硬上限 200）、
+  `--rate-limit`（连续 patch 的限流实证）、`--stop-redraw`（**中止重绘真机端到端**：
+  正文超预算但发得出去时 `/stop` 必须真的把卡重绘成中止色，断言**载荷里有颜色**）、
+  `--clean-only` / `--no-clean`（清理控制）。
+  ⚠️ 改 `cards.py` 的**降载档位**或状态色载体后，`--stop-redraw` 与默认模式都要跑一遍。
 
 ## 部署
 

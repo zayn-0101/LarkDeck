@@ -167,9 +167,9 @@ else:
 if _compat_mod is None:
     problems.append("拿不到 compat 模块，无法核对能力探测报告")
 else:
-    _required_keys = ("hermes_version", "adapter_class", "ok", "missing_required",
-                      "missing_optional", "missing_callback", "missing_signal",
-                      "missing_reactions", "session_attribution_ok")
+    # 键清单**从 compat 派生**，这里不再手写第二份（第八路审计实测：手写那份被删一项，
+    # 四个门禁全绿 —— 门禁自己的覆盖清单没人守）。
+    _required_keys = tuple(_compat_mod.PROBE_REPORT_KEYS)
     _report = _compat_mod.probe_report(cls)
     _absent = [k for k in _required_keys if k not in _report]
     print(f"probe_report keys: {sorted(_report)}")
@@ -179,6 +179,8 @@ else:
         problems.append(f"真适配器不该缺 reactions 契约，实得 {_report.get('missing_reactions')!r}")
     if _report.get("missing_signal") != []:
         problems.append(f"真适配器不该缺中断信号契约，实得 {_report.get('missing_signal')!r}")
+    if _report.get("contract_violation"):
+        problems.append(f"能力探测报告的契约没对齐：{_report['contract_violation']!r}")
 
     # ⚠️ 「真适配器返回空列表」这一条**没有判别力**：把 `probe_report` 改成
     # `report["missing_reactions"] = []`（探测彻底失效）它照样绿 —— 第七路审计实测到了。

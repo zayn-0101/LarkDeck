@@ -639,6 +639,16 @@ _PANEL_CHILDREN_ROOM = (FEISHU_ELEMENT_LIMIT - _ELEMENT_LIMIT_RESERVE
 #: 现在会实测并打印每张探针卡的字节数，用真机数据把它钉死。
 CARD_BYTE_BUDGET = 40000
 
+#: 飞书**实测**的卡片 JSON 硬上限（utf-8 字节）。2026-09-13 真机阶梯（`--bytes`）：
+#: **128000 仍 `code=0`**（create 与 patch 都是），**160000 被拒**：
+#: ``230025 The length of the message content reaches its limit``。
+#: 所以真实上限落在 (128000, 160000] 之间，取 128000 是**保守**的那一侧。
+#:
+#: 它只在一处用得上：正文已经超过 :data:`CARD_BYTE_BUDGET` 时，我们**仍然要给状态色
+#: 留一个落脚点**（见 :func:`status_shell`）—— 那一档不受软预算约束，只受这道硬墙约束。
+#: `core/adapter.py` 的 `_MAX_TRACKED_TEXT` 也以它为准（「发得出去的卡就存得下正文」）。
+FEISHU_CARD_BYTE_LIMIT = 128000
+
 
 def count_elements(node: Any) -> int:
     """递归数出卡片里**所有**带 ``tag`` 键的对象（嵌套面板的子元素全算）。
@@ -661,6 +671,38 @@ def card_bytes(node: Dict[str, Any]) -> int:
         return len(json.dumps(node, ensure_ascii=False).encode("utf-8"))
     except Exception:
         return 0
+
+
+def status_shell(panel: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """把完整面板缩成**只保留状态色**的最小面板（标题 + 一行状态文字，约 300 字节）。
+
+    为什么必须存在这个东西（2026-09-13 真机实测，新加的 ``--stop-redraw`` 探针抓到的）：
+    状态色（绿/红/黄）的载体**只有** ``collapsible_panel.border.color``，而正文一旦超过
+    :data:`CARD_BYTE_BUDGET`，:func:`fit_reply_card` 的降载阶梯会把面板**整块**摘掉
+    ⇒ 那张卡**没有任何颜色**。于是出现一个很荒谬的组合：``/stop`` 时我们确实发了
+    ``message.patch``（code=0，第七路审计的阻断项修好了），可**载荷里根本没有颜色**
+    —— 用户看到的还是「没变色」。换句话说：光把正文留住只解决了一半，
+    另一半是**别把颜色的载体丢在降载里**。
+
+    这一档的取舍：面板的数据（推理/工具/页脚）照旧不要，只留下「一个带颜色的框 +
+    一行状态文字」。成本约 300 字节，而这时卡片通常已经 40KB 以上（软预算的 15% 都不到），
+    相对飞书 128000 的硬上限可以忽略。
+    """
+    if not isinstance(panel, dict):
+        return None
+    border = panel.get("border")
+    color = (border or {}).get("color") if isinstance(border, dict) else None
+    if not color or color == BORDER_NEUTRAL:
+        return None                      # 没有状态色就没有要保住的东西
+    status = next((key for key, value in STATUS_BORDERS.items() if value == color), None)
+    if status is None:
+        return None
+    header = panel.get("header") if isinstance(panel.get("header"), dict) else {}
+    title = header.get("title")
+    if not isinstance(title, dict):
+        title = _i18n.i18n_text("panel.title")
+    return collapsible(title, [md(_i18n.t(_STATUS_TEXT_KEYS.get(status, "panel.title")))],
+                       expanded=False, border_color=color)
 
 
 def fit_reply_card(answer: str, *, streaming: bool = False,
@@ -695,8 +737,18 @@ def fit_reply_card(answer: str, *, streaming: bool = False,
             return node, tier
     # 连装饰全摘都超预算：正文本身太大。**照常返回**，让发送失败去走官方回落
     # （官方会分块），而不是在这里把答案切掉。
-    return reply_card(answer, streaming=streaming,
-                      print_frequency_ms=print_frequency_ms), "over-budget"
+    bare = reply_card(answer, streaming=streaming, print_frequency_ms=print_frequency_ms)
+    # ……但**状态色必须留住**（这是 `status_shell` 的用途，理由见它的 docstring）。
+    # 这一档故意**绕开软预算**（正文已经超了，再省那 300 字节没有意义），
+    # 只守飞书的**实测硬上限**：两张卡都贴边时，多这 300 字节可能把一张能发的卡顶成
+    # 「拒收 → 回落纯文本」，那就不划算。所以判据是「加完之后还在硬墙之内」。
+    shell = status_shell(panel)
+    if shell is not None:
+        with_shell = reply_card(answer, streaming=streaming, panel=shell,
+                                print_frequency_ms=print_frequency_ms)
+        if card_bytes(with_shell) <= FEISHU_CARD_BYTE_LIMIT:
+            return with_shell, "over-budget"
+    return bare, "over-budget"
 
 
 def _round_title(index: int, elapsed_ms: Any) -> str:

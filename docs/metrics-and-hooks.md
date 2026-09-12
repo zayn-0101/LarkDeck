@@ -46,7 +46,7 @@ prompt_tokens, reasoning_tokens, request_count, total_tokens
 `model@base_url` 缓存；探测不到时页脚退化成只显示已用量。也可以用
 `context_max_override` 直接钉住。
 
-## 面板数据：订阅六个钩子
+## 面板数据：订阅七个钩子
 
 推理、工具步骤与回合结局的订阅在 `hooks.py`，同样是只读观察（返回值一律 `None`）。
 清单的单一事实来源是 `compat.OBSERVED_HOOKS`（门禁与文档都读它）：
@@ -61,6 +61,9 @@ prompt_tokens, reasoning_tokens, request_count, total_tokens
 | `post_api_request` | 页脚上下文用量 + 「回合在动」信号 | 见下面「非流式模式」一段 |
 | `on_session_end` | **回合结局 → 卡片边框色** | 名字叫 session，实际**每回合**一次 |
 | `pre_gateway_dispatch` | `chat_id -> session_id` 归属映射 | 只读观察，恒返回 None |
+
+> 表里 8 行、钩子只有 7 个：`on_stream_delta` 按 `kind` 有两种用法（`reasoning` 进面板、
+> `text` 只用来切轮），数钩子数时要按钩子名去重。`OBSERVED_HOOKS` 才是唯一事实来源。
 
 数据进 `panel.py`：按 `session_id` 分桶，`turn_id` 一变就重置（新回合不残留旧面板）。
 `on_stream_start` 的清理必须走在卡片首帧前 —— 流式首帧可能早于新回合第一个推理/工具事件，
