@@ -264,8 +264,16 @@ def snapshot() -> Optional[Dict[str, Any]]:
         _purge_locked(now)
         sid = _LAST_ACTIVE
         state = _STATE.get(sid) if sid else None
+        if state is not None and not (state.get("reasoning_parts") or state.get("tools")):
+            state = None  # 活跃会话暂时没内容：走下面的回退
         if state is None:
-            return None
+            # 回退：找「最近更新且真的有内容」的会话 —— 钩子载荷没有 chat_id，
+            # 会话路由只能尽力而为；多会话并发时可能短暂串台（已知限制）。
+            candidates = [(sid2, st) for sid2, st in _STATE.items()
+                          if st.get("reasoning_parts") or st.get("tools")]
+            if not candidates:
+                return None
+            sid, state = max(candidates, key=lambda kv: kv[1].get("updated", 0.0))
         parts = list(state.get("reasoning_parts") or [])
         tools = [dict(item) for item in state.get("tools") or []]
         turn_id = state.get("turn_id", "")

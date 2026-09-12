@@ -645,6 +645,48 @@ def test_native_streaming_state_cap_evicts_oldest():
     assert "session-0" not in raw._ld_streams, "最旧的回合应被淘汰"
 
 
+def test_split_tool_progress():
+    """帧文本拆分：无分隔原样返回；尾块全空白不算进度块；多个分隔取最后一个。"""
+    assert adapter._split_tool_progress("纯正文") == ("纯正文", "")
+    assert adapter._split_tool_progress("") == ("", "")
+    body, tail = adapter._split_tool_progress("正文A\n\n---\n🖥 Running ls")
+    assert body == "正文A" and "Running" in tail
+    assert adapter._split_tool_progress("正文A\n\n---\n   ") == ("正文A\n\n---\n   ", "")
+    body, tail = adapter._split_tool_progress("A\n\n---\nB\n\n---\n进度")
+    assert body == "A\n\n---\nB" and tail == "进度"
+
+
+def test_native_streaming_archives_text_before_tool_progress():
+    """工具轮的叙述会归档：正文区只显示最后一个工具轮之后的文本。"""
+    defaults = dict(adapter._DEFAULTS)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    try:
+        panel.reset()
+        raw = _make()
+        updates = _wire_patch(raw)
+        assert _run(raw.send_stream_frame("", finalize=False, chat_id="oc_a",
+                                          turn_id="ta")) is True
+        assert _run(raw.send_stream_frame("第一段", finalize=False, chat_id="oc_a",
+                                          turn_id="ta")) is True
+        assert _run(raw.send_stream_frame("第一段\n\n---\n🖥 Running ls", finalize=False,
+                                          chat_id="oc_a", turn_id="ta")) is True
+        joined = json.dumps(json.loads(updates[-1]["content"]), ensure_ascii=False)
+        assert "Running" not in joined, "工具进度块不该进入正文"
+        assert "第一段" in joined, "工具执行中保留当前段的回顾"
+        assert _run(raw.send_stream_frame("第一段第二段", finalize=False,
+                                          chat_id="oc_a", turn_id="ta")) is True
+        joined2 = json.dumps(json.loads(updates[-1]["content"]), ensure_ascii=False)
+        assert "第二段" in joined2
+        assert "第一段" not in joined2, "工具轮之前的叙述应被归档"
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
 def test_send_clarify_without_choices_falls_back():
     raw = _make()
     _run(raw.send_clarify("oc_1", "开放式问题？", None, "cid", "sk"))

@@ -76,6 +76,19 @@ _MAX_TRACKED = 512
 _MAX_STREAMS = 64
 _STREAM_MIN_INTERVAL = 0.25
 
+#: 核心把「工具进度块」拼在正文后面，用这个分隔（见 agent/stream_consumer.py 的
+#: ``_compose_frame_content``）。没有该分隔的帧就是纯正文；核心改格式时这里
+#: 会退化成「不归档」，内容不会丢。
+_TOOL_PROGRESS_SEP = "\n\n---\n"
+
+
+def _split_tool_progress(text: str) -> "tuple[str, str]":
+    """拆一帧为 ``(正文, 工具进度块)``；没有进度块时第二项为空串。"""
+    body, sep, tail = text.rpartition(_TOOL_PROGRESS_SEP)
+    if sep and tail.strip():
+        return body, tail
+    return text, ""
+
 _DEFAULTS: Dict[str, Any] = {
     "cards": True,            # 用卡片渲染回复
     "native_streaming": True, # 官方 native streaming：一回合一张卡（工具进度合入同卡）
@@ -426,11 +439,20 @@ class LarkDeckMixin:
         key = f"{chat}:{turn_id}" if turn_id else chat
         state = self._ld_stream_get(key)
         now = time.monotonic()
+        # 工具进度块不进正文：帧里出现进度块就推进「归档点」，正文区只显示
+        # 最后一个工具轮之后的文本（工具细节在折叠面板里）。核心改格式时这里
+        # 退化为「不归档」，内容不会丢。
+        body, progress = _split_tool_progress(text)
+        cut_old = int((state or {}).get("cut", 0))
+        if progress:
+            cut, display = len(body), body[cut_old:]
+        else:
+            cut, display = cut_old, text[cut_old:]
         if state is None:
             if finalize:
                 # 没有活跃流可收尾：交核心回落（send/edit 会正常发出）。
                 return False
-            card = _cards.reply_card(text, streaming=True,
+            card = _cards.reply_card(display, streaming=True,
                                      panel=self._ld_panel(), footer=self._ld_footer(now))
             result = await self._ld_send_card(chat, card, reply_to=reply_to)
             if result is None or not getattr(result, "success", False):
@@ -440,11 +462,12 @@ class LarkDeckMixin:
                 return False
             self._ld_track(message_id, chat)
             self._ld_stream_put(key, {"message_id": message_id, "chat_id": chat,
-                                      "t0": now, "last": text, "last_at": now})
+                                      "t0": now, "last": text, "last_at": now,
+                                      "cut": cut})
             return True
         message_id = state["message_id"]
         if finalize:
-            card = _cards.reply_card(text or " ", streaming=False,
+            card = _cards.reply_card(display or " ", streaming=False,
                                      panel=self._ld_panel(),
                                      footer=self._ld_footer(state.get("t0")))
             result = await self._ld_update_card(chat, message_id, card)
@@ -459,13 +482,13 @@ class LarkDeckMixin:
         if (state.get("last") and isinstance(last_at, (int, float))
                 and now - last_at < _STREAM_MIN_INTERVAL):
             return True  # 节流窗口内的中间帧：跳过，等下个 tick（首帧不节流）
-        card = _cards.reply_card(text, streaming=True,
+        card = _cards.reply_card(display, streaming=True,
                                  panel=self._ld_panel(),
                                  footer=self._ld_footer(state.get("t0")))
         result = await self._ld_update_card(chat, message_id, card)
         if result is None or not getattr(result, "success", False):
             return False
-        self._ld_stream_put(key, {**state, "last": text, "last_at": now})
+        self._ld_stream_put(key, {**state, "last": text, "last_at": now, "cut": cut})
         return True
 
     def _ld_stream_get(self, key: str) -> Optional[Dict[str, Any]]:
