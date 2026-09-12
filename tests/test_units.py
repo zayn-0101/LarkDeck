@@ -1357,23 +1357,98 @@ def test_panel_session_cap_evicts_oldest():
 
 
 def test_panel_reasoning_buffer_compacts_and_caps():
+    """总量超上限时**从最早的轮开始回收**（保留最近的过程信息）。"""
     panel.reset()
     limit_before = panel._MAX_REASONING_CHARS
     try:
-        # 片段合并：大量小片段最终会被压成单段，内容不丢。
-        for i in range(panel._PARTS_COMPACT_AT + 50):
+        # 大量小片段：总内容不丢
+        for _ in range(200):
             panel.record_reasoning("s1", "t1", "x")
-        state = panel._STATE["s1"]
-        assert len(state["reasoning_parts"]) < panel._PARTS_COMPACT_AT
-        assert panel.snapshot()["reasoning"] == "x" * (panel._PARTS_COMPACT_AT + 50)
-        # 上限：超长时保留最早部分（渲染层再截断并留痕）。
+        assert panel.snapshot()["reasoning"] == "x" * 200
+
+        # 超上限：单轮仍超长时截断它自己（保留最早部分）
         panel.reset()
         panel._MAX_REASONING_CHARS = 10
         panel.record_reasoning("s1", "t1", "0123456789ABCDEF")
         assert panel.snapshot()["reasoning"] == "0123456789"
+
+        # 超上限：多轮时把**最早的轮**整轮丢掉，最近那轮留着
+        panel.reset()
+        panel._MAX_REASONING_CHARS = 10
+        panel.record_reasoning("s1", "t1", "AAAAAAAAAA")      # 第 1 轮，10 字
+        panel.record_answer_delta("s1", "t1")                  # 正文开始 → 切轮
+        panel.record_reasoning("s1", "t1", "BBBBBBBBBB")      # 第 2 轮，10 字 → 总量 20 > 上限
+        snap = panel.snapshot()
+        assert "BBBBBBBBBB" in snap["reasoning"], "最近一轮被丢掉了"
+        assert "AAAAAAAAAA" not in snap["reasoning"], "最早的轮没有被回收"
     finally:
         panel._MAX_REASONING_CHARS = limit_before
         panel.reset()
+
+
+def test_panel_renders_reasoning_rounds_with_durations():
+    """面板按轮渲染：每轮一个标题行 + 耗时；轮额度是总上限的均分。"""
+    rounds = [{"text": "第一段推理", "elapsed_ms": 6200},
+              {"text": "第二段推理", "elapsed_ms": 1500}]
+    node = cards.unified_panel(rounds=rounds, tools=["✅ bash · 0.1s"])
+    assert node is not None
+    texts = [e.get("content", "") for e in node["elements"]]
+    joined = " ".join(texts)
+    assert "第 1 轮" in joined and "6.2s" in joined, joined
+    assert "第 2 轮" in joined and "1.5s" in joined, joined
+    assert "第一段推理" in joined and "第二段推理" in joined
+    # 英文侧同步
+    assert "Round 1" in i18n.t("panel.round_n", loc := i18n.EN, n=1)
+
+    # 没给 rounds 时退回把 reasoning 当一整段（向后兼容）
+    flat = cards.unified_panel(reasoning="一整段推理")
+    assert "一整段推理" in flat["elements"][0]["content"]
+    assert "轮" not in flat["elements"][0]["content"]
+
+    # 每轮额度是总量的均分：两轮 + 小上限 → 每段都不许独占上限
+    capped = cards.unified_panel(rounds=[{"text": "x" * 500}, {"text": "y" * 500}],
+                                 max_reasoning_chars=200)
+    assert len("".join(e.get("content", "") for e in capped["elements"])) < 1000
+
+
+def test_panel_splits_reasoning_into_rounds():
+    """轮次定义：一轮 = 一段连续推理，被**正文或工具**打断即结束。
+
+    这是 aiduPOP 的定义（它的面板显示「第 N 波 · X.Xs」）。注意它**不是** API
+    调用次数、也**不是**工具轮次 —— 用错标签会误导用户，所以按打断切段自算。
+    """
+    panel.reset()
+    panel.record_reasoning("s1", "t1", "第一段推理")
+    panel.record_reasoning("s1", "t1", "接着写")
+    snap1 = panel.snapshot()
+    assert len(snap1["rounds"]) == 1, "同一段推理不该被切成多轮"
+    assert snap1["rounds"][0]["text"] == "第一段推理接着写"
+
+    # 正文开始 → 结束第 1 轮
+    panel.record_answer_delta("s1", "t1")
+    panel.record_reasoning("s1", "t1", "第二段推理")
+    snap2 = panel.snapshot()
+    assert len(snap2["rounds"]) == 2, "正文开始应切断推理轮"
+    assert snap2["rounds"][0]["text"] == "第一段推理接着写"
+    assert snap2["rounds"][1]["text"] == "第二段推理"
+    assert snap2["rounds"][0]["elapsed_ms"] >= 0
+    # 进行中的那一轮也给出「到现在为止」的耗时
+    assert snap2["rounds"][1]["elapsed_ms"] >= 0
+
+    # 工具调用也切断推理轮
+    panel.record_tool_started("s1", "t1", "bash", {}, "c1")
+    panel.record_reasoning("s1", "t1", "第三段推理")
+    snap3 = panel.snapshot()
+    assert len(snap3["rounds"]) == 3, "工具调用应切断推理轮"
+    # 向后兼容：reasoning 仍是所有轮的拼接
+    assert snap3["reasoning"] == "第一段推理接着写第二段推理第三段推理"
+
+    # 空白轮不进面板（否则会多出一个没有内容的「第 N 轮」标题）
+    panel.reset()
+    panel.record_reasoning("s1", "t1", "   ")
+    panel.record_answer_delta("s1", "t1")
+    assert panel.snapshot() is None
+    panel.reset()
 
 
 def test_panel_concurrent_writes_are_safe():

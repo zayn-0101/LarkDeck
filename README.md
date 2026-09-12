@@ -143,6 +143,7 @@ plugins:
         native_streaming: true   # 一回合一张卡（工具进度合入同卡）；关掉退回逐段新消息
         clarify_cards: true      # 澄清用按钮卡
         unified_panel: true      # 推理 + 工具合并为一个底部面板
+        panel_expanded: false    # 面板默认展开（默认收起）
         footer: true             # 页脚（模型 + 上下文用量 + 耗时）
         show_model: true         # 页脚里显示模型名
         context_style: text      # 上下文用量样式：text | bar | both

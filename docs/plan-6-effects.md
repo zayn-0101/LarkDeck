@@ -251,7 +251,86 @@
 但观感会与它的截图不同。→ **决策点 D2，见 §4。**
 
 
-## 6. 每阶段的固定收口动作
+## 7. 方案审计结论与设计更正（2026-09-12，两路独立审计）
+
+两路方案审计逐条对照 Hermes 真实源码后，**推翻了本方案阶段 1 的核心设计、并纠正了阶段 2/3 的多处事实**。
+下面每条都是「原方案写的 → 源码事实 → 改成什么」。**实施时以本节为准。**
+
+### 7.1 阻断级：阶段 1 的状态语义全错，必须重做
+
+| 原方案 | 源码事实 | 更正 |
+|---|---|---|
+| `on_stream_end(finished=True)` = 成功 → 绿 | **流中途掉线被核心故意转成正常返回的 stub**（`agent/chat_completion_helpers.py` 的 `_finish_chat_stream`：工具参数没传完 / 纯文本无 finish_reason 无 usage 都 `return _build_partial_stream_stub(...)`）→ emitter 报「成功」 | **断线的回合会被渲染成绿色**。`finished=True` 只能当「这次调用没抛异常」的弱证据，**不能单独当绿** |
+| 「每回合一次 end，用最后一次判定」 | **三层放大**：工具轮（N+1 起）× stream 重试（默认 2 → 最多 3 次）× API 级重试。**中间每一次都是 `finished=True`** | 长工具回合里卡片会**一直是绿色**。颜色必须由**回合级状态机**决定，不是「读最后一次 end」 |
+| 「中止不发 end，要推断」 | **中止会发 end**：中止不是 asyncio 取消，是协作式标志 + socket abort → `agent/interrupt_control.py` 置标志 → 抛 `InterruptedError`（**`OSError` 子类，属于 `Exception`**）→ 被 `_with_stream_emitters` 的 `except Exception` 接住 → `on_stream_end(finished=False, error="Agent interrupted during streaming API call")` | 但**中止与报错在载荷上不可区分**（无 `reason`/`cancelled` 字段）。**绝不要对 `error` 字符串做分类**（那正是 `lessons.md` 明令禁止的） |
+| 「中止靠推断」 | **有现成的公开契约**：`BasePlatformAdapter.interrupt_session_activity(session_key, chat_id, metadata=None)`（`gateway/platforms/base.py`），由 `gateway/run_agent_cache.py` 在 `/stop`、`/new` 路径调用。**带 `chat_id`** → 直接解决多会话归属 | 覆盖它（我们已经在子类化那个适配器）+ `super()` 回落。**签名必须带 `metadata` 或 `**kwargs`**（核心用 `_accepts_keyword` 特性探测）。按不变量 3 要登记进 `compat.py` 新的一组「信号型适配器契约」并用 `probe_report` 上报 |
+| 「渲染时读状态就知道该上什么色」 | **中止后卡片根本不会被重绘**：`/stop` 让 consumer 直接 return（`gateway/stream_consumer.py` 的「Session reset: abandon rather than deliver stale deltas」），而 `_abandon_native_stream` 对 native 模式是**空操作**（`stream_consumer_transport.py` 里 `if not self._use_draft_streaming: return`）→ **永远不会有 finalize 帧** | 插件**必须自己**在被通知时（`interrupt_session_activity` 内，那里有 async 上下文与 `chat_id`）主动把那张卡重绘成 stopped。否则状态改了、卡片不变、还不报错 |
+| 未提及 | **非流式模式下 `on_stream_start`/`on_stream_end` 完全不触发**（只在 `_with_stream_emitters` 的 3 个调用点发出，非流式走 `agent/turn_api_call.py`，没有任何 emitter） | 必须有一条**显式降级路径**（例如以 `post_api_request` 作为「回合有活动」的弱替代），并在文档里写清「颜色可信范围」 |
+| 「报错 → `api_request_error` → 黄」 | **每次失败尝试都发，包括随后重试成功的**（`agent/turn_api_error.py`、`agent/turn_response_check.py` 里带 `retryable=True`） | 判据要用它自带的 `retryable` / `retry_count >= max_retries`，否则**自愈的回合会闪黄** |
+
+**另有一条跨阶段的阻断项（见 7.4）：卡归属问题没解决，而阶段 1/2/3 全都站在它上面。**
+
+### 7.2 阶段 2 的三处小改（可做）
+
+1. **`iteration` 必须改标签**：它 = `agent._api_call_count`，在**每轮工具循环的 API 调用之前** +1，
+   而且有**退款**（compaction / fallback / redirect 重启会把编号退回去）→ 显示上会出现编号重复。
+   重试**不计入**。所以标成「**工具轮次 / 第 N 步**」是准确的；标成「思考轮次 / API 调用次数」是误导。
+2. **`duration_ms == 0` 有歧义**：0 是默认值，被 block / inline 路径 / 参数非法都会发 0，
+   而 `panel.py` 现在把 0 当**真值**（`_as_int(0)` 是合法 int）→ 「自己算差值」的兜底**永不触发**，
+   被 block 的步骤会显示「0ms」。判据只能用 `status == "blocked"` 或让 0 走兜底。
+3. **时间源只有一个**：沿用 panel 里已有的 `t0 = time.monotonic()`，不要引入第二套。
+   注意 `_TTL_SECONDS` / `_MAX_SESSIONS` 的淘汰会**在长回合中途**删掉 `t0` 让差值变成垃圾 ——
+   所以**阶段 2 不能独立于阶段 0 的淘汰修复上线**（阶段 0 已修）。
+
+### 7.3 阶段 3 目标要改，优先级最低
+
+- **`edit_interval` 与本项目路径无关**：native 模式下核心**完全不看**它
+  （`gateway/stream_consumer.py` 里 `if self._use_native_streaming: # No platform edit-rate limit:
+  push every delta immediately`），那段带 `edit_interval` 的判定只在 `else` 分支。
+  核心对 `send_stream_frame` **没有最小间隔限制**（那个被注释成节流器的字段只写不读，是死代码）。
+- **⇒ 插件侧的 `_STREAM_MIN_INTERVAL` 确实是当前唯一瓶颈，调小**确实**能提高刷新密度。**
+  上限 ≈ `1 / (0.05s + 适配器 RTT)`（核心 pump 循环地板 0.05s + 帧发送串行 await）。
+- **但真实风险比原方案写的严重得多，而且机制不同**：一帧失败会**永久关掉本回合的 native 流式**
+  （`stream_consumer_transport.py` 定义性失败后置 `_use_native_streaming = False`），
+  后续输出改走 `send()`（可能变成**多条纯文本消息**）；而**飞书的限流错误不匹配 flood 启发式**
+  （错误被格式化成 `[code] msg`，而 flood 只匹配 `flood`/`retry after`/`rate`）
+  → 走硬失败分支、**连自适应退避都不会启动**。
+  ⇒ 方案里必须写明：调小它的代价可能是「**本回合静默降级成多条纯文本**」，并配一个
+  **能自证 native 仍在工作**的诊断日志（`lessons.md` 推论 1 的要求）。
+- **前置确认**：本地 `native_streaming` 配置是否开启。**若为关**，实际走 edit 路径，
+  本章结论**反过来** → 阶段 3 第一步必须先确认这件事。
+
+### 7.4 跨阶段阻断项：钩子事件 → 具体卡片的归属设计（**必须补**）
+
+`turn_id` 两套命名空间的问题**没有被修、方案也没处理**，而阶段 1（给这张卡上色）、
+阶段 2（面板内容）、阶段 3（帧节奏）**都要求把钩子事件归属到某一张卡**：
+
+- 钩子载荷的 `turn_id` = `agent._current_turn_id`（`agent/stream_delivery.py`、`agent/inline_tool_executors.py`）
+- `send_stream_frame()` 收到的 `turn_id` = consumer 自造裸 uuid（`gateway/stream_consumer.py`）
+
+两者**永远匹配不上**（`core/panel.py::snapshot` 的警告块记着这次事故）。现在靠「渲染时取最近活跃会话」，
+单会话正确、**多会话串台** —— 阶段 1 的颜色会**跨会话串**，与上次那个 bug 是同一类。
+**⇒ 阶段 1 开工前必须先设计归属方案。** 已知可行方向：`interrupt_session_activity` 自带 `chat_id`；
+`gateway/mirror.py` 的 `(platform, chat_id) -> session_id` 反查（代价是一次 DB 查询 + 新私有依赖）。
+
+### 7.5 另外三条事实纠正
+
+- **`core/hooks.py` 开头那句「最坏情况也只是面板少一行，不可能拦住任何工具」在超时路径上是错的。**
+  默认 30s 超时（`hermes_cli/plugins_dispatch.py` 的 `_HOOK_CALLBACK_TIMEOUT_SECS`）后，
+  核心会补 `{"action":"block"}` → **工具被拦掉**，且抑制窗口内会被判 skip 同样按 block 处理。
+  阶段 2 若往 pre 回调里加任何阻塞物，就是把这个后果从「少一行」升级成「拦工具」。
+- **`prune` 阶段 3 的两个「待验证项」是空动作**：飞书 `send_typing` 是空实现（「Feishu bot API does
+  not expose a typing indicator」），且**飞书没有 reply 前缀**（只有 WhatsApp 实现有）。
+  这两条已由源码确认，**不需要做任何改动**。
+- **§0 约束 4 与决策门 D1 已过期**（不变量 5 已于 2026-09-12 更正：2.0 组件级 `behaviors`
+  **能**接服务端回调）。以更正后的 `AGENTS.md` 为准。
+
+### 7.6 审计建议的实施顺序
+
+先阶段 0 + 阶段 2（低风险、纯加法），**阶段 1 按 §7.1 重新设计后再做**（引入
+`interrupt_session_activity`、去掉推断、先解决 §7.4 的归属问题），**阶段 3 最后做且必须先测量**。
+
+## 8. 每阶段的固定收口动作
 
 1. 四门禁全绿（+ 动卡片时 `probe_render`）。
 2. **新回归测试必须先证明能抓住对应缺陷**（撤掉修复会红）。

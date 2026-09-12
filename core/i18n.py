@@ -27,6 +27,8 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     # 溢出保护：内容被截断 / 步骤被裁掉时补一行说明，让用户知道「还有东西但没显示」
     "panel.overflow":     {ZH: "…已省略 {n} 字符", EN: "…{n} chars omitted"},
     "panel.trimmed":      {ZH: "…更早的 {n} 步已折叠", EN: "…{n} earlier steps folded"},
+    # 推理轮标题。注意「轮」= 一段连续推理（被正文或工具打断），不是 API 调用次数。
+    "panel.round_n":      {ZH: "第 {n} 轮", EN: "Round {n}"},
     # clarify
     "clarify.header":     {ZH: "需要你确认", EN: "Needs your input"},
     "clarify.other":      {ZH: "其他（我直接输入）", EN: "Other (I'll type it)"},

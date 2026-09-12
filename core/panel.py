@@ -56,8 +56,8 @@ _MAX_REASONING_CHARS = 262144
 #: 单个会话最多缓存的工具步骤数（渲染层只显示最近 ``max_panel_steps`` 步）。
 _MAX_BUFFERED_TOOLS = 200
 
-#: 推理片段列表超过该长度就合并成单段，防止 list 无限增长。
-_PARTS_COMPACT_AT = 8192
+#: 单个会话最多保留多少「推理轮」（渲染层再按配置裁剪）。
+_MAX_ROUNDS = 50
 
 #: 工具参数预览的长度上限（字符）。
 _ARGS_PREVIEW_CHARS = 80
@@ -65,7 +65,7 @@ _ARGS_PREVIEW_CHARS = 80
 #: 每个会话最多记住多少个「已作废的 turn_id」（迟到事件丢弃用）。有界，防长跑会话膨胀。
 _MAX_CLOSED_TURNS = 8
 
-#: ``session_id -> state``；state = turn_id / reasoning_parts / tools / ...
+#: ``session_id -> state``；state = turn_id / rounds / current_round / tools / ...
 _STATE: Dict[str, Dict[str, Any]] = {}
 
 #: 最近有活动的会话 id —— 适配器没有 session_id，只能靠它关联。
@@ -141,7 +141,7 @@ def _touch_locked(session_id: str, turn_id: str, now: float, *,
         return None
     state = _STATE.get(sid)
     if state is None:
-        state = {"turn_id": "", "reasoning_parts": [], "reasoning_len": 0,
+        state = {"turn_id": "", "rounds": [], "current_round": None, "reasoning_len": 0,
                  "tools": [], "started": now, "updated": now,
                  "closed": deque(maxlen=_MAX_CLOSED_TURNS)}
         _STATE[sid] = state
@@ -161,7 +161,8 @@ def _touch_locked(session_id: str, turn_id: str, now: float, *,
         if current and tid != current:
             # 新回合：先把被替换的那个 turn_id 记为作废，再清空过程数据
             closed.append(current)
-            state["reasoning_parts"] = []
+            state["rounds"] = []
+            state["current_round"] = None
             state["reasoning_len"] = 0
             state["tools"] = []
             state["started"] = now
@@ -171,18 +172,72 @@ def _touch_locked(session_id: str, turn_id: str, now: float, *,
     return state
 
 
-def _compact_parts_locked(state: Dict[str, Any]) -> None:
-    """片段过多或超长时合并成单段（摊薄成本，防热路径 O(n²)）。"""
-    parts: List[str] = state["reasoning_parts"]
-    if len(parts) > _PARTS_COMPACT_AT:
-        joined = "".join(parts)
-        state["reasoning_parts"] = [joined]
-        state["reasoning_len"] = len(joined)
-        parts = state["reasoning_parts"]
-    if state["reasoning_len"] > _MAX_REASONING_CHARS and parts:
-        joined = "".join(parts)[: _MAX_REASONING_CHARS]
-        state["reasoning_parts"] = [joined]
-        state["reasoning_len"] = len(joined)
+# --------------------------------------------------------------------------- #
+# 推理轮（rounds）——「一轮」的定义
+# --------------------------------------------------------------------------- #
+#: aiduPOP 的「轮次」定义被我们沿用：**一轮 = 一段连续的推理文本**，被
+#: 「正文开始」或「工具调用」打断即结束。它**不是** API 调用次数（`iteration`），
+#: 也**不是**工具轮次 —— 用错了标签会误导用户，所以这里按打断切段自算。
+def _rounds_locked(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    rounds = state.get("rounds")
+    if not isinstance(rounds, list):
+        rounds = state["rounds"] = []
+    return rounds
+
+
+def _open_round_locked(state: Dict[str, Any], now: float) -> Dict[str, Any]:
+    """取（或开一个）当前正在进行的推理轮。"""
+    current = state.get("current_round")
+    if not isinstance(current, dict):
+        current = {"parts": [], "started": now, "elapsed_ms": None}
+        state["current_round"] = current
+        _rounds_locked(state).append(current)
+    return current
+
+
+def _finalize_round_locked(state: Dict[str, Any], now: float) -> None:
+    """结束当前推理轮（正文开始 / 工具开始 / 换回合时调用）。
+
+    纯空白的轮直接丢掉 —— 否则面板里会多出一个没有内容的「第 N 轮」标题。
+    """
+    current = state.get("current_round")
+    if not isinstance(current, dict):
+        return
+    state["current_round"] = None
+    rounds = _rounds_locked(state)
+    if not "".join(current.get("parts") or []).strip():
+        try:
+            rounds.remove(current)
+        except ValueError:
+            pass
+        return
+    current["elapsed_ms"] = max(0, int((now - float(current.get("started") or now)) * 1000))
+    # 只保留最近的若干轮
+    while len(rounds) > _MAX_ROUNDS:
+        dropped = rounds.pop(0)
+        state["reasoning_len"] = max(
+            0, state.get("reasoning_len", 0) - len("".join(dropped.get("parts") or [])))
+
+
+def _compact_locked(state: Dict[str, Any]) -> None:
+    """总长超上限时**从最早的轮开始回收**（保留最近的过程信息）。
+
+    热路径必须是 O(1)：长度靠 ``reasoning_len`` 增量累加，只有超上限才做
+    O(轮数) 的回收 —— 这个函数在 ``on_stream_delta`` 上**每个 token** 都会被调用。
+    """
+    if state.get("reasoning_len", 0) <= _MAX_REASONING_CHARS:
+        return
+    rounds = _rounds_locked(state)
+    # ① 从**最早的轮**开始整轮丢弃，直到总量落回上限内（保留最近的过程信息）
+    while len(rounds) > 1 and state["reasoning_len"] > _MAX_REASONING_CHARS:
+        dropped = rounds.pop(0)
+        state["reasoning_len"] -= len("".join(dropped.get("parts") or []))
+    # ② 只剩一轮仍超长 → 截断这一轮自己（保留最早部分，与旧语义一致）
+    if state["reasoning_len"] > _MAX_REASONING_CHARS and rounds:
+        text = "".join(rounds[0].get("parts") or "")
+        keep = text[: _MAX_REASONING_CHARS]
+        rounds[0]["parts"] = [keep]
+        state["reasoning_len"] = len(keep)
 
 
 def _args_preview(args: Any) -> str:
@@ -276,9 +331,34 @@ def record_reasoning(session_id: str, turn_id: str, delta: str) -> None:
         state = _touch_locked(str(session_id or ""), str(turn_id or ""), now)
         if state is None:
             return  # 迟到的旧回合事件 / 无归属：丢弃，别污染当前回合
-        state["reasoning_parts"].append(text)
-        state["reasoning_len"] += len(text)
-        _compact_parts_locked(state)
+        current = _open_round_locked(state, now)
+        current["parts"].append(text)
+        state["reasoning_len"] = state.get("reasoning_len", 0) + len(text)
+        _compact_locked(state)
+        _purge_locked(now)
+
+
+def record_answer_delta(session_id: str, turn_id: str) -> None:
+    """``on_stream_delta``（**正文**增量）钩子回调 —— 只做一件事：结束当前推理轮。
+
+    正文本身不进面板（面板只收过程信息），但「正文开始」是推理轮的**结束信号**：
+    轮次定义就是「被正文或工具打断」。所以这里只切轮，不存正文。
+
+    热路径（每个正文 token 一次），必须极快：没有正在进行的轮时**立即返回**，
+    不做任何状态写入。
+    """
+    now = _now()
+    sid = str(session_id or "")
+    if not sid:
+        return
+    with _LOCK:
+        state = _STATE.get(sid)
+        if not isinstance(state, dict) or not isinstance(state.get("current_round"), dict):
+            return  # 没有正在进行的轮：这是热路径，立刻返回，不写任何状态
+        tid = str(turn_id or "")
+        if tid and str(state.get("turn_id") or "") not in ("", tid):
+            return  # 迟到的旧回合正文：不切当前轮
+        _finalize_round_locked(state, now)
         _purge_locked(now)
 
 
@@ -294,6 +374,8 @@ def record_tool_started(session_id: str, turn_id: str, tool_name: str,
         state = _touch_locked(str(session_id or ""), str(turn_id or ""), now)
         if state is None:
             return
+        # 工具调用也是推理轮的**结束信号**（轮次定义 = 被正文或工具打断）
+        _finalize_round_locked(state, now)
         tools: List[Dict[str, Any]] = state["tools"]
         tools.append({
             "id": str(tool_call_id or ""),
@@ -376,32 +458,52 @@ def snapshot() -> Optional[Dict[str, Any]]:
         _purge_locked(now)
         sid = _LAST_ACTIVE
         state = _STATE.get(sid) if sid else None
-        if state is not None and not (state.get("reasoning_parts") or state.get("tools")):
+        if state is not None and not _has_content(state):
             state = None  # 活跃会话暂时没内容：走下面的回退
         if state is None:
             # 回退：找「最近更新且真的有内容」的会话 —— 钩子载荷没有 chat_id，
             # 会话路由只能尽力而为；多会话并发时可能短暂串台（已知限制）。
-            candidates = [(sid2, st) for sid2, st in _STATE.items()
-                          if st.get("reasoning_parts") or st.get("tools")]
+            candidates = [(sid2, st) for sid2, st in _STATE.items() if _has_content(st)]
             if not candidates:
                 return None
             sid, state = max(candidates, key=lambda kv: kv[1].get("updated", 0.0))
-        parts = list(state.get("reasoning_parts") or [])
+        rounds_raw = [dict(item) for item in (state.get("rounds") or [])]
         tools = [dict(item) for item in state.get("tools") or []]
         turn_id = state.get("turn_id", "")
         updated = state.get("updated", now)
     # 拼接放到锁外 —— 推理最长可达 _MAX_REASONING_CHARS，锁里做会拖慢
     # fail-closed 的 pre_tool_call 回调（见模块 docstring 线程模型）。
-    reasoning = "".join(parts)
+    rounds: List[Dict[str, Any]] = []
+    for item in rounds_raw:
+        text = "".join(item.get("parts") or [])
+        if not text:
+            continue
+        elapsed = item.get("elapsed_ms")
+        if elapsed is None:
+            # 还在进行中的轮：按「到现在为止」算，让用户看到实时耗时
+            elapsed = max(0, int((now - float(item.get("started") or now)) * 1000))
+        rounds.append({"text": text, "elapsed_ms": elapsed})
+    reasoning = "".join(item["text"] for item in rounds)
     if not reasoning and not tools:
         return None
     return {
         "session_id": sid,
         "turn_id": turn_id,
         "reasoning": reasoning,
+        "rounds": rounds,
         "tools": tools,
         "age": max(0.0, now - updated),
     }
+
+
+def _has_content(state: Dict[str, Any]) -> bool:
+    """这个会话桶里有没有值得渲染的东西（工具步骤或非空推理轮）。"""
+    if state.get("tools"):
+        return True
+    for item in state.get("rounds") or []:
+        if isinstance(item, dict) and "".join(item.get("parts") or ""):
+            return True
+    return False
 
 
 def reset() -> None:
@@ -415,6 +517,7 @@ def reset() -> None:
 __all__ = [
     "begin_turn",
     "record_reasoning",
+    "record_answer_delta",
     "record_tool_started",
     "record_tool_finished",
     "snapshot",

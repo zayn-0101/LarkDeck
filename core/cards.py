@@ -474,7 +474,16 @@ def fit_reply_card(answer: str, *, streaming: bool = False,
     return reply_card(answer, streaming=streaming, template=template, title=title), "over-budget"
 
 
-def unified_panel(*, reasoning: str = "", tools: Sequence[str] = (),
+def _round_title(index: int, elapsed_ms: Any) -> str:
+    """推理轮的标题行：``第 N 轮 · 6.2s``（耗时是**相对时长**，不是时刻）。"""
+    base = _i18n.t("panel.round_n", n=index)
+    if isinstance(elapsed_ms, int) and not isinstance(elapsed_ms, bool) and elapsed_ms > 0:
+        return f"{base} · {format_elapsed(max(0.1, elapsed_ms / 1000.0))}"
+    return base
+
+
+def unified_panel(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
+                  tools: Sequence[str] = (),
                   expanded: bool = False,
                   max_reasoning_chars: int = MAX_REASONING_CHARS,
                   max_tool_chars: int = MAX_TOOL_RESULT_CHARS,
@@ -484,6 +493,11 @@ def unified_panel(*, reasoning: str = "", tools: Sequence[str] = (),
 
     这是「统一面板」功能的本体 —— 正文区保持干净，过程信息全部收进底部一个面板，
     而不是推理一个面板、工具另一个面板。没有内容时返回 None（调用方据此不渲染）。
+
+    传了 ``rounds`` 就**按轮分段渲染**（每轮一个耗时标题行），这是 aiduPOP 的观感：
+    「一轮 = 一段连续推理，被正文或工具打断」。没传就退回把 ``reasoning`` 当一整段渲染。
+    每轮分到的截断额度是 ``max_reasoning_chars`` 的均分 —— 这样「推理文本上限」这个配置
+    仍然约束**总量**，不会因为轮数变多而整体膨胀。
 
     所有进来的长文本都过 :func:`truncate`：面板是「收纳」不是「倾倒」，
     真跑一个长任务，原始推理和工具输出能把卡片撑到几十屏。
@@ -495,7 +509,14 @@ def unified_panel(*, reasoning: str = "", tools: Sequence[str] = (),
     max_tool_chars = _cap(max_tool_chars, MAX_TOOL_RESULT_CHARS)
     max_steps = _cap(max_steps, MAX_PANEL_STEPS)
     inner: List[Dict[str, Any]] = []
-    if reasoning:
+
+    round_list = [item for item in rounds if isinstance(item, dict) and str(item.get("text") or "")]
+    if round_list:
+        share = max(120, max_reasoning_chars // len(round_list))
+        for index, item in enumerate(round_list, start=1):
+            body = truncate(str(item.get("text") or ""), share)
+            inner.append(md(f"**{_round_title(index, item.get('elapsed_ms'))}**\n\n{body}"))
+    elif reasoning:
         inner.append(md(truncate(reasoning, max_reasoning_chars)))
     steps = [str(item) for item in tools]
     if max_steps > 0 and len(steps) > max_steps:

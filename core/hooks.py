@@ -48,17 +48,23 @@ def _on_stream_start(**payload: Any) -> None:
 
 
 def _on_stream_delta(**payload: Any) -> None:
-    """流式增量：只有推理（``kind="reasoning"``）进面板，正文增量丢弃。
+    """流式增量：推理（``kind="reasoning"``）进面板，**正文只用来切轮**。
+
+    正文本身不进面板（面板只收过程信息），但「正文开始」是推理轮的结束信号 ——
+    轮次定义就是「一段连续推理，被正文或工具打断」。不接这个信号的话，整回合的
+    推理会连成一个巨大的「第 1 轮」，轮次显示就没意义了。
 
     走 Hermes 的专用队列派发（每回调 1024 深度、满了丢最旧），回调必须
     吃 ``**kwargs`` 全量载荷；核心热路径，禁一切阻塞操作。
     """
     try:
-        if str(payload.get("kind") or "") != "reasoning":
-            return
-        _panel.record_reasoning(payload.get("session_id", ""),
-                                payload.get("turn_id", ""),
-                                payload.get("delta", ""))
+        kind = str(payload.get("kind") or "")
+        session_id = payload.get("session_id", "")
+        turn_id = payload.get("turn_id", "")
+        if kind == "reasoning":
+            _panel.record_reasoning(session_id, turn_id, payload.get("delta", ""))
+        elif kind == "text":
+            _panel.record_answer_delta(session_id, turn_id)
     except Exception:  # pragma: no cover - 防御性：钩子绝不能抛
         logger.debug("[larkdeck] on_stream_delta 采集忽略了一次异常", exc_info=True)
 

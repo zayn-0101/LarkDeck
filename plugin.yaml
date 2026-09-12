@@ -31,6 +31,10 @@ config_schema:
     type: boolean
     default: true
     description: "推理 + 工具合并为底部一个可折叠面板（数据来自官方钩子）"
+  panel_expanded:
+    type: boolean
+    default: false
+    description: "面板默认展开（默认收起；展开态很占屏）"
   footer:
     type: boolean
     default: true

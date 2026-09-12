@@ -106,6 +106,7 @@ _DEFAULTS: Dict[str, Any] = {
     "native_streaming": True, # 官方 native streaming：一回合一张卡（工具进度合入同卡）
     "clarify_cards": True,    # 澄清使用按钮卡
     "unified_panel": True,    # 推理 + 工具合并为底部一个可折叠面板
+    "panel_expanded": False,  # 面板默认收起（展开态很占屏；aiduPOP 同为默认收起）
     "footer": True,           # 页脚：模型 + 上下文用量 + 耗时
     "show_model": True,       # 页脚显示模型名（关掉只剩上下文和耗时）
     "context_style": "text",  # 上下文用量样式：text（默认）| bar | both
@@ -358,7 +359,9 @@ class LarkDeckMixin:
             ]
             return _cards.unified_panel(
                 reasoning=str(snap.get("reasoning") or ""),
+                rounds=snap.get("rounds") or [],
                 tools=steps,
+                expanded=_cfg("panel_expanded"),
                 max_reasoning_chars=_cfg_int("max_reasoning_chars", _cards.MAX_REASONING_CHARS),
                 max_tool_chars=_cfg_int("max_tool_result_chars", _cards.MAX_TOOL_RESULT_CHARS),
                 max_steps=_cfg_int("max_panel_steps", _cards.MAX_PANEL_STEPS),
