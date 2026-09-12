@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.DS_Store
+*.log
+
+# 绝不进公开仓库
+config.yaml
+.env
+*.env
+*.key
+*.pem
