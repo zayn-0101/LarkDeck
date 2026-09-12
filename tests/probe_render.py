@@ -191,14 +191,14 @@ def build_footer_cases(cards) -> list:
     )
 
     mark = f"{PROBE_MARK} · 页脚样式对照 · 只验渲染"
-    started = _time.monotonic() - 12.3
     labels = (("text", "⑦ 页脚【纯文字】当前默认"),
               ("bar", "⑧ 页脚【图形条】"),
               ("both", "⑨ 页脚【数字+条】"))
     cases = []
     for style, label in labels:
         _adapter._CONFIG["context_style"] = style
-        footer = _adapter.LarkDeckMixin._ld_footer(started)
+        # 页脚现在只放上下文用量（模型/耗时进了面板标题行），所以不再需要 started
+        footer = _adapter.LarkDeckMixin._ld_footer()
         body = f"页脚样式 **{style}**。下面这行是真适配器算出来的：\n`{footer}`"
         cases.append((label, cards.reply_card(body, streaming=True,
                                               footer=f"{footer} · {mark}")))
@@ -335,7 +335,22 @@ def build_dialect_probe_cards(cards) -> list:
     }
     # 对照组：1.0 的按钮行**不能**放进 2.0 卡（会被飞书拒收，230099）。
     # 不把它塞进用例里 —— 那会让整个探针跑出红色，而它「被拒」才是正确行为。
-    return [("⑫ 方言探针【2.0 select_static + input】← 请点下拉 + 回车", card)]
+    cases = [("⑫ 方言探针【2.0 select_static + input】← 请点下拉 + 回车", card)]
+
+    # ⑬⑭ 顺手把**生产代码真正会发的那两张 2.0 澄清卡**也发一遍：
+    # 上面那张探针是手搓的最小结构，而 `clarify_card_2` 还带 `footnote()` 脚注、
+    # input 的 label、多选走 `multi_select_static` —— 这些只有真发一次才知道飞书收不收
+    # （本地单测只验结构）。翻 `clarify_dialect` 默认值之前必须先确证它们能发出去。
+    cases.append(("⑬ 真 2.0 澄清卡（单选）—— clarify_card_2 的真实输出",
+                  cards.clarify_card_2("这张 2.0 澄清卡渲染正常吗？",
+                                       ["一切正常", "下拉没出来", "排版乱了"],
+                                       clarify_id="probe-c2", session_key="probe-sk")))
+    cases.append(("⑭ 真 2.0 澄清卡（多选，multi_select_static）",
+                  cards.clarify_card_2("多选那张渲染正常吗？",
+                                       ["模型名", "轮次", "工具数", "耗时"],
+                                       clarify_id="probe-c2m", session_key="probe-sk",
+                                       multi=True)))
+    return cases
 
 
 def build_bilingual_cases(cards) -> list:

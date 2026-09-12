@@ -40,6 +40,15 @@
   不会再补发** —— 答案彻底消失，任何一层都不报错。
   教训：**当一段文本既可能是「系统生成的元数据」又可能是「用户内容」时，不要用字符串
   匹配去猜**；判错两个方向都会吞内容，那就选不猜。详见 `core/adapter.py` 顶部说明。
+- **卡片在真机上根本发不出去，本地门禁全绿**（2026-09-13 实际踩过）—— 2.0 的
+  `card(title=...)` 把 `i18n_text()` 返回的**节点**直接塞进 `plain_text.content`，产出
+  `{"content": {"tag": "plain_text", ...}}` 这种嵌套结构；飞书整张卡拒收
+  （`230099 / ErrCode 200621 parse card json err`）。1.0 的 `legacy_card` 一直处理正确，
+  所以**只有走 2.0 的澄清卡**中招 —— 而它们本地单测只核「有没有 header」，完全看不出来。
+  教训：**能被本地规则判定的卡片合法性，就该在本地钉住**（现在是
+  `test_every_text_node_carries_a_string_not_a_nested_node`：所有文本节点的 `content`
+  与 `i18n_content` 的值必须是字符串）；真机探针留给「只有 API 能裁决」的那部分
+  （枚举值、元素上限、方言接受度）。
 - **探针永远说「不支持」**（2026-09-12 实际踩过）—— 转发 `metadata` 给父类时写成
   `getattr(type(parent), "interrupt_session_activity", None)`，而 `parent` 是
   `super()` 对象、**`type(parent)` 恒为 `super`** ⇒ 探针拿不到方法、永远判 False，

@@ -487,8 +487,15 @@ def card(*, elements: Sequence[Dict[str, Any]], template: str = "blue",
         "body": {"elements": list(elements)},
     }
     if title:
-        node["header"] = {"template": template,
-                          "title": {"tag": "plain_text", "content": title}}
+        # ``title`` 可以是**字符串**，也可以是 :func:`i18n.i18n_text` 的双语节点。
+        # ⚠️ 后者曾经被直接塞进 ``content`` 里，产出 ``{"content": {"tag": ...}}`` 这种
+        # 嵌套结构 —— 飞书**拒收**（``230099 / ErrCode 200621 parse card json err``），
+        # 而本地单测只核「有没有 header」看不出来。2026-09-13 由 `probe_render.py` 的
+        # 真机探针抓到（⑬⑭ 两张真 2.0 澄清卡全被拒）。``legacy_card`` 一直是对的，
+        # 这里补齐同样的处理。
+        title_node = (title if isinstance(title, dict)
+                      else {"tag": "plain_text", "content": str(title)})
+        node["header"] = {"template": template, "title": title_node}
     return node
 
 
@@ -788,7 +795,8 @@ def clarify_card_2(question: str, choices: Sequence[str], *, clarify_id: str,
                              "session_key": session_key, "question": question}
     selector: Dict[str, Any] = {
         "tag": "multi_select_static" if multi else "select_static",
-        "placeholder": {"tag": "plain_text", "content": _i18n.t("clarify.pick")},
+        "placeholder": {"tag": "plain_text",
+                        "content": _i18n.t("clarify.pick_multi" if multi else "clarify.pick")},
         "options": _clarify_options(choices),
         "behaviors": [{"type": "callback", "value": dict(value)}],
     }

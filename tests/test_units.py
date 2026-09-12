@@ -2366,6 +2366,63 @@ def test_turn_end_ignores_stale_turn_and_note_turn_clears_status():
         panel.reset()
 
 
+def _iter_text_nodes(node):
+    """递归找出所有文本节点（plain_text / markdown / lark_md）。"""
+    if isinstance(node, dict):
+        if node.get("tag") in ("plain_text", "markdown", "lark_md"):
+            yield node
+        for value in node.values():
+            yield from _iter_text_nodes(value)
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            yield from _iter_text_nodes(item)
+
+
+def test_every_text_node_carries_a_string_not_a_nested_node():
+    """每个文本节点的 ``content`` 必须是**字符串**，``i18n_content`` 的值也是。
+
+    ⚠️ 这条是**真机探针抓到的真 bug 的本地哨兵**（2026-09-13）：``card(title=...)`` 曾把
+    ``i18n_text()`` 返回的**节点**直接塞进 ``plain_text.content``，产出
+    ``{"content": {"tag": "plain_text", ...}}`` —— 飞书**拒收**整张卡
+    （``230099 / ErrCode 200621 parse card json err``）。
+    ``legacy_card`` 一直处理正确，但 2.0 的 ``card()`` 没有；本地单测只核「有没有 header」
+    完全看不出来，两个真实的 2.0 澄清卡在真机上是**发不出去**的。
+
+    结构检查放在本地，是因为「跑一次真机探针」不能每改一行都做；
+    凡是**能被本地规则判定**的卡片合法性，就该在本地钉住。
+    """
+    cards_under_test = {
+        "reply_card(streaming)": cards.reply_card("正文", streaming=True, footer="ctx 1k/2k"),
+        "reply_card(final)": cards.reply_card("正文", streaming=False),
+        "clarify_card(1.0)": cards.clarify_card("Q?", ["A", "B"], clarify_id="c",
+                                                session_key="s"),
+        "clarify_resolved_card(1.0)": cards.clarify_resolved_card(
+            question="Q?", answer="A", user_name="u"),
+        "clarify_card_2(单选)": cards.clarify_card_2("Q?", ["A", "B"], clarify_id="c",
+                                                     session_key="s"),
+        "clarify_card_2(多选)": cards.clarify_card_2("Q?", ["A", "B"], clarify_id="c",
+                                                     session_key="s", multi=True),
+        "clarify_resolved_card_2": cards.clarify_resolved_card_2(
+            question="Q?", answer="A", user_name="u"),
+    }
+    problems = []
+    for name, card in cards_under_test.items():
+        for node in _iter_text_nodes(card):
+            content = node.get("content")
+            if not isinstance(content, str):
+                problems.append(f"{name}: {node.get('tag')}.content 不是字符串而是 "
+                                f"{type(content).__name__}（飞书会拒收整张卡）")
+            i18n_node = node.get("i18n_content")
+            if i18n_node is not None:
+                if not isinstance(i18n_node, dict):
+                    problems.append(f"{name}: i18n_content 不是 dict")
+                else:
+                    for lang, value in i18n_node.items():
+                        if not isinstance(value, str):
+                            problems.append(f"{name}: i18n_content[{lang}] 不是字符串")
+    assert not problems, "；".join(problems)
+
+
 def test_panel_concurrent_writes_are_safe():
     panel.reset()
     errors: list = []
