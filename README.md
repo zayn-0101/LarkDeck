@@ -98,14 +98,14 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 | 澄清交互卡（按钮点击直接作答，不再手打选项） | ✅ |
 | 模型别名（可选：把 `deepseek-flash` 显示成你认得出来的名字；默认关闭） | ✅ |
 | 双语 UI（跟随飞书客户端语言） | ✅ 真机确证（2026-09-12）：互换实验证明客户端按 `i18n_content` 选语言 |
-| 即时响应：首帧早于首个 token（native seed 帧）+ 可关的「处理中」表情 | ✅ `reactions: false` 关掉飞书那侧相当于「输入提示」的 Typing 表情 |
+| 即时响应：首帧早于首个 token（native seed 帧）+ 等待期占位 + 可关的「处理中」表情 | ✅ 真机实测 seed 帧建卡 `code=0`；等待期正文区显示 i18n 占位「⏳ 正在生成…」（收尾帧不带，避免空答案停在「正在生成…」）；`reactions: false` 可关掉飞书那侧相当于「输入提示」的表情（**默认保持 Hermes 行为 = aiduPOP 的做法**，它的测试明确断言「reaction 拦截保持禁用」，见 `docs/plan-6-effects.md` §9） |
 | **回合状态色**：完成绿边 / 报错红边 / 中止黄边 | ✅ 数据来自官方 `on_session_end`（每回合一次）；颜色画在面板边框上 |
 | **推理按轮分段**（`第 N 轮 · 6.2s`；一轮 = 一段连续推理，被正文或工具打断） | ✅ |
 | 面板标题行：模型名 · 轮数 · 工具数 · 耗时 | ✅ 卡片级 header 已去掉，信息全在面板头（观感更接近 aiduPOP） |
 | 页脚：上下文用量（模型/耗时已并入面板标题） | ✅ 真机渲染已确认 |
 | 上下文用量三样式（纯文字 / 图形条 / 数字+条） | ✅ 真机渲染已确认 |
 | 推理文本 / 工具结果上限 + 元素溢出保护 | ✅ |
-| 打字机逐字显示 | ⏳ **字段已带上、动画未确证**：`streaming_print_ms`（默认 15）把 `streaming_config` 带在流式帧上，飞书 create/patch 都是 `code=0`；但「客户端会不会逐字打」是纯客户端行为，**API 返回码看不到**。证据倾向「`message.patch` 拿不到这个动画」（见「已知限制」里打字机那条），自测用 `tests/probe_render.py --typing` |
+| 打字机逐字显示 | ⏳ **字段已带上、动画未确证**（另一条传输 CardKit 实测整链 `code=0`，两条传输的公平对照见 `--cardkit`）：`streaming_print_ms`（默认 15）把 `streaming_config` 带在流式帧上，飞书 create/patch 都是 `code=0`；但「客户端会不会逐字打」是纯客户端行为，**API 返回码看不到**。证据倾向「`message.patch` 拿不到这个动画」（见「已知限制」里打字机那条），自测用 `tests/probe_render.py --typing` |
 
 > 每项效果**验证到什么程度**（本地门禁 / 真机 API / 肉眼）见
 > [`docs/plan-6-effects.md`](docs/plan-6-effects.md) 的「6 项效果的实施完成度」表 ——
