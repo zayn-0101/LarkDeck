@@ -4,12 +4,26 @@
 --------------
 1. Hermes 的 ``platform_registry`` 对同名平台是**最后写入者胜**。larkdeck 在内置
    ``feishu`` 平台注册之后再注册一次 ``feishu``，于是被解析到的就是我们的工厂。
-2. 我们的工厂先调用**内置工厂**，拿到一个已完整初始化好的 ``FeishuAdapter`` 实例
-   —— 鉴权、WebSocket、长连接守护、媒体、重试、限流全在里面 —— 然后把这个实例的
-   ``__class__`` 换成 ``type("LarkDeckFeishuAdapter", (LarkDeckMixin, <内置类>), {})``。
-   纯 Python 对象改 ``__class__`` 是合法操作，MRO 让我们的方法优先。
+2. 我们的工厂先向注册表问出**内置适配器的真实类**，然后用
+   ``type("LarkDeckFeishuAdapter", (LarkDeckMixin, <内置类>), {})`` **直接构造**一个
+   实例 —— 鉴权、WebSocket、长连接守护、媒体、重试、限流全都继承自内置类。
 3. 于是只需要覆盖四处：``send`` / ``edit_message`` / ``send_clarify`` /
    ``_on_card_action_trigger``，其余全部继承。
+
+为什么不用 ``instance.__class__ = 子类``
+---------------------------------------
+CPython 允许改 ``__class__`` 的前提之一是「新类的**直接基类链**与旧类一致」，不只是内存
+布局一致。``type("X", (Mixin, FeishuAdapter), {})`` 的直接基类是 ``Mixin`` 而非
+``FeishuAdapter``，赋值必抛 ``TypeError: object layout differs``。直接构造子类没有这个
+约束。代价是首轮多造一个实例 —— 它的 ``__init__`` 只读配置、不建连接，无副作用。
+
+按钮回调为什么能接上
+--------------------
+内置适配器在 ``_prepare_client()`` 里用
+``register_p2_card_action_trigger(self._on_card_action_trigger)`` 注册**绑定方法**，
+而 ``_prepare_client()`` 由 ``connect()`` 调用 —— 晚于我们构造实例的时机。所以那一刻
+按 MRO 解析出的就是本类的实现。若哪天内置改成在 ``__init__`` 里注册，这里就会静默失效，
+``tests/check_override.py`` 专门盯着这一点。
 
 为什么这么绕而**不** import 内置适配器模块
 ------------------------------------------
@@ -99,11 +113,9 @@ class LarkDeckMixin:
     不继承 ``BasePlatformAdapter`` —— 所有父类实现都来自被叠加的内置类，
     这样既避免 MRO 冲突，也保证「内置有什么我们就有什么」。
 
-    ``__slots__ = ()`` 是**必需**的，不是洁癖：``enrich()`` 用 ``__class__`` 赋值把实例
-    升级成子类，而 CPython 要求两个类的内存布局完全一致。混入类若隐式带上自己的
-    ``__dict__``/``__weakref__`` 槽，布局就会多出一块，赋值直接抛
-    ``TypeError: object layout differs``。实例状态照常可用 —— ``__dict__`` 来自被叠加的
-    内置类。
+    ``__slots__ = ()`` 是刻意的：混入层不持有任何实例状态，状态一律挂在
+    ``_ld_*`` 属性上（``_ld_setup()`` 里初始化）。这样这个类可以干净地叠在
+    任何内置适配器类之前，不参与任何内存布局假设。
     """
 
     __slots__ = ()

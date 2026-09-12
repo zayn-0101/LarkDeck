@@ -69,6 +69,24 @@ if mro_names.index("LarkDeckMixin") > mro_names.index("FeishuAdapter"):
 if getattr(adapter, "REQUIRES_EDIT_FINALIZE", None) is not True:
     problems.append("REQUIRES_EDIT_FINALIZE 不是 True，末帧会另发新消息而不是原地封口")
 
+# 覆盖面必须真的落到我们的实现上 —— 光看 MRO 顺序不够，绑定方法可能在构造期就被取走了。
+ld_mixin = next((c for c in cls.__mro__ if c.__name__ == "LarkDeckMixin"), None)
+if ld_mixin is None:
+    problems.append("找不到 LarkDeckMixin")
+else:
+    for name in ("send", "edit_message", "send_clarify", "_on_card_action_trigger"):
+        own = ld_mixin.__dict__.get(name)
+        if own is None:
+            problems.append(f"LarkDeckMixin 没有实现 {name}")
+            continue
+        resolved = getattr(adapter, name, None)
+        if getattr(resolved, "__func__", resolved) is not own:
+            problems.append(
+                f"{name} 解析到的是 {getattr(resolved, '__qualname__', resolved)!r}，不是 larkdeck 的实现"
+            )
+if not isinstance(getattr(adapter, "_ld_state", None), dict):
+    problems.append("_ld_setup() 没跑，实例状态缺失")
+
 if problems:
     for p in problems:
         print("FAIL:", p)
