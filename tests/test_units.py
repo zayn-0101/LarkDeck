@@ -207,6 +207,13 @@ def test_build_adapter_falls_back_when_interface_missing():
     assert not isinstance(obj, adapter.LarkDeckMixin), "接口不全时不得叠卡片层"
 
 
+def compat_has_bilingual(key: str) -> bool:
+    """i18n 表里两门语言都必须有该键，且**互不相同**（相同说明有人只写了一种语言）。"""
+    entry = cards._i18n._STRINGS.get(key) or {}
+    zh, en = entry.get(cards._i18n.ZH), entry.get(cards._i18n.EN)
+    return bool(zh) and bool(en) and zh != en
+
+
 def test_probe_adapter_class_reports_missing():
     ok, missing = compat.probe_adapter_class(StubAdapter)
     assert ok and missing == [], missing
@@ -283,7 +290,17 @@ def test_probe_report_warnings_name_the_right_contract():
 
     # ④ 报告里**没有** `missing_reactions` 这个键时不许静默（上游改名/被误删）：
     #    缺键要当成「探测失效」报出来，而不是当成「一切正常」。
+    # 契约键本身必须**包含**这六个（删掉任何一个都意味着某条静默失灵失去上报）。
+    # 注意用 `pop(..., None)`：否则「契约少了这个键」会以 KeyError 的形式**崩**在测试里，
+    # 而崩溃不算判别力证据（第九路审计 F3 指出过这种归因）。
+    for required in ("hermes_version", "adapter_class", "ok", "missing_required",
+                     "missing_optional", "missing_callback", "missing_signal",
+                     "missing_reactions", "session_attribution_ok"):
+        assert required in compat.PROBE_REPORT_KEYS, (
+            f"探测契约少了 {required} —— 上游改名后不会有任何上报")
+
     broken = _report()
+    assert "missing_reactions" in broken, "契约键没进报告"
     broken.pop("missing_reactions")
     with _LogCapture("larkdeck") as records:
         adapter._log_probe_report(broken)
@@ -482,6 +499,46 @@ def test_card_byte_budget_degrades_decorations_never_body():
 
     # 量纲是字节：中文 3 字节/字，按字符估会低估 3 倍
     assert cards.card_bytes({"a": "汉"}) == len('{"a": "汉"}'.encode("utf-8"))
+
+
+def test_empty_streaming_body_shows_a_pending_placeholder():
+    """建卡时正文还是空的 ⇒ 必须显示占位文案；**收尾帧不许带**。
+
+    为什么值得一条门禁（aiduPOP 的效果图 1 = 「即时响应」）：光「卡出现得早」不够，
+    还要**一眼看出它在干活**。我们此前建卡后正文是一个空格（`md()` 为了不让元素为空
+    补的）⇒ 用户看到的是一张近乎空白的卡，直到第一个 token 到达 —— 效果 1a 的观感
+    在真机上打了折扣。反过来更危险：占位若跟着**收尾帧**走，一个没有正文的回合
+    （被中止 / 只输出思考）会永远停在「正在生成…」，那是**错误信息**而不是观感问题。
+    """
+    pending = cards._i18n.t(cards._PENDING_TEXT_KEY)
+    assert pending.strip(), "占位文案不能是空的"
+
+    # ① 流式 + 空正文 ⇒ 占位
+    for blank in ("", "   ", "\n", None):
+        node = cards.reply_card(blank, streaming=True)
+        blob = json.dumps(node, ensure_ascii=False)
+        assert pending in blob, (blank, blob)
+
+    # ② 收尾帧（streaming=False）+ 空正文 ⇒ **不许**占位
+    for blank in ("", "   ", None):
+        node = cards.reply_card(blank, streaming=False)
+        blob = json.dumps(node, ensure_ascii=False)
+        assert pending not in blob, f"收尾帧带了占位，空答案的回合会永远停在「正在生成…」：{blob}"
+
+    # ③ 有正文时，任何一帧都不该出现占位（它是「还没到」，不是「附言」）
+    node = cards.reply_card("真实答案", streaming=True)
+    blob = json.dumps(node, ensure_ascii=False)
+    assert "真实答案" in blob and pending not in blob, blob
+
+    # ④ 走完整降载阶梯也一样（超预算档也不能把占位吃掉或留下）
+    for kwargs in ({}, {"budget": 10 ** 9}, {"panel": cards.unified_panel(status="ok")}):
+        streaming_empty, tier = cards.fit_reply_card("", streaming=True, **kwargs)
+        assert pending in json.dumps(streaming_empty, ensure_ascii=False), (tier, kwargs)
+        final_empty, tier2 = cards.fit_reply_card("", streaming=False, **kwargs)
+        assert pending not in json.dumps(final_empty, ensure_ascii=False), (tier2, kwargs)
+
+    # ⑤ 占位文案必须有双语条目（界面文案一律走 i18n，不硬编码）
+    assert compat_has_bilingual(cards._PENDING_TEXT_KEY), cards._PENDING_TEXT_KEY
 
 
 def test_streaming_summary_is_never_empty():
@@ -2651,9 +2708,13 @@ def test_long_body_still_redraws_on_stop_and_never_degrades_silently():
             _run(raw2.send("oc_2", huge))
         text = _log_text(records)
         assert "未为「中止重绘」保留副本" in text, f"存不下时必须留痕，实得：{text!r}"
-        # 日志的单位口径必须是**字节**（第七路审计：这里曾传字符数，读起来像阈值算错了）
-        assert f"正文 {len(huge.encode('utf-8'))} 字节" in text, (
-            f"日志口径必须是 utf-8 字节，实得：{text!r}")
+        # 日志必须**同时**报两个口径（第七路审计：这里曾传字符数，读起来像阈值算错了；
+        # 第九路审计：换口径后只打一个数会让「原始 126900 却报 127202」看着像 bug）
+        assert "JSON 转义后" in text, f"日志要说清口径，实得：{text!r}"
+        assert f"原始 {len(huge.encode('utf-8'))} 字节" in text, (
+            f"日志必须报原始字节数，实得：{text!r}")
+        assert f"正文 {adapter._card_body_bytes(huge)} 字节" in text, (
+            f"日志必须报判据口径（JSON 转义后）的字节数，实得：{text!r}")
         # 超限时只允许两种结果：**完整保留**或**完全不留** —— 绝不许截断。
         # 截断的后果是 `/stop` 把屏上 6 万字的答案重绘成 1000 字（用户可见的数据丢失），
         # 而第八路审计实测：把这里改成 `body[:1000]` 四门禁全绿。
@@ -2695,6 +2756,72 @@ def test_tracked_text_keeps_a_bounded_number_of_copies():
         assert "om_keep_0" not in survivors, "该被淘汰的是最久没用的那份"
         assert "om_new" in survivors
     finally:
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_tracked_body_always_fits_the_status_shell_end_to_end():
+    """**复合不变量**：被追踪的正文，`/stop` 那一次重绘的载荷里**一定有颜色**，且发得出去。
+
+    由来（第九路审计 F1 + F2，实测可复现）：
+      * 追踪判据原先用**原始 utf-8 字节**，而「装不装得下状态小面板」的守卫用
+        **JSON 序列化后的整卡字节**；`\n` `"` `\\` `\t` 在 JSON 里会转义成 2 字节，
+        于是存在一条缝隙：正文被留下（⇒ `/stop` 必发 patch），但那张卡装不下小面板
+        ⇒ patch 发出去、`code=0`、**载荷里没有任何颜色**。实测窗口：正文 126900 字节
+        + 300 个换行 ⇒ 载荷 127750 字节（会被飞书收下）、含 yellow **False**。
+      * 而那两条各看一半的老断言（「阈值 + 开销 ≤ 硬上限」与「壳 ≤ 余量」）**拦不住它**：
+        审计把壳从 543 加到 1015 字节（仍 ≤ 1024）就重新撕开一条 303 字节宽的窗口，
+        四条门禁**全绿**。
+    所以这里用**真实形状**（中文 + 换行）跑端到端：只要正文被留下，就必须画得上色。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    limit = adapter._MAX_TRACKED_TEXT
+    try:
+        for per_line in (40, 80):
+            line = "汉" * per_line + "\n"
+            # 顶到**真正的边界**：JSON 引号只算一次，所以「unit 整除」只能当保守起点
+            count = max(1, limit // adapter._card_body_bytes(line))
+            while adapter._card_body_bytes(line * (count + 1)) <= limit:
+                count += 1
+            inside = line * count
+            assert adapter._card_body_bytes(inside) <= limit, (
+                adapter._card_body_bytes(inside), limit)
+            panel.reset()
+            raw = _make()
+            updates = _wire_patch(raw)
+            _run(raw.send("oc_esc", inside))
+            kept = (raw._ld_state.get("om_card_1") or {}).get("last_text") or ""
+            assert kept == inside, (
+                f"判据口径 {adapter._card_body_bytes(inside)} ≤ 阈值 {limit} 的正文必须被保留"
+                f"（原始 {len(inside.encode('utf-8'))} 字节）—— 否则 /stop 不会重绘")
+            _run(raw.interrupt_session_activity("sk", "oc_esc"))
+            assert updates, "被追踪的正文必须能重绘出中止态"
+            payload = updates[-1]["content"]
+            size = len(payload.encode("utf-8"))
+            assert size <= cards.FEISHU_CARD_BYTE_LIMIT, (
+                f"重绘载荷 {size} 字节超过飞书实测硬上限 {cards.FEISHU_CARD_BYTE_LIMIT}"
+                " —— 那一次 patch 会被拒，用户什么都看不到")
+            assert "yellow" in payload, (
+                "被追踪的正文 /stop 后**载荷里没有颜色**（追踪判据与守卫口径不一致）"
+                f"：判据口径 {adapter._card_body_bytes(inside)} 字节、载荷 {size} 字节")
+
+            # 反方向：超出判据口径的正文必须**不被保留**，而且留一条告警（绝不静默）
+            outer = line * (count + 1)
+            assert adapter._card_body_bytes(outer) > limit
+            raw2 = _make()
+            _wire_patch(raw2)
+            adapter._log_note_text_skipped._at = 0.0
+            with _LogCapture("larkdeck") as records:
+                _run(raw2.send("oc_esc2", outer))
+            assert (raw2._ld_state.get("om_card_1") or {}).get("last_text") == "", \
+                "超出判据口径的正文不许再留下（留下就落进「无颜色」窗口）"
+            assert "未为「中止重绘」保留副本" in _log_text(records), _log_text(records)
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
         panel.reset()
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)
@@ -2978,7 +3105,44 @@ def test_invariant_2_fallbacks_survive_exceptions_not_just_failures():
         adapter._apply_metrics_config()
 
 
-def test_card_byte_constants_are_pinned_to_the_measured_envelope():
+def test_cross_module_constants_are_derived_not_copied():
+    """跨模块常量必须是**算出来的**，不能抄字面量（第九路审计 F9 的防漂移闸门）。
+
+    实测过三条四门禁全绿的变异：`adapter` 里把 `_cards.FEISHU_CARD_BYTE_LIMIT` 抄成
+    字面量 `128000`、`_print_frequency_ms` 里把上限抄成 `2000`、`_log_probe_report` 的
+    缺键清单退回手写元组。今天数值相同 ⇒ **无可观测后果**，但下一次改一处忘一处就是
+    真缺陷（本项目已经栽过一次：`_MAX_TRACKED_TEXT` 被同文件旧赋值覆盖成 40000）。
+    机械门禁只能查「源码里引用了那个单一事实来源」，查不了「以后会不会漂」——
+    这条就是那个最低成本的防漂移闸门。
+    """
+    import inspect
+
+    adapter_src = inspect.getsource(adapter)
+    cards_src = inspect.getsource(cards)
+    for needle, why in (
+            ("_FEISHU_CARD_BYTE_LIMIT = _cards.FEISHU_CARD_BYTE_LIMIT",
+             "硬上限必须引用 cards.FEISHU_CARD_BYTE_LIMIT，不能抄字面量"),
+            ("high = _cards.PRINT_FREQUENCY_MAX_MS",
+             "打字机上限必须引用 cards.PRINT_FREQUENCY_MAX_MS，不能抄字面量"),
+            ("_compat.PROBE_REPORT_KEYS",
+             "缺键清单必须从 compat.PROBE_REPORT_KEYS 派生"),
+            ("_MAX_TRACKED_TEXT = _FEISHU_CARD_BYTE_LIMIT - _CARD_BYTES_OVERHEAD",
+             "阈值必须是算出来的")):
+        assert needle in adapter_src, why
+    assert "FEISHU_CARD_BYTE_LIMIT = 128000" in cards_src, \
+        "硬上限的**唯一**字面量必须留在 cards.py（真机实测的出处就在它上面那段注释里）"
+    # ⚠️ 只查**赋值形态**，不查散文：注释/docstring 里引用实测数字是对的（那是出处），
+    # 直接给常量赋数字、或手写一份字符串列表，才是会漂的那种改法。
+    import re as _re
+    for pattern, why in (
+            (r"_FEISHU_CARD_BYTE_LIMIT\s*=\s*\d", "硬上限不许直接赋数字（要引用 cards 的常量）"),
+            (r"\bhigh\s*=\s*\d", "打字机上限不许直接赋数字（要引用 cards.PRINT_FREQUENCY_MAX_MS）"),
+            (r"_MAX_TRACKED_TEXT\s*=\s*\d", "追踪阈值不许直接赋数字（要由硬上限减去余量算出来）"),
+            (r"absent\s*=\s*\[\"", "缺键/契约清单不许手写字符串列表（要从 compat 派生）")):
+        assert not _re.search(pattern, adapter_src), f"{why}（第九路审计 F9）"
+
+
+
     """卡片字节那三个常量**自身**必须有门禁，不能只锁它们之间的关系。
 
     第八路审计实测（43 条变异矩阵）：新加的形状断言只盯着「阈值 + 开销 ≤ 硬上限」这条
@@ -3077,6 +3241,36 @@ def test_status_color_survives_the_byte_budget_degradation():
         "明确有余量时还不给颜色 ⇒ status_shell 的守卫条件反了"
 
 
+def test_degrade_log_names_the_wall_and_the_numbers():
+    """降载日志必须说清**撞的是哪堵墙**（档位 / 元素数 / 字节数），第九路审计 F8。
+
+    实测过四条变异四门禁全绿：不打字节、元素数传 0、字节数传 0、**档位写死 "ok"**
+    （最误导的一条：明明降载了却记「档位=ok」）。而这条日志是「卡片为什么少了个面板」
+    的唯一线索 —— 光看档位名分不出是**字节**触发的还是**元素数**触发的，两者的处置
+    完全不同（后者要收轮数/步数，不是收长度）。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    try:
+        adapter._log_degrade_once._at = 0.0
+        with _LogCapture("larkdeck") as records:
+            adapter._log_degrade_once("over-budget", 5, 61000)
+        text = _log_text(records)
+        assert "over-budget" in text, text
+        assert "元素 5/200" in text, text
+        assert "字节 61000/40000" in text, text
+        # 档位必须来自**实参**（写死 "ok" 的变异在这里变红）
+        adapter._log_degrade_once._at = 0.0
+        with _LogCapture("larkdeck") as records:
+            adapter._log_degrade_once("no-panel", 7, 1234)
+        text2 = _log_text(records)
+        assert "no-panel" in text2 and "元素 7/200" in text2 and "字节 1234/40000" in text2, text2
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+        adapter._log_degrade_once._at = 0.0
+
+
 def test_over_budget_tier_keeps_the_typewriter_and_never_truncates_body():
     """三种降载档位都要保住打字机配置，且正文永不被截断。
 
@@ -3102,6 +3296,25 @@ def test_over_budget_tier_keeps_the_typewriter_and_never_truncates_body():
                                   element_limit=1)
     assert t3 != "ok" and n3["config"].get("streaming_config"), t3
 
+    # ⚠️ **带状态小面板的那半个超预算分支**（第九路审计 F7）：这一档的卡会带
+    # `status_shell`，它与裸卡分支是两条不同的构造语句 —— 早先的断言只覆盖了裸卡，
+    # 于是「壳分支忘传 print_frequency_ms」四门禁全绿（用户把 streaming_print_ms 设成 0
+    # 关掉打字机时，这一档又会带上 15ms）。
+    status_panel = cards.unified_panel(status="stopped")
+    for want in (0, 40):
+        node_shell, tier_shell = cards.fit_reply_card(
+            body, streaming=True, panel=status_panel, print_frequency_ms=want)
+        assert tier_shell == "over-budget", tier_shell
+        blob_shell = json.dumps(node_shell, ensure_ascii=False)
+        assert cards.border_for_status("stopped") in blob_shell, "壳丢了 —— 前提不成立"
+        if want == 0:
+            assert "streaming_config" not in blob_shell, (
+                "0 = 关掉打字机，超预算档不许再带上它")
+        else:
+            assert node_shell["config"].get("streaming_config") == {
+                "print_frequency_ms": {"default": 40}, "print_step": {"default": 1},
+                "print_strategy": "fast"}, "超预算 + 小面板这一档也要把自定义值传下去"
+
 
 def test_print_frequency_is_clamped_and_never_raises():
     """打字机间隔的坏值必须被夹住，且**绝不抛**（抛出去整张卡就回落到纯文本了）。
@@ -3116,7 +3329,7 @@ def test_print_frequency_is_clamped_and_never_raises():
     """
     # ① 被保护的那一层：越界/坏值一律退回默认，**绝不抛**
     for bad in (float("inf"), float("-inf"), float("nan"), 10 ** 9, 5000, 2001, 0, -5,
-                None, "abc", [], {}, "1e999"):
+                None, "abc", [], {}, "1e999", 10 ** 400, int("9" * 400)):
         got = cards.streaming_config(bad)["print_frequency_ms"]["default"]
         assert got == cards.DEFAULT_PRINT_FREQUENCY_MS, (bad, got)
     # 边界内保留原值（夹取不该把合法值也吃掉）
@@ -3153,8 +3366,14 @@ def test_out_of_range_print_frequency_is_logged_not_silent():
     def _value(cfg):
         adapter.configure(streaming_print_ms=cfg)
         adapter._log_print_ms_once._at = 0.0          # 清限流窗口
-        with _LogCapture("larkdeck") as records:
-            got = adapter._print_frequency_ms()
+        try:
+            with _LogCapture("larkdeck") as records:
+                got = adapter._print_frequency_ms()
+        except Exception as exc:
+            # ⚠️ 必须**转成断言失败**而不是让异常飞出去：这条路径跑在插件注册里，
+            # 抛出去就是「插件整体不生效、静默退回纯文本」（本项目最怕的失败模式）。
+            # 而且断言失败才是门禁的判别力证据 —— 崩溃只说明代码坏了（第九路审计 F3/F6）。
+            raise AssertionError(f"配置 {cfg!r} 让取值抛了异常：{exc!r}") from exc
         return got, _log_text(records)
 
     defaults = dict(adapter._DEFAULTS)
@@ -3162,19 +3381,21 @@ def test_out_of_range_print_frequency_is_logged_not_silent():
         # ① 越界：**边界上下都要打**。`PRINT_FREQUENCY_MAX_MS + 1` 这一条是有判别力的 ——
         #    第八路审计实测：把 `_print_frequency_ms` 里的上限改成字面量 2001，四门禁全绿
         #    （两个模块各持一份上限、分叉了没人管）。现在这条会把分叉抓住。
-        for bad in ("5000", 5001, 10 ** 9, cards.PRINT_FREQUENCY_MAX_MS + 1):
+        for bad in ("5000", 5001, 10 ** 9, cards.PRINT_FREQUENCY_MAX_MS + 1,
+                    10 ** 400, int("9" * 400)):
             got, text = _value(bad)
             assert got == cards.DEFAULT_PRINT_FREQUENCY_MS, (bad, got)
             assert "streaming_print_ms" in text and "退回" in text, (bad, text)
 
         # ② **转不动**的值同样不许静默（第八路审计指出的另一半：`_cfg_int` 在范围判断之前
         #    就把它们塌成默认，于是这条分支永远见不到它们 —— 写 "fast"/""/null/inf 全静默）
-        for junk in ("abc", "", [], {}, float("inf"), float("nan"), "1e999"):
+        for junk in ("abc", "", [], {}, float("inf"), float("nan"), "1e999",
+                     10 ** 400, int("9" * 400)):
             got, text = _value(junk)
             assert got == cards.DEFAULT_PRINT_FREQUENCY_MS, (junk, got)
             assert "不是可用的数字" in text, (junk, text)
             # 告警要打**用户写的那个值**，不是 float 舍入后的天文数字
-            assert repr(junk) in text, (junk, text)
+            assert repr(junk)[:40] in text, (junk, text)
 
         # ③ 合法值 / 0（= 关掉打字机）不许报警，也别改值
         for good in (1, 15, cards.PRINT_FREQUENCY_MAX_MS):

@@ -338,20 +338,39 @@ def _log_print_ms_once(why: str, fallback: int) -> None:
                    "（打字机逐字间隔；0 才是「关掉打字机」）", why, fallback)
 
 
-def _log_note_text_skipped(size: int) -> None:
+def _card_body_bytes(body: str) -> int:
+    """正文进卡片后的 **JSON 字节数**（= 判据口径，见 :data:`_MAX_TRACKED_TEXT`）。
+
+    ⚠️ 为什么不能用 `len(body.encode())`：卡片 JSON 会把 ``\n`` ``"`` ``\\`` ``\t`` 转义成
+    两字节，所以**JSON 口径 ≥ 原始口径**。第九路审计实测：两者混用会重新打开一条静默窗口 ——
+    正文 126900 字节 + 300 个换行（原始口径"在阈值内"⇒ 正文被留下）时，那张带小面板的卡
+    127750 字节**装得下**、patch 也确实发了、`code=0`，但**载荷里没有颜色**（守卫按 JSON 口径
+    算出的 127202 + 壳 545 越过了 128000）⇒ 用户还是看不到中止色，唯一日志还不提颜色。
+    判据与守卫必须同口径，这就是那个口径。
+    """
+    try:
+        return len(json.dumps(str(body or ""), ensure_ascii=False).encode("utf-8", "ignore"))
+    except Exception:                     # pragma: no cover - 防御性（str 不会失败）
+        return len(str(body or "").encode("utf-8", "ignore"))
+
+
+def _log_note_text_skipped(size: int, raw_size: int) -> None:
     """正文太大、无法为「中止重绘」保留 —— 限流告警（60 秒一条），绝不静默。
 
-    ``size`` 是**utf-8 字节数**，与阈值同口径。第七路审计抓到过这里传的是 `len(body)`
-    （字符数），打出「正文 14000 字符超过 40000 字节预算」这种读起来像阈值算错了的日志 ——
-    而这条日志是「卡片为什么不变色」的唯一线索，口径必须自洽。
+    ``size`` 是**判据口径**（JSON 转义后字节，见 :func:`_card_body_bytes`），
+    ``raw_size`` 是原始 utf-8 字节。**两个数都要打**：第七路审计抓到过这里传的是 `len(body)`
+    （字符数），打出「正文 14000 字符超过 40000 字节预算」这种像阈值算错了的日志；
+    第九路审计又指出换口径后只打一个数会让「原始 126900 却报 127202」看着像 bug。
+    这条日志是「卡片为什么不变色」的唯一线索，口径必须自洽且说得清。
     """
     now = time.monotonic()
     if now - getattr(_log_note_text_skipped, "_at", 0.0) < 60.0:
         return
     _log_note_text_skipped._at = now  # type: ignore[attr-defined]
-    logger.warning("[larkdeck] 正文 %d 字节超过 %d 字节预算，未为「中止重绘」保留副本"
-                   "—— 若本回合掉过 native，/stop 时这张卡不会变成中止色",
-                   size, _MAX_TRACKED_TEXT)
+    logger.warning("[larkdeck] 正文 %d 字节（JSON 转义后；原始 %d 字节）超过 %d 字节预算，"
+                   "未为「中止重绘」保留副本 —— 若本回合掉过 native，"
+                   "/stop 时这张卡不会变成中止色",
+                   size, raw_size, _MAX_TRACKED_TEXT)
 
 
 def _log_degrade_once(tier: str, elements: int = 0, size: int = 0) -> None:
@@ -446,15 +465,16 @@ class LarkDeckMixin:
     def _ld_note_text(self, message_id: str, text: str) -> None:
         """记下这张卡最后渲染过的正文（供非 native 路径的「中止重绘」用）。
 
-        上限按 **utf-8 字节**、与飞书的卡片硬上限同口径：**发得出去的卡就存得下正文**
-        （见 :data:`_MAX_TRACKED_TEXT`）。真正超限时**不静默**：留一条限流日志说明
-        「中止时这张卡不会变色」—— 静默降级是本项目的头号失败模式（审计实测出来的）。
+        上限按 **JSON 转义后的字节数**（:func:`_card_body_bytes`），与「这张卡装不装得下
+        状态小面板」的守卫**同口径**：**发得出去的卡就存得下正文、也一定画得上色**。
+        真正超限时**不静默**：留一条限流日志说明「中止时这张卡不会变色」——
+        静默降级是本项目的头号失败模式（审计实测出来的）。
         """
         body = str(text or "")
-        size = len(body.encode("utf-8", "ignore"))
+        size = _card_body_bytes(body)
         if size > _MAX_TRACKED_TEXT:
             # 只有在**连飞书都发不出去**的量级上才会走到这里（见 _MAX_TRACKED_TEXT 注释）
-            _log_note_text_skipped(size)
+            _log_note_text_skipped(size, len(body.encode("utf-8", "ignore")))
             body = ""
         with self._ld_lock:
             entry = self._ld_state.get(message_id)
@@ -609,7 +629,7 @@ class LarkDeckMixin:
     def _ld_build_card(cls, content: str, *, streaming: bool,
                        panel: Optional[Dict[str, Any]],
                        footer: Optional[str]) -> Dict[str, Any]:
-        """构造回复卡，超字节预算时**分级丢装饰**（面板 → 页脚 → 全摘）。
+        """构造回复卡，超字节预算时**分级丢装饰**（面板 → 页脚 → 裸卡 → 只留状态小面板）。
 
         为什么不截断正文：官方把 native 流式下的长度责任明确推给适配器，而官方
         ``send()`` 本身会分块 —— 正文过大时正确做法是让卡片发送失败、由核心的

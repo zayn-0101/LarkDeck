@@ -244,6 +244,8 @@ def build_cases(cards) -> list:
         return card
 
     return [
+        ("⓪ 首帧占位卡（这一张就是**回合刚开始那一秒**的样子）",
+         cards.reply_card("", streaming=True, footer=mark)),
         ("① 澄清卡（legacy 1.0，应有 3 个按钮）",
          tag_legacy(cards.clarify_card("这张卡渲染正常吗？按钮能看见吗？",
                                        ["一切正常", "按钮没出来", "排版乱了"],
@@ -896,6 +898,21 @@ def probe_stop_redraw(client, chat: str, cards) -> int:
     print("—— 第二条路径：native 流式 + /stop ——")
     stream_key = f"probe-stream-{int(time.time())}"
     painted_stream: list = []          # 提前定义：中途 return/抛异常时下面的判定不该炸
+    # 记账钩子：seed 帧建卡时适配器会调 `_ld_track(message_id, chat_id)`。
+    # 第九路审计指出一个账本缺口 —— 建卡成功、但 `_ld_stream_get` 拿不到 message_id 时
+    # 我们会直接 return，那张**已经发到用户 DM 里**的卡就没人记账（下次清理带不走它）。
+    # 所以从 `_ld_track` 这里顺手抄一份，保证「发出去的卡一定进账本」。
+    tracked_ids: list = []
+    original_track = adapter._ld_track
+
+    def _spy_track(message_id, chat_id=None):
+        if message_id:
+            tracked_ids.append(str(message_id))
+        if chat_id is None:
+            return original_track(message_id)
+        return original_track(message_id, chat_id)
+
+    adapter._ld_track = _spy_track       # type: ignore[method-assign]
     loop = asyncio.new_event_loop()
     try:
         adapter._client.im.v1.message.patch = _counting_patch
@@ -908,8 +925,13 @@ def probe_stop_redraw(client, chat: str, cards) -> int:
         state = adapter._ld_stream_get(f"{chat}:{stream_key}")
         stream_mid = str((state or {}).get("message_id") or "")
         print(f"   流式卡 message_id = {stream_mid}")
+        # 先把**所有认出来的 id** 记账（`_ld_track` 抄到的那份是兜底），再判失败
+        if tracked_ids:
+            _save_sent_ids(_load_sent_ids() + sorted(set(tracked_ids)))
+            print(f"   已记账 {len(set(tracked_ids))} 个 id（来自 `_ld_track`）")
         if not stream_mid:
-            print("❌ native 建卡后没有记录 message_id，后续帧无处可去")
+            print("❌ native 建卡后没有记录 message_id，后续帧无处可去"
+                  f"（已把认出的 id {sorted(set(tracked_ids))} 记进账本，免得 DM 里堆卡）")
             return 1
         _save_sent_ids(_load_sent_ids() + [stream_mid])
         # 正文同样取 60000 字节（超我们自己的降载预算、但飞书收得下）
@@ -928,12 +950,13 @@ def probe_stop_redraw(client, chat: str, cards) -> int:
                   f"{'yellow' in payload}")
     finally:
         adapter._client.im.v1.message.patch = original_patch
+        adapter._ld_track = original_track       # type: ignore[method-assign]
         loop.close()
     if painted_stream:
         print("✅ native 路径同样保住了中止色（不再只是推断）")
     else:
-        print("❌ native 路径的 /stop 载荷里没有黄边（审计那条推断成立，需修）")
-        ok = False
+        print("❌ native 路径的 /stop 载荷里没有黄边")
+        return 1
 
     from lark_oapi.api.im.v1 import GetMessageRequest
     got = client.im.v1.message.get(GetMessageRequest.builder().message_id(mid).build())
@@ -965,6 +988,8 @@ def probe_stop_redraw(client, chat: str, cards) -> int:
     elif not painted:
         print("❌ patch 发出去了但**载荷里没有状态色** —— 降载阶梯把承载颜色的面板"
               "整块摘掉了（`status_shell` 就是修这个的）")
+    print("（上面这些是**第一条（非 native）路径**的判定；它是本次运行的独立结论，"
+          "不再靠第二条路径的结论兜底）")
     return 1
 
 
@@ -1035,13 +1060,17 @@ def main(argv: list) -> int:
     print()
     if ok:
         print(f"全部被飞书接收 ✅ —— 去飞书 DM 看这 {len(cases)} 张卡：")
+        print("  ⓪ 首帧占位卡（回合刚开始那一秒：应当是「⏳ 正在生成…」而不是空白）")
+        print("  ①② 澄清卡（1.0 按钮 / 已答复回填）")
         print("  ③④ 折叠面板（③ 点一下标题行右边的三角应能展开）· ⑤⑥ 双语互换实验"
               "（看到英文说明 i18n 生效）")
-        print("  ⑦⑧⑨ 页脚三样式 · ⑩⑪ 三种状态色边框 · ⑫ 方言探针（可点）· ⑬⑭ 真 2.0 澄清卡（可点）")
+        print("  ⑦⑧⑨ 页脚三样式 · ⑩⑪ 三种状态色边框 · ⑫ 方言探针（可点）· "
+              "⑬⑭ 真 2.0 澄清卡（可点）")
     else:
         print("有卡片被拒 ❌ —— 按上面飞书给的 msg 改")
     print("注意：按钮点击不会被处理（本探针只验渲染，不验点击）；"
-          "打字机单独跑：`--typing`；中止重绘单独跑：`--stop-redraw`。")
+          "打字机单独跑：`--typing`；中止重绘单独跑：`--stop-redraw`；"
+          "CardKit 对照跑：`--cardkit`。")
     return 0 if ok else 1
 
 

@@ -571,6 +571,27 @@ def card(*, elements: Sequence[Dict[str, Any]], template: str = "blue",
     return node
 
 
+#: 「答案还没开始」时正文区的占位文案键（i18n）。理由见 :func:`answer_or_pending`。
+_PENDING_TEXT_KEY = "stream.pending"
+
+
+def answer_or_pending(answer: str, streaming: bool) -> str:
+    """正文为空且**还在流式**时，给一个占位文案（空白卡看起来像卡住了）。
+
+    aiduPOP 的「即时响应」（它的效果图 1）不只是「卡出现得早」，还包括**一眼看出它在干活**：
+    它的卡片在等待期显示占位文案，正文一到就被替换。我们此前建卡后正文只有一个空格
+    （:func:`md` 为了避免元素为空而补的），用户看到的是一张**近乎空白**的卡 ——
+    效果 1a 的「即时」在观感上打了折扣。
+
+    ⚠️ **收尾帧（``streaming=False``）绝不带占位**：否则一个真的没有正文的回合
+    （被中止、或模型只输出了思考）会永远停在「正在生成…」，那是明确的错误信息。
+    这也是为什么判据挂在 ``streaming`` 上，而不是「正文为空」上。
+    """
+    if streaming and not str(answer or "").strip():
+        return _i18n.t(_PENDING_TEXT_KEY)
+    return answer
+
+
 def reply_card(answer: str, *, streaming: bool = False, panel: Optional[Dict[str, Any]] = None,
                footer: Optional[str] = None,
                print_frequency_ms: Any = DEFAULT_PRINT_FREQUENCY_MS) -> Dict[str, Any]:
@@ -579,7 +600,7 @@ def reply_card(answer: str, *, streaming: bool = False, panel: Optional[Dict[str
     **没有卡片级 header**（决策 D2）。原来标题固定是 "Hermes"，既没信息量又占一行，
     现在模型名/轮数/工具数/耗时全在面板头里。
     """
-    elements: List[Dict[str, Any]] = [md(answer)]
+    elements: List[Dict[str, Any]] = [md(answer_or_pending(answer, streaming))]
     if panel:
         elements.append(panel)
     if footer:
@@ -714,6 +735,8 @@ def fit_reply_card(answer: str, *, streaming: bool = False,
     """构造回复卡，超预算时**分级丢装饰**。返回 ``(card, 降级档位)``。
 
     档位：``ok`` → ``no-panel`` → ``bare`` → ``over-budget``。
+    ⚠️ ``over-budget`` 档**不是**裸卡：它会带一个只保状态色的小面板（:func:`status_shell`，
+    除非加上它就越过飞书硬上限）。别在这里按「裸卡」假设写调用方逻辑。
     降载由**两道独立的墙**触发：字节预算（我们自己的保守值）与元素数硬上限（飞书 200）。
     两者任一超了就往下丢装饰 —— 元素那一侧撞上不是「卡片变小」而是**整张卡不渲染**。
 

@@ -45,9 +45,9 @@ MUTATIONS = [
      "_MAX_TRACKED_TEXT = _cards.CARD_BYTE_BUDGET",
      "test_units"),
     # ---- P8：日志单位口径 ---------------------------------------------------- #
-    ("P8-日志传字符数", "core/adapter.py",
-     "        size = len(body.encode(\"utf-8\", \"ignore\"))",
-     "        size = len(body)",
+    ("P8-告警的原始口径传字符数", "core/adapter.py",
+     '            _log_note_text_skipped(size, len(body.encode("utf-8", "ignore")))',
+     "            _log_note_text_skipped(size, len(body))",
      "test_units"),
     # ---- P2：越界静默 -------------------------------------------------------- #
     ("P2-越界告警降级成 debug", "core/adapter.py",
@@ -159,9 +159,6 @@ MUTATIONS = [
     ("D24-删掉一个键的 type 声明", "plugin.yaml",
      "  streaming_print_ms:\n    type: integer\n", "  streaming_print_ms:\n",
      "test_units"),
-    ("D25-对照：default 加行内注释（合法 YAML，应当全绿）", "plugin.yaml",
-     "    default: 15\n", "    default: 15  # 毫秒\n",
-     "test_units"),
     ("D26-default 改折叠标量", "plugin.yaml",
      "    default: 15\n", "    default: >\n      15\n",
      "test_units"),
@@ -177,11 +174,83 @@ MUTATIONS = [
      "    \"missing_callback\", \"missing_signal\", \"missing_reactions\", \"session_attribution_ok\",\n)",
      "    \"missing_callback\", \"missing_signal\", \"session_attribution_ok\",\n)",
      "test_units"),
+    # ---- 第十五轮：首帧占位 + 面板耗时段 -------------------------------------- #
+    ("T1-建卡不再显示占位（空白卡）", "core/cards.py",
+     "    if streaming and not str(answer or \"\").strip():",
+     "    if False:",
+     "test_units"),
+    ("T2-收尾帧也带占位（空答案永远「正在生成」）", "core/cards.py",
+     "    if streaming and not str(answer or \"\").strip():",
+     "    if not str(answer or \"\").strip():",
+     "test_units"),
+    ("T3-面板标题丢掉耗时段", "core/adapter.py",
+     "                duration=duration,", "                duration=None,",
+     "check_hooks"),
+    ("T4-footer_line 不再渲染耗时", "core/cards.py",
+     "    if isinstance(duration, (int, float)) and duration >= 0.1:\n        parts.append(f\"⏱ {format_elapsed(float(duration))}\")",
+     "    if False:\n        parts.append(f\"⏱ {format_elapsed(float(duration or 0))}\")",
+     "check_hooks"),
+    ("T5-每轮耗时标题不再渲染", "core/cards.py",
+     "        return f\"{base} · {format_elapsed(max(0.1, elapsed_ms / 1000.0))}\"",
+     "        return base",
+     "test_units"),
+    # ---- 第九路审计：口径统一 / 复合不变量 / 壳分支 / 诊断日志 ---------------- #
+    ("F1-追踪判据退回原始 utf-8 口径", "core/adapter.py",
+     "        size = _card_body_bytes(body)",
+     "        size = len(body.encode(\"utf-8\", \"ignore\"))",
+     "test_units"),
+    ("F1b-判据不再做 JSON 转义", "core/adapter.py",
+     "        return len(json.dumps(str(body or \"\"), ensure_ascii=False).encode(\"utf-8\", \"ignore\"))",
+     "        return len(str(body or \"\").encode(\"utf-8\", \"ignore\"))",
+     "test_units"),
+    ("F2-壳可以长到超过余量（复合不变量）", "core/cards.py",
+     "    return collapsible(title, [md(_i18n.t(_STATUS_TEXT_KEYS.get(status, \"panel.title\")))],\n                       expanded=False, border_color=color)",
+     "    return collapsible(title, [md(_i18n.t(_STATUS_TEXT_KEYS.get(status, \"panel.title\"))),\n                               md(\"填充\" * 160)],\n                       expanded=False, border_color=color)",
+     "test_units"),
+    ("F7-壳分支丢掉打字机配置", "core/cards.py",
+     "        with_shell = reply_card(answer, streaming=streaming, panel=shell,\n                                print_frequency_ms=print_frequency_ms)",
+     "        with_shell = reply_card(answer, streaming=streaming, panel=shell)",
+     "test_units"),
+    ("F8-降载日志的档位写死成 ok", "core/adapter.py",
+     "                   tier, elements, _cards.FEISHU_ELEMENT_LIMIT, size,",
+     "                   \"ok\", elements, _cards.FEISHU_ELEMENT_LIMIT, size,",
+     "test_units"),
+    ("F8b-降载日志不打字节数", "core/adapter.py",
+     "                   tier, elements, _cards.FEISHU_ELEMENT_LIMIT, size,",
+     "                   tier, elements, _cards.FEISHU_ELEMENT_LIMIT, 0,",
+     "test_units"),
+    ("F6-_as_int 丢掉 OverflowError 捕获", "core/adapter.py",
+     "    except (TypeError, ValueError, OverflowError):\n        return None\n    if number != number",
+     "    except (TypeError, ValueError):\n        return None\n    if number != number",
+     "test_units"),
+    # ---- F9：跨模块常量被抄成字面量（防漂移闸门）----------------------------- #
+    ("F9-adapter 抄字面量硬上限", "core/adapter.py",
+     "_FEISHU_CARD_BYTE_LIMIT = _cards.FEISHU_CARD_BYTE_LIMIT",
+     "_FEISHU_CARD_BYTE_LIMIT = 128000",
+     "test_units"),
+    ("F9b-打字机上限抄字面量", "core/adapter.py",
+     "    high = _cards.PRINT_FREQUENCY_MAX_MS", "    high = 2000",
+     "test_units"),
+    ("F9c-追踪阈值抄字面量", "core/adapter.py",
+     "_MAX_TRACKED_TEXT = _FEISHU_CARD_BYTE_LIMIT - _CARD_BYTES_OVERHEAD",
+     "_MAX_TRACKED_TEXT = 126976",
+     "test_units"),
     # ---- P6：黄金路径耗时 ---------------------------------------------------- #
     ("P6-轮耗时恒为 0", "core/panel.py",
      "    current[\"elapsed_ms\"] = max(0, int((now - float(current.get(\"started\") or now)) * 1000))",
      "    current[\"elapsed_ms\"] = 0",
      "check_hooks"),
+]
+
+
+#: **对照项**：行为等价的改动（合法 YAML 变体等），期望四门禁**全绿**。
+#: 与 MUTATIONS 分开成两张表 —— 判断依据是它属于哪张表，不是名字里有没有某个字。
+CONTROLS = [
+    ("C-对照：default 加行内注释（合法 YAML）", "plugin.yaml",
+     "    default: 15\n", "    default: 15  # 毫秒\n", ""),
+    ("C-对照：纯注释改动", "core/adapter.py",
+     "#: 卡片按钮 value 里的动作键；只认自己这一个，其余一律回落给内置实现。",
+     "#: 卡片按钮 value 里的动作键；只认自己这一个，其余一律回落给内置实现。（注释改动）", ""),
 ]
 
 
@@ -197,16 +266,25 @@ def _prepare(dest_parent: Path) -> Path:
 #: 只是「你把代码弄坏了」—— 第八路审计实测：语法错误型变异会让四个门禁全红
 #: （`invalid syntax (adapter.py, line 99)`），如果把它也算「抓住了」，那这个验证器就在骗人。
 _CRASH_MARKERS = ("SyntaxError", "invalid syntax", "IndentationError", "Traceback (most recent call last)")
-_ASSERT_MARKERS = ("AssertionError", "FAIL", "FAILED", "passed")
+#: 断言失败的标记：**只认 AssertionError 与 test_units 的 `FAIL  <name>:` 行**。
+#: （三个 check_* 用手写 `FAIL: …` 报错，所以裸 `FAIL` 不能当断言标记 —— 见 _classify。）
+_ASSERT_MARKERS = ("AssertionError",)
 
 
 def _classify(proc: "subprocess.CompletedProcess") -> str:
-    """``red-assert``（真有判别力）/ ``red-crash``（只是崩了，不算证据）/ ``green``。"""
+    """``red-assert``（真有判别力）/ ``red-crash``（只是崩了，不算证据）/ ``green``。
+
+    ⚠️ 判据是「**崩溃优先**」，而且只认 ``AssertionError`` 作为断言标记 ——
+    第九路审计实测原版方向是反的：三个 ``check_*`` 门禁用手写 ``problems.append("FAIL: …")``
+    报错，所以一个**纯语法错误**的变异会让它们打出 ``FAIL: Failed to load plugin``，
+    被当成「断言失败」⇒ 崩溃也算「被门禁抓住」。反过来不会误判：真断言失败
+    （含测试自身的 ``KeyError`` 型 ERROR）永远带 ``AssertionError``。
+    """
     if proc.returncode == 0:
         return "green"
     blob = (proc.stdout or "") + (proc.stderr or "")
     crashed = any(marker in blob for marker in _CRASH_MARKERS)
-    asserted = any(marker in blob for marker in _ASSERT_MARKERS)
+    asserted = "AssertionError" in blob or "FAIL  " in blob
     if crashed and not asserted:
         return "red-crash"
     return "red-assert"
@@ -231,6 +309,7 @@ def main() -> int:
     args = ap.parse_args()
 
     picked = [m for m in MUTATIONS if args.k in m[0]]
+    controls = [m for m in CONTROLS if args.k in m[0]]
 
     # ⚠️ **基线守卫**（第八路审计实测出来的假绿源头）：基线自己就是红的时候，
     # 每条变异当然都「变红」—— 于是这个验证器会满口「全部被门禁抓住 ✅」。
@@ -265,13 +344,6 @@ def main() -> int:
             crashed = [k for k, (kind, _) in results.items() if kind == "red-crash"]
             evidence = [k for k in red if k not in crashed]
             expect_script = expect if expect.endswith(".py") else expect + ".py"
-            control = "对照" in name
-            if control:
-                status = "⚪ 对照全绿（符合预期）" if not red else "❌ 对照项居然变红了（假红！）"
-                print(f"{status} {name}  实红={red}")
-                if red:
-                    bad.append(f"{name}: 对照变异（行为等价）竟然让门禁变红 —— 门禁有假红")
-                continue
             if not red:
                 status = "🟢 全绿（**断言没有判别力！**）"
             elif not evidence:
@@ -290,6 +362,28 @@ def main() -> int:
             print(f"临时目录保留在 {tmp_root}")
         else:
             shutil.rmtree(tmp_root, ignore_errors=True)
+
+    # 对照项（**单独一张表**，不靠名字里的关键字）：它们是**行为等价**的改动，
+    # 必须四门禁全绿 —— 用来证明门禁不会假红。第九路审计实测：原来靠 `"对照" in name`
+    # 判定，于是把任意一条「抓不住的变异」改个名字就能被跳过（可滥用）。
+    for idx, (name, rel, old_text, new_text, _unused) in enumerate(controls):
+        parent = tmp_root / f"ctl{idx:02d}"
+        parent.mkdir(parents=True)
+        repo = _prepare(parent)
+        target = repo / rel
+        text = target.read_text(encoding="utf-8")
+        if old_text not in text:
+            bad.append(f"{name}: 对照锚点没找到")
+            print(f"❓ {name}: 锚点没找到")
+            continue
+        target.write_text(text.replace(old_text, new_text, 1), encoding="utf-8")
+        results = _run_gates(repo)
+        red = [k for k, (kind, _) in results.items() if kind != "green"]
+        if red:
+            bad.append(f"{name}: 等价改动竟然让门禁变红 —— 门禁有假红")
+            print(f"❌ 对照变红了（假红！） {name} 实红={red}")
+        else:
+            print(f"⚪ 对照全绿（符合预期） {name}")
 
     if bad:
         print("\n结论：")

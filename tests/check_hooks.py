@@ -464,6 +464,23 @@ else:
                 if "🧠 3" not in title or "🔧 1" not in title:
                     problems.append(f"黄金路径：面板标题行不对（期望含「🧠 3 / 🔧 1」）：{title!r}")
                 print(f"黄金路径面板：{title!r}")
+
+            # ⚠️ 面板标题里的**耗时段**（`⏱ 12.3s`）此前无人验：上面那次调用传的是
+            # `started=None`，所以它永远不出现（第八路审计点出过这个盲区）。生产路径
+            # 是**传 t0 的**（native 帧/收尾/重绘都传 `state["t0"]`），所以这里必须补一次
+            # 带 started 的调用 —— 否则「面板头里没有耗时」这种退化四门禁全绿。
+            timed = _adm.LarkDeckMixin._ld_panel("", time.monotonic() - 12.3)
+            if timed is None:
+                problems.append("黄金路径：带 started 的面板渲染不出来")
+            else:
+                t_title = timed.get("header", {}).get("title", {}).get("content", "")
+                print(f"黄金路径面板（带耗时）：{t_title!r}")
+                if "⏱" not in t_title:
+                    problems.append(f"黄金路径：面板标题没有耗时段（期望「⏱ 12.3s」）：{t_title!r}")
+                elif "12.3s" not in t_title:
+                    problems.append(f"黄金路径：耗时段的数值不对（期望 12.3s）：{t_title!r}")
+                if "🧠 3" not in t_title or "🔧 1" not in t_title:
+                    problems.append(f"黄金路径：耗时段的出现把它它段挤掉了：{t_title!r}")
         except Exception as exc:  # pragma: no cover - 防御性
             problems.append(f"黄金路径：渲染异常 {exc!r}")
 

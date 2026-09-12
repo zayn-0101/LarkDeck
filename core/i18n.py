@@ -32,6 +32,7 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     # 轮数超过渲染上限时，更早的轮整轮折叠（保证面板总量有界，见 cards.unified_panel）
     "panel.rounds_trimmed": {ZH: "…更早的 {n} 轮已折叠", EN: "…{n} earlier rounds folded"},
     # 回合结局的文字兜底（面板没有别的正文时显示；边框色是主要载体）
+    "stream.pending":     {ZH: "⏳ 正在生成…", EN: "⏳ Generating…"},
     "panel.status_ok":    {ZH: "✅ 已完成", EN: "✅ Completed"},
     "panel.status_error": {ZH: "❌ 执行出错", EN: "❌ Failed"},
     "panel.status_stopped": {ZH: "⛔ 已中止", EN: "⛔ Stopped"},
