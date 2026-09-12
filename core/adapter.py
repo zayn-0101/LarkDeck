@@ -94,7 +94,7 @@ HOOKS: Dict[str, bool] = {}
 
 
 def _apply_metrics_config() -> None:
-    """把「别名 + 上下文上限覆盖」推给 :mod:`larkdeck.context`（幂等）。"""
+    """把「别名 + 上下文上限覆盖」推给 :mod:`larkdeck.core.context`（幂等）。"""
     aliases = _cfg_raw("model_aliases")
     if isinstance(aliases, dict):
         _context.set_aliases(aliases)
@@ -233,7 +233,7 @@ class LarkDeckMixin:
     def _ld_footer(cls, started: Optional[float] = None) -> Optional[str]:
         """页脚一行：``🤖 模型 · ctx 用量 · ⏱ 耗时``。
 
-        数据全部来自官方钩子（见 :mod:`larkdeck.context`）：钩子还没触发时该段
+        数据全部来自官方钩子（见 :mod:`larkdeck.core.context`）：钩子还没触发时该段
         自然缺失，全缺就返回 ``None``（不渲染脚注元素）。**任何情况下不抛异常**
         —— 页脚是装饰，不能因为它把整张卡片搞坏。
         """
@@ -253,7 +253,7 @@ class LarkDeckMixin:
 
     @classmethod
     def _ld_panel(cls) -> Optional[Dict[str, Any]]:
-        """底部折叠面板：推理过程 + 工具步骤（数据来自 :mod:`larkdeck.panel`）。
+        """底部折叠面板：推理过程 + 工具步骤（数据来自 :mod:`larkdeck.core.panel`）。
 
         没有数据（钩子未触发 / reasoning 未开启 / 面板关掉）就返回 ``None``，
         ``reply_card`` 会自然跳过这个元素。与页脚同理：**任何情况下不抛异常**，

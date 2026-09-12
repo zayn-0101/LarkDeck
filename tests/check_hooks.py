@@ -92,18 +92,18 @@ invoke_hook(
     telemetry_schema_version=1,
 )
 
-from larkdeck import context                               # noqa: E402
+from larkdeck.core import context                           # noqa: E402
 
 # 坑：插件加载器把插件装进 ``hermes_plugins.larkdeck`` 命名空间，而我们用包名
 # ``larkdeck`` 又导了一份 —— 两个模块对象各有各的模块级状态。钩子写进 A，
 # 从 B 读就永远是空的。这里必须读**加载器那份**。
 _loaded = None
-for _name in ("hermes_plugins.larkdeck.context", "larkdeck.context"):
+for _name in ("hermes_plugins.larkdeck.core.context", "larkdeck.core.context"):
     if _name in sys.modules:
         _loaded = sys.modules[_name]
         break
 if _loaded is not None and _loaded is not context:
-    print(f"注意: 存在两份 larkdeck.context，断言改用加载器那份 {_loaded.__name__}")
+    print(f"注意: 存在两份 larkdeck.core.context，断言改用加载器那份 {_loaded.__name__}")
     context = _loaded
 
 snap = context.snapshot()
@@ -132,15 +132,15 @@ if context.snapshot()["input_tokens"] != 44800:
     problems.append("坏载荷把好数据冲掉了")
 
 # --- 面板：工具生命周期（真实 invoke_hook）+ 推理增量（真实流式队列） -------------
-from larkdeck import panel                                  # noqa: E402
+from larkdeck.core import panel                             # noqa: E402
 
 _panel = None
-for _name in ("hermes_plugins.larkdeck.panel", "larkdeck.panel"):
+for _name in ("hermes_plugins.larkdeck.core.panel", "larkdeck.core.panel"):
     if _name in sys.modules:
         _panel = sys.modules[_name]
         break
 if _panel is None:
-    problems.append("找不到 larkdeck.panel 模块，无法核对面板数据")
+    problems.append("找不到 larkdeck.core.panel 模块，无法核对面板数据")
 else:
     from agent.plugin_stream_hooks import (                 # noqa: E402
         enqueue_plugin_stream_hook, has_stream_observer_hooks,

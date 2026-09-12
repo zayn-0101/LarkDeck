@@ -9,7 +9,7 @@
 * 工具调用 → 官方钩子 ``pre_tool_call`` / ``post_tool_call``。
 
 其余飞书卡片插件全都靠 patch 核心 ``run_turn.py`` 的实例回调拿这两样数据，
-larkdeck 走公开钩子（见 :mod:`larkdeck.hooks`），代价是钩子载荷**只有
+larkdeck 走公开钩子（见 :mod:`larkdeck.core.hooks`），代价是钩子载荷**只有
 ``session_id``，没有 ``chat_id`` / ``message_id``** —— 适配器更新卡片时
 无从知道当前卡片属于哪个会话。
 
@@ -17,7 +17,7 @@ larkdeck 走公开钩子（见 :mod:`larkdeck.hooks`），代价是钩子载荷*
 --------------------
 按「**最近活跃会话**」取快照：谁最后一次产生推理 / 工具事件，面板就显示谁。
 单会话（绝大多数场景）下完全正确；多会话并发时可能短暂串台 —— 换来的是
-零源码改写，与页脚指标的取舍一致（见 :mod:`larkdeck.context`）。
+零源码改写，与页脚指标的取舍一致（见 :mod:`larkdeck.core.context`）。
 
 回合边界：同一会话的 ``turn_id`` 变化时清空过程数据，新回合的面板不残留
 上一回合的推理。``turn_id`` 缺失（老版本 Hermes）时保守地继续累积。

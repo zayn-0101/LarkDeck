@@ -28,7 +28,7 @@ _REPO_PARENT = os.path.dirname(os.path.dirname(_HERE))  # .../code —— 使 `i
 if _REPO_PARENT not in sys.path:
     sys.path.insert(0, _REPO_PARENT)
 
-from larkdeck import adapter, cards, compat, context, i18n, panel  # noqa: E402
+from larkdeck.core import adapter, cards, compat, context, i18n, panel  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #

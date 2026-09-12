@@ -29,7 +29,7 @@ FeishuAdapter 的 ``_card()`` —— 两者在本机都是已验证可用的。�
 而同样的 ``note`` 放在 1.0 卡里正常通过。2.0 想要小字脚注只能用 :func:`footnote`。
 **结构正确 ≠ 飞书接受** —— 卡片合法性只有真发一次才知道，见 ``tests/probe_render.py``。
 
-界面文案走 :mod:`larkdeck.i18n`，靠飞书原生 ``i18n_content`` 做双语。
+界面文案走 :mod:`larkdeck.core.i18n`，靠飞书原生 ``i18n_content`` 做双语。
 """
 
 from __future__ import annotations

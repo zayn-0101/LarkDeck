@@ -94,7 +94,7 @@ if ld_mixin is None:
 else:
     ld_mod = sys.modules.get(getattr(ld_mixin, "__module__", ""))
     if ld_mod is None:
-        problems.append("拿不到 larkdeck.adapter 模块对象，无法验证配置桥接")
+        problems.append("拿不到 larkdeck.core.adapter 模块对象，无法验证配置桥接")
     else:
         got_clarify = ld_mod._cfg("clarify_cards")
         got_style = ld_mod._cfg_raw("context_style")

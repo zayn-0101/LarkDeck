@@ -186,8 +186,8 @@ $PY tests/probe_render.py          # 真发卡片到自己的飞书 DM，验飞�
 
 `check_hooks.py` 走的是核心真正使用的派发器（`hermes_cli.lifecycle.invoke_hook`），
 载荷用 Hermes 自己的 `CanonicalUsage` 生成，并带一组**对照组**（不启用插件时钩子必须为空）。
-它专门盯住一个不报错的坑：插件加载器装在 `hermes_plugins.larkdeck.*` 命名空间下，
-测试里若用 `import larkdeck.context` 会拿到**第二个模块对象**，读写状态对不上。
+它专门盯住一个不报错的坑：插件加载器装在 `hermes_plugins.larkdeck.core.*` 命名空间下，
+测试里若用 `import larkdeck.core.context` 会拿到**第二个模块对象**，读写状态对不上。
 
 `check_clarify_e2e.py` 用的是从平台注册表里取出来的**真内置适配器类**，只把最底层
 `_feishu_send_with_retry` 换成捕获器，**不连飞书、不发网络请求**。它能抓到桩类抓不到

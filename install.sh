@@ -14,7 +14,9 @@ HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 PLUGINS_DIR="$HERMES_HOME/plugins"
 TARGET="$PLUGINS_DIR/larkdeck"
 MODE="link"
-FILES=(plugin.yaml __init__.py adapter.py cards.py i18n.py compat.py context.py hooks.py panel.py)
+FILES=(plugin.yaml __init__.py
+       core/__init__.py core/adapter.py core/cards.py core/i18n.py core/compat.py
+       core/context.py core/hooks.py core/panel.py)
 
 usage() {
   cat <<'EOF'
@@ -67,6 +69,7 @@ if [ "$MODE" = "link" ]; then
 else
   mkdir -p "$TARGET"
   for f in "${FILES[@]}"; do
+    mkdir -p "$TARGET/$(dirname "$f")"   # core/ 子目录（相对路径）要先建出来
     cp "$REPO_DIR/$f" "$TARGET/$f"
   done
   echo "已复制 ${#FILES[@]} 个文件到：$TARGET"

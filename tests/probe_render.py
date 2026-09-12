@@ -74,11 +74,11 @@ def load_env() -> dict:
 
 
 def load_cards():
-    """把 cards.py 当包内模块加载，绕开 __init__.py（它会拉 Hermes 依赖）。"""
+    """把 core/cards.py 当包内模块加载，绕开 __init__.py（它会拉 Hermes 依赖）。"""
     pkg = types.ModuleType("_larkdeck_probe")
     pkg.__path__ = [str(REPO)]
     sys.modules["_larkdeck_probe"] = pkg
-    return importlib.import_module("_larkdeck_probe.cards")
+    return importlib.import_module("_larkdeck_probe.core.cards")
 
 
 def load_adapter_parts():
@@ -92,8 +92,8 @@ def load_adapter_parts():
         pkg = types.ModuleType("_larkdeck_probe")
         pkg.__path__ = [str(REPO)]
         sys.modules["_larkdeck_probe"] = pkg
-    return (importlib.import_module("_larkdeck_probe.adapter"),
-            importlib.import_module("_larkdeck_probe.context"))
+    return (importlib.import_module("_larkdeck_probe.core.adapter"),
+            importlib.import_module("_larkdeck_probe.core.context"))
 
 
 def _load_sent_ids() -> list:

@@ -68,11 +68,11 @@ prompt_tokens, reasoning_tokens, request_count, total_tokens
 ### 1. 模块会被加载两次，全局状态不共享
 
 插件加载器把插件装进 `hermes_plugins.<name>` 命名空间。测试里若再用
-`import larkdeck.context`，拿到的是**第二个模块对象**：钩子写进 A 的 `_LATEST`，
+`import larkdeck.core.context`，拿到的是**第二个模块对象**：钩子写进 A 的 `_LATEST`，
 断言读 B 的 `_LATEST`，永远是空的，而且**不报错**。
 
-正确取法见 `tests/check_hooks.py`：优先 `sys.modules["hermes_plugins.larkdeck.context"]`。
-探针脚本用合成包 `_larkdeck_probe` 加载，也是为了让包内相对导入指向同一份模块。
+正确取法见 `tests/check_hooks.py`：优先 `sys.modules["hermes_plugins.larkdeck.core.context"]`。
+探针脚本用合成包 `_larkdeck_probe.core` 加载，也是为了让包内相对导入指向同一份模块。
 
 ### 2. 钩子回调必须极快
 

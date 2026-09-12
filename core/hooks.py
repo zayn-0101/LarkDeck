@@ -11,7 +11,7 @@ larkdeck 是「平台插件 + 钩子订阅者」：``ctx.register_platform()`` �
 * 工具生命周期：``pre_tool_call`` / ``post_tool_call``（面板里的工具步骤）。
 
 ``pre_tool_call`` 是 **fail-closed** 钩子 —— 核心会等它返回指令，回调卡住
-会阻止工具执行。所以这个回调只做一次 dict 写入（:mod:`larkdeck.panel` 内
+会阻止工具执行。所以这个回调只做一次 dict 写入（:mod:`larkdeck.core.panel` 内
 是微秒级的加锁写），绝不返回 directive、绝不 IO：哪怕 larkdeck 自己有 bug，
 最坏情况也只是面板少一行，不可能拦住任何工具。
 
@@ -37,7 +37,7 @@ def _on_stream_start(**payload: Any) -> None:
     首帧卡片可能先于本回合的第一个推理 / 工具事件发出，没有这一步会把
     上一回合的推理带给新回复（本回合无面板事件时甚至永久残留）。
     ``on_stream_start`` 每次 API 尝试（含重试）都触发，靠 ``turn_id``
-    比较保持幂等，见 :func:`larkdeck.panel.begin_turn`。
+    比较保持幂等，见 :func:`larkdeck.core.panel.begin_turn`。
     """
     try:
         _panel.begin_turn(payload.get("session_id", ""), payload.get("turn_id", ""))

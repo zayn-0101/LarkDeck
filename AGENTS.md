@@ -30,14 +30,15 @@
 
 ```
 plugin.yaml   插件清单（kind: platform，含 requires_env 与 config_schema 声明）
-__init__.py   只导出 register
-adapter.py    覆盖层：LarkDeckMixin + merged_class() + build_adapter() + register() + 启动自检
-cards.py      卡片 JSON 构造（纯函数、无 I/O）—— 两种方言的边界在这里
-i18n.py       双语文案（飞书原生 i18n_content）
-compat.py     版本 / 能力探测 —— Hermes 私有名的唯一存放处
-context.py    运行时指标（钩子写入 → 页脚读取的进程内全局快照）
-panel.py      面板数据层（推理 / 工具钩子写入 → 卡片面板读取；按会话分桶 + 最近活跃取用）
-hooks.py      官方钩子订阅（5 个观察型钩子）：只写内存、异常自吞、永不返回 directive
+__init__.py   插件入口：只从 core.adapter 转发 register
+core/         插件本体（Hermes 加载器以 hermes_plugins.larkdeck.core.* 命名空间加载）
+  adapter.py    覆盖层：LarkDeckMixin + merged_class() + build_adapter() + register() + 启动自检
+  cards.py      卡片 JSON 构造（纯函数、无 I/O）—— 两种方言的边界在这里
+  i18n.py       双语文案（飞书原生 i18n_content）
+  compat.py     版本 / 能力探测 —— Hermes 私有名的唯一存放处
+  context.py    运行时指标（钩子写入 → 页脚读取的进程内全局快照）
+  panel.py      面板数据层（推理 / 工具钩子写入 → 卡片面板读取；按会话分桶 + 最近活跃取用）
+  hooks.py      官方钩子订阅（5 个观察型钩子）：只写内存、异常自吞、永不返回 directive
 install.sh    安装脚本（默认软链；NAS 用 --copy，其 FILES 数组是手动的，新增模块要同步）
 docs/         HFC 切换步骤、指标与钩子原理
 tests/        见「验证」
@@ -78,8 +79,8 @@ python3 tests/check_clarify_e2e.py # 澄清卡端到端，必须打印 CLARIFY E
 - `check_override.py` 是唯一能证明「注册表覆盖生效」的手段 —— 单测用替身，证明不了运行时行为。
   它还负责验证插件配置桥接：临时 config.yaml 里写 `plugins.entries.larkdeck.settings`，
   断言 `_CONFIG` 生效且未配置的键保持默认。
-- 测试里要用加载器那份 `context` 模块（`hermes_plugins.larkdeck.context`）；
-  直接 `import larkdeck.context` 会拿到第二个模块对象，读写状态对不上（`check_hooks.py` 盯这个）。
+- 测试里要用加载器那份 `context` 模块（`hermes_plugins.larkdeck.core.context`）；
+  直接 `import larkdeck.core.context` 会拿到第二个模块对象，读写状态对不上（`check_hooks.py` 盯这个）。
 - **改 `cards.py` 或任何卡片结构后必须跑 `tests/probe_render.py`**：唯一连真实飞书的测试
   （从 `~/.hermes/.env` 读凭据，把探针卡真发到自己的飞书 DM：功能卡 + 双语互换实验 +
   页脚样式对照，自动先清理上次的探针卡）。
