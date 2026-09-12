@@ -49,11 +49,11 @@ config_schema:
   max_reasoning_chars:
     type: integer
     default: 1200
-    description: "统一面板中推理文本上限（超出部分截断并留痕）"
+    description: "统一面板中推理文本上限（超出部分截断并留痕）；写 0 或负数视为用默认值，不是取消上限"
   max_tool_result_chars:
     type: integer
     default: 600
-    description: "统一面板中工具结果上限（超出部分截断并留痕）"
+    description: "统一面板中单条工具步骤行上限（超出部分截断并留痕）。面板显示的是参数预览，预览本身已截到 80 字符，所以这项实际极少触发"
   max_panel_steps:
     type: integer
     default: 30

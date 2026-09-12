@@ -76,9 +76,10 @@ prompt_tokens, reasoning_tokens, request_count, total_tokens
 
 ### 2. 钩子回调必须极快
 
-`post_api_request` 不在超时隔离名单里，回调在**调用方线程**同步执行，异常虽被吞掉
-但会拖慢请求。所以 `context.record_api_call()` 只做一次带锁的字典赋值：
-不做 I/O、不做网络、不解析、上下文上限的探测留到渲染时才做（且带缓存）。
+`post_api_request` **在超时受限集合里**（0.21.1 实测见 `hermes_cli/plugins_dispatch.py`）：
+回调跑在核心的独立 **worker 线程**上，超时会被丢弃并触发 **60 秒抑制窗口**。
+所以 `context.record_api_call()` 只做一次带锁的字典赋值：不做 I/O、不做网络、不解析，
+上下文上限的探测留到渲染时才做（且带缓存）。
 
 面板订阅的 `pre_tool_call` 更严格：它是 **fail-closed** 钩子——回调卡住/超时会被
 当作拦截指令，工具调用直接不执行。所以 `hooks.py` 的回调只做内存写入（微秒级返回），

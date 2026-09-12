@@ -19,8 +19,10 @@ larkdeck 的替代路径（零源码改写）
 
 线程模型
 --------
-钩子在调用方线程同步执行（``post_api_request`` 不在超时受限集合里），
-所以 :func:`record_api_call` **只做内存写入，绝不做 IO / 网络 / 加锁等待**。
+钩子回调跑在核心的**独立 worker 线程**上（不是调用方线程），而 ``post_api_request``
+**在超时受限集合里** —— 超时的回调会被丢弃，并触发一个 60 秒的抑制窗口。
+所以 :func:`record_api_call` **只做内存写入，绝不做 IO / 网络 / 加锁等待**：
+纪律不变，但理由不是「别拖慢调用方」，而是「别把自己拖进超时抑制」。
 重量级的上下文上限查询放在渲染时才做，并且按 ``model@base_url`` 缓存。
 
 已知取舍
@@ -90,6 +92,13 @@ def record_api_call(**payload: Any) -> None:
         context_used = prompt_tokens if prompt_tokens is not None else input_tokens
         if not model and context_used is None:
             return  # 没有任何可用信息，别污染上一帧
+        # 只有模型名、没有用量：**整帧不更新**。
+        # 只刷 model/provider 会把「新模型的显示名」和「上一个模型的 token 数」拼在一起
+        # —— 页脚于是显示一个从未存在过的组合，context_pct 还会拿新模型的窗口去除旧数字
+        # （被 min(100) 掩盖，看起来只是"偏高"）。
+        # 首帧例外：那时还没有任何快照，光有模型名也值得记下来（页脚先显示模型名）。
+        if context_used is None and _LATEST:
+            return
         with _LOCK:
             prev = dict(_LATEST)
             _LATEST.update({

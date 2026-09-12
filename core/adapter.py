@@ -76,18 +76,22 @@ _MAX_TRACKED = 512
 _MAX_STREAMS = 64
 _STREAM_MIN_INTERVAL = 0.25
 
-#: 核心把「工具进度块」拼在正文后面，用这个分隔（见 ``gateway/stream_consumer.py``
-#: 的 ``_compose_frame_content``；0.21.1 实测它就是 ``"\n\n---\n".join(...)``）。
-#: 没有该分隔的帧就是纯正文；核心改格式时这里会退化成「不归档」，内容不会丢。
-_TOOL_PROGRESS_SEP = "\n\n---\n"
-
-
-def _split_tool_progress(text: str) -> "tuple[str, str]":
-    """拆一帧为 ``(正文, 工具进度块)``；没有进度块时第二项为空串。"""
-    body, sep, tail = text.rpartition(_TOOL_PROGRESS_SEP)
-    if sep and tail.strip():
-        return body, tail
-    return text, ""
+#: ⚠️ 这里曾经有一个「工具进度块不进正文 / 叙述归档」的实现，**已作为安全修复移除**。
+#:
+#: 它用裸分隔符 ``"\n\n---\n"`` 判断核心有没有往帧里拼工具进度块，但核心的合成式是
+#: ``gateway/stream_consumer.py`` 的
+#: ``"\n\n---\n".join(p for p in (accumulated, progress) if p)`` —— **没有工具进度时，
+#: 帧文本就是累积正文本身**。而 ``---`` 独占一行、前后空行，正是普通的 markdown 分隔线，
+#: 模型随时会写。于是模型一写分隔线就被误判成进度块：归档点被推到分隔线处 → 之后每帧
+#: 都算不出正文 → 卡片正文被刷空 → finalize 帧的 ``display or " "`` 让整条回答只剩一个空格。
+#: 更致命的是核心侧对 finalize 是**乐观记账**（``stream_consumer_transport`` 按完整帧文本
+#: 记录已送达，``delivered_final_matches`` 比对通过），核心认为送达成功、**不会再补发** ——
+#: 这条回答就彻底没了，任何一层都不会报错。
+#:
+#: 分隔符天生无歧义判据可用（两侧都是普通 markdown，核心的进度行也没有稳定形状），
+#: 判错任一方向都会吞正文。所以结论是**不猜**：整帧原样渲染。代价是工具执行期间
+#: 核心叠加的进度行会短暂出现在正文里 —— 那本来就是核心给 native 流式的默认呈现，
+#: 而且核心在下一个正文增量到达时会自己清掉它；工具细节另有折叠面板承载。
 
 _DEFAULTS: Dict[str, Any] = {
     "cards": True,            # 用卡片渲染回复
@@ -439,15 +443,10 @@ class LarkDeckMixin:
         key = f"{chat}:{turn_id}" if turn_id else chat
         state = self._ld_stream_get(key)
         now = time.monotonic()
-        # 工具进度块不进正文：帧里出现进度块就推进「归档点」，正文区只显示
-        # 最后一个工具轮之后的文本（工具细节在折叠面板里）。核心改格式时这里
-        # 退化为「不归档」，内容不会丢。
-        body, progress = _split_tool_progress(text)
-        cut_old = int((state or {}).get("cut", 0))
-        if progress:
-            cut, display = len(body), body[cut_old:]
-        else:
-            cut, display = cut_old, text[cut_old:]
+        # 整帧原样渲染，**不做任何正文归档** —— 理由见文件顶部那段说明。
+        # 简言之：核心的分隔符与模型自己写的 markdown 分隔线无法区分，猜错就会
+        # 静默吞掉整条回答（且核心按完整帧文本判定已送达，不会补发）。
+        display = text
         if state is None:
             if finalize:
                 # 没有活跃流可收尾：交核心回落（send/edit 会正常发出）。
@@ -462,8 +461,7 @@ class LarkDeckMixin:
                 return False
             self._ld_track(message_id, chat)
             self._ld_stream_put(key, {"message_id": message_id, "chat_id": chat,
-                                      "t0": now, "last": text, "last_at": now,
-                                      "cut": cut})
+                                      "t0": now, "last": text, "last_at": now})
             return True
         message_id = state["message_id"]
         if finalize:
@@ -488,7 +486,7 @@ class LarkDeckMixin:
         result = await self._ld_update_card(chat, message_id, card)
         if result is None or not getattr(result, "success", False):
             return False
-        self._ld_stream_put(key, {**state, "last": text, "last_at": now, "cut": cut})
+        self._ld_stream_put(key, {**state, "last": text, "last_at": now})
         return True
 
     def _ld_stream_get(self, key: str) -> Optional[Dict[str, Any]]:
@@ -545,6 +543,11 @@ class LarkDeckMixin:
         这是内置适配器在 ``_build_event_handler`` 里用
         ``register_p2_card_action_trigger(self._on_card_action_trigger)`` 注册的
         **绑定方法**，所以 MRO 优先的覆盖会自动生效 —— 无需另注册事件。
+
+        交回内置实现那一步**必须自己再兜一层**：内置哪天改名/移除这个方法，
+        ``super()`` 会抛 ``AttributeError`` 直接穿透进 SDK 回调线程，而这里正是
+        「别人的卡」（审批卡等）的必经之路 —— 不能因为我们的兜底把点击整条炸掉。
+        ``_on_card_action_trigger`` 已登记在 ``compat.CALLBACK_ADAPTER_ATTRS``。
         """
         try:
             event = getattr(data, "event", None)
@@ -554,7 +557,30 @@ class LarkDeckMixin:
                 return self._ld_handle_clarify_click(event=event, value=value)
         except Exception as exc:
             logger.warning("[larkdeck] 处理卡片点击时异常: %s", exc, exc_info=True)
-        return super()._on_card_action_trigger(data)
+        return self._ld_passthrough_click(data)
+
+    def _ld_passthrough_click(self, data: Any) -> Any:
+        """把点击原样交回内置实现；内置没有该方法时安全收场，绝不抛进回调线程。"""
+        fallback = getattr(super(), "_on_card_action_trigger", None)
+        if not callable(fallback):
+            logger.warning("[larkdeck] 内置适配器没有 _on_card_action_trigger，放弃这次点击")
+            return self._ld_card_response_safe()
+        try:
+            return fallback(data)
+        except Exception as exc:
+            logger.warning("[larkdeck] 内置点击处理异常: %s", exc, exc_info=True)
+            return self._ld_card_response_safe()
+
+    def _ld_card_response_safe(self) -> Any:
+        """构造「无卡片变更」的回调响应；连 ``_card_response`` 都缺时返回 None。"""
+        build = getattr(self, "_card_response", None)
+        if not callable(build):
+            return None
+        try:
+            return build()
+        except Exception:
+            logger.debug("[larkdeck] _card_response 失败", exc_info=True)
+            return None
 
     def _ld_handle_clarify_click(self, *, event: Any, value: Dict[str, Any]) -> Any:
         """把一次澄清点击变成 ``resolve_gateway_clarify`` 调用，并原地更新卡片。"""
@@ -562,37 +588,47 @@ class LarkDeckMixin:
         answer = value.get("answer")
         if not clarify_id or answer is None:
             logger.warning("[larkdeck] 澄清点击缺少 clarify_id/answer，忽略")
-            return self._card_response()
+            return self._ld_card_response_safe()
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
         if not self._is_interactive_operator_authorized(open_id):
             logger.warning("[larkdeck] 未授权的澄清点击 by %s", open_id or "<unknown>")
-            return self._card_response()
+            return self._ld_card_response_safe()
 
         loop = self._loop
         if not self._loop_accepts_callbacks(loop):
             logger.warning("[larkdeck] 适配器 loop 未就绪，丢弃澄清点击")
-            return self._card_response()
+            return self._ld_card_response_safe()
 
         is_other = answer == _cards.OTHER_VALUE
+        question = str(value.get("question") or "")
 
-        async def _job() -> None:
-            try:
-                if is_other:
-                    # 「其他」不提交答案，只把该 clarify 切成等待文字输入。
-                    _compat.clarify_mark_awaiting_text(clarify_id)
-                else:
-                    _compat.clarify_resolve_gateway_clarify(clarify_id, str(answer))
-            except Exception as exc:
-                logger.error("[larkdeck] resolve_gateway_clarify 失败: %s", exc, exc_info=True)
+        # 提交是**同步**的：网关那两处只做「锁内 dict 取写 + threading.Event.set()」，
+        # 不碰事件循环（已对 Hermes 源码核实），所以能当场拿到真实结果。
+        # 而这正是关键：**「没抛异常」不等于提交成功** —— 重复点击，或点击一个已被
+        # 超时/文字回答消费掉的澄清时，网关返回 False。此时若仍把卡片换成「已答复」，
+        # 就会出现「卡片说已收到、agent 却仍阻塞在网关」：答案永久丢失，且卡片已变
+        # 已解状态，用户连重试的机会都没有。所以只有真的提交成功才回填卡片。
+        try:
+            if is_other:
+                # 「其他」不提交答案，只把该 clarify 切成等待文字输入。
+                committed = _compat.clarify_mark_awaiting_text(clarify_id)
+            else:
+                committed = _compat.clarify_resolve_gateway_clarify(clarify_id, str(answer))
+        except Exception as exc:
+            logger.error("[larkdeck] 澄清提交异常: %s", exc, exc_info=True)
+            committed = False
 
-        self._submit_on_loop(loop, _job())
+        if not committed:
+            logger.warning("[larkdeck] 澄清提交未生效（clarify=%s）—— 该澄清可能已被处理或过期；"
+                           "卡片保持原样，用户仍可重试", clarify_id)
+            return self._ld_card_response_safe()
+
+        if is_other:
+            return self._ld_card_response_safe()
 
         user_name = self._get_cached_sender_name(open_id) or open_id or "?"
-        question = str(value.get("question") or "")
-        if is_other:
-            return self._card_response()
         return self._card_response(
             _cards.clarify_resolved_card(question=question, answer=str(answer), user_name=user_name)
         )
@@ -603,6 +639,22 @@ class LarkDeckMixin:
 # --------------------------------------------------------------------------- #
 _BASE_CLASSES: Dict[Any, type] = {}
 _MERGED_CLASSES: Dict[type, type] = {}
+
+
+def _log_probe_report(report: Dict[str, Any]) -> None:
+    """把 ``compat.probe_report()`` 的能力快照打进日志（缺失项提级到 WARNING）。
+
+    这是「只探测上报」里那个**上报** —— 没有它，CALLBACK 两组的探测只在单测里跑过，
+    生产代码从不调用，等于什么都没上报。
+    """
+    missing_callback = list(report.get("missing_callback") or [])
+    missing_optional = list(report.get("missing_optional") or [])
+    detail = (f"{report.get('adapter_class')} · "
+              f"缺可选 {missing_optional or '无'} · 缺点击回调 {missing_callback or '无'}")
+    if missing_callback:
+        logger.warning("[larkdeck] 能力探测：%s —— 澄清按钮会静默失灵（点下去没反应）", detail)
+    else:
+        logger.info("[larkdeck] 能力探测：%s", detail)
 
 
 def merged_class(base_cls: type) -> type:
@@ -650,6 +702,11 @@ def build_adapter(base_factory: Any, config: Any) -> Any:
     if not ok:
         _remember_selfcheck(False, "内置适配器缺少所需接口: " + ", ".join(missing))
         return base_factory(config)
+
+    # 完整能力快照 —— 点击回调路径与可选接口**只有这里能看见**。
+    # 缺了不阻断卡片，但必须在日志里留痕：这些名字官方一改，澄清按钮就静默失灵
+    # （点下去没有任何反应，也不报错），没有别的地方会给出信号。
+    _log_probe_report(_compat.probe_report(base_cls))
 
     try:
         adapter = merged_class(base_cls)(config)

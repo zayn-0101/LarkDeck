@@ -218,7 +218,8 @@ def footer_line(*, duration: Optional[float] = None, model: str = "",
     parts: List[str] = []
     if model:
         parts.append(f"🤖 {model}")
-    if isinstance(tools, int) and tools > 0:
+    # 注意排除 bool：Python 里 isinstance(True, int) 为真，不排会拼出「🔧 True」。
+    if isinstance(tools, int) and not isinstance(tools, bool) and tools > 0:
         parts.append(f"🔧 {tools}")
     if context:
         parts.append(context)
@@ -255,11 +256,30 @@ def tool_step(name: str, *, status: str = "ok", duration_ms: Any = None,
 # --------------------------------------------------------------------------- #
 # 溢出保护：任何一段用户不可控的长文本，进卡片前都必须过这一关
 # --------------------------------------------------------------------------- #
+def _cap(value: Any, default: int) -> int:
+    """把配置来的上限归一到**正数**。
+
+    ⚠️ ``<= 0`` **不能理解成「不设限」** —— 面板是收进卡片里的：不截断就会把整段推理
+    （panel 的缓冲上限 262144 字符）塞进卡片，卡片 JSON 膨胀到几百 KB，飞书直接拒收，
+    那个回合的卡片功能整块丢掉（按不变量会回落纯文本，消息不丢，但卡片没了）。
+    `panel.py` 里最多还缓存 200 步工具。所以 0 / 负数 / 转不动一律退回默认值 ——
+    这与 README 把这三个键描述成「上限」的自然预期一致。
+    """
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return n if n > 0 else default
+
+
 def truncate(text: str, limit: int, *, key: str = "panel.overflow") -> str:
     """超长文本截断并补一行「已省略 N 字符」，而不是静默切掉。
 
     静默截断会让用户以为模型就说了这么多；补一行说明才知道下面还有内容。
     截断点回退到最近一个空白，避免把一个词劈成两半。
+
+    调用方必须先经 :func:`_cap` 归一 ``limit`` —— 这里 ``limit <= 0`` 保持「原样返回」
+    的 fail-open 行为，只作为最后一道兜底，生产路径不会走到（:func:`unified_panel` 已归一）。
     """
     text = text or ""
     if limit <= 0 or len(text) <= limit:
@@ -274,10 +294,16 @@ def truncate(text: str, limit: int, *, key: str = "panel.overflow") -> str:
 # --------------------------------------------------------------------------- #
 # 2.0：回复卡（流式 + 统一面板）
 # --------------------------------------------------------------------------- #
-def _summary_of(text: str) -> Dict[str, Any]:
-    """2.0 卡片的 ``config.summary`` —— 官方 SDK 与 HFC 都强制带，漏了会出问题。"""
+def _summary_of(text: str, *, fallback: str = "") -> Dict[str, Any]:
+    """2.0 卡片的 ``config.summary`` —— 官方 SDK 与 HFC 都强制带，漏了会出问题。
+
+    ⚠️ 归一化后为空时**必须给兜底文案**：``{"content": ""}`` 等于通知栏空白，
+    正是这个字段要防的那件事。而空文本在真实路径上会出现两次 —— native 流式的
+    seed 帧（用空文本建卡），以及归档点落在末尾时的 finalize 帧
+    （``_ld_stream_frame`` 里写的 ``display or " "``）。
+    """
     flat = " ".join(str(text or "").split())
-    return {"content": flat[:SUMMARY_MAX]}
+    return {"content": flat[:SUMMARY_MAX] or fallback}
 
 
 def card(*, elements: Sequence[Dict[str, Any]], template: str = "blue",
@@ -294,8 +320,9 @@ def card(*, elements: Sequence[Dict[str, Any]], template: str = "blue",
     if streaming is not None:
         config["streaming_mode"] = bool(streaming)
     # 流式卡必须带 summary，否则通知栏空白、且部分场景会被拒。
+    # 内容为空时（seed 帧 / 空 finalize 帧）退回卡片标题，不能留空串。
     if streaming or summary:
-        config["summary"] = _summary_of(summary)
+        config["summary"] = _summary_of(summary, fallback=str(title or DEFAULT_TITLE))
     return {
         "schema": SCHEMA,
         "config": config,
@@ -331,7 +358,13 @@ def unified_panel(*, reasoning: str = "", tools: Sequence[str] = (),
 
     所有进来的长文本都过 :func:`truncate`：面板是「收纳」不是「倾倒」，
     真跑一个长任务，原始推理和工具输出能把卡片撑到几十屏。
+
+    三个上限都先过 :func:`_cap`：配置写 0 / 负数等于退回默认上限，**不是**取消上限
+    （取消上限会让卡片被飞书拒收，后果见 :func:`_cap`）。
     """
+    max_reasoning_chars = _cap(max_reasoning_chars, MAX_REASONING_CHARS)
+    max_tool_chars = _cap(max_tool_chars, MAX_TOOL_RESULT_CHARS)
+    max_steps = _cap(max_steps, MAX_PANEL_STEPS)
     inner: List[Dict[str, Any]] = []
     if reasoning:
         inner.append(md(truncate(reasoning, max_reasoning_chars)))
@@ -346,8 +379,12 @@ def unified_panel(*, reasoning: str = "", tools: Sequence[str] = (),
     if not inner:
         return None
     # 标题必须是 plain_text，且带上工具计数 —— 收起状态下这是用户唯一看得到的信息
-    title = (_i18n.i18n_text("panel.title_tools", n=len(tools)) if tools
-             else _i18n.i18n_text("panel.title"))
+    if tools:
+        # 英文单复数：1 tool call / N tool calls
+        key = "panel.title_tools_one" if len(tools) == 1 else "panel.title_tools"
+        title = _i18n.i18n_text(key, n=len(tools))
+    else:
+        title = _i18n.i18n_text("panel.title")
     return collapsible(title, inner, expanded=expanded)
 
 

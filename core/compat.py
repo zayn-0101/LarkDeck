@@ -27,25 +27,26 @@ REQUIRED_ADAPTER_ATTRS: Tuple[str, ...] = (
 
 # 缺少也不致命：有则用、无则退回内置实现。
 OPTIONAL_ADAPTER_ATTRS: Tuple[str, ...] = (
-    "_send_interactive_card",  # 按钮卡发送（克隆卡片时可复用）
-    "_client",                 # lark SDK 客户端
-    "supports_draft_streaming",
     "edit_message",
 )
 
 # 卡片点击路径复用的内置适配器私有接口。缺了不致命（点击回落给内置实现），
-# 但澄清按钮会静默失灵 —— 只探测上报，不阻断卡片加载。
+# 但澄清按钮会静默失灵 —— 探测上报，不阻断卡片加载。
+# 注意 ``_on_card_action_trigger`` 在列表内：它是本插件**覆盖并 super() 调用**的那个方法，
+# 内置哪天改名/移除，点击链路就整条失效（且 super() 会抛），必须在同一处登记。
 CALLBACK_ADAPTER_ATTRS: Tuple[str, ...] = (
+    "_on_card_action_trigger",              # 点击入口（本插件覆盖它，并把非自己的点击交回）
     "_is_interactive_operator_authorized",  # 点击人是否获授权
     "_loop_accepts_callbacks",              # loop 是否已就绪
-    "_submit_on_loop",                      # 把协程提交进 loop
     "_get_cached_sender_name",              # open_id -> 显示名
     "_card_response",                       # 卡片回调响应构造
 )
 
 #: 实例属性（不是类属性），无法在类上静态探测：运行时缺失会抛 ``AttributeError``，
-#: 由 ``_on_card_action_trigger`` 捕获并回落。登记在此只为把私有名集中到本文件。
-CALLBACK_INSTANCE_ATTRS: Tuple[str, ...] = ("_loop",)
+#: 由 ``_on_card_action_trigger`` 捕获并回落。登记在此只为把私有名集中到本文件，
+#: 并把 probe_report 的输出修准 —— ``_client`` 是实例属性，早先误登记在类属性组里，
+#: 导致 ``_has(cls, "_client")`` 恒为 False、探测结果长期误报。
+CALLBACK_INSTANCE_ATTRS: Tuple[str, ...] = ("_loop", "_client")
 
 
 def hermes_version() -> str:
@@ -137,18 +138,47 @@ def clarify_multi_select(clarify_id: str) -> bool:
         return False
 
 
-def clarify_mark_awaiting_text(clarify_id: str) -> None:
-    """把该澄清切成「等待文字输入」（点「其他」时用）。失败抛给调用方决定。"""
+def clarify_mark_awaiting_text(clarify_id: str) -> bool:
+    """把该澄清切成「等待文字输入」（点「其他」时用）；返回是否真的切成功。
+
+    **「没抛异常」不等于成功** —— 该澄清未知时 Hermes 返回 False。
+    """
     from tools.clarify_gateway import mark_awaiting_text
 
-    mark_awaiting_text(str(clarify_id))
+    return bool(mark_awaiting_text(str(clarify_id)))
 
 
-def clarify_resolve_gateway_clarify(clarify_id: str, answer: str) -> None:
-    """提交澄清答案、解除网关阻塞。失败抛给调用方决定。"""
+def clarify_resolve_gateway_clarify(clarify_id: str, answer: str) -> bool:
+    """提交澄清答案、解除网关阻塞；返回是否真的提交成功。
+
+    ⚠️ 返回 False 表示这次点击**没有生效**（该澄清已被超时或文字回答消费掉，或重复点击）。
+    调用方若把「没抛异常」当成功、把卡片换成「已答复」，就会出现
+    「卡片说已收到、agent 仍阻塞在网关」—— 答案永久丢失，而且卡片已变成已解状态，
+    用户连重试的机会都没有。
+
+    这两处实现都是「锁内 dict 取写 + ``threading.Event.set()``」，不碰事件循环，
+    所以可以同步调用并当场拿结果。
+    """
     from tools.clarify_gateway import resolve_gateway_clarify
 
-    resolve_gateway_clarify(str(clarify_id), str(answer))
+    return bool(resolve_gateway_clarify(str(clarify_id), str(answer)))
+
+
+def hook_is_wired(name: str) -> bool:
+    """问核心：这个钩子名当前真的有订阅者吗？
+
+    为什么需要它：``ctx.register_hook()`` 对**未知钩子名只 warning 不抛**
+    （Hermes ``hermes_cli/plugins.py`` 会拿名字对 ``VALID_HOOKS`` 校验），返回值也不是
+    bool。所以「注册时没抛异常」根本不能证明钩子挂上了 —— 官方哪天改名，
+    启动自检照样打印「钩子 xxx 已订阅」，而回调永不派发，页脚与面板静默变空。
+    这里用核心自己的判定兜一层，让自检说的是实话。
+    """
+    try:
+        from hermes_cli.lifecycle import has_hook
+
+        return bool(has_hook(name))
+    except Exception:
+        return False
 
 
 def _has(cls: type, name: str) -> bool:

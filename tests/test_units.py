@@ -70,6 +70,7 @@ class StubAdapter:
         self._fail_cards = bool(getattr(config, "fail_cards", fail_cards))
         self.calls: list = []
         self.submitted: list = []
+        self.card_updates: list = []
         self._loop = object()
 
     # --- compat.REQUIRED_ADAPTER_ATTRS ---
@@ -112,14 +113,45 @@ class StubAdapter:
     def _loop_accepts_callbacks(self, loop):
         return loop is not None
 
-    def _submit_on_loop(self, loop, coro):
-        self.submitted.append(coro)
-
     def _get_cached_sender_name(self, open_id):
         return "汪老师"
 
     def _card_response(self, card=None):
+        self.card_updates.append(card)
         return {"card": card} if card else {"toast": "ok"}
+
+
+def _fake_clarify_gateway(resolved: list, *, commit: bool = True):
+    """装一个假的 ``tools.clarify_gateway``。
+
+    ``commit=False`` 模拟网关**拒绝**这次提交（重复点击 / 该澄清已被超时或文字回答
+    消费掉）—— 真实实现就是返回 bool 的这个语义，见 Hermes
+    ``tools/clarify_gateway.py`` 的 ``resolve_gateway_clarify``。
+    """
+    fake_tools = types.ModuleType("tools")
+    fake_cg = types.ModuleType("tools.clarify_gateway")
+    fake_cg._lock = threading.Lock()
+    fake_cg._entries = {}
+
+    def _resolve(cid, resp):
+        resolved.append((cid, resp))
+        return commit
+
+    def _awaiting(cid):
+        resolved.append((cid, "__await_text__"))
+        return commit
+
+    fake_cg.resolve_gateway_clarify = _resolve
+    fake_cg.mark_awaiting_text = _awaiting
+    fake_tools.clarify_gateway = fake_cg
+    sys.modules["tools"] = fake_tools
+    sys.modules["tools.clarify_gateway"] = fake_cg
+    return fake_tools, fake_cg
+
+
+def _drop_fake_clarify_gateway():
+    sys.modules.pop("tools", None)
+    sys.modules.pop("tools.clarify_gateway", None)
 
 
 def _run(coro):
@@ -192,7 +224,10 @@ def test_probe_adapter_class_reports_missing():
 def test_clarify_gateway_bridge_degrades_safely():
     # 无 Hermes 环境（没有 tools 模块）时保守返回 False，而不是抛异常。
     assert compat.clarify_multi_select("cid-x") is False
-    assert compat.CALLBACK_INSTANCE_ATTRS == ("_loop",)
+    # _client 是**实例**属性，登记在实例组里；早先误放进类属性组，导致探测恒报缺失。
+    assert compat.CALLBACK_INSTANCE_ATTRS == ("_loop", "_client")
+    # 覆盖并 super() 调用的点击入口必须在册，否则内置改名后整条点击链路静默失效
+    assert "_on_card_action_trigger" in compat.CALLBACK_ADAPTER_ATTRS
 
 
 # --------------------------------------------------------------------------- #
@@ -325,6 +360,20 @@ def test_reply_card_is_20_with_summary():
     summary = card["config"].get("summary")
     assert isinstance(summary, dict) and summary.get("content"), "流式卡漏了 summary"
     assert len(summary["content"]) <= cards.SUMMARY_MAX
+
+
+def test_streaming_summary_is_never_empty():
+    """空文本也要给兜底 summary。
+
+    真实路径上会两次送出空文本：native 流式的 seed 帧（空文本建卡），以及归档点落在
+    末尾时的 finalize 帧。``{"content": ""}`` 等于通知栏空白 —— 正是这个字段要防的事。
+    """
+    for empty in ("", " ", "   \n  "):
+        for streaming in (True, False):
+            node = cards.reply_card(empty, streaming=streaming)["config"].get("summary")
+            if node is None:
+                continue
+            assert node.get("content"), f"空文本（{empty!r}, streaming={streaming}）下 summary 不该为空"
 
 
 def test_dialect_element_exclusivity():
@@ -645,19 +694,16 @@ def test_native_streaming_state_cap_evicts_oldest():
     assert "session-0" not in raw._ld_streams, "最旧的回合应被淘汰"
 
 
-def test_split_tool_progress():
-    """帧文本拆分：无分隔原样返回；尾块全空白不算进度块；多个分隔取最后一个。"""
-    assert adapter._split_tool_progress("纯正文") == ("纯正文", "")
-    assert adapter._split_tool_progress("") == ("", "")
-    body, tail = adapter._split_tool_progress("正文A\n\n---\n🖥 Running ls")
-    assert body == "正文A" and "Running" in tail
-    assert adapter._split_tool_progress("正文A\n\n---\n   ") == ("正文A\n\n---\n   ", "")
-    body, tail = adapter._split_tool_progress("A\n\n---\nB\n\n---\n进度")
-    assert body == "A\n\n---\nB" and tail == "进度"
+def test_native_streaming_never_blanks_body_on_markdown_rule():
+    """P0 回归：模型自己写 markdown 分隔线，**绝不能**把正文弄没。
 
-
-def test_native_streaming_archives_text_before_tool_progress():
-    """工具轮的叙述会归档：正文区只显示最后一个工具轮之后的文本。"""
+    曾经的「叙述归档」用裸分隔符 ``"\\n\\n---\\n"`` 判断核心有没有拼工具进度块，
+    但核心在没有工具进度时帧文本就是累积正文本身（``gateway/stream_consumer.py``
+    的 ``_compose_frame_content``）。于是模型写一条 ``---`` 就被误判成进度块：
+    归档点推到分隔线处 → 之后每帧算出的正文都是空串 → finalize 的
+    ``display or " "`` 让整条回答只剩一个空格；而核心按完整帧文本乐观记账、
+    判定「已送达」，不会再补发 —— 回答彻底消失且不报任何错。
+    """
     defaults = dict(adapter._DEFAULTS)
     old_interval = adapter._STREAM_MIN_INTERVAL
     adapter._STREAM_MIN_INTERVAL = 0.0
@@ -665,20 +711,21 @@ def test_native_streaming_archives_text_before_tool_progress():
         panel.reset()
         raw = _make()
         updates = _wire_patch(raw)
-        assert _run(raw.send_stream_frame("", finalize=False, chat_id="oc_a",
-                                          turn_id="ta")) is True
-        assert _run(raw.send_stream_frame("第一段", finalize=False, chat_id="oc_a",
-                                          turn_id="ta")) is True
-        assert _run(raw.send_stream_frame("第一段\n\n---\n🖥 Running ls", finalize=False,
-                                          chat_id="oc_a", turn_id="ta")) is True
-        joined = json.dumps(json.loads(updates[-1]["content"]), ensure_ascii=False)
-        assert "Running" not in joined, "工具进度块不该进入正文"
-        assert "第一段" in joined, "工具执行中保留当前段的回顾"
-        assert _run(raw.send_stream_frame("第一段第二段", finalize=False,
-                                          chat_id="oc_a", turn_id="ta")) is True
-        joined2 = json.dumps(json.loads(updates[-1]["content"]), ensure_ascii=False)
-        assert "第二段" in joined2
-        assert "第一段" not in joined2, "工具轮之前的叙述应被归档"
+        assert _run(raw.send_stream_frame("", finalize=False, chat_id="oc_r",
+                                          turn_id="tr")) is True
+        # 模型写了一条标准的 markdown 分隔线，整回合没有调用任何工具
+        frames = ["第一章要点",
+                  "第一章要点\n\n---\n第二章要点",
+                  "第一章要点\n\n---\n第二章要点\n\n结论就这些。"]
+        for text in frames:
+            assert _run(raw.send_stream_frame(text, finalize=False, chat_id="oc_r",
+                                              turn_id="tr")) is True
+        assert _run(raw.send_stream_frame(frames[-1], finalize=True, chat_id="oc_r",
+                                          turn_id="tr")) is True
+        final = json.dumps(json.loads(updates[-1]["content"]), ensure_ascii=False)
+        assert "第一章要点" in final, "分隔线**之前**的内容不能丢"
+        assert "第二章要点" in final, "分隔线**之后**的内容更不能丢"
+        assert "结论就这些。" in final, "末帧正文不能只剩一个空格"
     finally:
         adapter._STREAM_MIN_INTERVAL = old_interval
         panel.reset()
@@ -718,15 +765,7 @@ def test_card_action_unrelated_value_falls_through():
 def test_clarify_click_resolves_gateway():
     raw = _make()
     resolved: list = []
-    fake_tools = types.ModuleType("tools")
-    fake_cg = types.ModuleType("tools.clarify_gateway")
-    fake_cg._lock = threading.Lock()
-    fake_cg._entries = {}
-    fake_cg.resolve_gateway_clarify = lambda cid, resp: resolved.append((cid, resp))
-    fake_cg.mark_awaiting_text = lambda cid: resolved.append((cid, "__await_text__"))
-    fake_tools.clarify_gateway = fake_cg
-    sys.modules["tools"] = fake_tools
-    sys.modules["tools.clarify_gateway"] = fake_cg
+    fake_tools, fake_cg = _fake_clarify_gateway(resolved, commit=True)
     try:
         data = types.SimpleNamespace(
             event=types.SimpleNamespace(
@@ -737,26 +776,19 @@ def test_clarify_click_resolves_gateway():
         )
         out = raw._on_card_action_trigger(data)
         assert out is not None and raw.calls == [], "自己人的点击不应交给内置处理"
-        assert raw.submitted, "应把解析动作提交到适配器 loop"
-        _run(raw.submitted[0])
+        # 提交是**同步**的：网关那两处只做锁内 dict 取写 + threading.Event.set()，
+        # 不碰事件循环（已对 Hermes 源码核实），所以当场就能断言，无需再驱动 loop。
         assert resolved == [("cid-9", "B 方案")], resolved
+        assert raw.card_updates and raw.card_updates[-1] is not None, \
+            "提交成功后应把卡片回填成「已答复」"
     finally:
-        sys.modules.pop("tools", None)
-        sys.modules.pop("tools.clarify_gateway", None)
+        _drop_fake_clarify_gateway()
 
 
 def test_clarify_click_other_marks_awaiting_text():
     raw = _make()
     resolved: list = []
-    fake_tools = types.ModuleType("tools")
-    fake_cg = types.ModuleType("tools.clarify_gateway")
-    fake_cg._lock = threading.Lock()
-    fake_cg._entries = {}
-    fake_cg.resolve_gateway_clarify = lambda cid, resp: resolved.append((cid, resp))
-    fake_cg.mark_awaiting_text = lambda cid: resolved.append((cid, "__await_text__"))
-    fake_tools.clarify_gateway = fake_cg
-    sys.modules["tools"] = fake_tools
-    sys.modules["tools.clarify_gateway"] = fake_cg
+    fake_tools, fake_cg = _fake_clarify_gateway(resolved, commit=True)
     try:
         data = types.SimpleNamespace(
             event=types.SimpleNamespace(
@@ -766,11 +798,37 @@ def test_clarify_click_other_marks_awaiting_text():
                 operator=types.SimpleNamespace(open_id="ou_ok")),
         )
         raw._on_card_action_trigger(data)
-        _run(raw.submitted[0])
+        # 提交是同步的（网关只做锁内 dict 写 + Event.set，不碰事件循环），无需再驱动 loop
         assert resolved == [("cid-3", "__await_text__")], resolved
     finally:
-        sys.modules.pop("tools", None)
-        sys.modules.pop("tools.clarify_gateway", None)
+        _drop_fake_clarify_gateway()
+
+
+def test_clarify_click_that_did_not_commit_must_not_refill_card():
+    """提交未生效时**绝不能**把卡片换成「已答复」。
+
+    触发：重复点击同一条澄清，或点击一个已被超时 / 文字回答消费掉的澄清 ——
+    网关此时返回 False。若仍回填卡片，就会出现「卡片说已收到、agent 仍阻塞在网关」：
+    答案永久丢失，而且卡片已变成已解状态，用户连重试的机会都没有。
+    """
+    raw = _make()
+    resolved: list = []
+    fake_tools, fake_cg = _fake_clarify_gateway(resolved, commit=False)
+    try:
+        data = types.SimpleNamespace(
+            event=types.SimpleNamespace(
+                action=types.SimpleNamespace(value={
+                    "larkdeck_action": "clarify", "clarify_id": "cid-dup",
+                    "answer": "B 方案", "question": "选哪个？"}),
+                operator=types.SimpleNamespace(open_id="ou_ok")),
+        )
+        out = raw._on_card_action_trigger(data)
+        assert resolved == [("cid-dup", "B 方案")], "还是要尝试提交"
+        assert out is not None, "但必须给回调一个响应"
+        assert raw.card_updates == [None], \
+            "提交没成功就不能回填「已答复」卡片，否则用户以为答案已送达"
+    finally:
+        _drop_fake_clarify_gateway()
 
 
 def test_clarify_click_from_unauthorized_user_is_ignored():
@@ -897,6 +955,35 @@ def test_unified_panel_applies_caps() -> None:
     # 上限可调（配置进来就是这个口子）
     assert cards.unified_panel(reasoning="z" * 50, max_reasoning_chars=10) is not None
     assert cards.unified_panel() is None
+
+
+def test_panel_caps_treat_zero_as_default_not_unlimited():
+    """配置写 0 / 负数必须退回默认上限，**不是**取消上限。
+
+    取消上限会把整段推理（panel 缓冲可达 262144 字符）塞进卡片，飞书直接拒收，
+    那个回合的卡片功能整块丢掉。README 把这三个键描述成「上限」，行为得对得上。
+    """
+    for zeroish in (0, -1):
+        long_panel = cards.unified_panel(reasoning="x" * 5000, max_reasoning_chars=zeroish)
+        assert "已省略" in long_panel["elements"][0]["content"], \
+            f"max_reasoning_chars={zeroish} 不能变成「不截断」"
+
+        many = cards.unified_panel(tools=[f"step{i}" for i in range(40)], max_steps=zeroish)
+        joined = " ".join(e.get("content", "") for e in many["elements"])
+        assert "更早的 10 步已折叠" in joined, f"max_steps={zeroish} 不能变成「全量保留」"
+
+        big = cards.unified_panel(tools=["y" * 5000], max_tool_chars=zeroish)
+        assert "已省略" in big["elements"][0]["content"], \
+            f"max_tool_chars={zeroish} 不能变成「不截断」"
+
+
+def test_panel_title_english_plural():
+    """英文单复数：1 tool call / N tool calls（单次工具调用很常见）。"""
+    one = cards.unified_panel(tools=["read_file"])
+    assert one["header"]["title"]["i18n_content"]["en_us"] == "Thinking & tools · 1 tool call"
+    many = cards.unified_panel(tools=["read_file", "bash"])
+    assert many["header"]["title"]["i18n_content"]["en_us"] == "Thinking & tools · 2 tool calls"
+    assert one["header"]["title"]["i18n_content"]["zh_cn"] == "思考与工具 · 1 次工具调用"
 
 
 # --------------------------------------------------------------------------- #

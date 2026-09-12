@@ -147,9 +147,9 @@ plugins:
         show_model: true         # 页脚里显示模型名
         context_style: text      # 上下文用量样式：text | bar | both
         model_aliases: ""        # "真名=显示名, 真名2=显示名2"
-        max_reasoning_chars: 1200   # 推理文本上限（超出截断并留痕）
-        max_tool_result_chars: 600  # 单条工具结果上限（超出截断并留痕）
-        max_panel_steps: 30         # 面板最多保留多少步（超出保留最近的）
+        max_reasoning_chars: 1200   # 推理文本上限（超出截断并留痕；写 0 视为用默认值，不是不设限）
+        max_tool_result_chars: 600  # 单条工具步骤行上限；面板显示的是参数预览，预览已被截到 80 字符，所以这项现实里几乎不会触发
+        max_panel_steps: 30         # 面板最多保留多少步（超出保留最近的；写 0 视为用默认值）
         context_max_override: 0     # 非 0 时钉住上下文上限（探测不准时兜底）
 ```
 
@@ -203,7 +203,7 @@ LarkDeck 接管后才生效）。
 ## 已知限制
 
 - **必须和官方适配器同一进程**：官方 `feishu` 平台被禁用时，LarkDeck 无处附着。
-- **依赖官方适配器的内部方法**：发送/编辑路径 3 个必需（`_feishu_send_with_retry` 等，启动自检校验），点击回调路径 5 个类属性 + 1 个实例属性（`_submit_on_loop`、`_card_response` 等）+ 澄清网关内部结构（`_lock` / `_entries` / `mark_awaiting_text`）。全部集中登记在 `compat.py`，并用 `probe_adapter_class()` / `probe_report()` 在运行时探测 —— 官方哪天改了名字，自检会直接报出来，而不是静默失效。
+- **依赖官方适配器的内部方法**：发送/编辑路径 3 个必需（`_feishu_send_with_retry` 等，启动自检校验，缺了**拒绝覆盖**并保持内置行为），点击回调路径 5 个类属性 + 2 个实例属性（`_on_card_action_trigger`、`_card_response`、`_client` 等）+ 澄清网关内部结构（`_lock` / `_entries` / `mark_awaiting_text`）。全部集中登记在 `compat.py`：`probe_adapter_class()` 守必需项，`probe_report()` 的完整快照在启动时打进日志（缺点击回调会提级 WARNING 并写明「澄清按钮会静默失灵」）—— 官方哪天改了名字，日志会直接说出来，而不是静默失效。
 - ~~**`i18n_content` 的元素级支持需真机确认**~~ → **已实测确认**（2026-09-12）：
   文本元素同时带 `content` 与 `i18n_content`，1.0 与 2.0 卡均被飞书接受；
   1.0 的 header title 与按钮 text 也接受且生效。**互换实验**（把 `zh_cn` 分支里放英文）

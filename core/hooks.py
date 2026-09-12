@@ -26,6 +26,7 @@ import logging
 import time
 from typing import Any, Callable, Dict, Tuple
 
+from . import compat as _compat
 from . import context as _context
 from . import panel as _panel
 
@@ -132,10 +133,18 @@ def register(ctx: Any) -> Dict[str, bool]:
     for name, callback in SUBSCRIPTIONS:
         try:
             register_hook(name, callback)
-            result[name] = True
         except Exception as exc:
             result[name] = False
             logger.warning("[larkdeck] 订阅钩子 %s 失败: %s", name, exc)
+            continue
+        # 「没抛异常」不等于挂上了：官方对未知钩子名只 warning（见 compat.hook_is_wired）。
+        # 不复核的话，官方哪天改名，自检仍会打印「已订阅」，而回调永不派发，
+        # 页脚 / 面板静默变空 —— 正是本项目最怕的静默失败。
+        wired = _compat.hook_is_wired(name)
+        result[name] = wired
+        if not wired:
+            logger.warning("[larkdeck] 钩子 %s 注册后仍未被核心认作已订阅"
+                           "（官方可能改名了），相关页脚 / 面板数据会缺失", name)
     if result.get("post_api_request"):
         logger.debug("[larkdeck] 已订阅 post_api_request（模型 / 上下文用量）")
     return result

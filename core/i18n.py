@@ -22,6 +22,8 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     # 统一面板
     "panel.title":        {ZH: "执行详情", EN: "Run details"},
     "panel.title_tools":  {ZH: "思考与工具 · {n} 次工具调用", EN: "Thinking & tools · {n} tool calls"},
+    # 英文单复数：单次调用时说 "1 tool call" 而不是 "1 tool calls"（中文无变化，但保持同表）。
+    "panel.title_tools_one": {ZH: "思考与工具 · 1 次工具调用", EN: "Thinking & tools · 1 tool call"},
     # 溢出保护：内容被截断 / 步骤被裁掉时补一行说明，让用户知道「还有东西但没显示」
     "panel.overflow":     {ZH: "…已省略 {n} 字符", EN: "…{n} chars omitted"},
     "panel.trimmed":      {ZH: "…更早的 {n} 步已折叠", EN: "…{n} earlier steps folded"},
