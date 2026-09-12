@@ -735,6 +735,10 @@ def test_native_streaming_cap_never_evicts_active_streams():
     回合期间只有 panel 在变、`_ld_stream_put` 根本不被调用 —— 那种流看起来「很陈旧」，
     实际正活跃。踢掉它，下一帧会因为查不到状态而**另发一张新卡**（重复卡 + 老卡永久
     停在流式态），正是淘汰逻辑本来要防的事。
+
+    ⚠️ 断言必须**有判别力**：先前只断言 `<= _MAX_STREAMS` + 「新流进来了」，
+    而旧实现（按 t0 淘汰）同样满足 —— 于是这个测试在旧实现下也是绿的（假测试）。
+    能区分新旧的可观测量是「全部活跃流一个都不许掉」+「软超限时总数恰好是 N+1」。
     """
     raw = _make()
     now = time.monotonic()
@@ -744,8 +748,10 @@ def test_native_streaming_cap_never_evicts_active_streams():
                                           "message_id": f"om_a{i}"})
     assert len(raw._ld_streams) == adapter._MAX_STREAMS
     raw._ld_stream_put("active-new", {"t0": now, "last_at": now, "message_id": "om_an"})
-    assert any(k.startswith("active-") for k in raw._ld_streams), \
+    assert all(f"active-{i}" in raw._ld_streams for i in range(adapter._MAX_STREAMS)), \
         "活跃流被淘汰了 —— 这会导致同一回合另发一张新卡（重复卡）"
+    assert len(raw._ld_streams) == adapter._MAX_STREAMS + 1, \
+        "软超限必须**保留全部活跃流**，只是多留一个（旧实现会掉到 49 个）"
     assert "active-new" in raw._ld_streams
 
 
@@ -1477,6 +1483,218 @@ def test_panel_concurrent_writes_are_safe():
 
 
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# 9. 阶段 0 修复的回归网（审计指出这批「零覆盖」，逐条补上）
+#
+# 每条都必须**能抓住对应缺陷**：撤掉修复会红。补这些是因为
+# docs/lessons.md 推论 1：每加一层能力，都要配一个「能自证」的东西。
+# --------------------------------------------------------------------------- #
+def test_inf_and_nan_config_never_escape_as_exceptions():
+    """`inf` / `1e999` / `.inf` 这类 YAML 合法值**不许**让插件注册炸掉。
+
+    这是审计复现出的头号缺陷：`_as_int` / `_cfg_int` 只捕 TypeError/ValueError，
+    而 `int(float("inf"))` 抛的是 **OverflowError**。于是配置里写 `inf` 会经
+    `configure()` 一路穿到**没有任何 try 的 `register()`** → 注册整体失败 →
+    **静默退回纯文本**（本项目最怕的失败模式）。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    bad_values = (float("inf"), float("-inf"), float("nan"), "inf", "1e999", object())
+    try:
+        for bad in bad_values:
+            # 1) adapter._cfg_int：退回默认，不抛
+            adapter._CONFIG["max_panel_steps"] = bad
+            assert adapter._cfg_int("max_panel_steps", 30) == 30, bad
+            # 2) configure 整条链不抛
+            adapter.configure(context_max_override=bad, max_reasoning_chars=bad)
+            # 3) cards._cap 同样兜住（这是同类缺陷的第三处）
+            assert cards._cap(bad, 7) == 7, bad
+            # 4) 两个 _as_int 兜住
+            assert context._as_int(bad) is None, bad
+            assert panel._as_int(bad) is None, bad
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_ld_known_never_raises_without_setup():
+    """`_ld_setup()` 没跑成时，`_ld_known` 必须返回 None 而不是抛。
+
+    `edit_message` 的**第一行**就调它，而那一行在 try 之外 —— 一旦抛出去就会穿进
+    核心的每帧编辑路径，破坏「卡片失败必须回落官方实现」这条不变量。
+    """
+    class Bare:
+        pass
+
+    bare = Bare()
+    assert adapter.LarkDeckMixin._ld_known(bare, "om_x") is None
+    # 状态被塞成非 dict 也不许抛
+    bare._ld_state = "不是 dict"
+    bare._ld_lock = threading.Lock()
+    assert adapter.LarkDeckMixin._ld_known(bare, "om_x") is None
+
+
+def test_args_preview_is_bounded_for_nested_and_long_inputs():
+    """有界序列化要对**嵌套**与**超长列表**同样成立（不只是最平的那种参数）。
+
+    审计实测：修正前 `{"edits":[{"old_str":5MB}]}` = 18.9ms、2M 元素 list = 14.4ms，
+    而扁平 `{"content":5MB}` 只有 0.022ms —— 也就是「有界」只对一种形状成立。
+    """
+    big = "x" * 5_000_000
+    nested = {"edits": [{"old_str": big, "new_str": big}]}
+    deep = {"a": {"b": {"c": big}}}
+    huge_list = {"items": ["y"] * 2_000_000}
+
+    for label, payload in (("嵌套", nested), ("深层", deep), ("超长列表", huge_list)):
+        t0 = time.perf_counter()
+        got = panel._args_preview(payload)
+        cost_ms = (time.perf_counter() - t0) * 1000
+        assert cost_ms < 5.0, f"{label}参数预览耗时 {cost_ms:.1f}ms —— 有界序列化失效了"
+        assert len(got) <= panel._ARGS_PREVIEW_CHARS + 1, (label, len(got))
+    # 自引用结构不许无限递归
+    cyc: dict = {}
+    cyc["self"] = cyc
+    assert len(panel._args_preview(cyc)) <= panel._ARGS_PREVIEW_CHARS + 1
+
+
+def test_context_max_never_blocks_the_caller():
+    """`context_max` 未命中缓存时**必须立即返回**，把探测交给后台线程。
+
+    它在事件循环线程上被调用（send / edit_message / send_stream_frame 都是 async），
+    而官方 `get_model_context_length` 会发 HTTP（官方为此专门提供 async 版本，
+    注释写明会 stall the event loop）。同步探测会让首次渲染页脚时**所有会话的流式帧
+    一起停等几秒**。
+    """
+    import types
+
+    hold = threading.Event()
+    fake = types.ModuleType("agent.model_metadata")
+
+    def _slow(model, base_url=""):
+        hold.wait(3.0)
+        return 200_000
+
+    fake.get_model_context_length = _slow
+    agent_mod = sys.modules.get("agent") or types.ModuleType("agent")
+    old_meta = getattr(agent_mod, "model_metadata", None)
+    sys.modules["agent"] = agent_mod
+    agent_mod.model_metadata = fake
+    sys.modules["agent.model_metadata"] = fake
+    try:
+        context.reset()
+        context.record_api_call(model="probe-model", usage={"input_tokens": 1000})
+        t0 = time.perf_counter()
+        first = context.context_max()
+        cost_ms = (time.perf_counter() - t0) * 1000
+        assert cost_ms < 500, f"首次调用阻塞了 {cost_ms:.0f}ms —— 又回到同步探测了"
+        assert first is None, "未命中时应当返回 None（页脚退化成只显示已用量）"
+        hold.set()
+        for _ in range(60):  # 等后台线程写回
+            if context.context_max() == 200_000:
+                break
+            time.sleep(0.05)
+        assert context.context_max() == 200_000, "后台探测没有把结果写回缓存"
+    finally:
+        hold.set()
+        sys.modules.pop("agent.model_metadata", None)
+        if old_meta is None:
+            sys.modules.pop("agent", None)
+        else:
+            agent_mod.model_metadata = old_meta
+        context.reset()
+
+
+def test_truncate_never_over_reports_omission():
+    """「已省略 N 字符」必须按**实际切点**算。
+
+    切点会被块级/字形回退拉到 limit 之前，而原实现用 `len(text) - limit` ——
+    回退时少报（审计实测：实际丢 108、文案声称 68）。
+    """
+    text = "A" * 60 + "\n- item\n" + "B" * 100
+    out = cards.truncate(text, 100)
+    head, _, note = out.partition("\n> ")
+    omitted = int("".join(ch for ch in note if ch.isdigit()))
+    actual = len(text) - len(head)
+    assert omitted >= actual, f"少报了：声称省略 {omitted}，实际丢 {actual}"
+
+
+def test_panel_attribution_is_deterministic_by_chat_id():
+    """有 chat→session 绑定时，面板归属必须是**确定性**的，不是「最近活跃」。
+
+    这是消掉多会话串台的关键：钩子载荷只有 ``session_id``、适配器只有 ``chat_id``，
+    靠 ``pre_gateway_dispatch`` 观察到的映射把两者对上。以前只能取「最近活跃」，
+    并发会话时 A 的卡片会显示 B 的推理/工具。
+    """
+    panel.reset()
+    panel.record_reasoning("s1", "t1", "会话一的推理")
+    panel.record_reasoning("s2", "t2", "会话二的推理")
+    assert panel.snapshot()["session_id"] == "s2", "无绑定时退回最近活跃（旧行为）"
+
+    panel.bind_chat_session("oc_one", "s1")
+    panel.bind_chat_session("oc_two", "s2")
+    assert panel.snapshot("oc_one")["session_id"] == "s1", "按 chat 归属失败 —— 会串台"
+    assert "会话一的推理" in panel.snapshot("oc_one")["reasoning"]
+    assert panel.snapshot("oc_two")["session_id"] == "s2"
+
+    # 未知 chat → 退回旧行为；**绝不能因为归属失败就不渲染面板**
+    assert panel.snapshot("oc_unknown")["session_id"] == "s2"
+    # 绑定指向一个没有内容的会话 → 同样退回
+    panel.bind_chat_session("oc_empty", "s-nonexistent")
+    assert panel.snapshot("oc_empty")["session_id"] == "s2"
+
+    # 空值不入表
+    panel.bind_chat_session("", "s1")
+    panel.bind_chat_session("oc_x", "")
+    assert panel.bound_session_id("") == "" and panel.bound_session_id("oc_x") == ""
+    panel.reset()
+
+
+def test_session_attribution_helpers_degrade_safely():
+    """归属辅助函数拿不到东西时**必须返回空/False，绝不抛**；且**只读**。"""
+    assert compat.lookup_session_id(None, "k") == ""
+    assert compat.lookup_session_id(object(), "") == ""
+    assert isinstance(compat.session_attribution_available(), bool)
+
+    class Store:
+        def __init__(self):
+            self.created = False
+
+        def get_or_create_session(self, *a, **k):  # pragma: no cover - 不该被调用
+            self.created = True
+            raise AssertionError("归属绝不能用 get_or_create_session（会改核心行为）")
+
+        def peek_session_id(self, key):
+            return "sess-1" if key else None
+
+    store = Store()
+    assert compat.lookup_session_id(store, "k") == "sess-1"
+    assert store.created is False, "用了会建会话的接口 —— 违反只读纪律"
+
+
+def test_late_begin_turn_must_not_poison_current_turn():
+    """迟到的 `on_stream_start` **不许**把当前回合作废 —— 否则整回合面板永久黑屏。
+
+    2026-09-12 踩过：曾给 `begin_turn` 开了一条 `reopen=True` 例外（本意是处理
+    turn_id 复用），它**绕过了作废集检查**并落进替换分支，于是被记进作废集的
+    是**当前正在跑的回合** —— 一个迟到的 start 就能毒死整回合的面板，
+    比原来的瞬态清空更糟（父版下一个事件就把面板拉回来了）。
+    """
+    panel.reset()
+    panel.begin_turn("s1", "t1")
+    panel.record_reasoning("s1", "t1", "第一回合")
+    panel.begin_turn("s1", "t2")
+    panel.record_reasoning("s1", "t2", "第二回合")
+
+    panel.begin_turn("s1", "t1")  # t1 的 start 迟到（它自己那条队列落后了）
+
+    panel.record_reasoning("s1", "t2", "第二回合后续")
+    snap = panel.snapshot()
+    assert snap is not None, "迟到的旧 start 把面板毒死了（整回合黑屏）"
+    assert "第二回合后续" in snap["reasoning"], "当前回合的数据被丢弃了"
+    assert "t2" not in list(panel._STATE["s1"]["closed"]), "当前回合被记进了作废集"
+    panel.reset()
+
+
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

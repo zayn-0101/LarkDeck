@@ -119,6 +119,8 @@ def probe_report(cls: Optional[type]) -> Dict[str, Any]:
     report["missing_required"] = missing
     report["missing_optional"] = [n for n in OPTIONAL_ADAPTER_ATTRS if not _has(cls, n)]
     report["missing_callback"] = [n for n in CALLBACK_ADAPTER_ATTRS if not _has(cls, n)]
+    # 会话归属是「卡片能否确定属于哪个会话」的前提，缺了只是退回旧行为（不阻断卡片）
+    report["session_attribution_ok"] = session_attribution_available()
     return report
 
 
@@ -179,6 +181,83 @@ def hook_is_wired(name: str) -> bool:
         return bool(has_hook(name))
     except Exception:
         return False
+
+
+# --------------------------------------------------------------------------- #
+# 会话归属（``gateway/session.py``）—— 把「哪张卡」对上「哪个会话」所需的公开面。
+#
+# 为什么需要：钩子载荷只有 ``session_id``，而适配器渲染卡片时只有 ``chat_id``；
+# 两侧的 ``turn_id`` 还是两套不相干的命名空间（见 panel.snapshot 的警告块）。
+# ``pre_gateway_dispatch`` 恰好同时给出 ``event.source``（含 chat_id）与 ``session_store``，
+# 于是可以算出 ``chat_id -> session_id`` 的确定性映射。
+#
+# 这些名字都是**公开名**（无下划线），但仍属 Hermes 内部耦合，按不变量 3 集中登记 + 探测上报。
+# --------------------------------------------------------------------------- #
+#: 归属契约用到的公开面（点分名，仅供文档与探测报告使用）。
+SESSION_ATTRIBUTION_API: Tuple[str, ...] = (
+    "gateway.session.build_session_key",
+    "gateway.session.SessionStore.lookup_by_session_key",
+    "gateway.session.SessionStore.peek_session_id",
+    "gateway.platforms.event.MessageEvent.source",
+    "gateway.session.SessionSource.chat_id",
+)
+
+
+def session_attribution_available() -> bool:
+    """归属所需的公开面是否齐备；缺了就退回「最近活跃会话」的旧行为。"""
+    try:
+        from gateway.session import SessionStore, build_session_key
+
+        return (callable(getattr(SessionStore, "lookup_by_session_key", None))
+                and callable(getattr(SessionStore, "peek_session_id", None))
+                and callable(build_session_key))
+    except Exception:
+        return False
+
+
+def session_key_for_source(source: Any, store: Any) -> str:
+    """按 store **自己的配置**算出 session_key（镜像它的私有实现，不调用私有方法）。
+
+    ``SessionStore`` 内部是 ``build_session_key(source, group_sessions_per_user=...,
+    thread_sessions_per_user=..., profile=...)``；这里读同样的**公开**配置属性再算一遍。
+    默认配置下两者结果一致；算不出或算不中时返回空串，调用方据此放弃归属。
+    """
+    try:
+        from gateway.session import build_session_key
+
+        config = getattr(store, "config", None)
+        return str(build_session_key(
+            source,
+            group_sessions_per_user=bool(getattr(config, "group_sessions_per_user", True)),
+            thread_sessions_per_user=bool(getattr(config, "thread_sessions_per_user", False)),
+        ) or "")
+    except Exception:
+        return ""
+
+
+def lookup_session_id(store: Any, session_key: str) -> str:
+    """``session_key -> session_id``；查不到返回空串。
+
+    **只读**：优先用 ``peek_session_id``（拿锁读映射），退回 ``lookup_by_session_key``。
+    **刻意不用 ``get_or_create_session``** —— 那个会在 auth 之前给未授权发送者创建会话，
+    属于改变核心行为。
+    """
+    if not session_key:
+        return ""
+    for name in ("peek_session_id", "lookup_by_session_key"):
+        method = getattr(store, name, None)
+        if not callable(method):
+            continue
+        try:
+            got = method(session_key)
+        except Exception:
+            continue
+        if isinstance(got, str):
+            return got
+        sid = str(getattr(got, "session_id", "") or "")
+        if sid:
+            return sid
+    return ""
 
 
 def _has(cls: type, name: str) -> bool:

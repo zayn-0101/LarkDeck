@@ -37,6 +37,7 @@ import logging
 import threading
 import time
 from collections import deque
+from itertools import islice
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("larkdeck.panel")
@@ -64,6 +65,11 @@ _ARGS_PREVIEW_CHARS = 80
 
 #: 每个会话最多记住多少个「已作废的 turn_id」（迟到事件丢弃用）。有界，防长跑会话膨胀。
 _MAX_CLOSED_TURNS = 8
+
+#: ``chat_id -> (session_id, 记录时刻)``：由 ``pre_gateway_dispatch`` 观察到的归属。
+_CHAT_SESSION: Dict[str, Any] = {}
+_CHAT_SESSION_MAX = 256
+_CHAT_SESSION_TTL = 86400.0
 
 #: ``session_id -> state``；state = turn_id / rounds / current_round / tools / ...
 _STATE: Dict[str, Dict[str, Any]] = {}
@@ -111,8 +117,7 @@ def _purge_locked(now: float) -> None:
         _LAST_ACTIVE = ""
 
 
-def _touch_locked(session_id: str, turn_id: str, now: float, *,
-                  reopen: bool = False) -> Optional[Dict[str, Any]]:
+def _touch_locked(session_id: str, turn_id: str, now: float) -> Optional[Dict[str, Any]]:
     """取（或新建）会话状态；``turn_id`` 变化视为新回合，清空过程数据。
 
     **返回 ``None`` 表示这次事件属于一个已作废的旧回合，调用方必须原样丢弃** ——
@@ -125,13 +130,9 @@ def _touch_locked(session_id: str, turn_id: str, now: float, *,
     turn_id 改成 t2，随后迟到的 t1 事件又被判成「又换回合」，把 t2 的面板清掉、turn_id
     倒回 t1。把「被替换掉的那个 turn_id」立刻记进作废集，迟到事件就再也进不来。
 
-    注意两处刻意的设计：
-    * 登记**必须在替换分支里做**，不能只放在 :func:`begin_turn`。若 t2 的首个事件先于
-      t2 的 ``on_stream_start`` 到达（两条队列，属常态），替换是这里自己完成的，
-      t1 从未经过 ``begin_turn``，集合会恒空、保护失效。
-    * ``reopen=True``（只由 :func:`begin_turn` 传）表示「权威地宣告新回合开始」，
-      此时先从作废集里摘掉该 id —— 万一 turn_id 被复用（uuid 碰撞可忽略，但替身/
-      老版本可能给稳定 id），不至于让面板永久空掉。
+    注意一处刻意的设计：登记**必须在替换分支里做**，不能只放在 :func:`begin_turn`。
+    若 t2 的首个事件先于 t2 的 ``on_stream_start`` 到达（两条队列，属常态），
+    替换是这里自己完成的，t1 从未经过 ``begin_turn``，集合会恒空、保护失效。
     """
     global _LAST_ACTIVE
     sid = str(session_id or "")
@@ -150,13 +151,19 @@ def _touch_locked(session_id: str, turn_id: str, now: float, *,
         closed = state["closed"] = deque(maxlen=_MAX_CLOSED_TURNS)
     tid = str(turn_id or "")
     if tid:
-        if reopen:
-            try:
-                closed.remove(tid)
-            except ValueError:
-                pass
-        elif tid in closed:
-            return None  # 迟到的旧回合事件：丢弃，绝不写任何状态
+        if tid in closed:
+            # 迟到的旧回合事件（或旧回合的重复 start）：**一律丢弃**，且不写任何状态。
+            #
+            # ⚠️ 2026-09-12 踩过：曾经给 `begin_turn` 开了一条 `reopen=True` 的例外
+            # （本意是「万一把 turn_id 复用，允许重新收养」）。但那个例外**绕过了本检查**
+            # 并落进下面的替换分支 —— 于是被记进作废集的是**当前正在跑的回合**，
+            # 一个迟到的 on_stream_start 就能让整回合面板永久黑屏（比原来的瞬态清空更糟）。
+            #
+            # `tid in closed` 只有两种可能：迟到的旧事件，或 id 被复用。两者无法区分，
+            # 而前者是真实的生产故障、后者只在「给稳定 id 的测试替身」里出现。
+            # 所以一律按迟到处理；作废集本身有上限（_MAX_CLOSED_TURNS），
+            # 很久以前的 id 会被挤出去，复用场景能自愈。
+            return None
         current = state.get("turn_id") or ""
         if current and tid != current:
             # 新回合：先把被替换的那个 turn_id 记为作废，再清空过程数据
@@ -269,13 +276,23 @@ _SHRINK_STR_CHARS = 120
 
 
 def _shrink(value: Any, depth: int = 0) -> Any:
-    """生成参数的**有界**副本，供预览序列化使用（有损，仅用于展示）。"""
-    if depth >= _SHRINK_DEPTH:
-        return "…" if isinstance(value, (dict, list, tuple)) else value
+    """生成参数的**有界**副本，供预览序列化使用（有损，仅用于展示）。
+
+    ⚠️ **标量封顶必须排在深度判断之前**。原实现先判深度、深度超限时对 ``str``/``bytes``
+    原样返回，于是「深度刚好等于上限」的长字符串完全不封顶 ——
+    ``{"edits":[{"old_str": 5MB, "new_str": 5MB}]}`` 实测 18.9ms，等于没修。
+
+    同理切片用 ``islice``：``list(value)[:8]`` 会**先全量拷贝**再切片
+    （2M 元素 list 实测 14.4ms），而 islice 是惰性的。
+    """
+    # ① 标量封顶与深度无关，永远先做
     if isinstance(value, str):
         return value[:_SHRINK_STR_CHARS] + ("…" if len(value) > _SHRINK_STR_CHARS else "")
     if isinstance(value, (bytes, bytearray)):
         return f"<{len(value)} bytes>"
+    # ② 只有容器才受深度限制
+    if depth >= _SHRINK_DEPTH and isinstance(value, (dict, list, tuple, set, frozenset)):
+        return "…"
     if isinstance(value, dict):
         out: Dict[Any, Any] = {}
         for index, (key, item) in enumerate(value.items()):
@@ -284,11 +301,15 @@ def _shrink(value: Any, depth: int = 0) -> Any:
                 break
             out[str(key)[:64]] = _shrink(item, depth + 1)
         return out
-    if isinstance(value, (list, tuple, set)):
-        items = list(value)
-        out_list = [_shrink(item, depth + 1) for item in items[:_SHRINK_ITEMS]]
-        if len(items) > _SHRINK_ITEMS:
-            out_list.append(f"+{len(items) - _SHRINK_ITEMS}")
+    if isinstance(value, (list, tuple, set, frozenset)):
+        items = list(islice(value, _SHRINK_ITEMS))
+        try:
+            total = len(value)
+        except TypeError:  # pragma: no cover - 无 len 的可迭代
+            total = len(items)
+        out_list = [_shrink(item, depth + 1) for item in items]
+        if total > _SHRINK_ITEMS:
+            out_list.append(f"+{total - _SHRINK_ITEMS}")
         return out_list
     return value
 
@@ -311,8 +332,7 @@ def begin_turn(session_id: str, turn_id: str) -> None:
         return
     now = _now()
     with _LOCK:
-        # reopen=True：这是「新回合开始」的权威信号，允许从作废集里重新收养该 id。
-        _touch_locked(sid, tid, now, reopen=True)
+        _touch_locked(sid, tid, now)
         _purge_locked(now)
 
 
@@ -434,7 +454,42 @@ def record_tool_finished(session_id: str, turn_id: str, tool_name: str = "",
 # --------------------------------------------------------------------------- #
 # 读快照
 # --------------------------------------------------------------------------- #
-def snapshot() -> Optional[Dict[str, Any]]:
+def bind_chat_session(chat_id: str, session_id: str) -> None:
+    """记下「这个 chat 属于哪个会话」（由 ``pre_gateway_dispatch`` 观察得到）。
+
+    有了它，适配器渲染卡片时就能按自己的 ``chat_id`` **确定地**取到对应会话，
+    而不是猜「最近活跃」—— 这是消掉多会话串台的关键。观察方只做一次只读查找，无副作用。
+    """
+    chat = str(chat_id or "").strip()
+    sid = str(session_id or "").strip()
+    if not chat or not sid:
+        return
+    now = _now()
+    with _LOCK:
+        _CHAT_SESSION[chat] = (sid, now)
+        if len(_CHAT_SESSION) > _CHAT_SESSION_MAX:
+            stale = sorted(_CHAT_SESSION.items(), key=lambda kv: kv[1][1])
+            for key, _ in stale[: len(_CHAT_SESSION) - _CHAT_SESSION_MAX]:
+                _CHAT_SESSION.pop(key, None)
+
+
+def bound_session_id(chat_id: str) -> str:
+    """这个 chat 已知属于哪个会话；没有绑定（或已过期）返回空串。"""
+    chat = str(chat_id or "").strip()
+    if not chat:
+        return ""
+    now = _now()
+    with _LOCK:
+        bound = _CHAT_SESSION.get(chat)
+        if not bound:
+            return ""
+        if now - bound[1] > _CHAT_SESSION_TTL:
+            _CHAT_SESSION.pop(chat, None)
+            return ""
+        return str(bound[0])
+
+
+def snapshot(chat_id: str = "") -> Optional[Dict[str, Any]]:
     """最近活跃会话的面板数据；没有内容返回 ``None``（调用方据此不渲染）。
 
     返回 ``{"session_id", "turn_id", "reasoning", "tools", "age"}``：
@@ -456,13 +511,25 @@ def snapshot() -> Optional[Dict[str, Any]]:
     now = _now()
     with _LOCK:
         _purge_locked(now)
-        sid = _LAST_ACTIVE
-        state = _STATE.get(sid) if sid else None
-        if state is not None and not _has_content(state):
-            state = None  # 活跃会话暂时没内容：走下面的回退
+        sid = ""
+        state = None
+        # ① 优先用**确定性归属**：这个 chat_id 已知属于哪个会话（由 pre_gateway_dispatch
+        #    观察得到）。有绑定且那个会话真有内容就用它 —— 这就消掉了多会话串台。
+        if chat_id:
+            bound = _CHAT_SESSION.get(str(chat_id).strip())
+            if bound and now - bound[1] <= _CHAT_SESSION_TTL:
+                candidate = _STATE.get(bound[0])
+                if candidate is not None and _has_content(candidate):
+                    sid, state = bound[0], candidate
+        # ② 没有绑定（新会话第一回合 / 老版本 Hermes / 查找失败）→ 退回旧行为：
+        #    取「最近活跃会话」。**必须保住这条退路**，不能因为归属失败就不渲染面板。
         if state is None:
-            # 回退：找「最近更新且真的有内容」的会话 —— 钩子载荷没有 chat_id，
-            # 会话路由只能尽力而为；多会话并发时可能短暂串台（已知限制）。
+            sid = _LAST_ACTIVE
+            state = _STATE.get(sid) if sid else None
+            if state is not None and not _has_content(state):
+                state = None  # 活跃会话暂时没内容：走下面的回退
+        if state is None:
+            # 回退：找「最近更新且真的有内容」的会话
             candidates = [(sid2, st) for sid2, st in _STATE.items() if _has_content(st)]
             if not candidates:
                 return None
@@ -511,11 +578,14 @@ def reset() -> None:
     global _LAST_ACTIVE
     with _LOCK:
         _STATE.clear()
+        _CHAT_SESSION.clear()
         _LAST_ACTIVE = ""
 
 
 __all__ = [
     "begin_turn",
+    "bind_chat_session",
+    "bound_session_id",
     "record_reasoning",
     "record_answer_delta",
     "record_tool_started",

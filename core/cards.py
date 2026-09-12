@@ -269,8 +269,13 @@ def _cap(value: Any, default: int) -> int:
     这与 README 把这三个键描述成「上限」的自然预期一致。
     """
     try:
-        n = int(value)
-    except (TypeError, ValueError):
+        number = float(value)
+        if number != number or number in (float("inf"), float("-inf")):  # NaN / ±Inf
+            return default
+        n = int(number)
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError：int(float("inf")) 抛的是它，不是 ValueError。
+        # 漏了会让 _ld_panel 静默整块丢面板（那里 catch 住后返回 None）。
         return default
     return n if n > 0 else default
 
@@ -305,10 +310,11 @@ def truncate(text: str, limit: int, *, key: str = "panel.overflow") -> str:
     text = text or ""
     if limit <= 0 or len(text) <= limit:
         return text
-    hidden = len(text) - limit
-    head = text[: _glyph_safe(text, _block_boundary(text, limit))]
-    head = _close_code_spans(head)
-    return f"{head.rstrip()}\n> {_i18n.t(key, n=hidden)}"
+    # 切点可能被块级/字形回退拉到 limit 之前，所以丢弃量必须按**实际切点**算 ——
+    # 用 len(text) - limit 会在回退时少报（实测实际丢 108、文案声称 68）。
+    cut = _glyph_safe(text, _block_boundary(text, limit))
+    head = _close_code_spans(text[:cut])
+    return f"{head.rstrip()}\n> {_i18n.t(key, n=len(text) - cut)}"
 
 
 #: 行首块级标记：截断点落在这类行之前，不会把块切成两半。
@@ -431,11 +437,20 @@ def reply_card(answer: str, *, streaming: bool = False, panel: Optional[Dict[str
                 streaming=streaming, summary=answer)
 
 
-#: 卡片 JSON 的 UTF-8 字节预算。飞书对 interactive 卡有大小上限，超了直接拒收
-#: （本项目实测过 `230099` 类拒绝）。**量纲必须是字节**：``ensure_ascii=False`` 下
-#: 一个汉字占 3 字节，按字符数估算会在中文场景低估 3 倍。
-#: 真机实测值待补（`probe_render.py` 可量），这里先取保守值。
-CARD_BYTE_BUDGET = 20000
+#: 卡片 JSON 的 UTF-8 字节预算。飞书对 interactive 卡有大小上限，超了会被拒收。
+#: **量纲必须是字节**：``ensure_ascii=False`` 下汉字占 3 字节，按字符估会低估 3 倍。
+#:
+#: ⚠️ 这个数字**仍是保守猜测，尚无权威依据** —— 审计核实过：Hermes 源码里没有任何
+#: 卡片大小常量（唯一相关错误码 `230099` 的官方注释是「failed to create card content」，
+#: 是**内容创建失败**的通用码，不是大小上限），官方飞书适配器也没有 native streaming
+#: 可供参照（它只有纯文本的 `MAX_MESSAGE_LENGTH = 8000`）。
+#: 取值权衡：**过小会在正常长度的回答上静默摘掉整个面板**（早先取 20000 时，
+#: ~4600 汉字的正文就会把「推理+工具」面板整块摘掉，而此前那种卡片是能正常发出的），
+#: 过大则会在飞书拒收时让每一帧都失败，而**一帧失败会永久关掉本回合的 native 流式**
+#: （核心的行为，见 stream_consumer_transport）—— 那比丢面板更糟。
+#: 所以先取一个「正常回答不动、超大才降载」的宽松值；`tests/probe_render.py`
+#: 现在会实测并打印每张探针卡的字节数，用真机数据把它钉死。
+CARD_BYTE_BUDGET = 40000
 
 
 def card_bytes(node: Dict[str, Any]) -> int:

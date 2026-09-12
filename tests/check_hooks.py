@@ -9,8 +9,8 @@
 它做的事：
   1. 造临时 HERMES_HOME，软链本仓库，config 里启用 larkdeck；
   2. ``discover_plugins()`` 加载插件（真加载器）；
-  3. 五个观测钩子（``post_api_request`` / ``on_stream_start`` / ``on_stream_delta`` /
-     ``pre_tool_call`` / ``post_tool_call``）必须全部被登记；
+  3. 六个观测钩子（``post_api_request`` / ``on_stream_start`` / ``on_stream_delta`` /
+     ``pre_tool_call`` / ``post_tool_call`` / ``pre_gateway_dispatch``）必须全部被登记；
   4. 用真实载荷格式派发它们，核对数据真的流进 larkdeck 的数据层：
      - ``post_api_request`` 经 ``invoke_hook`` → 页脚指标（模型 / 上下文占用）；
      - ``pre/post_tool_call`` 经 ``invoke_hook`` → 面板工具步骤（含耗时 / 状态）；
@@ -51,7 +51,7 @@ from hermes_cli.lifecycle import has_hook, invoke_hook     # noqa: E402
 discover_plugins()
 
 WIRED_HOOKS = ("post_api_request", "on_stream_start", "on_stream_delta",
-               "pre_tool_call", "post_tool_call")
+               "pre_tool_call", "post_tool_call", "pre_gateway_dispatch")
 wired = {name: has_hook(name) for name in WIRED_HOOKS}
 print(f"has_hook = {wired}")
 

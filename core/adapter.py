@@ -206,6 +206,20 @@ def _cfg_int(key: str, default: int = 0) -> int:
         return default
 
 
+def _log_degrade_once(tier: str) -> None:
+    """卡片降载日志 —— **限流**：60 秒最多一条。
+
+    降载是在每个流式帧上判定的，不限流的话超预算期间每秒会刷 4 条
+    （本项目自己的约定是诊断日志必须限流，见 _log_empty_panel_once）。
+    """
+    now = time.monotonic()
+    if now - getattr(_log_degrade_once, "_at", 0.0) < 60.0:
+        return
+    _log_degrade_once._at = now
+    logger.warning("[larkdeck] 卡片超字节预算，降载档位=%s（正文不截断；"
+                   "若仍发不出会回落官方分块）", tier)
+
+
 def _log_empty_panel_once() -> None:
     """面板为空时记一条限流 INFO（排查「钩子没数据」用；60 秒最多一条）。"""
     now = time.monotonic()
@@ -334,8 +348,13 @@ class LarkDeckMixin:
             return None
 
     @classmethod
-    def _ld_panel(cls) -> Optional[Dict[str, Any]]:
+    def _ld_panel(cls, chat_id: str = "") -> Optional[Dict[str, Any]]:
         """底部折叠面板：推理过程 + 工具步骤（数据来自 :mod:`larkdeck.core.panel`）。
+
+        ``chat_id`` 决定面板归属：由 ``pre_gateway_dispatch`` 观察到的
+        ``chat_id -> session_id`` 映射给出**确定性**归属，并发会话不再串台。
+        拿不到映射时（新会话首回合 / 老版本 Hermes）自动退回「最近活跃会话」的旧行为
+        —— **归属失败绝不能导致面板不渲染**。
 
         没有数据（钩子未触发 / reasoning 未开启 / 面板关掉）就返回 ``None``，
         ``reply_card`` 会自然跳过这个元素。与页脚同理：**任何情况下不抛异常**，
@@ -344,7 +363,7 @@ class LarkDeckMixin:
         try:
             if not _cfg("unified_panel"):
                 return None
-            snap = _panel.snapshot()
+            snap = _panel.snapshot(chat_id)
             if not snap:
                 _log_empty_panel_once()
                 return None
@@ -385,8 +404,7 @@ class LarkDeckMixin:
         card, tier = _cards.fit_reply_card(content, streaming=streaming,
                                            panel=panel, footer=footer)
         if tier != "ok":
-            logger.info("[larkdeck] 卡片超字节预算，降载档位=%s（正文不截断，"
-                        "若仍发不出会回落官方分块）", tier)
+            _log_degrade_once(tier)
         return card
 
     # ---------------------------------------------------------------- 发送原语
@@ -434,7 +452,8 @@ class LarkDeckMixin:
             # edit_message 按 t0 计算。之前这里传的是 time.monotonic()，等于
             # 恒等于 0.0s —— 属于白占一个字段，顺手修掉。
             card = self._ld_build_card(content, streaming=False,
-                                       panel=self._ld_panel(), footer=self._ld_footer())
+                                       panel=self._ld_panel(chat_id),
+                                       footer=self._ld_footer())
             result = await self._ld_send_card(chat_id, card, reply_to=reply_to, metadata=metadata)
             if result is not None and getattr(result, "success", False):
                 self._ld_track(getattr(result, "message_id", "") or "", chat_id)
@@ -455,7 +474,7 @@ class LarkDeckMixin:
         try:
             card = self._ld_build_card(
                 content, streaming=not finalize,
-                panel=self._ld_panel(),
+                panel=self._ld_panel(chat_id),
                 footer=self._ld_footer(state.get("t0")),
             )
             result = await self._ld_update_card(chat_id, message_id, card)
@@ -516,7 +535,8 @@ class LarkDeckMixin:
                 # 没有活跃流可收尾：交核心回落（send/edit 会正常发出）。
                 return False
             card = self._ld_build_card(display, streaming=True,
-                                       panel=self._ld_panel(), footer=self._ld_footer(now))
+                                       panel=self._ld_panel(chat),
+                                       footer=self._ld_footer(now))
             result = await self._ld_send_card(chat, card, reply_to=reply_to)
             if result is None or not getattr(result, "success", False):
                 return False
@@ -530,7 +550,7 @@ class LarkDeckMixin:
         message_id = state["message_id"]
         if finalize:
             card = self._ld_build_card(display or " ", streaming=False,
-                                       panel=self._ld_panel(),
+                                       panel=self._ld_panel(chat),
                                        footer=self._ld_footer(state.get("t0")))
             result = await self._ld_update_card(chat, message_id, card)
             if result is None or not getattr(result, "success", False):
@@ -545,7 +565,7 @@ class LarkDeckMixin:
                 and now - last_at < _STREAM_MIN_INTERVAL):
             return True  # 节流窗口内的中间帧：跳过，等下个 tick（首帧不节流）
         card = self._ld_build_card(display, streaming=True,
-                                   panel=self._ld_panel(),
+                                   panel=self._ld_panel(chat),
                                    footer=self._ld_footer(state.get("t0")))
         result = await self._ld_update_card(chat, message_id, card)
         if result is None or not getattr(result, "success", False):

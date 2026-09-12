@@ -307,3 +307,7 @@ def reset() -> None:
     with _LOCK:
         _LATEST.clear()
         _MAX_CACHE.clear()
+        # 也清掉探测状态：否则一次失败探测留下的 300s 退避会被下一个测试/探针继承，
+        # 表现为「怎么探测都不触发」。
+        _RETRY_AFTER.clear()
+        _INFLIGHT.clear()

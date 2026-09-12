@@ -316,19 +316,33 @@ def main(argv: list) -> int:
 
     cases = build_cases(cards) + build_bilingual_cases(cards) + build_footer_cases(cards)
     ok = True
+    byte_report: list = []
     for label, card in cases:
         code, msg, mid = send(client, chat, card)
         dialect = card.get("schema", "1.0(legacy)")
         status = "✅" if code == 0 else "❌"
         if code != 0:
             ok = False
+        # 字节数必须量出来 —— 这是 `cards.CARD_BYTE_BUDGET` 的唯一权威来源。
+        # 注意量纲是 **utf-8 字节**，不是字符（汉字 3 字节，按字符估会低估 3 倍）。
+        nbytes = len(json.dumps(card, ensure_ascii=False).encode("utf-8"))
+        byte_report.append((label, nbytes, code))
         print(f"{status} {label}")
-        print(f"     方言={dialect}  code={code}  msg={msg}  id={mid}")
+        print(f"     方言={dialect}  code={code}  msg={msg}  id={mid}  字节={nbytes}")
         if code != 0:
             one_line = json.dumps(card, ensure_ascii=False)
             print(f"     被拒卡片({len(one_line)} 字符): {one_line[:900]}")
         else:
             _save_sent_ids(_load_sent_ids() + [mid])
+
+    # 把「飞书接受过的最大字节数」打成一行，方便直接更新 CARD_BYTE_BUDGET。
+    if byte_report:
+        accepted = [(n, lb) for lb, n, code in byte_report if code == 0]
+        if accepted:
+            top = max(accepted)
+            print()
+            print(f"📏 飞书本轮接受的最大卡片 = {top[0]} 字节（{top[1]}）")
+            print(f"   → `core/cards.py` 的 CARD_BYTE_BUDGET 应不小于这个数的一个安全倍数")
 
     print()
     print("全部被飞书接收 ✅ —— 去飞书 DM 看九张卡（③ 记得点一下三角箭头；⑤⑥ 是双语互换实验，看到英文说明 i18n 生效；⑦⑧⑨ 是页脚三样式对照）" if ok

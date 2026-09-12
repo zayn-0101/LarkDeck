@@ -69,6 +69,35 @@ def _on_stream_delta(**payload: Any) -> None:
         logger.debug("[larkdeck] on_stream_delta 采集忽略了一次异常", exc_info=True)
 
 
+def _on_pre_gateway_dispatch(**payload: Any) -> None:
+    """观察入站消息的**会话归属**（``chat_id -> session_id``）。
+
+    为什么需要：钩子载荷只有 ``session_id``，而适配器渲染卡片时只有 ``chat_id``；
+    两侧的 ``turn_id`` 还是两套不相干的命名空间（见 ``panel.snapshot`` 的警告块）。
+    这个钩子恰好同时给出 ``event.source``（含 chat_id）与 ``session_store``，
+    于是能把两者对上 —— 面板归属从此是**确定性**的，不再靠「最近活跃」猜。
+
+    ⚠️ **必须恒返回 None**：这是个能干预分发的钩子（返回 ``{"action": "skip"}`` 会丢消息、
+    ``"rewrite"`` 会改文本），我们只观察。它在 **auth 之前**、每条入站消息都会跑，
+    所以只做「只读查一次 store + 写一次内存」，不做任何 I/O、不改任何东西。
+    """
+    try:
+        source = getattr(payload.get("event"), "source", None)
+        store = payload.get("session_store")
+        if source is None or store is None:
+            return
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        if not chat_id:
+            return
+        # 只读查找：绝不调 get_or_create_session（那会在 auth 之前给未授权发送者建会话）
+        session_id = _compat.lookup_session_id(
+            store, _compat.session_key_for_source(source, store))
+        if session_id:
+            _panel.bind_chat_session(chat_id, session_id)
+    except Exception:  # pragma: no cover - 防御性：钩子绝不能抛
+        logger.debug("[larkdeck] 会话归属观察忽略了一次异常", exc_info=True)
+
+
 def _log_pre_tool_once(tool_name: str, session_id: str) -> None:
     """诊断限流：60 秒内只记一条，证明 pre_tool_call 真的触达了本插件。"""
     now = time.monotonic()
@@ -121,6 +150,9 @@ SUBSCRIPTIONS: Tuple[Tuple[str, Callable[..., Any]], ...] = (
     # 工具生命周期（面板里的工具步骤；pre 为 fail-closed，回调极小）
     ("pre_tool_call", _on_pre_tool_call),
     ("post_tool_call", _on_post_tool_call),
+    # 入站消息的会话归属（chat_id -> session_id）—— 让卡片能确定地找到自己的会话。
+    # 这个钩子能干预分发，我们**只观察、恒返回 None**。
+    ("pre_gateway_dispatch", _on_pre_gateway_dispatch),
 )
 
 

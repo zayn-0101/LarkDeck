@@ -55,7 +55,7 @@ core/         插件本体（Hermes 加载器以 hermes_plugins.larkdeck.core.* 
   compat.py     版本 / 能力探测 —— Hermes 私有名的唯一存放处
   context.py    运行时指标（钩子写入 → 页脚读取的进程内全局快照）
   panel.py      面板数据层（推理 / 工具钩子写入 → 卡片面板读取；按会话分桶 + 最近活跃取用）
-  hooks.py      官方钩子订阅（5 个观察型钩子）：只写内存、异常自吞、永不返回 directive
+  hooks.py      官方钩子订阅（6 个观察型钩子）：只写内存、异常自吞、永不返回 directive
 install.sh    安装脚本（默认软链；NAS 用 --copy，其 FILES 数组是手动的，新增模块要同步）
 docs/         踩坑与开工索引、指标钩子原理、部署与迁移步骤
 tests/        见「验证」
