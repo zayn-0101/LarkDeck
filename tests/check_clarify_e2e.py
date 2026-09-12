@@ -256,6 +256,27 @@ async def scenario():
               "输入框的答案没有落在它自己那个澄清上")
         check(cg._entries[cid_new].response == "立即回滚",
               f"输入框答案解析不对：{cg._entries[cid_new].response!r}")
+
+        # —— 输入框里输入**散文**（不是编号、不是选项原文）：必须也能作答 ——
+        # 审计 P2：卡片上写着「直接输入你的答案」，但服务端没人把它切成「等待文字输入」，
+        # 核心的判据对「选项题 + 散文」返回 rejected_prose ⇒ 用户打了字、回车、
+        # **什么都没发生也没有提示**。1.0 路径没这个问题（用户得先点「其他」按钮）。
+        cid_prose, skey_prose = "cid-e2e-prose", "sk-6"
+        cg.register(cid_prose, skey_prose, "还有什么要补充？", ["没有", "有"])
+        await adapter.send_clarify("oc_test", "还有什么要补充？", ["没有", "有"],
+                                   cid_prose, skey_prose, )
+        prose_value = {"larkdeck_action": "clarify", "clarify_id": cid_prose,
+                       "session_key": skey_prose, "question": "还有什么要补充？"}
+        click6 = NS(event=NS(action=NS(value=prose_value, option=None, options=None,
+                                       input_value="我想先观察一下再说"),
+                             operator=NS(open_id="ou_zayn"),
+                             context=NS(open_message_id="om_e2e_6", chat_id="oc_test")))
+        adapter._on_card_action_trigger(click6)
+        await asyncio.sleep(0.3)
+        check(cg._entries[cid_prose].event.is_set() is True,
+              "输入框里的散文没有被接受（打了字、回车、什么都没发生）")
+        check(cg._entries[cid_prose].response == "我想先观察一下再说",
+              f"散文答案被改写了：{cg._entries[cid_prose].response!r}")
     finally:
         ld_mod._CONFIG["clarify_dialect"] = "1.0"
 

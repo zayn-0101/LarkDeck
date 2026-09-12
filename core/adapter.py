@@ -71,13 +71,15 @@ ACTION_CLARIFY = "clarify"
 #: 追踪中的卡片上限，防止长跑会话无限增长。
 _MAX_TRACKED = 512
 
-#: 为「中止重绘」保留的正文长度上限（字符）。只用于非 native 路径把卡片重绘成中止态。
+#: 为「中止重绘」保留正文的上限，**按 utf-8 字节**（= 卡片自己那份字节预算的口径）。
 #:
-#: 超过就不保留 —— 但这**不是**一次可见的降级：正文超过 ~1.3 万汉字时卡片本身已经超
-#: `CARD_BYTE_BUDGET`（40000 字节）而降载，最终会按不变量 2 回落官方分块发送
-#: （多条纯文本），那张卡本来就不存在了。所以「超长正文没有中止色」是空集，
-#: 不值得为此长期驻留几十 KB。
-_MAX_TRACKED_TEXT = 20000
+#: ⚠️ 这里原本写的是 **20000 字符**，并且超限时**静默**把正文清空 —— 2026-09-13 审计
+#: 实测出一个真缺陷：一张 20500 字符的**英文**正文（≈20.5KB，远在 40000 字节预算之内、
+#: 卡片渲染得好好的）在非 native 路径上 `/stop` 时 **patch 调用数 = 0**：卡片不变色、
+#: 内存里 status 已经是 stopped、而且**一行日志都没有**。这正是本项目最怕的静默形态。
+#: 修正：口径与卡片预算对齐（能上卡的正文就存得下），超限时**必须留日志**。
+#: 内存上界 = 「每个 chat 只留最近一张卡」× 40000 字节（见 :meth:`_ld_track`）。
+_MAX_TRACKED_TEXT = _cards.CARD_BYTE_BUDGET
 
 #: native 流式：并发回合上限 + 帧节流窗口（秒）。帧率过高会触发飞书限流，
 #: 窗口内的中间帧直接跳过（返回 True 但不下发；下个 tick 文本变了会重试）。
@@ -260,6 +262,17 @@ def _cfg_int(key: str, default: int = 0) -> int:
         return default
 
 
+def _log_note_text_skipped(size: int) -> None:
+    """正文太大、无法为「中止重绘」保留 —— 限流告警（60 秒一条），绝不静默。"""
+    now = time.monotonic()
+    if now - getattr(_log_note_text_skipped, "_at", 0.0) < 60.0:
+        return
+    _log_note_text_skipped._at = now  # type: ignore[attr-defined]
+    logger.warning("[larkdeck] 正文 %d 字符超过 %d 字节预算，未为「中止重绘」保留副本"
+                   "—— 若本回合掉过 native，/stop 时这张卡不会变成中止色",
+                   size, _MAX_TRACKED_TEXT)
+
+
 def _log_degrade_once(tier: str, elements: int = 0) -> None:
     """卡片降载日志 —— **限流**：60 秒最多一条。
 
@@ -347,10 +360,13 @@ class LarkDeckMixin:
     def _ld_note_text(self, message_id: str, text: str) -> None:
         """记下这张卡最后渲染过的正文（供非 native 路径的「中止重绘」用）。
 
-        有上限：超长正文直接不存（宁可中止时不变色，也不要把几十 KB 的正文长期驻留内存）。
+        上限按 **utf-8 字节**、与卡片自己的字节预算同口径：能上卡的正文就存得下。
+        真正超限（> ``CARD_BYTE_BUDGET``）时**不静默**：留一条限流日志说明「中止时
+        这张卡不会变色」—— 静默降级是本项目的头号失败模式（这条就是审计实测出来的）。
         """
         body = str(text or "")
-        if len(body) > _MAX_TRACKED_TEXT:
+        if len(body.encode("utf-8", "ignore")) > _MAX_TRACKED_TEXT:
+            _log_note_text_skipped(len(body))
             body = ""
         with self._ld_lock:
             entry = self._ld_state.get(message_id)
@@ -895,7 +911,11 @@ class LarkDeckMixin:
         if keys:
             return await self._ld_redraw_stopped_keys(chat, keys)
         if fallback is None:
-            logger.debug("[larkdeck] 中止：这个 chat 没有可重绘的卡（可能还没建卡）")
+            # 提到 INFO：这一行是「中止后卡片为什么没变色」的唯一线索。
+            # 静默失败是本项目的头号失败模式，所以不留 debug。
+            logger.info("[larkdeck] 中止：这个 chat 没有可重绘的卡"
+                        "（`_ld_streams` 无本 chat 的流，且 `_ld_state` 里没有带正文的卡 —— "
+                        "可能还没建卡，或正文太大没保留副本）")
             return False
         _at, message_id, entry = fallback
         return await self._ld_redraw_one_stopped(chat, message_id, str(entry.get("last_text") or ""),
@@ -1193,10 +1213,19 @@ class LarkDeckMixin:
         session_key = str(value.get("session_key") or "")
 
         if mode == "text":
-            # 输入框的自由文本：用**核心自己的判据**解析（编号 / 标签 / 多选 / 无效选择），
-            # 但**必须限定在这一张卡的 clarify_id 上** —— 核心给「用户直接打字回复」用的
-            # 入口取的是该 session 最旧的待答澄清，同 session 两条待答时会答错问题
-            # （2026-09-13 审计实测）。自己拼答案则会把「1,3」当成一个叫「1,3」的选项。
+            # 输入框的自由文本。**两步，顺序不能反**：
+            #
+            # ① 先把这条澄清切成「等待文字输入」—— 用户点输入框本身就是 1.0 里「其他
+            #    （我直接输入）」那个按钮的等价物。不做这一步，核心的判据会对「选项题 +
+            #    散文」返回 `rejected_prose`：用户**打了字、回车、什么都没发生、也没有提示**
+            #    （2026-09-13 审计实测：输入「我想先观察一下再说」→ 不提交、只有 WARNING）。
+            # ② 再按**这张卡自己的** clarify_id 解析（编号 / 标签 / 多选都走核心规则）。
+            #    核心给「用户直接打字回复」用的入口取的是该 session 最旧的待答澄清，
+            #    同 session 两条待答时会答错问题，所以不能用它。
+            try:
+                _compat.clarify_mark_awaiting_text(clarify_id)
+            except Exception:  # pragma: no cover - 防御性
+                logger.debug("[larkdeck] 切换文字等待态失败", exc_info=True)
             outcome = _compat.clarify_text_answer(clarify_id, str(answer))
             if outcome != _compat.CLARIFY_TEXT_RESOLVED:
                 logger.warning("[larkdeck] 澄清输入框的内容没有被接受（%s · session=%s）"

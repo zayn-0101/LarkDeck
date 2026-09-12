@@ -576,12 +576,14 @@ def reply_card(answer: str, *, streaming: bool = False, panel: Optional[Dict[str
 #: 飞书 Card 2.0 的**硬上限**：整张卡里（含嵌套）带 ``tag`` 键的对象总数 ≤ 200。
 #: 超了不是「截断」，而是**整张卡完全不渲染**。
 #:
-#: **2026-09-13 真机实测（tests/probe_render.py --elements）**，不是抄来的：
-#:   * 递归实测 198 个元素 → ``code=0`` 收下；
-#:   * 递归实测 202 个元素 → **拒收**：``code=230099``，
-#:     ``ext=ErrCode: 11310; ErrMsg: element exceeds the limit``。
-#: 所以墙在 198~202 之间，官方口径的 200 成立；``230099`` 是**不可重试**的
-#: 确定性错误（同样内容重试必然同样失败），别把它塞进退避重试集合。
+#: **2026-09-13 真机实测（tests/probe_render.py --elements）**，不是抄来的。
+#: 探针按 (196, 200, 201, 204) 四档递进、递归计数后实际发出的是同样这四个数，
+#: 输出为：**196 ✅ · 200 ✅ · 201 ❌ · 204 ❌**（拒收时
+#: ``code=230099`` · ``ext=ErrCode: 11310; ErrMsg: element exceeds the limit``）。
+#: ⇒ 墙在 200/201 之间，官方口径的 200 成立。
+#: （早先这里写过「198 收下 / 202 拒收」—— 那是另一次阶梯的输出，与当前探针口径对不上，
+#: 已按可复现的数字改写。下一次飞书收紧上限时，用同一个阶梯就能复现新墙的位置。）
+#: ``230099`` 是**不可重试**的确定性错误（同样内容重试必然同样失败），别塞进退避集合。
 #:
 #: ⚠️ 计数必须是**递归数所有含 tag 的对象**，不是数 ``body.elements`` 的长度：
 #: 折叠面板里的每个 markdown 都算一个，只数顶层会低估几倍 —— 上面那两次实测用的
@@ -590,6 +592,22 @@ FEISHU_ELEMENT_LIMIT = 200
 
 #: 给正文 / 脚注 / 收尾留的余量（收尾帧会补脚注，不能刚好卡在 200）。
 _ELEMENT_LIMIT_RESERVE = 6
+
+#: 面板**之外**那张卡的固定元素数（递归口径）：正文 markdown 1 + 面板本体 1 +
+#: 面板标题 plain_text 1 + 面板标题的 icon 1 + 脚注 1 = 5。
+#: 面板能放多少个子元素必须用它来算，**不能**用「上限减个大概」——
+#: `panel_room` 与 `fit_reply_card` 的 `element_limit` 口径不一致时，会出现
+#: 「面板自己以为放得下、降载阶梯却把整块面板摘掉」的 3~4 个元素的缝
+#: （2026-09-13 审计实测：steps=190 → tier=no-panel、190 个元素的推理面板全没了）。
+_CARD_FIXED_ELEMENTS = 5
+
+#: 面板里可能出现的「…更早的 N 步已折叠」提示行，也要算进子元素预算。
+_PANEL_HINT_ELEMENTS = 1
+
+#: 面板**子元素**的可用额度：与 :func:`fit_reply_card` 的判据同源，保证「面板自认为
+#: 放得下」⇒「降载阶梯也认」。留 1 个给折叠提示，最终整卡正好落在 element_limit 上。
+_PANEL_CHILDREN_ROOM = (FEISHU_ELEMENT_LIMIT - _ELEMENT_LIMIT_RESERVE
+                        - _CARD_FIXED_ELEMENTS - _PANEL_HINT_ELEMENTS)
 
 #: 卡片 JSON 的 UTF-8 字节预算。飞书对 interactive 卡有大小上限，超了会被拒收。
 #: **量纲必须是字节**：``ensure_ascii=False`` 下汉字占 3 字节，按字符估会低估 3 倍。
@@ -707,8 +725,9 @@ def unified_panel(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
     # 面板**自己**也要为飞书的元素硬墙让路（见 :data:`FEISHU_ELEMENT_LIMIT`）：
     # 面板的元素 = 轮次行 + 步骤行 + 可能的折叠提示。`max_panel_steps` 是用户可配的，
     # 配大了会把整张卡顶废（超限是**整卡不渲染**，不是截断），所以这里先算可用额度。
-    # 这只是预防性的粗算 —— 真正的兜底在 :func:`fit_reply_card` 里递归数。
-    panel_room = max(2, FEISHU_ELEMENT_LIMIT - _ELEMENT_LIMIT_RESERVE - 2)
+    # 额度与 :func:`fit_reply_card` 的判据**同源**（`_PANEL_CHILDREN_ROOM`）：
+    # 面板自认为放得下 ⇒ 阶梯也认，不会出现「面板被整块摘掉」的缝。
+    panel_room = max(2, _PANEL_CHILDREN_ROOM)
 
     round_list = [item for item in rounds if isinstance(item, dict) and str(item.get("text") or "")]
     if round_list:
@@ -868,7 +887,10 @@ def clarify_card_2(question: str, choices: Sequence[str], *, clarify_id: str,
             "tag": "input",
             "label": _i18n.i18n_text("clarify.other"),
             "placeholder": {"tag": "plain_text", "content": _i18n.t("clarify.other_hint")},
-            "behaviors": [{"type": "callback", "value": {**value, "free_text": True}}],
+            # 只带路由键与澄清标识：**模式由载荷推导**（有 `action.input_value` 就是
+            # 自由文本），所以这里不再写一个没人读的 `free_text` 标志键
+            # （2026-09-13 审计：那个键全仓只有写入点、没有读取点）。
+            "behaviors": [{"type": "callback", "value": dict(value)}],
         })
     elements.append(footnote(_i18n.t("clarify.multi_hint" if multi else "clarify.hint")))
     return card(elements=elements, template="orange",

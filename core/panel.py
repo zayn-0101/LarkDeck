@@ -477,6 +477,10 @@ def mark_stopped(chat_id: str = "") -> str:
             return ""
         state["status"] = STATUS_STOPPED
         state["updated"] = now
+        # 唯一的写入口里也要顺手淘汰：`mark_stopped` 会为「绑定但还没建桶」的会话建桶，
+        # 不淘汰的话这些刚建的空桶会挤掉真实会话的槽位（审计实测：`_MAX_SESSIONS`
+        # 按 `updated` 淘汰，刚建的空桶更新、掉的是有内容的老会话）。
+        _purge_locked(now)
         return sid
 
 

@@ -2275,47 +2275,60 @@ def test_stop_redraw_cleans_up_and_reaches_non_native_cards():
 
 
 def test_stop_forwards_to_core_before_redrawing():
-    """中止必须**先转发给内核**再重绘卡片 —— 重绘抛异常也不能挡住内核的中止。
+    """中止必须**先转发给内核**再重绘卡片；且父类**只能被调用一次**。
 
-    审计实测：原来 super() 在重绘之后，而重绘里有 await（可能多次串行 patch、
-    `_run_blocking` 又没有超时），一旦这段被取消或挂住，`except Exception` 接不住
-    `CancelledError`（BaseException），内核的「置停止事件 + 停打字」就不会发生。
-    另外父类方法内部抛 `TypeError` 时，旧写法会把**父类调用两次**。
+    审计实测的两件事：
+      * 原来 super() 排在重绘之后，而重绘里有 await（可能多次串行 patch、`_run_blocking`
+        没有超时），一旦这段被取消或挂住，`except Exception` 接不住 `CancelledError`
+        （BaseException），内核的「置停止事件 + 停打字」就不会发生；
+      * 原来的运行时会兜 `except TypeError`，于是**父类内部**抛 TypeError 时会被跑第二遍
+        （重复置停止事件 / 停打字）。M06 变异证明「不再双跑」这条断言此前**结构上不可能失败**
+        ——这里让假父类在第一次调用时就抛，才真的验证到。
+    父类抛出的异常**照原样往上抛**（与「核心直接调父类」等价，不隐瞒），但此时不重绘 ——
+    中止是内核的职责，重绘是装饰，职责失败了就不该假装成功。
     """
     defaults = dict(adapter._DEFAULTS)
     try:
-        panel.reset()
-        raw = _make()
-        order: list = []
+        for parent_raises in (False, True):
+            panel.reset()
+            raw = _make()
+            order: list = []
+            calls: list = []
 
-        async def boom(chat_id):
-            order.append("redraw")
-            raise RuntimeError("网络炸了")
+            async def boom(chat_id):
+                order.append("redraw")
+                raise RuntimeError("重绘失败")
 
-        original_forward = raw.interrupt_session_activity
+            async def fake_super(self, session_key, chat_id, metadata=None):
+                order.append("super")
+                calls.append((session_key, chat_id, metadata))
+                if parent_raises:
+                    raise TypeError("父类内部抛的 TypeError（不是签名不匹配）")
 
-        def spy_super(self, session_key, chat_id, metadata=None):
-            order.append("super")
-            return original_forward.__get__(self, type(self))
+            raw._ld_redraw_stopped = boom
+            original = StubAdapter.interrupt_session_activity
+            StubAdapter.interrupt_session_activity = fake_super
+            try:
+                if parent_raises:
+                    try:
+                        _run(raw.interrupt_session_activity("sk", "oc_1", metadata={"k": 1}))
+                    except TypeError:
+                        pass  # 与「核心直接调父类」等价，允许上抛
+                else:
+                    _run(raw.interrupt_session_activity("sk", "oc_1", metadata={"k": 1}))
+            finally:
+                StubAdapter.interrupt_session_activity = original
 
-        raw._ld_redraw_stopped = boom
-        super_method = StubAdapter.interrupt_session_activity
-        calls: list = []
-
-        async def fake_super(self, session_key, chat_id, metadata=None):
-            order.append("super")
-            calls.append((session_key, chat_id, metadata))
-
-        StubAdapter.interrupt_session_activity = fake_super
-        try:
-            _run(raw.interrupt_session_activity("sk", "oc_1", metadata={"k": 1}))
-        finally:
-            StubAdapter.interrupt_session_activity = super_method
-
-        assert calls == [("sk", "oc_1", {"k": 1})], f"内核的中止没被正确转发：{calls!r}"
-        assert order and order[0] == "super", f"转发必须排在重绘之前：{order!r}"
-        assert "redraw" in order, "重绘没被尝试"
-        assert len(calls) == 1, f"父类被调用了两次：{calls!r}"
+            assert len(calls) == 1, f"父类被调用了两次：{calls!r}"
+            assert calls[0][:2] == ("sk", "oc_1"), f"内核的中止没被正确转发：{calls!r}"
+            assert calls[0][2] == {"k": 1}, f"metadata 被丢了：{calls!r}"
+            assert order[0] == "super", f"转发必须排在重绘之前：{order!r}"
+            if parent_raises:
+                assert "redraw" not in order, "父类抛异常后不该继续假装成功"
+            else:
+                assert "redraw" in order, "父类正常时重绘必须发生"
+            # 两种情况下状态都已经先写好了（写状态是最廉价、不会失败的一步）
+            assert order[0] == "super"
     finally:
         panel.reset()
         adapter._CONFIG.clear()
@@ -2501,6 +2514,113 @@ def test_streaming_config_only_on_streaming_frames():
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)
         adapter._apply_metrics_config()
+
+
+def test_long_body_still_redraws_on_stop_and_never_degrades_silently():
+    """审计 P1 的回归：正文很长时 `/stop` 也必须能重绘；实在存不下要**留痕**。
+
+    原缺陷（本轮修掉）：`_ld_note_text` 用 **20000 字符**做闸门，超了就**静默**把正文清空
+    ⇒ `_ld_redraw_stopped` 的非 native 回退分支一个候选都找不到 ⇒ `/stop` 之后卡片
+    **一次 patch 都不发**、颜色不变、**零日志**。触发条件是真实可达的：20500 个**英文**
+    字符（≈20.5KB，远在 40000 字节预算之内、卡片渲染得好好的）+ 本回合掉过 native。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    try:
+        # ① 20.5k 字符的英文正文：能上卡 ⇒ 必须保留 ⇒ `/stop` 必须重绘出黄边
+        panel.reset()
+        raw = _make()
+        updates = _wire_patch(raw)
+        _run(raw.send("oc_1", "x" * 20500))
+        assert raw._ld_state, "（前提）卡应当被追踪"
+        _run(raw.interrupt_session_activity("sk", "oc_1"))
+        assert updates, "长正文的卡在 /stop 时没有重绘（原来的静默缺陷）"
+        assert "yellow" in json.dumps(json.loads(updates[-1]["content"]), ensure_ascii=False)
+
+        # ② 超过字节预算（存不下）：允许不存，但**必须留一条日志**（不许静默）
+        panel.reset()
+        adapter.LarkDeckMixin._ld_note_text._seen = None
+        raw2 = _make()
+        _wire_patch(raw2)
+        huge = "汉" * (adapter._cards.CARD_BYTE_BUDGET // 3 + 500)  # 超出字节预算
+        with _LogCapture("larkdeck") as records:
+            _run(raw2.send("oc_2", huge))
+        text = _log_text(records)
+        assert "未为「中止重绘」保留副本" in text, f"存不下时必须留痕，实得：{text!r}"
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_stop_redraws_the_most_recently_used_card_and_keeps_one_copy_per_chat():
+    """一个 chat 里有多张追踪卡时的两条性质（别把两条混成一条）。
+
+    审计的 M11 变异（删掉 `_ld_track` 里「清同 chat 其它卡的 `last_text`」那行）四条门禁
+    全绿。我第一版回归测试写错了断言 —— 它假设「一定挑最新**创建**的那张」，而代码实际是
+    「挑最近**用过**的那张」（`_ld_known` 每次编辑都会刷新 `last`），所以那条变异照样绿。
+    真实的两条性质是（第一条由 `_ld_track` 保证、第二条由 `_ld_redraw_stopped` 保证）：
+      * **内存**：**新建卡**时把同 chat 其它卡的正文本清掉（所以「发了两张卡」之后只剩一张有正文）；
+      * **选择**：重绘打给最近**用过**的那张卡（`last` 最新，编辑会刷新它），
+        而不是「最新创建」的那张 —— 在屏上被更新的那张才是该重绘的。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    try:
+        panel.reset()
+        raw = _make()
+        raw._ld_build_patch_request = lambda *, message_id, content: {
+            "message_id": message_id, "content": content}
+        results = iter([{"code": 0, "data": {"message_id": "om_old"}},
+                        {"code": 0, "data": {"message_id": "om_new"}}])
+
+        async def _send(*, chat_id, msg_type, payload, reply_to, metadata):
+            return next(results)
+
+        seen: list = []
+        raw._feishu_send_with_retry = _send
+        raw._client.im.v1.message.patch = lambda request: (
+            seen.append(request["message_id"]) or {"code": 0, "data": {"message_id": "om_x"}})
+
+        _run(raw.send("oc_1", "第一张卡"))
+        _run(raw.send("oc_1", "第二张卡"))
+        assert set(raw._ld_state) == {"om_old", "om_new"}, raw._ld_state
+
+        # ① 内存：每个 chat 只留一张卡的正文本
+        kept = [mid for mid, value in raw._ld_state.items()
+                if value.get("chat_id") == "oc_1" and value.get("last_text")]
+        assert kept == ["om_new"], f"每个 chat 只应保留最近一张卡的正文，实得 {kept!r}"
+
+        # ② 行为：重绘打给**唯一还留着正文**的那张（也就是最近一次真正渲染过正文的卡）
+        _run(raw.interrupt_session_activity("sk", "oc_1"))
+        assert seen == ["om_new"], f"重绘应当打给留着正文的那张卡：{seen!r}"
+
+        # ③ 选择：旧卡被重新编辑后，它就成了「最近渲染过正文的那张」——重绘要跟着它走
+        #    （选择用的是 `last`，不是创建时刻；`_ld_known`/编辑都会刷新 `last`）
+        # 注意：`edit_message` 自己也会 patch（那是它在更新卡片），所以清空要放在它**之后**
+        _run(raw.edit_message("oc_1", "om_old", "旧卡被更新了"))
+        seen.clear()
+        _run(raw.interrupt_session_activity("sk", "oc_1"))
+        assert seen == ["om_old"], f"重绘应当跟着「最近用过的那张卡」走：{seen!r}"
+    finally:
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_stream_leak_threshold_stays_hour_scale():
+    """`_STREAM_LEAK_SECONDS` 必须是**小时级** —— 这个常量本身就是那条纪律的证据。
+
+    审计的 M29：把它降到 1 秒，四条门禁全绿（旧测试用常量自身构造数据，对取值不敏感）。
+    而这个常量的意义恰恰是「只回收真正泄漏的流，绝不按最近活动淘汰」——
+    一个跑十分钟工具的回合期间，`last_at` 根本不推进，看起来「很陈旧」但正活跃；
+    阈值太小就会踢掉活跃流，下一帧查不到状态就**另发一张新卡**（重复卡 + 老卡停在流式态）。
+    """
+    assert adapter._STREAM_LEAK_SECONDS >= 600, \
+        f"阈值太小会把活跃回合当成泄漏：{adapter._STREAM_LEAK_SECONDS}"
 
 
 def test_panel_concurrent_writes_are_safe():
