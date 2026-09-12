@@ -465,6 +465,9 @@
 
 「验证到什么程度」分三档，**不要混着说**：
 **A 本地门禁**（单测/结构检查能自证）· **B 真机 API**（`probe_render.py` 真发到飞书，返回码说了算）·
+**E 回合序列门禁**（`tests/check_hooks.py` 的「完整回合的可见帧序列」：真适配器类 + 录音客户端，
+按生产路径 `send_stream_frame` / `interrupt_session_activity` 断言用户依次看到的每一帧：
+seed 占位 → 面板出现 → 占位消失 → 收尾绿边且关 streaming_mode → `/stop` 黄边）。
 **D 真机端到端**（走生产适配器路径 + 真飞书 API，断言用户可见的那部分结果：
 `tests/probe_render.py --stop-redraw` —— 它**两条重绘路径都跑**：非 native（`send` + patch）
 与真 native 流式（`send_stream_frame` 建卡 → 若干帧 → `/stop`）。2026-09-13 实测两条都通过：
@@ -473,16 +476,18 @@
 
 | # | 效果 | 实现位置 | 默认 | 验证到 |
 |---|---|---|---|---|
-| 1a | 即时响应（首帧早于首个 token） | native seed 帧（核心契约，`stream_frame("")` 建卡） | 开 | **A**（单测覆盖 seed 帧生命周期） |
+| 1a | 即时响应（首帧早于首个 token） | native seed 帧（核心契约，`stream_frame("")` 建卡）+ 等待期占位文案 | 开 | **A** + **E**（seed 帧必须带占位且 `streaming_mode: true`）+ 真机 `code=0`（探针 ⓪ 号卡） |
 | 1b | 打字机 | `cards.streaming_config()` + 配置 `streaming_print_ms`（15） | 开 | **B**（飞书接受字段，create/patch 都是 `code=0`）+ **B′**（CardKit 实体链**每一步**实测 `code=0`：`card.create` → 发实体卡 → `card_element.content` × 8 → `settings` 收尾；见 `--cardkit`）+ **C 待定**（动画本身；两条传输的公平对照已留在 DM 里等人看） |
 | 1c | 无输入提示 | 覆盖 `_reactions_enabled()`（配置 `reactions`，默认保持 Hermes 行为） | 保持 | **A**（覆盖逻辑 + **尊重父类** + 私有名已登记进 `compat.REACTION_ADAPTER_ATTRS` 并在启动自检里上报；此前「父类缺失」那条路无门禁，第六路审计指出后已补） |
-| 2 | 完成态绿色面板 | `on_session_end` → `panel.record_turn_end` → `cards.border_for_status` | 开 | **A** + **B**（三种状态色的探针卡都被飞书接受）+ **D**（超预算档也保住颜色：`--stop-redraw` 真机实测载荷里有色、`code=0`） |
-| 3 | 中止黄边 / 报错红边 | 同上 + 覆盖 `interrupt_session_activity` 自己重绘 | 开 | **A**（含「空回合也要画出黄边」「必须落在绑定会话」）+ **B** + **D**（**60000 字节正文**的卡：正文留住 + 载荷带黄边 + 飞书 `code=0`，真机端到端；见第十四轮） |
-| 4 | 展开面板 + 每轮相对耗时 | `cards.unified_panel`（`第 N 轮 · 6.2s`）+ `panel_expanded` | 收起 | **A** + **B** + **C 待定**（展开/收起的观感） |
+| 2 | 完成态绿色面板 | `on_session_end` → `panel.record_turn_end` → `cards.border_for_status` | 开 | **A** + **B**（三种状态色的探针卡都被飞书接受）+ **D**（超预算档也保住颜色：`--stop-redraw` 真机实测载荷里有色、`code=0`）+ **E**（收尾帧必须绿边、必须关 `streaming_mode`、不许带占位） |
+| 3 | 中止黄边 / 报错红边 | 同上 + 覆盖 `interrupt_session_activity` 自己重绘 | 开 | **A**（含「空回合也要画出黄边」「必须落在绑定会话」）+ **B** + **D**（**60000 字节正文**的卡：正文留住 + 载荷带黄边 + 飞书 `code=0`，真机端到端；见第十四轮）+ **E**（`/stop` 之后至少一次写入且载荷含中止色） |
+| 4 | 展开面板 + 每轮相对耗时 | `cards.unified_panel`（`第 N 轮 · 6.2s`）+ `panel_expanded` | 收起 | **A** + **B** + **E**（正文一开始面板就得在、标题含 `⏱`）+ **C 待定**（展开/收起的观感） |
 | 5 | Clarify 2.0 选项卡 | `cards.clarify_card_2`（`select_static` / `multi_select_static` / `input` + 组件级 `behaviors`） | `clarify_dialect: "1.0"` | **B**（真 2.0 卡飞书接受）+ **C 待定**（点一次确证回调到服务端后再翻默认） |
 | 6 | Clarify 回填 + 确认徽章 | `clarify_resolved_card` / `_2`（✅ + 答案 + 用户） | 开 | **A**（含「提交未生效不回填」）+ **B**（回填帧的响应形式与官方示例一致） |
 
-**剩下要人看的三处（C 档）**：打字机动画（`--typing`）、面板展开观感、2.0 澄清卡点击。
+**剩下要人看的三处（C 档）**：打字机动画（`--typing`，或 `--cardkit` 的甲/乙对照卡）、
+面板展开观感、2.0 澄清卡点击。**这三处是纯客户端行为，API 返回码永远看不到** ——
+本计划的全部机器证据（A/B/D/E 四档）止步于此，所以它们必须由人判，不能由代理声称通过。
 前两处**已经落地并在跑**，只是「好不好看」需要人判；第三处是**翻默认的前提**。
 
 ### 第四路审计（审「审计修复批次」本身）：1 阻断 + 3 必修，全部已修
