@@ -90,7 +90,7 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 | 流式卡片（一回合一张卡，工具进度合入同卡） | ✅ 走 Hermes 官方 native streaming 协议；失败自动回落到内置发送 |
 | 统一面板（推理 + 工具合并为一个可折叠底部面板） | ✅ 数据来自官方钩子（`on_stream_delta` / `pre_tool_call` / `post_tool_call`）；推理流需开启 Hermes 侧 `plugins.stream_reasoning_deltas` |
 | 澄清交互卡（按钮点击直接作答，不再手打选项） | ✅ |
-| 模型别名（`deepseek-v4-flash` → 你认得出来的名字） | ✅ |
+| 模型别名（可选：把 `deepseek-flash` 显示成你认得出来的名字；默认关闭） | ✅ |
 | 双语 UI（跟随飞书客户端语言） | ✅ 真机确证（2026-09-12）：互换实验证明客户端按 `i18n_content` 选语言 |
 | 页脚：模型名 + 上下文用量 + 耗时 | ✅ 真机渲染已确认 |
 | 上下文用量三样式（纯文字 / 图形条 / 数字+条） | ✅ 真机渲染已确认 |
@@ -116,10 +116,10 @@ plugins:
     - larkdeck
 ```
 
-重启网关即可。启动日志里会有一行自检结果：
+重启网关即可。启动日志里会有一行自检结果（下面是 0.21.1 实测原文）：
 
 ```
-[larkdeck] 自检通过：feishu 平台已由 larkdeck 接管（Hermes 0.21.1）
+[larkdeck] 启动自检通过：Hermes 0.21.1 · feishu 平台已由 larkdeck 接管 · 钩子 post_api_request/on_stream_start/on_stream_delta/pre_tool_call/post_tool_call
 ```
 
 如果自检失败，会打 `ERROR` 并**保持官方适配器原样工作** —— 卡片不生效，但飞书不会被弄坏。
@@ -203,14 +203,14 @@ LarkDeck 接管后才生效）。
 ## 已知限制
 
 - **必须和官方适配器同一进程**：官方 `feishu` 平台被禁用时，LarkDeck 无处附着。
-- **依赖官方适配器的内部方法**：发送/编辑路径 3 个必需（`_feishu_send_with_retry` 等，启动自检校验），点击回调路径 5 个（`_submit_on_loop`、`_card_response` 等）+ 澄清网关内部结构（`_lock` / `_entries` / `mark_awaiting_text`）。全部集中登记在 `compat.py`，并用 `probe_adapter_class()` / `probe_report()` 在运行时探测 —— 官方哪天改了名字，自检会直接报出来，而不是静默失效。
+- **依赖官方适配器的内部方法**：发送/编辑路径 3 个必需（`_feishu_send_with_retry` 等，启动自检校验），点击回调路径 5 个类属性 + 1 个实例属性（`_submit_on_loop`、`_card_response` 等）+ 澄清网关内部结构（`_lock` / `_entries` / `mark_awaiting_text`）。全部集中登记在 `compat.py`，并用 `probe_adapter_class()` / `probe_report()` 在运行时探测 —— 官方哪天改了名字，自检会直接报出来，而不是静默失效。
 - ~~**`i18n_content` 的元素级支持需真机确认**~~ → **已实测确认**（2026-09-12）：
   文本元素同时带 `content` 与 `i18n_content`，1.0 与 2.0 卡均被飞书接受；
   1.0 的 header title 与按钮 text 也接受且生效。**互换实验**（把 `zh_cn` 分支里放英文）
   在中文客户端上显示出英文，证明客户端确实按 `i18n_content` 选语言，而不是永远读默认值。
   兜底仍然安全：客户端不认时回落到 `content`，不会让卡片发不出去。
   **注意 AI 生成的正文不翻译**，双语只覆盖界面文案。
-- 与 hermes-feishu-streaming-card（HFC）**不能共存**：两边都要接管 `feishu` 平台，且 HFC 还改了源码。切换步骤见 `docs/`。
+- 与 hermes-feishu-streaming-card（HFC）**不能共存**：两边都要接管 `feishu` 平台，且 HFC 还改了源码。切换步骤见 [`docs/switch-from-hfc.md`](docs/switch-from-hfc.md)。
 - **页脚数据是进程内全局的**：钩子记录的是「最近一次 API 请求」，多会话并发时所有卡片共享同一份快照。单用户单会话无影响；真要按会话隔离，得从钩子载荷里的 `session_id` 分桶，目前没做。
 - **面板按「最近活跃会话」取用**：钩子载荷只有 `session_id`、没有 chat_id，卡片渲染时无法确定自己属于哪个会话，只能取最近有活动的那个。多会话并发时面板可能短暂显示另一个会话的推理/工具（正文与页脚不受影响）；单会话无感。
 

@@ -1,7 +1,7 @@
 # AGENTS.md — larkdeck
 
 > Hermes Agent 的飞书流式卡片插件。中文日常叫法「卡组」。
-> 使用者文档在 `README.md`；从 HFC 迁移步骤在 `docs/switch-from-hfc.md`。
+> 使用者文档在 `README.md`；踩坑记录与开工索引在 `docs/lessons.md`；原理与部署在 `docs/`。
 > 全局人格与安全红线见 `~/.hermes/SOUL.md`；本文件只加项目内规则。
 
 ## 不变量（改动前必读）
@@ -16,9 +16,9 @@
    自动回退 edit/send —— 这条 fail-open 链是官方契约，别绕过、别在帧里吞掉回落。
 3. **Hermes 私有接口只允许出现在 `compat.py`。** 目前分三组登记：适配器必需 3 个
    （`REQUIRED_ADAPTER_ATTRS`，`probe_adapter_class()` 运行时校验，缺了拒绝覆盖）；
-   点击回调路径 5 个（`CALLBACK_ADAPTER_ATTRS` + 实例属性 `CALLBACK_INSTANCE_ATTRS`，
-   只探测上报 —— 缺了不致命但澄清按钮会静默失灵）；澄清网关内部结构
-   （`_lock` / `_entries` / `mark_awaiting_text` / `resolve_gateway_clarify`，
+   点击回调路径 5 个类属性（`CALLBACK_ADAPTER_ATTRS`）+ 1 个实例属性
+   （`CALLBACK_INSTANCE_ATTRS`，只探测上报 —— 缺了不致命但澄清按钮会静默失灵）；
+   澄清网关内部结构（`_lock` / `_entries` / `mark_awaiting_text` / `resolve_gateway_clarify`，
    已封装成 `clarify_multi_select()` 等函数）。新增依赖一律先登记。
 4. **不假设版本。** Mac 与 NAS 都跑 Hermes 0.21.1（NAS 是镜像内固定版本），升级随时会发生。
    能力一律运行时探测，不写死版本号分支。
@@ -42,7 +42,7 @@ core/         插件本体（Hermes 加载器以 hermes_plugins.larkdeck.core.* 
   panel.py      面板数据层（推理 / 工具钩子写入 → 卡片面板读取；按会话分桶 + 最近活跃取用）
   hooks.py      官方钩子订阅（5 个观察型钩子）：只写内存、异常自吞、永不返回 directive
 install.sh    安装脚本（默认软链；NAS 用 --copy，其 FILES 数组是手动的，新增模块要同步）
-docs/         HFC 切换步骤、指标与钩子原理
+docs/         踩坑与开工索引、指标钩子原理、部署与迁移步骤
 tests/        见「验证」
 ```
 
@@ -93,11 +93,11 @@ python3 tests/check_clarify_e2e.py # 澄清卡端到端，必须打印 CLARIFY E
 
 ## 部署
 
-- **Mac**：`~/.hermes/plugins/larkdeck` 软链到本仓库（`./install.sh`），改代码即生效。
-- **NAS**：`/opt/data/plugins/larkdeck`（`HERMES_HOME=/opt/data`，bind 挂载，容器重建不丢）。
+- **Mac（现役）**：`~/.hermes/plugins/larkdeck` 软链到本仓库（`./install.sh`），改代码即生效。
+- **NAS（待装）**：`/opt/data/plugins/larkdeck`（`HERMES_HOME=/opt/data`，bind 挂载，容器重建不丢）。
   官方镜像源码在 `/opt/hermes`，**非持久** —— 这正是本项目存在的理由。
-- 两处**仍装着 HFC**，NAS 上靠 `/opt/data/scripts/hermes-scheme2-bootstrap.sh` 每次容器
-  启动重新注入 8 个核心文件。切到 larkdeck 必须先拆掉那个脚本，否则每次开机把 HFC 装回来。
+  装之前先读 `docs/switch-from-hfc.md`：那边有一步是拆掉容器启动期的源码注入脚本，
+  不拆的话每次开机都会把旧注入打回 `/opt/hermes`，直接顶掉本插件。
 
 ## 红线
 

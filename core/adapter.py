@@ -19,10 +19,11 @@ CPython 允许改 ``__class__`` 的前提之一是「新类的**直接基类链*
 
 按钮回调为什么能接上
 --------------------
-内置适配器在 ``_prepare_client()`` 里用
-``register_p2_card_action_trigger(self._on_card_action_trigger)`` 注册**绑定方法**，
-而 ``_prepare_client()`` 由 ``connect()`` 调用 —— 晚于我们构造实例的时机。所以那一刻
-按 MRO 解析出的就是本类的实现。若哪天内置改成在 ``__init__`` 里注册，这里就会静默失效，
+内置适配器在 ``_prepare_client()`` → ``_build_event_handler()`` 里用
+``register_p2_card_action_trigger(self._on_card_action_trigger)`` 注册**绑定方法**
+（0.21.1 实测：注册点写在 ``_build_event_handler``，由 ``_prepare_client`` 调用，
+而 ``_prepare_client`` 又晚于我们构造实例的时机）。所以那一刻按 MRO 解析出的就是
+本类的实现。若哪天内置改成在 ``__init__`` 里注册，这里就会静默失效，
 ``tests/check_override.py`` 专门盯着这一点。
 
 为什么这么绕而**不** import 内置适配器模块
@@ -59,7 +60,6 @@ from . import panel as _panel
 
 logger = logging.getLogger("larkdeck")
 
-PLUGIN_NAME = "larkdeck"
 PLATFORM_NAME = "feishu"
 LABEL = "Feishu / Lark — LarkDeck cards"
 ADAPTER_CLASS_NAME = "LarkDeckFeishuAdapter"
@@ -76,9 +76,9 @@ _MAX_TRACKED = 512
 _MAX_STREAMS = 64
 _STREAM_MIN_INTERVAL = 0.25
 
-#: 核心把「工具进度块」拼在正文后面，用这个分隔（见 agent/stream_consumer.py 的
-#: ``_compose_frame_content``）。没有该分隔的帧就是纯正文；核心改格式时这里
-#: 会退化成「不归档」，内容不会丢。
+#: 核心把「工具进度块」拼在正文后面，用这个分隔（见 ``gateway/stream_consumer.py``
+#: 的 ``_compose_frame_content``；0.21.1 实测它就是 ``"\n\n---\n".join(...)``）。
+#: 没有该分隔的帧就是纯正文；核心改格式时这里会退化成「不归档」，内容不会丢。
 _TOOL_PROGRESS_SEP = "\n\n---\n"
 
 

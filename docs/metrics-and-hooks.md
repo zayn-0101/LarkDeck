@@ -90,5 +90,5 @@ prompt_tokens, reasoning_tokens, request_count, total_tokens
 $PY tests/check_hooks.py    # 真实派发器 + 真实 CanonicalUsage 载荷 + 面板数据层 + 对照组
 ```
 
-它会验证：4 个钩子登记成功、真实 `invoke_hook` / 流式钩子队列能送达、指标语义正确、
+它会验证：5 个钩子（页脚 1 + 面板 4）全部登记成功、真实 `invoke_hook` / 流式钩子队列能送达、指标语义正确、
 面板数据落桶正确、坏载荷不冲掉好数据、以及**未启用插件时钩子为空**（对照组，证明观测点可信）。

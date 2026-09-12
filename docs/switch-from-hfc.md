@@ -1,7 +1,10 @@
 # 从 HFC 切到 LarkDeck
 
-两处机器都还装着 hermes-feishu-streaming-card（HFC）。**两边都要切**，且顺序不能反：
-先卸载 HFC，再装 LarkDeck。反过来做会导致同一时间两个插件都想接管 `feishu` 平台。
+**状态（2026-09-12 核实）**：**Mac 已完成切换**，**NAS 未核实**（当时从 Mac 连不上
+`192.168.0.200:5667`）。剩下的活只在 NAS 那边。
+
+顺序不能反：**先卸载 HFC，再装 LarkDeck**。反过来做会导致同一时间两个插件都想
+接管 `feishu` 平台。
 
 ---
 
@@ -25,15 +28,18 @@ cron/scheduler_delivery.py
 
 ---
 
-## Mac
+## Mac（已完成，留作记录）
+
+2026-09-12 核实：8 个核心文件里已无 HFC 注入，`plugins.enabled` 里只有 larkdeck，
+启动自检通过。下面是当时的执行顺序。
 
 ```bash
 # 1) 卸载 HFC（必须用它自带的 CLI，pip uninstall 会留下核心文件里的注入）
 hermes-feishu-card cli uninstall --hermes-dir ~/.hermes/hermes-agent --yes
 # 具体入口以 `hermes-feishu-card --help` 为准
 
-# 2) 核实注入已被回滚：每个文件都不该再出现 hermes_feishu_card
-grep -l hermes_feishu_card ~/.hermes/hermes-agent/gateway/*.py
+# 2) 核实注入已被回滚：下面两个目录都不该再出现 hermes_feishu_card
+grep -rl hermes_feishu_card ~/.hermes/hermes-agent/gateway ~/.hermes/hermes-agent/cron
 
 # 3) 装 LarkDeck
 cd ~/code/larkdeck && ./install.sh
@@ -42,9 +48,14 @@ cd ~/code/larkdeck && ./install.sh
 # 5) 重启网关，看启动日志里的 [larkdeck] 自检行
 ```
 
+**残留（别踩）**：第 1 步只回滚了注入，HFC 包本体（`hermes-feishu-streaming-card 4.4.5`）
+和 `hermes-feishu-card` CLI 仍留在 venv 里，且声明了 `hermes_agent.plugins` 入口 ——
+它不在 `plugins.enabled` 里所以不加载，但**误跑它的安装命令会把注入打回核心文件**，
+直接顶掉 larkdeck。
+
 ---
 
-## NAS（Docker）
+## NAS（Docker，待做）
 
 NAS 上 HFC 不是官方镜像自带的，而是靠一个第三方启动脚本每次容器重建时重新装回去：
 
@@ -76,5 +87,5 @@ NAS 上 HFC 不是官方镜像自带的，而是靠一个第三方启动脚本�
 
 ## 什么时候可以删那个 bootstrap 脚本
 
-确认 LarkDeck 在两处都跑稳（至少经历一次网关重启 + 一次容器重建）之后，再把备份的
+确认 LarkDeck 在 NAS 也跑稳（至少经历一次网关重启 + 一次容器重建）之后，再把备份的
 `hermes-scheme2-bootstrap.sh` 和宿主上的 HFC 源码目录一并清掉。
