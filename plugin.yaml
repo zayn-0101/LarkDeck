@@ -26,7 +26,11 @@ config_schema:
   clarify_cards:
     type: boolean
     default: true
-    description: "澄清提问用按钮卡；无线索或其他失败时回落内置文字提问"
+    description: "澄清提问用交互卡；无线索或其他失败时回落内置文字提问"
+  clarify_dialect:
+    type: string
+    default: "1.0"
+    description: "澄清卡方言：1.0（按钮，默认，真机已跑通）/ 2.0（下拉+输入框，需真机点击验证后再翻）"
   unified_panel:
     type: boolean
     default: true

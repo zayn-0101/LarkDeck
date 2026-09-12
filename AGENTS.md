@@ -43,9 +43,14 @@
    > **认证据的规矩：官方文档 + 真机探针为准，不抄别人注释。**
    > 2.0 澄清卡（`select_static` + `input`）是可行的，见 `docs/plan-6-effects.md` 阶段 4。
 
-   澄清卡现在用 1.0 是**当时的选择**（它确实能用），不是唯一解；换 2.0 属于**功能决策**。
+   澄清卡现在**默认用 1.0**（按钮 + 顶层 `value`，真机跑通过），不是唯一解 ——
+   `cards.clarify_card_2()` 就是 2.0 版（`select_static` / `multi_select_static` /
+   `input` + 组件级 `behaviors`），由配置 `clarify_dialect` 选择（默认 `"1.0"`）。
+   **翻默认值的前提是真机点一次**：`tests/probe_render.py` 的 ⑫ 方言探针卡点下去后
+   日志里应出现 `[larkdeck] 探针点击到达 ✅`（点击是经 WebSocket 送进正在跑的网关的，
+   探针脚本接不到，所以由 `adapter._ld_log_probe_click` 如实记录）。
    元素级方言差异见 `README.md` 的表；`tests/test_units.py::test_clarify_card_must_be_legacy_dialect`
-   锁的是**当前实现别被误改**，不再代表"2.0 不可行"。
+   锁的是**当前默认实现别被误改**，不再代表"2.0 不可行"；真正的红线是**方言不许混用**。
 
 ## 目录
 

@@ -119,11 +119,14 @@ _STREAM_HARD_CAP_FACTOR = 4
 _DEFAULTS: Dict[str, Any] = {
     "cards": True,            # 用卡片渲染回复
     "native_streaming": True, # 官方 native streaming：一回合一张卡（工具进度合入同卡）
-    "clarify_cards": True,    # 澄清使用按钮卡
+    "clarify_cards": True,    # 澄清使用交互卡
+    # 澄清卡方言：1.0（按钮 + 顶层 value，真机已跑通，**默认**）/ 2.0（下拉 + 输入框 +
+    # 组件级 behaviors，需真机点击确证后再翻默认；见 AGENTS.md 不变量 5）
+    "clarify_dialect": "1.0",
     "unified_panel": True,    # 推理 + 工具合并为底部一个可折叠面板
     "panel_expanded": False,  # 面板默认收起（展开态很占屏；aiduPOP 同为默认收起）
-    "footer": True,           # 页脚：模型 + 上下文用量 + 耗时
-    "show_model": True,       # 页脚显示模型名（关掉只剩上下文和耗时）
+    "footer": True,           # 页脚：只放上下文用量（模型/耗时已并入面板标题行）
+    "show_model": True,       # 面板标题行里显示模型名
     "context_style": "text",  # 上下文用量样式：text（默认）| bar | both
     "model_aliases": "",      # 模型别名："真名=显示名, ..." 或 dict
     "max_reasoning_chars": _cards.MAX_REASONING_CHARS,
@@ -817,8 +820,9 @@ class LarkDeckMixin:
                 multi = _compat.clarify_multi_select(clarify_id)
             except Exception:  # pragma: no cover - compat 内部已兜底
                 multi = False
-            card = _cards.clarify_card(question, list(choices), clarify_id=clarify_id,
-                                       session_key=session_key, multi=multi)
+            card = self._ld_build_clarify_card(
+                question, list(choices), clarify_id=clarify_id,
+                session_key=session_key, multi=multi)
             result = await self._ld_send_card(chat_id, card, metadata=metadata)
             if result is not None and getattr(result, "success", False):
                 return result
@@ -846,7 +850,7 @@ class LarkDeckMixin:
             action = getattr(event, "action", None)
             value = getattr(action, "value", {}) or {}
             if isinstance(value, dict) and value.get(ACTION_KEY) == ACTION_CLARIFY:
-                return self._ld_handle_clarify_click(event=event, value=value)
+                return self._ld_handle_clarify_click(event=event, action=action, value=value)
             if isinstance(value, dict) and value.get(_cards.PROBE_VALUE_KEY):
                 return self._ld_log_probe_click(event=event, action=action)
         except Exception as exc:
@@ -902,12 +906,78 @@ class LarkDeckMixin:
             logger.debug("[larkdeck] _card_response 失败", exc_info=True)
             return None
 
-    def _ld_handle_clarify_click(self, *, event: Any, value: Dict[str, Any]) -> Any:
-        """把一次澄清点击变成 ``resolve_gateway_clarify`` 调用，并原地更新卡片。"""
+    @staticmethod
+    def _ld_build_clarify_card(question: str, choices: List[str], *, clarify_id: str,
+                               session_key: str, multi: bool) -> Dict[str, Any]:
+        """按 ``clarify_dialect`` 选澄清卡方言。
+
+        默认 **1.0**：那是本插件真机跑通的路径（按钮 + 顶层 ``value``）。
+        ``"2.0"`` 是决策门 D1 的路径 A（``select_static`` / ``multi_select_static`` /
+        ``input`` + 组件级 ``behaviors``），在**真机点过一次**之前不翻默认值
+        —— ``AGENTS.md`` 不变量 5 的纪律：卡片方言的结论只能靠真机实验。
+        取到不认识的值时按 1.0 处理（不猜、不抛）。
+        """
+        dialect = str(_cfg_raw("clarify_dialect") or "1.0").strip()
+        if dialect == "2.0":
+            return _cards.clarify_card_2(question, choices, clarify_id=clarify_id,
+                                         session_key=session_key, multi=multi)
+        return _cards.clarify_card(question, choices, clarify_id=clarify_id,
+                                   session_key=session_key, multi=multi)
+
+    @staticmethod
+    def _ld_build_resolved_card(*, question: str, answer: Any,
+                                user_name: str) -> Dict[str, Any]:
+        """已答复卡必须与待答卡**同方言**（换方言会让飞书丢弃这一帧）。"""
+        dialect = str(_cfg_raw("clarify_dialect") or "1.0").strip()
+        if dialect == "2.0":
+            return _cards.clarify_resolved_card_2(question=question, answer=answer,
+                                                  user_name=user_name)
+        return _cards.clarify_resolved_card(question=question, answer=str(answer),
+                                            user_name=user_name)
+
+    @staticmethod
+    def _ld_clarify_answer(action: Any, value: Dict[str, Any]) -> "tuple[Any, str]":
+        """从点击载荷里取出答案 —— 返回 ``(answer, mode)``，``mode`` ∈
+        ``{"choice", "multi", "text", "none"}``。
+
+        三种方言/组件各把答案放在不同字段（官方文档）：
+          * 1.0 按钮：``action.value`` 里我们自己的 ``answer``（**choice**）；
+          * 2.0 `select_static`：``action.option``（单个字符串，**choice**）；
+          * 2.0 `multi_select_static`：``action.option`` 是**列表** → 按网关那条
+            「文字回答多选」的规范拼成 **JSON 数组字符串**（**multi**）；
+          * 2.0 `input`：``action.input_value`` 是自由文本（**text**），必须交给核心
+            自己的判据去解析（编号 / 标签 / 多选 / 无效选择），不能自己猜。
+
+        ``mode == "none"`` 表示载荷里什么都没有 —— 调用方保持安静、不要提交空答案。
+        """
+        option = getattr(action, "option", None)
+        if isinstance(option, list) and option:
+            return json.dumps([str(item) for item in option], ensure_ascii=False), "multi"
+        if isinstance(option, str) and option.strip():
+            return option, "choice"
+        typed = getattr(action, "input_value", None)
+        if isinstance(typed, str) and typed.strip():
+            return typed.strip(), "text"
+        fallback = value.get("answer") if isinstance(value, dict) else None
+        if fallback is None:
+            return None, "none"
+        return fallback, "choice"
+
+    def _ld_handle_clarify_click(self, *, event: Any, action: Any,
+                                 value: Dict[str, Any]) -> Any:
+        """把一次澄清点击变成 ``resolve_gateway_clarify`` 调用，并原地更新卡片。
+
+        ``action`` 是载荷里的 ``event.action``：1.0 的答案在 ``value["answer"]``，
+        2.0 的在 ``action.option``（下拉）或 ``action.input_value``（输入框）——
+        取值规则见 :meth:`_ld_clarify_answer`。
+        """
         clarify_id = str(value.get("clarify_id") or "")
-        answer = value.get("answer")
-        if not clarify_id or answer is None:
-            logger.warning("[larkdeck] 澄清点击缺少 clarify_id/answer，忽略")
+        if not clarify_id:
+            logger.warning("[larkdeck] 澄清点击缺少 clarify_id，忽略")
+            return self._ld_card_response_safe()
+        answer, mode = self._ld_clarify_answer(action, value)
+        if mode == "none":
+            logger.warning("[larkdeck] 澄清点击里既没有 answer 也没有 option/input_value，忽略")
             return self._ld_card_response_safe()
 
         operator = getattr(event, "operator", None)
@@ -923,6 +993,20 @@ class LarkDeckMixin:
 
         is_other = answer == _cards.OTHER_VALUE
         question = str(value.get("question") or "")
+        session_key = str(value.get("session_key") or "")
+
+        if mode == "text":
+            # 输入框的自由文本：用**核心自己的判据**解析（编号 / 标签 / 多选 / 无效选择）。
+            # 自己拼答案会把「1,3」当成一个叫「1,3」的选项，多选直接废掉。
+            outcome = _compat.clarify_attempt_text(session_key, str(answer))
+            if outcome != _compat.CLARIFY_TEXT_RESOLVED:
+                logger.warning("[larkdeck] 澄清输入框的内容没有被接受（%s · session=%s）"
+                               "—— 卡片保持原样，用户可重试", outcome, session_key[:8])
+                return self._ld_card_response_safe()
+            user_name = self._get_cached_sender_name(open_id) or open_id or "?"
+            return self._card_response(
+                self._ld_build_resolved_card(question=question, answer=answer,
+                                             user_name=user_name))
 
         # 提交是**同步**的：网关那两处只做「锁内 dict 取写 + threading.Event.set()」，
         # 不碰事件循环（已对 Hermes 源码核实），所以能当场拿到真实结果。
@@ -949,8 +1033,9 @@ class LarkDeckMixin:
             return self._ld_card_response_safe()
 
         user_name = self._get_cached_sender_name(open_id) or open_id or "?"
+        # 回填卡必须与待答卡同方言，否则飞书会**静默丢弃**这一帧（HFC 踩过）
         return self._card_response(
-            _cards.clarify_resolved_card(question=question, answer=str(answer), user_name=user_name)
+            self._ld_build_resolved_card(question=question, answer=answer, user_name=user_name)
         )
 
 

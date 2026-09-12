@@ -210,6 +210,31 @@ def clarify_resolve_gateway_clarify(clarify_id: str, answer: str) -> bool:
     return bool(resolve_gateway_clarify(str(clarify_id), str(answer)))
 
 
+#: 澄清「文字回答」的判定结果（对应核心 ``tools.clarify_gateway`` 的 TEXT_* 常量）。
+CLARIFY_TEXT_RESOLVED = "resolved"
+CLARIFY_TEXT_NO_PENDING = "no_pending"
+
+
+def clarify_attempt_text(session_key: str, text: str) -> str:
+    """把一段用户文字按**核心自己的规则**变成澄清答案；返回结果串。
+
+    为什么不让调用方自己拼接答案：核心那套规则不简单 —— 多选要解析
+    ``"1,3"`` / ``"staging, prod"`` 并**返回 JSON 数组字符串**、单选要支持编号与
+    标签匹配、还要区分「无效选择」（保持待答，让用户重试）与「散文」（可能是另一种
+    意图）。2.0 澄清卡的输入框拿到的是**自由文本**，只有走核心这条判据才不会把
+    「1,3」当成一个叫「1,3」的选项。
+
+    返回 ``CLARIFY_TEXT_RESOLVED`` / ``CLARIFY_TEXT_NO_PENDING`` 或核心的
+    ``rejected_*``（原样透传，调用方据此决定是否提示用户重试）。
+    """
+    try:
+        from tools.clarify_gateway import attempt_text_response_for_session
+
+        return str(attempt_text_response_for_session(str(session_key), str(text)))
+    except Exception:
+        return CLARIFY_TEXT_NO_PENDING
+
+
 def hook_is_wired(name: str) -> bool:
     """问核心：这个钩子名当前真的有订阅者吗？
 

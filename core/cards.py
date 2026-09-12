@@ -686,13 +686,89 @@ def clarify_card(question: str, choices: Sequence[str], *, clarify_id: str,
                        title=_i18n.i18n_text("clarify.header"))
 
 
+def _clarify_options(choices: Sequence[str]) -> List[Dict[str, Any]]:
+    """2.0 下拉的选项：显示用带序号，**回调值用原始选项文本**（答案要的是规范标签）。
+
+    去重：``select_static`` 的 ``value`` **不可重复**（官方文档明写「否则交互异常、
+    服务端无法区分选了哪个」），所以重复的选项只留第一个。
+    """
+    options: List[Dict[str, Any]] = []
+    seen: set = set()
+    for idx, choice in enumerate(choices, start=1):
+        text = str(choice)
+        if text in seen:
+            continue
+        seen.add(text)
+        options.append({"text": {"tag": "plain_text", "content": f"{idx}. {text}"},
+                        "value": text})
+    return options
+
+
+def clarify_card_2(question: str, choices: Sequence[str], *, clarify_id: str,
+                   session_key: str, multi: bool = False) -> Dict[str, Any]:
+    """带下拉/输入框的澄清卡（**2.0 方言**，组件级 ``behaviors`` 接回调）。
+
+    ⚠️ **默认不启用**（配置 ``clarify_dialect`` 默认 ``"1.0"``）。原因不是它不可行 ——
+    官方文档与 aiduPOP 的实拍都支持这条路 —— 而是这个项目对**要接服务端点击的卡片**
+    有硬纪律：只有真机点一次才算证据（``AGENTS.md`` 不变量 5，这条纪律是被「抄第三方
+    注释」坑出来的）。真机确证后把默认值翻成 ``"2.0"`` 即可，拦截逻辑一行都不用改：
+    ``behaviors`` 的 ``value`` 会**原样**成为 ``event.action.value``，所以
+    ``larkdeck_action`` 那个拦截键照旧成立；用户选了什么则在 ``action.option``，
+    输入框内容在 ``action.input_value``（见 ``adapter._ld_clarify_answer``）。
+
+    多选用 ``multi_select_static``（回调的 ``option`` 是**列表**，要拼成 JSON 数组
+    —— 与网关那条「文字回答多选」的规范一致，见 ``clarify_gateway`` 的
+    ``_coerce_multi_select_text``）。多选时**不给**自由输入框：混在一起会与
+    「编号/标签」的解析规则打架。
+    """
+    value: Dict[str, Any] = {"larkdeck_action": "clarify", "clarify_id": clarify_id,
+                             "session_key": session_key, "question": question}
+    selector: Dict[str, Any] = {
+        "tag": "multi_select_static" if multi else "select_static",
+        "placeholder": {"tag": "plain_text", "content": _i18n.t("clarify.pick")},
+        "options": _clarify_options(choices),
+        "behaviors": [{"type": "callback", "value": dict(value)}],
+    }
+    elements: List[Dict[str, Any]] = [md(f"\u2753 {question}"), selector]
+    if not multi:
+        elements.append({
+            "tag": "input",
+            "label": _i18n.i18n_text("clarify.other"),
+            "placeholder": {"tag": "plain_text", "content": _i18n.t("clarify.other_hint")},
+            "behaviors": [{"type": "callback", "value": {**value, "free_text": True}}],
+        })
+    elements.append(footnote(_i18n.t("clarify.multi_hint" if multi else "clarify.hint")))
+    return card(elements=elements, template="orange",
+                title=_i18n.i18n_text("clarify.header"), summary=question)
+
+
+def clarify_resolved_card_2(*, question: str, answer: Any, user_name: str) -> Dict[str, Any]:
+    """2.0 的已答复卡 —— **必须与待答卡同方言**，否则回调里回填的那一帧会被飞书丢弃。"""
+    return card(elements=[md(f"\u2753 {question}"),
+                          md(f"\u2705 **{_clarify_answer_label(answer)}**\u3000\u2014\u3000{user_name}")],
+                template="green", title=_i18n.i18n_text("clarify.header"), summary=question)
+
+
+def _clarify_answer_label(answer: Any) -> str:
+    """把（可能来自多选 JSON 的）答案整理成给人看的一行。"""
+    text = str(answer or "")
+    if text.startswith("["):
+        try:
+            items = json.loads(text)
+            if isinstance(items, list):
+                text = "、".join(str(item) for item in items)
+        except Exception:
+            pass
+    return _i18n.t("clarify.other") if text == OTHER_VALUE else text
+
+
 def clarify_resolved_card(*, question: str, answer: str, user_name: str) -> Dict[str, Any]:
     """点击后原地替换的已答复卡。
 
     必须与待答卡同为 1.0 方言 —— 回调里回填的卡片也走同一条 legacy 轨迹，
     换成 2.0 会被飞书丢弃（HFC 的 ``interaction callback card suppressed`` 就是踩了这个）。
     """
-    label = _i18n.t("clarify.other") if answer == OTHER_VALUE else answer
+    label = _clarify_answer_label(answer)
     return legacy_card(
         elements=[md(f"\u2753 {question}"), md(f"\u2705 **{label}**\u3000\u2014\u3000{user_name}")],
         template="green", title=_i18n.i18n_text("clarify.header"),

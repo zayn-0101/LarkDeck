@@ -349,10 +349,12 @@ def _buttons_of(card):
 
 
 def test_clarify_card_must_be_legacy_dialect():
-    """要接服务端点击的卡片只能是 1.0 —— 混进 2.0 会让飞书拒绝 action 行。
+    """**当前默认**的澄清卡是 1.0（按钮 + 顶层 value）。
 
-    这是本插件最容易被改崩的不变量：2.0 的 behaviors 回调到不了
-    ``p2.card.action.trigger``，而 1.0 的 action 容器嵌进 2.0 卡会被拒。
+    锁的是「实现别被误改成半 1.0 半 2.0」，**不是**「2.0 不可行」—— 不变量 5 已于
+    2026-09-12 更正：2.0 的组件级 ``behaviors`` 能到服务端，见 ``clarify_card_2``
+    与 ``clarify_dialect`` 配置（默认仍是 1.0，等真机点击确证后再翻）。
+    真正会崩的是**方言混用**：1.0 的 action 行放进 2.0 卡会被飞书拒（230099）。
     """
     card = cards.clarify_card("选哪个？", ["A", "B"], clarify_id="c", session_key="s")
     assert "schema" not in card, "澄清卡不能带 schema —— 带了她就是 2.0 卡，action 行会被拒"
@@ -1953,6 +1955,151 @@ def test_native_frame_failure_and_success_are_both_visible_in_logs():
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)
         adapter._apply_metrics_config()
+
+
+def test_clarify_dialect_switch_and_no_dialect_mixing():
+    """``clarify_dialect`` 选方言；两种方言**内部都不许混用**。
+
+    混用的后果是静默失灵：1.0 的 ``action`` 行放进 2.0 卡 → 飞书拒收（230099）；
+    而 2.0 组件不带 ``behaviors`` → 点击永远到不了服务端（点了没反应）。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    try:
+        adapter.configure(clarify_cards=True)
+        # 默认（1.0）：顶层 elements + action 行，没有 schema/body
+        one = adapter.LarkDeckMixin._ld_build_clarify_card(
+            "选哪个？", ["A", "B"], clarify_id="c1", session_key="sk", multi=False)
+        assert "schema" not in one and isinstance(one.get("elements"), list), one
+        assert _buttons_of(one), "1.0 卡的点击载体是 action 行"
+
+        adapter.configure(clarify_dialect="2.0")
+        two = adapter.LarkDeckMixin._ld_build_clarify_card(
+            "选哪个？", ["A", "B"], clarify_id="c1", session_key="sk", multi=False)
+        assert two.get("schema") == "2.0" and "body" in two, two
+        tags = _all_tags(two)
+        assert "select_static" in tags and "input" in tags, tags
+        assert "action" not in tags, "2.0 卡里出现 1.0 的 action 行会被飞书拒收"
+        blob = json.dumps(two, ensure_ascii=False)
+        assert "larkdeck_action" in blob, "拦截键必须原样带在 behaviors.value 里"
+
+        # 多选：multi_select_static，且**不给**自由输入框（与编号/标签解析打架）
+        multi = adapter.LarkDeckMixin._ld_build_clarify_card(
+            "选哪些？", ["A", "B", "C"], clarify_id="c1", session_key="sk", multi=True)
+        mtags = _all_tags(multi)
+        assert "multi_select_static" in mtags and "select_static" not in mtags, mtags
+        assert "input" not in mtags
+
+        # 回填卡必须与待答卡同方言
+        assert adapter.LarkDeckMixin._ld_build_resolved_card(
+            question="Q?", answer="A", user_name="u").get("schema") == "2.0"
+        adapter.configure(clarify_dialect="1.0")
+        assert "schema" not in adapter.LarkDeckMixin._ld_build_resolved_card(
+            question="Q?", answer="A", user_name="u")
+
+        # 认不出的值 → 按 1.0 处理（不猜、不抛）
+        adapter.configure(clarify_dialect="3.0")
+        weird = adapter.LarkDeckMixin._ld_build_clarify_card(
+            "Q?", ["A"], clarify_id="c1", session_key="sk", multi=False)
+        assert "schema" not in weird, "认不出的方言值不许猜成 2.0"
+
+        # 选项 value 必须唯一（官方：重复会让交互异常）
+        dup = cards.clarify_card_2("Q?", ["A", "A", "B"], clarify_id="c", session_key="s")
+        select = [e for e in dup["body"]["elements"] if e["tag"] == "select_static"][0]
+        values = [o["value"] for o in select["options"]]
+        assert values == ["A", "B"], values
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_clarify_answer_extraction_covers_all_three_shapes():
+    """三种载荷各把答案放在不同字段：``value.answer`` / ``action.option`` / ``action.input_value``。
+
+    读错字段的后果是**点了没反应**（或提交一个空答案）—— 静默失灵。
+    多选尤其容易错：网关要的是 **JSON 数组字符串**，自己拼字符串会让它把
+    「A,B」当成一个选项。
+    """
+    cls = adapter.LarkDeckMixin
+
+    class _Action:
+        def __init__(self, **kw):
+            self.tag = kw.get("tag")
+            self.option = kw.get("option")
+            self.input_value = kw.get("input_value")
+            self.value = kw.get("value")
+
+    # 1.0：答案在我们自己的 value 里
+    assert cls._ld_clarify_answer(_Action(value={"answer": "A"}), {"answer": "A"}) == ("A", "choice")
+    # 2.0 单选下拉
+    assert cls._ld_clarify_answer(_Action(tag="select_static", option="B"), {}) == ("B", "choice")
+    # 2.0 多选下拉 → JSON 数组字符串（网关的规范形式）
+    answer, mode = cls._ld_clarify_answer(
+        _Action(tag="multi_select_static", option=["A", "C"]), {})
+    assert mode == "multi" and json.loads(answer) == ["A", "C"], (answer, mode)
+    # 2.0 输入框
+    assert cls._ld_clarify_answer(
+        _Action(tag="input", input_value="  自己写的  "), {}) == ("自己写的", "text")
+    # 什么都没有 → none（调用方保持安静，不提交空答案）
+    assert cls._ld_clarify_answer(_Action(), {}) == (None, "none")
+    assert cls._ld_clarify_answer(_Action(input_value="   "), {}) == (None, "none")
+    # option 为空列表（用户没选）也算没有答案
+    assert cls._ld_clarify_answer(_Action(option=[]), {}) == (None, "none")
+
+
+def test_clarify_free_text_only_commits_when_the_core_accepts_it():
+    """2.0 输入框的自由文本：**只有核心判据说「已解析」才回填卡片**。
+
+    自己拼答案会废掉多选（「1,3」会被当成一个叫「1,3」的选项）；而「没抛异常就当
+    成功」会让卡片显示「已答复」、agent 却仍阻塞在网关 —— 答案永久丢失且用户失去
+    重试机会（这条纪律 1.0 路径上已经有，2.0 的输入框走的是另一条判据）。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    original = compat.clarify_attempt_text
+    try:
+        panel.reset()
+        adapter.configure(clarify_cards=True, clarify_dialect="2.0")
+        raw = _make()
+        calls: list = []
+
+        def fake_attempt(session_key, text):
+            calls.append((session_key, text))
+            return outcome[0]
+
+        outcome = ["resolved"]
+        compat.clarify_attempt_text = fake_attempt
+        try:
+            event = types.SimpleNamespace(
+                operator=types.SimpleNamespace(open_id="ou_ok"),
+                action=types.SimpleNamespace(tag="input", value={"larkdeck_action": "clarify",
+                                                                "clarify_id": "c1",
+                                                                "session_key": "sk-1",
+                                                                "question": "选哪个？"},
+                                             option=None, input_value="1,3"))
+            # 观测点：回填卡的构造被调用过（把构造换成记录器，别去窥探 SDK 响应对象内部）
+            filled: list = []
+            adapter.LarkDeckMixin._ld_build_resolved_card = staticmethod(
+                lambda *, question, answer, user_name: filled.append((question, answer, user_name))
+                or {"filled": True})
+            result = raw._on_card_action_trigger(types.SimpleNamespace(event=event))
+            assert calls == [("sk-1", "1,3")], calls
+            assert filled == [("选哪个？", "1,3", "汪老师")], filled
+            assert result is not None, "解析成功时应当回填卡片"
+
+            # 核心判据拒绝（无效选择 / 散文）→ **不**回填卡片（否则卡片谎报已答复、
+            # agent 却仍阻塞在网关，答案永久丢失）
+            outcome[0] = "rejected_selection"
+            filled.clear()
+            result2 = raw._on_card_action_trigger(types.SimpleNamespace(event=event))
+            assert filled == [], f"被拒绝的输入不该回填卡片：{filled!r}"
+            assert result2 is not None, "至少要有「无卡片变更」的响应"
+        finally:
+            compat.clarify_attempt_text = original
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+        panel.reset()
 
 
 def test_panel_concurrent_writes_are_safe():

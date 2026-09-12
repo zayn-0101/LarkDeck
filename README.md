@@ -144,7 +144,8 @@ plugins:
       settings:
         cards: true              # 用卡片渲染回复（关掉则完全退回官方纯文本行为）
         native_streaming: true   # 一回合一张卡（工具进度合入同卡）；关掉退回逐段新消息
-        clarify_cards: true      # 澄清用按钮卡
+        clarify_cards: true      # 澄清用交互卡
+        clarify_dialect: "1.0"   # 澄清卡方言：1.0 按钮（默认）/ 2.0 下拉+输入框（需真机点击验证）
         unified_panel: true      # 推理 + 工具合并为一个底部面板
         panel_expanded: false    # 面板默认展开（默认收起）
         footer: true             # 页脚（只放上下文用量）
