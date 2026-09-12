@@ -362,6 +362,88 @@ else:
     if st is not None and st.get("status"):
         problems.append(f"新回合没有清掉上一回合的结局状态：{st.get('status')!r}")
 
+    # ------------------------------------------------------------------ #
+    # 黄金路径：**一个完整回合**的所有钩子按真实顺序走一遍，最后验卡片
+    # ------------------------------------------------------------------ #
+    # 分段测过不等于连起来对：前面每段都在验自己那一层，这里验的是**串起来**的结果 ——
+    # 轮次有没有被正文/工具正确切断、工具耗时有没有配对上、结局色有没有画到边框上、
+    # 面板标题行有没有把「模型 · 轮数 · 工具数 · 耗时」拼出来。
+    # （这一节正是「推理连成一个巨大第 1 轮」那类静默退化会被抓住的地方。）
+    _panel.reset()
+    _SESSION, _TURN = "sess-golden", "golden-1"
+
+    def _stream(kind, delta=""):
+        enqueue_plugin_stream_hook(
+            "on_stream_delta", delta=delta, kind=kind,
+            session_id=_SESSION, turn_id=_TURN,
+            model="deepseek-v4-flash", provider="deepseek", surface="feishu")
+
+    enqueue_plugin_stream_hook("on_stream_start", session_id=_SESSION, turn_id=_TURN,
+                               model="deepseek-v4-flash", provider="deepseek",
+                               surface="feishu")
+    _stream("reasoning", "先想")
+    _stream("reasoning", "一下")            # 同一轮
+    _stream("text", "这是正文")              # 正文开始 → 切断第 1 轮
+    _stream("reasoning", "再看工具")          # 第 2 轮
+    invoke_hook("pre_tool_call", tool_name="terminal", args={"command": "ls"},
+                session_id=_SESSION, task_id="t1", tool_call_id="g-call-1",
+                turn_id=_TURN, api_request_id="greq1", middleware_trace=[])
+    invoke_hook("post_tool_call", tool_name="terminal", args={"command": "ls"},
+                result="ok", task_id="t1", session_id=_SESSION,
+                tool_call_id="g-call-1", turn_id=_TURN, api_request_id="greq1",
+                duration_ms=42, status="ok", error_type=None, error_message=None,
+                middleware_trace=[])
+    # 工具之后**再补一段推理**：这一段必须开成**第 3 轮**。
+    # 没有它的话，「工具切断推理轮」这条线路是看不见的 —— 第 2 轮本来就是最后那个
+    # 未结束的轮，切与不切在快照里都表现为「2 轮」（实测：把工具那处切轮删掉，
+    # 黄金路径照样全绿）。这一段把它变成可判定的。
+    _stream("reasoning", "工具之后")
+    invoke_hook("on_session_end", session_id=_SESSION, task_id="t1", turn_id=_TURN,
+                completed=True, failed=False, interrupted=False,
+                turn_exit_reason="text_response(stop)", model="deepseek-v4-flash",
+                platform="feishu")
+
+    golden = None
+    for _ in range(60):
+        golden = _panel.snapshot()
+        if golden and len(golden.get("rounds") or []) >= 3 and golden.get("status") == "ok":
+            break
+        time.sleep(0.05)
+    print(f"黄金路径 snapshot = {golden}")
+    if not golden:
+        problems.append("黄金路径：面板快照为空")
+    else:
+        rounds = golden.get("rounds") or []
+        if len(rounds) != 3:
+            problems.append(f"黄金路径：期望 3 轮（正文、工具各切断一次 + 工具后再来一段），"
+                            f"实得 {len(rounds)}")
+        elif [r.get("text") for r in rounds] != ["先想一下", "再看工具", "工具之后"]:
+            problems.append(f"黄金路径：轮的切分不对 {[r.get('text') for r in rounds]!r}")
+        if not all(isinstance(r.get("elapsed_ms"), int) for r in rounds):
+            problems.append(f"黄金路径：轮缺耗时 {rounds!r}")
+        tools = golden.get("tools") or []
+        if len(tools) != 1 or tools[0].get("duration_ms") != 42 or tools[0].get("status") != "ok":
+            problems.append(f"黄金路径：工具步骤不对 {tools!r}")
+        if golden.get("status") != "ok":
+            problems.append(f"黄金路径：结局状态不对 {golden.get('status')!r}")
+
+        # —— 最后一步：真渲染成卡片，验用户**看得见**的那部分 ——
+        try:
+            _adm = (sys.modules.get("hermes_plugins.larkdeck.core.adapter")
+                    or sys.modules["larkdeck.core.adapter"])
+            node = _adm.LarkDeckMixin._ld_panel("", None)
+            if node is None:
+                problems.append("黄金路径：渲染不出面板")
+            else:
+                if node.get("border", {}).get("color") != "green":
+                    problems.append(f"黄金路径：边框不是绿色 {node.get('border')!r}")
+                title = node.get("header", {}).get("title", {}).get("content", "")
+                if "🧠 3" not in title or "🔧 1" not in title:
+                    problems.append(f"黄金路径：面板标题行不对（期望含「🧠 3 / 🔧 1」）：{title!r}")
+                print(f"黄金路径面板：{title!r}")
+        except Exception as exc:  # pragma: no cover - 防御性
+            problems.append(f"黄金路径：渲染异常 {exc!r}")
+
 if problems:
     for p in problems:
         print("FAIL:", p)
