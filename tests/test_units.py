@@ -362,6 +362,31 @@ def test_reply_card_is_20_with_summary():
     assert len(summary["content"]) <= cards.SUMMARY_MAX
 
 
+def test_card_byte_budget_degrades_decorations_never_body():
+    """超预算时分级丢装饰（面板 → 页脚 → 全摘），**绝不截断正文**。
+
+    官方把 native 流式下的长度责任明确推给适配器，而官方 send() 本身分块 ——
+    正文过大时正确做法是让发送失败、由 fail-open 链回落官方分块（退化成多条纯文本，
+    但答案完整）；静默截断会让用户以为模型就说了这么多。
+    """
+    panel = cards.unified_panel(reasoning="推" * 2000, tools=["bash"])
+    footer = "🤖 m · ctx 1k/2k · ⏱ 1.0s"
+    body = "答案" * 500
+
+    node, tier = cards.fit_reply_card(body, streaming=True, panel=panel, footer=footer,
+                                      budget=10 ** 9)
+    assert tier == "ok"
+    assert "collapsible_panel" in _all_tags(node), "预算充足时装饰该在"
+
+    node2, tier2 = cards.fit_reply_card(body, streaming=True, panel=panel, footer=footer,
+                                        budget=100)
+    assert tier2 == "over-budget"
+    assert body in json.dumps(node2, ensure_ascii=False), "正文被截断了 —— 绝不能静默截断答案"
+
+    # 量纲是字节：中文 3 字节/字，按字符估会低估 3 倍
+    assert cards.card_bytes({"a": "汉"}) == len('{"a": "汉"}'.encode("utf-8"))
+
+
 def test_streaming_summary_is_never_empty():
     """空文本也要给兜底 summary。
 
@@ -685,13 +710,75 @@ def test_native_streaming_throttle_skips_midframes_but_not_first():
         adapter._apply_metrics_config()
 
 
-def test_native_streaming_state_cap_evicts_oldest():
-    """回合状态表有上限，满了淘汰最旧的四分之一。"""
+def test_native_streaming_cap_reclaims_only_leaked_streams():
+    """容量满时只回收**真正泄漏**的流（静默超过泄漏阈值），不是「最旧的那批」。
+
+    泄漏 = 核心始终没发 finalize，状态挂在那里没人管。这类回收是安全的。
+    """
     raw = _make()
-    for i in range(adapter._MAX_STREAMS + 5):
-        raw._ld_stream_put(f"session-{i}", {"t0": float(i), "message_id": f"om_{i}"})
+    now = time.monotonic()
+    leaked = now - adapter._STREAM_LEAK_SECONDS - 10
+    # 造满容量：一半是泄漏流，一半是活跃流
+    for i in range(adapter._MAX_STREAMS):
+        raw._ld_stream_put(f"leaked-{i}", {"t0": leaked, "last_at": leaked,
+                                          "message_id": f"om_l{i}"})
+    assert len(raw._ld_streams) == adapter._MAX_STREAMS
+    raw._ld_stream_put("newcomer", {"t0": now, "last_at": now, "message_id": "om_new"})
     assert len(raw._ld_streams) <= adapter._MAX_STREAMS
-    assert "session-0" not in raw._ld_streams, "最旧的回合应被淘汰"
+    assert "newcomer" in raw._ld_streams, "新流必须能进来"
+
+
+def test_native_streaming_cap_never_evicts_active_streams():
+    """**活跃流绝不淘汰** —— 这是防重复卡的关键不变量。
+
+    为什么不能按「最近活动」淘汰：`last_at` 只在有正文帧时推进，而一个跑十分钟工具的
+    回合期间只有 panel 在变、`_ld_stream_put` 根本不被调用 —— 那种流看起来「很陈旧」，
+    实际正活跃。踢掉它，下一帧会因为查不到状态而**另发一张新卡**（重复卡 + 老卡永久
+    停在流式态），正是淘汰逻辑本来要防的事。
+    """
+    raw = _make()
+    now = time.monotonic()
+    # 全部是「创建很久、但最近刚活动」的流：旧实现按 t0 淘汰，会把它们踢掉
+    for i in range(adapter._MAX_STREAMS):
+        raw._ld_stream_put(f"active-{i}", {"t0": now - 99999.0, "last_at": now,
+                                          "message_id": f"om_a{i}"})
+    assert len(raw._ld_streams) == adapter._MAX_STREAMS
+    raw._ld_stream_put("active-new", {"t0": now, "last_at": now, "message_id": "om_an"})
+    assert any(k.startswith("active-") for k in raw._ld_streams), \
+        "活跃流被淘汰了 —— 这会导致同一回合另发一张新卡（重复卡）"
+    assert "active-new" in raw._ld_streams
+
+
+def test_stream_state_rejects_stale_turn_events():
+    """迟到的旧回合事件必须被丢弃，不能清掉新回合的面板。
+
+    结构性成因：Hermes 给每个 (钩子名, 回调) 配独立队列 + 独立守护线程，**跨钩子无顺序
+    保证** —— t1 的推理增量可能排在队列里，等 t2 的 on_stream_start 先派发之后才到达。
+    """
+    panel.reset()
+    panel.record_reasoning("s1", "t1", "第一回合的推理")
+    # 新回合开始（权威信号）
+    panel.begin_turn("s1", "t2")
+    panel.record_reasoning("s1", "t2", "第二回合的推理")
+    assert "第二回合的推理" in panel.snapshot()["reasoning"]
+
+    # t1 的迟到增量到达 —— 必须被丢弃
+    panel.record_reasoning("s1", "t1", "迟到的第一回合增量")
+    snap = panel.snapshot()
+    assert "迟到的第一回合增量" not in snap["reasoning"], "迟到的旧回合事件污染了新回合"
+    assert "第二回合的推理" in snap["reasoning"], "新回合的数据被清掉了"
+    assert snap["turn_id"] == "t2", "turn_id 被倒回旧回合了"
+    panel.reset()
+
+
+def test_stream_state_drops_unattributed_events():
+    """空 session_id 不许进桶 —— 否则会生成匿名桶被 snapshot 选中，串到别的卡片上。"""
+    panel.reset()
+    panel.record_reasoning("", "t1", "无主的推理")
+    panel.record_tool_started("", "t1", "bash", {}, "c1")
+    assert panel.snapshot() is None, "无归属的数据不该被任何卡片取到"
+    assert "" not in panel._STATE
+    panel.reset()
 
 
 def test_native_streaming_never_blanks_body_on_markdown_rule():

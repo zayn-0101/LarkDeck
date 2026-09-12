@@ -76,6 +76,14 @@ _MAX_TRACKED = 512
 _MAX_STREAMS = 64
 _STREAM_MIN_INTERVAL = 0.25
 
+#: 流状态被判为「泄漏」的静默时长（秒）。必须取**小时级**：`last_at` 只在有正文帧时
+#: 推进，一个长时间只跑工具的回合看起来会很陈旧，用分钟级阈值会把活跃回合踢掉、
+#: 造成重复卡。这里只用来收「核心始终没发 finalize」的真正泄漏。
+_STREAM_LEAK_SECONDS = 3600.0
+
+#: 硬上限倍数：软上限只告警、不淘汰活跃流；到这个倍数才被迫淘汰（防内存）。
+_STREAM_HARD_CAP_FACTOR = 4
+
 #: ⚠️ 这里曾经有一个「工具进度块不进正文 / 叙述归档」的实现，**已作为安全修复移除**。
 #:
 #: 它用裸分隔符 ``"\n\n---\n"`` 判断核心有没有往帧里拼工具进度块，但核心的合成式是
@@ -181,9 +189,19 @@ def _cfg(key: str) -> bool:
 
 
 def _cfg_int(key: str, default: int = 0) -> int:
+    """取整数配置；坏值一律退回 ``default``，**绝不抛**。
+
+    ⚠️ 必须接住 ``OverflowError``：``int(float("inf"))`` 抛的是它。配置里写
+    ``inf`` / ``1e999`` / ``.inf``（YAML 都合法）时，这个值会经 ``configure()``
+    一路穿到 ``register()``，而那里没有任何 try —— 结果是插件注册整体失败、
+    **静默退回纯文本**，正是本项目最怕的失败模式（已实测复现）。
+    """
     try:
-        return int(float(_cfg_raw(key)))
-    except (TypeError, ValueError):
+        number = float(_cfg_raw(key))
+        if number != number or number in (float("inf"), float("-inf")):
+            return default
+        return int(number)
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -236,16 +254,40 @@ class LarkDeckMixin:
             return
         with self._ld_lock:
             if len(self._ld_state) >= _MAX_TRACKED:
-                # 按开始时间淘汰最旧的一半，简单且够用。
-                oldest = sorted(self._ld_state.items(), key=lambda kv: kv[1].get("t0", 0.0))
+                # 按「最近活动」淘汰，**不按创建时刻**：长回合的卡创建得早但仍在被编辑，
+                # 按 t0 淘汰会把它们踢出去 —— 之后 edit_message 找不到追踪项就回落内置
+                # 实现，而内置走 message.update、对 interactive 卡会被飞书拒，卡片永久冻结。
+                oldest = sorted(self._ld_state.items(),
+                                key=lambda kv: kv[1].get("last", kv[1].get("t0", 0.0)))
                 for key, _ in oldest[: _MAX_TRACKED // 2]:
                     self._ld_state.pop(key, None)
-            self._ld_state[message_id] = {"chat_id": chat_id, "t0": time.monotonic()}
+            now = time.monotonic()
+            self._ld_state[message_id] = {"chat_id": chat_id, "t0": now, "last": now}
 
     def _ld_known(self, message_id: str) -> Optional[Dict[str, Any]]:
-        with self._ld_lock:
-            entry = self._ld_state.get(message_id)
-            return dict(entry) if entry else None
+        """查这张卡是不是我们自己发的（并顺带刷新「最近活动」，供淘汰用）。
+
+        刻意写成**永不抛**：``edit_message`` 的第一行就会调它，而那一行在 try 之外 ——
+        一旦 ``_ld_setup()`` 没跑成（构造期异常被上层吞掉），``AttributeError`` 会直接
+        穿进核心的每帧编辑路径，破坏「卡片失败必须回落官方实现」这条不变量。
+        宁可返回 None（调用方据此回落 ``super()``），也不能抛。
+        """
+        state = getattr(self, "_ld_state", None)
+        lock = getattr(self, "_ld_lock", None)
+        if not isinstance(state, dict) or lock is None:
+            return None
+        try:
+            with lock:
+                entry = state.get(message_id)
+                if not entry:
+                    return None
+                # 刷新最近活动：淘汰必须按「最近用过」而不是「创建时刻」，
+                # 否则长回合的卡会被踢掉，之后编辑回落内置实现、卡片永久冻结。
+                entry["last"] = time.monotonic()
+                return dict(entry)
+        except Exception:  # pragma: no cover - 防御性
+            logger.debug("[larkdeck] 查卡片追踪失败", exc_info=True)
+            return None
 
     def _ld_forget(self, message_id: str) -> None:
         with self._ld_lock:
@@ -325,6 +367,25 @@ class LarkDeckMixin:
             logger.warning("[larkdeck] 面板渲染失败，跳过", exc_info=True)
             return None
 
+    # ---------------------------------------------------------------- 卡片构造
+    @classmethod
+    def _ld_build_card(cls, content: str, *, streaming: bool,
+                       panel: Optional[Dict[str, Any]],
+                       footer: Optional[str]) -> Dict[str, Any]:
+        """构造回复卡，超字节预算时**分级丢装饰**（面板 → 页脚 → 全摘）。
+
+        为什么不截断正文：官方把 native 流式下的长度责任明确推给适配器，而官方
+        ``send()`` 本身会分块 —— 正文过大时正确做法是让卡片发送失败、由核心的
+        fail-open 链回落到官方分块（退化成多条纯文本，但**答案完整**）。
+        静默截断会让用户以为模型就说了这么多。
+        """
+        card, tier = _cards.fit_reply_card(content, streaming=streaming,
+                                           panel=panel, footer=footer)
+        if tier != "ok":
+            logger.info("[larkdeck] 卡片超字节预算，降载档位=%s（正文不截断，"
+                        "若仍发不出会回落官方分块）", tier)
+        return card
+
     # ---------------------------------------------------------------- 发送原语
     async def _ld_send_card(self, chat_id: str, card: Dict[str, Any], *,
                             reply_to: Optional[str] = None,
@@ -369,8 +430,8 @@ class LarkDeckMixin:
             # 首帧没有「已耗时」可言（这一帧就是起点），所以不带 ⏱；⏱ 由后续
             # edit_message 按 t0 计算。之前这里传的是 time.monotonic()，等于
             # 恒等于 0.0s —— 属于白占一个字段，顺手修掉。
-            card = _cards.reply_card(content, streaming=False,
-                                     panel=self._ld_panel(), footer=self._ld_footer())
+            card = self._ld_build_card(content, streaming=False,
+                                       panel=self._ld_panel(), footer=self._ld_footer())
             result = await self._ld_send_card(chat_id, card, reply_to=reply_to, metadata=metadata)
             if result is not None and getattr(result, "success", False):
                 self._ld_track(getattr(result, "message_id", "") or "", chat_id)
@@ -389,7 +450,7 @@ class LarkDeckMixin:
         if state is None or not getattr(self, "_client", None):
             return await super().edit_message(chat_id, message_id, content, finalize=finalize)
         try:
-            card = _cards.reply_card(
+            card = self._ld_build_card(
                 content, streaming=not finalize,
                 panel=self._ld_panel(),
                 footer=self._ld_footer(state.get("t0")),
@@ -451,8 +512,8 @@ class LarkDeckMixin:
             if finalize:
                 # 没有活跃流可收尾：交核心回落（send/edit 会正常发出）。
                 return False
-            card = _cards.reply_card(display, streaming=True,
-                                     panel=self._ld_panel(), footer=self._ld_footer(now))
+            card = self._ld_build_card(display, streaming=True,
+                                       panel=self._ld_panel(), footer=self._ld_footer(now))
             result = await self._ld_send_card(chat, card, reply_to=reply_to)
             if result is None or not getattr(result, "success", False):
                 return False
@@ -465,9 +526,9 @@ class LarkDeckMixin:
             return True
         message_id = state["message_id"]
         if finalize:
-            card = _cards.reply_card(display or " ", streaming=False,
-                                     panel=self._ld_panel(),
-                                     footer=self._ld_footer(state.get("t0")))
+            card = self._ld_build_card(display or " ", streaming=False,
+                                       panel=self._ld_panel(),
+                                       footer=self._ld_footer(state.get("t0")))
             result = await self._ld_update_card(chat, message_id, card)
             if result is None or not getattr(result, "success", False):
                 return False
@@ -480,9 +541,9 @@ class LarkDeckMixin:
         if (state.get("last") and isinstance(last_at, (int, float))
                 and now - last_at < _STREAM_MIN_INTERVAL):
             return True  # 节流窗口内的中间帧：跳过，等下个 tick（首帧不节流）
-        card = _cards.reply_card(display, streaming=True,
-                                 panel=self._ld_panel(),
-                                 footer=self._ld_footer(state.get("t0")))
+        card = self._ld_build_card(display, streaming=True,
+                                   panel=self._ld_panel(),
+                                   footer=self._ld_footer(state.get("t0")))
         result = await self._ld_update_card(chat, message_id, card)
         if result is None or not getattr(result, "success", False):
             return False
@@ -497,9 +558,35 @@ class LarkDeckMixin:
     def _ld_stream_put(self, key: str, state: Dict[str, Any]) -> None:
         with self._ld_lock:
             if len(self._ld_streams) >= _MAX_STREAMS and key not in self._ld_streams:
-                oldest = sorted(self._ld_streams.items(), key=lambda kv: kv[1].get("t0", 0.0))
-                for stale, _ in oldest[: max(1, _MAX_STREAMS // 4)]:
-                    self._ld_streams.pop(stale, None)
+                # ⚠️ 只淘汰**真正泄漏**的流，**绝不按「最近活动」淘汰**。
+                # 理由：`last_at` 只在有正文帧时推进，而一个跑十分钟工具的回合期间
+                # 只有 panel 在变、`_ld_stream_put` 根本不被调用 —— 那种流看起来
+                # 「很陈旧」，实际正活跃。踢掉它，下一帧就会因为查不到状态而
+                # **另发一张新卡**（重复卡 + 老卡永久停在流式态），正是这里要防的事。
+                # 所以阈值取**小时级**，专门收核心没发 finalize 的泄漏回合。
+                now = time.monotonic()
+                stale = [
+                    other for other, value in self._ld_streams.items()
+                    if now - float(value.get("last_at") or value.get("t0") or 0.0)
+                    > _STREAM_LEAK_SECONDS
+                ]
+                for other in stale[: max(1, _MAX_STREAMS // 4)]:
+                    self._ld_streams.pop(other, None)
+                if len(self._ld_streams) >= _MAX_STREAMS:
+                    # 一个都没到泄漏阈值 = 真的并发了很多活跃回合。软超限：照常插入、
+                    # 只告警（宁可多留状态，也不能踢活跃流造重复卡）；硬上限兜底内存。
+                    if len(self._ld_streams) >= _MAX_STREAMS * _STREAM_HARD_CAP_FACTOR:
+                        oldest = sorted(self._ld_streams.items(),
+                                        key=lambda kv: kv[1].get("last_at",
+                                                                 kv[1].get("t0", 0.0)))
+                        for other, _ in oldest[: max(1, _MAX_STREAMS // 4)]:
+                            self._ld_streams.pop(other, None)
+                        logger.error("[larkdeck] 并发流已达硬上限 %d，被迫淘汰最旧的回合"
+                                     "（可能有回合的卡片停在流式态）",
+                                     _MAX_STREAMS * _STREAM_HARD_CAP_FACTOR)
+                    else:
+                        logger.warning("[larkdeck] 并发流超过软上限 %d 且无可回收的泄漏流"
+                                       "（活跃回合不淘汰，仅告警）", _MAX_STREAMS)
             self._ld_streams[key] = state
 
     def _ld_stream_pop(self, key: str) -> None:
@@ -710,12 +797,12 @@ def build_adapter(base_factory: Any, config: Any) -> Any:
 
     try:
         adapter = merged_class(base_cls)(config)
+        adapter._ld_setup()
     except Exception as exc:  # 卡片层构造失败绝不能让飞书起不来
         _remember_selfcheck(False, f"卡片层构造失败: {exc}")
         logger.error("[larkdeck] 卡片层构造失败，退回内置适配器: %s", exc, exc_info=True)
         return base_factory(config)
 
-    adapter._ld_setup()
     logger.debug("[larkdeck] 已接管适配器: %s", [c.__name__ for c in type(adapter).__mro__[:3]])
     return adapter
 

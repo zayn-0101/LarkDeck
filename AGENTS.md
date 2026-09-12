@@ -22,11 +22,26 @@
    已封装成 `clarify_multi_select()` 等函数）。新增依赖一律先登记。
 4. **不假设版本。** Mac 与 NAS 都跑 Hermes 0.21.1（NAS 是镜像内固定版本），升级随时会发生。
    能力一律运行时探测，不写死版本号分支。
-5. **卡片方言不可混用：要接点击的卡只能是 legacy 1.0。** 2.0 的 `behaviors` 回调到不了
-   `p2.card.action.trigger`；1.0 的 `action` 按钮行嵌进 2.0 卡会被飞书拒绝。澄清卡
-   （待答 + 回填）走 `legacy_card()`，只有流式回复卡走 2.0。混用不报错，只会让按钮
-   **静默失灵**。`tests/test_units.py::test_clarify_card_must_be_legacy_dialect` 锁住这条；
-   元素级方言差异见 `README.md` 的表。
+5. **卡片方言不可混用 —— 但「2.0 的回调到不了服务端」是错的，2026-09-12 更正。**
+   正确规则：**要接服务端点击的组件，必须在它所属的方言里用对应的声明**。
+   - **1.0**：`{"tag":"action","actions":[...]}` 按钮行 + 按钮**顶层** `value`；
+   - **2.0**：**组件级** `behaviors: [{"type":"callback","value":{...}}]` —— `value` 会原样成为
+     `event.action.value`；组件可以是 `button`、`select_static`（回调带 `action.option`）、
+     `input`（回调带 `action.input_value`）。
+   在 2.0 卡里放 1.0 的 `action` 行、或只有顶层 `value` 的按钮 → 飞书**拒收**（IM API `230099`）。
+   混用后果是**静默失灵**（点了没反应），所以这条纪律照旧要守。
+
+   > **旧结论错在哪（别再重蹈）**：原表述是「2.0 的 `behaviors` 回调到不了
+   > `p2.card.action.trigger`，所以澄清卡只能是 1.0」。这是**误诊** —— 当时那张「2.0 澄清卡」
+   > 实际用的是**没有 `behaviors`、只有顶层 `value` 的 1.0 按钮**放进 2.0 的 `body.elements`，
+   > 那是「2.0 卡里放 1.0 组件」这个病；而且论据抄自第三方插件的**代码注释**，不是真机实验
+   > （该插件自己的代码还与那句注释自相矛盾）。
+   > **认证据的规矩：官方文档 + 真机探针为准，不抄别人注释。**
+   > 2.0 澄清卡（`select_static` + `input`）是可行的，见 `docs/plan-6-effects.md` 阶段 4。
+
+   澄清卡现在用 1.0 是**当时的选择**（它确实能用），不是唯一解；换 2.0 属于**功能决策**。
+   元素级方言差异见 `README.md` 的表；`tests/test_units.py::test_clarify_card_must_be_legacy_dialect`
+   锁的是**当前实现别被误改**，不再代表"2.0 不可行"。
 
 ## 目录
 

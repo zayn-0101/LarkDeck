@@ -49,6 +49,13 @@ _LATEST: Dict[str, Any] = {}
 #: ``model@base_url`` -> 上下文上限；``None`` 表示查过但没查到（同样是有效缓存）。
 _MAX_CACHE: Dict[str, Optional[int]] = {}
 
+#: 正在后台探测的 key（避免同一模型被并发渲染起出一堆线程）。
+_INFLIGHT: set = set()
+
+#: 探测**失败**后的退避截止时刻（单调钟）。失败不写负缓存，只退避重试。
+_RETRY_AFTER: Dict[str, float] = {}
+_PROBE_FAIL_BACKOFF_SECONDS = 300.0
+
 #: 配置钉住的上下文上限，优先级高于自动探测（所有模型统一生效）。
 _MAX_OVERRIDE: Optional[int] = None
 
@@ -60,14 +67,22 @@ _ALIASES: Dict[str, str] = {}
 # 采集
 # --------------------------------------------------------------------------- #
 def _as_int(value: Any) -> Optional[int]:
-    """宽容地把钩子里的数字转成 int；转不了就返回 None（不抛）。"""
+    """宽容地把钩子里的数字转成 int；转不了就返回 None（不抛）。
+
+    ⚠️ 必须连 ``OverflowError`` 一起接住：``int(float("inf"))`` 抛的是它，不是
+    ``ValueError``。漏了会让整条调用链炸掉 —— 配置里写 ``1e999`` / ``.inf`` / ``inf``
+    就能一路穿到 ``register()``，插件注册整体失败、**静默退回纯文本**。
+    """
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, int):
         return value
     try:
-        return int(float(value))
-    except (TypeError, ValueError):
+        number = float(value)
+        if number != number or number in (float("inf"), float("-inf")):  # NaN / ±Inf
+            return None
+        return int(number)
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -133,11 +148,18 @@ def record_api_call(**payload: Any) -> None:
 # 上下文上限
 # --------------------------------------------------------------------------- #
 def context_max(model: str = "", base_url: str = "") -> Optional[int]:
-    """模型上下文窗口大小；查不到返回 ``None``（页脚会退化成只显示已用量）。
+    """模型上下文窗口大小；**查不到或还没探到时返回 ``None``**（页脚退化成只显示已用量）。
 
-    优先级：配置钉住的值 → ``get_model_context_length()`` 自动探测。
-    自动探测可能做一次网络/目录查询，所以结果按 ``model@base_url`` 缓存，
-    同一个模型永远只查一次。
+    优先级：配置钉住的值 → 缓存 → 后台探测（本次仍返回 ``None``）。
+
+    ⚠️ **探测绝不能在调用线程上同步做。** 这个函数由 ``snapshot()`` → ``_ld_footer()``
+    进入，而三个入口（``send`` / ``edit_message`` / ``send_stream_frame``）都是 async，
+    跑在**事件循环线程**上；``get_model_context_length()`` 会发 HTTP（官方为此专门提供
+    ``get_model_context_length_async``，注释写明 blocking HTTP 会 stall the event loop）。
+    同步探测会让首次渲染页脚时**所有会话的流式帧一起停等几秒**。
+
+    所以：命中缓存立即返回；未命中就起一个守护线程去探，本次返回 ``None``，
+    下一个渲染周期自然拿到值。代价是页脚的 ctx 段可能晚一帧出现 —— 可接受。
     """
     if _MAX_OVERRIDE:
         return _MAX_OVERRIDE
@@ -146,20 +168,45 @@ def context_max(model: str = "", base_url: str = "") -> Optional[int]:
         return None
     base_url = (base_url or _LATEST.get("base_url") or "").strip()
     key = f"{model}@{base_url}"
+    now = time.monotonic()
     with _LOCK:
         if key in _MAX_CACHE:
             return _MAX_CACHE[key]
+        # 「查缓存 → 未命中 → 未在探测中 → 置位 + 起线程」必须在同一把锁内完成，
+        # 否则并发渲染会对同一模型起出一堆线程。
+        if key not in _INFLIGHT and now >= _RETRY_AFTER.get(key, 0.0):
+            _INFLIGHT.add(key)
+            threading.Thread(target=_probe_context_max, args=(key, model, base_url),
+                             name="larkdeck-ctx-probe", daemon=True).start()
+    return None
+
+
+def _probe_context_max(key: str, model: str, base_url: str) -> None:
+    """后台线程：探测上下文上限并写缓存。**任何异常都不许穿出去**。
+
+    刻意用 ``threading.Thread(daemon=True)`` 而不是线程池：非守护线程在解释器退出时
+    会被 join，而这里的探测没有超时 —— 那样会把 Hermes 的退出拖住。
+    """
     value: Optional[int] = None
+    probed = False
     try:
         from agent.model_metadata import get_model_context_length  # 公开 API
+
         value = _as_int(get_model_context_length(model, base_url=base_url))
         if value is not None and value <= 0:
             value = None
+        probed = True  # 探测本身跑通了 —— 即便结论是「查不到」
     except Exception:
         logger.debug("[larkdeck] 取上下文上限失败（model=%s）", model, exc_info=True)
     with _LOCK:
-        _MAX_CACHE[key] = value
-    return value
+        _INFLIGHT.discard(key)
+        if probed:
+            # 探测跑通但结论是「未知」→ 负缓存：查过一次就不再查（与原行为一致）
+            _MAX_CACHE[key] = value
+        else:
+            # 探测**失败**（网络抖动 / 导入异常）：**不写负缓存**，只退避重试。
+            # 否则一次网络问题会把该模型的百分比永久钉死成「只显示已用量」。
+            _RETRY_AFTER[key] = time.monotonic() + _PROBE_FAIL_BACKOFF_SECONDS
 
 
 def set_context_override(value: Optional[int]) -> None:

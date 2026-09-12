@@ -34,6 +34,9 @@ FeishuAdapter 的 ``_card()`` —— 两者在本机都是已验证可用的。�
 
 from __future__ import annotations
 
+import json
+import re
+import unicodedata
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 from . import i18n as _i18n
@@ -276,7 +279,25 @@ def truncate(text: str, limit: int, *, key: str = "panel.overflow") -> str:
     """超长文本截断并补一行「已省略 N 字符」，而不是静默切掉。
 
     静默截断会让用户以为模型就说了这么多；补一行说明才知道下面还有内容。
-    截断点回退到最近一个空白，避免把一个词劈成两半。
+
+    截断点按**优先级阶梯**选，目的是不切断 markdown 的块结构：
+
+    1. 空行（``\\n\\n``，段落边界）—— 最优；
+    2. 行首块级标记（``#`` / ``-`` / ``*`` / ``+`` / ``>`` / ``|`` / ```` ``` ````）；
+    3. 任意换行；
+    4. 空白（用 ``isspace()`` 而不是 ``" "`` —— CJK 文本里几乎不出现半角空格，
+       原来的 ``" " in head[-80:]`` 对中文基本不生效，这也是更容易切进 emoji 中间的原因）；
+    5. 实在没有就往回退到 ``limit``。
+
+    每级都要求落在 ``limit`` 的后半段（``>= limit // 2``），否则宁可用上一级 ——
+    避免为了对齐块边界而丢掉大半内容。
+
+    截断点最后还要过一次字形回退（ZWJ 组合、变体选择符、组合记号、国旗对），
+    免得把 👨‍👩‍👧 这类多码点字形切成两半。
+
+    **只修围栏与行内反引号，绝不补 ``**``**：``**`` 在 markdown 里语义歧义（乘法、
+    行内代码里的 ``**``、``*`` 与 ``**`` 混用都会让计数失真），补错的闭合符比不补更糟；
+    核心自己给正文做同类处理时也只碰围栏与反引号。
 
     调用方必须先经 :func:`_cap` 归一 ``limit`` —— 这里 ``limit <= 0`` 保持「原样返回」
     的 fail-open 行为，只作为最后一道兜底，生产路径不会走到（:func:`unified_panel` 已归一）。
@@ -285,10 +306,75 @@ def truncate(text: str, limit: int, *, key: str = "panel.overflow") -> str:
     if limit <= 0 or len(text) <= limit:
         return text
     hidden = len(text) - limit
-    head = text[:limit]
-    if " " in head[-80:]:
-        head = head[: head.rfind(" ")]
+    head = text[: _glyph_safe(text, _block_boundary(text, limit))]
+    head = _close_code_spans(head)
     return f"{head.rstrip()}\n> {_i18n.t(key, n=hidden)}"
+
+
+#: 行首块级标记：截断点落在这类行之前，不会把块切成两半。
+_BLOCK_START_MARKS = ("#", "-", "*", "+", ">", "|")
+
+#: 字形回退最多回溯多少个码点。
+_GLYPH_BACK_LIMIT = 8
+
+
+def _block_boundary(text: str, limit: int) -> int:
+    """在 ``limit`` 附近找一个**块级安全**的截断位置（返回下标）。"""
+    window = text[:limit]
+    floor = limit // 2
+    pos = window.rfind("\n\n")
+    if pos >= floor:
+        return pos
+    for index in range(len(window) - 1, floor - 1, -1):
+        if window[index] != "\n":
+            continue
+        tail = window[index + 1:]
+        if tail.startswith("```") or tail[:1] in _BLOCK_START_MARKS:
+            return index
+    pos = window.rfind("\n")
+    if pos >= floor:
+        return pos
+    for index in range(len(window) - 1, floor - 1, -1):
+        if window[index].isspace():
+            return index
+    return limit
+
+
+def _glyph_safe(text: str, pos: int) -> int:
+    """把截断点从**字形中间**挪出来，最多回溯 ``_GLYPH_BACK_LIMIT`` 个码点。
+
+    ZWJ 序列（👨‍👩‍👧）、变体选择符（U+FE0E/FE0F）、组合记号都是「多个码点组成一个
+    可见字形」，按码点硬切会渲染出两个 emoji 或豆腐块。国旗是两个 regional indicator
+    组成一对，也不能切散。
+    """
+    backed = 0
+    while pos > 0 and backed < _GLYPH_BACK_LIMIT:
+        ch = text[pos - 1]
+        if ch == "\u200d" or ch in ("\ufe0e", "\ufe0f") or unicodedata.combining(ch):
+            pos -= 1
+            backed += 1
+            continue
+        if ("\U0001F1E6" <= ch <= "\U0001F1FF" and pos >= 2
+                and "\U0001F1E6" <= text[pos - 2] <= "\U0001F1FF"):
+            pos -= 2
+            backed += 2
+            continue
+        break
+    return pos
+
+
+def _close_code_spans(text: str) -> str:
+    """闭合被截断打断的代码围栏与行内反引号；**不碰 ``**``**（语义歧义，见 docstring）。"""
+    if not text:
+        return text
+    # 先剥掉完整的 ```…``` 区段，再数尾部未闭合的那个
+    stripped = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    if stripped.count("```") % 2:
+        text += "\n```"
+        stripped = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    if stripped.count("`") % 2:
+        text += "`"
+    return text
 
 
 # --------------------------------------------------------------------------- #
@@ -343,6 +429,49 @@ def reply_card(answer: str, *, streaming: bool = False, panel: Optional[Dict[str
         elements.append(footnote(footer))
     return card(elements=elements, template=template, title=title,
                 streaming=streaming, summary=answer)
+
+
+#: 卡片 JSON 的 UTF-8 字节预算。飞书对 interactive 卡有大小上限，超了直接拒收
+#: （本项目实测过 `230099` 类拒绝）。**量纲必须是字节**：``ensure_ascii=False`` 下
+#: 一个汉字占 3 字节，按字符数估算会在中文场景低估 3 倍。
+#: 真机实测值待补（`probe_render.py` 可量），这里先取保守值。
+CARD_BYTE_BUDGET = 20000
+
+
+def card_bytes(node: Dict[str, Any]) -> int:
+    """卡片 JSON 的 utf-8 字节数（发送时用的就是这份序列化）。"""
+    try:
+        return len(json.dumps(node, ensure_ascii=False).encode("utf-8"))
+    except Exception:
+        return 0
+
+
+def fit_reply_card(answer: str, *, streaming: bool = False,
+                   panel: Optional[Dict[str, Any]] = None, footer: Optional[str] = None,
+                   template: str = "blue", title: str = DEFAULT_TITLE,
+                   budget: int = CARD_BYTE_BUDGET) -> "tuple[Dict[str, Any], str]":
+    """构造回复卡，超预算时**分级丢装饰**。返回 ``(card, 降级档位)``。
+
+    档位：``ok`` → ``no-panel`` → ``bare`` → ``over-budget``。
+
+    **刻意不截断正文。** 按审计核实：Hermes 官方明确把 native 流式下的长度责任推给适配器
+    （``gateway/stream_consumer.py`` 的注释写着 "Native streaming bypasses this: the adapter
+    truncates against the stream protocol's own limit"），而官方 ``send()`` 本身是**分块**的
+    （``splits_long_messages``）。所以正文过长时正确的做法是**让它发失败**，由核心的
+    fail-open 链回落到官方 ``send()`` → 分块发送（退化成多条纯文本，但**内容完整**）。
+    静默截断答案会让用户以为模型就说了这么多 —— 这正是 ``docs/lessons.md`` 里最怕的失败模式。
+    """
+    attempts = ((panel, footer, "ok"),
+                (None, footer, "no-panel"),
+                (None, None, "bare"))
+    for panel_try, footer_try, tier in attempts:
+        node = reply_card(answer, streaming=streaming, panel=panel_try, footer=footer_try,
+                          template=template, title=title)
+        if card_bytes(node) <= budget:
+            return node, tier
+    # 连装饰全摘都超预算：正文本身太大。**照常返回**，让发送失败去走官方回落
+    # （官方会分块），而不是在这里把答案切掉。
+    return reply_card(answer, streaming=streaming, template=template, title=title), "over-budget"
 
 
 def unified_panel(*, reasoning: str = "", tools: Sequence[str] = (),

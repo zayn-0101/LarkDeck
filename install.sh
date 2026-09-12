@@ -18,6 +18,24 @@ FILES=(plugin.yaml __init__.py
        core/__init__.py core/adapter.py core/cards.py core/i18n.py core/compat.py
        core/context.py core/hooks.py core/panel.py)
 
+# ── 门禁：FILES 是**手写**清单，漏同步会装出一个残缺插件（少了指标采集或钩子订阅），
+# 而默认软链模式**永远测不出来** —— 只有 NAS / --copy 会中招。所以这里把清单与
+# 仓库里真实的运行文件对一遍，不一致就直接拒绝运行。
+_actual="$(cd "$REPO_DIR" && find . \( -name '*.py' -o -name 'plugin.yaml' \) \
+           -not -path './tests/*' -not -path '*/__pycache__/*' \
+           | sed 's|^\./||' | sort)"
+_declared="$(printf '%s\n' "${FILES[@]}" | sort)"
+if [ "$_actual" != "$_declared" ]; then
+  {
+    echo "✗ install.sh 的 FILES 清单与仓库实际运行文件不一致："
+    diff <(printf '%s\n' "$_declared") <(printf '%s\n' "$_actual") \
+      | grep -E '^[<>]' \
+      | sed 's/^< /  清单里有但仓库没有: /; s/^> /  仓库有但清单没列: /'
+    echo "  新增/删除模块后必须同步 FILES（--copy 模式靠它）。"
+  } >&2
+  exit 1
+fi
+
 usage() {
   cat <<'EOF'
 用法：./install.sh [选项]
