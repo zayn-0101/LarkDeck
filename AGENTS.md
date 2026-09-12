@@ -14,7 +14,7 @@
    宁可退回纯文本，也不能因为卡片报错而丢消息。改 `adapter.py` 时逐条保住这个性质。
    native streaming（`SUPPORTS_NATIVE_STREAMING` + `send_stream_frame`）的帧失败由核心
    自动回退 edit/send —— 这条 fail-open 链是官方契约，别绕过、别在帧里吞掉回落。
-3. **Hermes 私有接口只允许出现在 `compat.py`。** 目前分五组登记：
+3. **Hermes 私有接口只允许出现在 `compat.py`。** 目前分五组登记（另见「会话归属」一节）：
    适配器必需 3 个（`REQUIRED_ADAPTER_ATTRS`，`probe_adapter_class()` 运行时校验，
    缺了拒绝覆盖）；点击回调路径 5 个类属性（`CALLBACK_ADAPTER_ATTRS`）+ 1 个实例属性
    （`CALLBACK_INSTANCE_ATTRS`）；**信号型契约 1 个**（`SIGNAL_ADAPTER_ATTRS` ——
@@ -46,9 +46,11 @@
    澄清卡现在**默认用 1.0**（按钮 + 顶层 `value`，真机跑通过），不是唯一解 ——
    `cards.clarify_card_2()` 就是 2.0 版（`select_static` / `multi_select_static` /
    `input` + 组件级 `behaviors`），由配置 `clarify_dialect` 选择（默认 `"1.0"`）。
-   **翻默认值的前提是真机点一次**：`tests/probe_render.py` 的 ⑫ 方言探针卡点下去后
-   日志里应出现 `[larkdeck] 探针点击到达 ✅`（点击是经 WebSocket 送进正在跑的网关的，
-   探针脚本接不到，所以由 `adapter._ld_log_probe_click` 如实记录）。
+   **翻默认值的前提有两条**：① 真机点一次 —— `tests/probe_render.py` 的 ⑫ 方言探针卡
+   点下去后日志里应出现 `[larkdeck] 探针点击到达 ✅`（点击是经 WebSocket 送进正在跑的
+   网关的，探针脚本接不到，所以由 `adapter._ld_log_probe_click` 如实记录）；
+   ② `check_clarify_e2e.py` 的 2.0 场景全绿（单选 `action.option` / 多选 `action.options` /
+   输入框只解**自己那张卡**的澄清 —— 这三条都有过真机级 bug，见 `docs/plan-6-effects.md` §9）。
    元素级方言差异见 `README.md` 的表；`tests/test_units.py::test_clarify_card_must_be_legacy_dialect`
    锁的是**当前默认实现别被误改**，不再代表"2.0 不可行"；真正的红线是**方言不许混用**。
 

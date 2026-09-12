@@ -10,17 +10,29 @@
 * **schema 2.0**：``config`` / ``header`` / ``body.elements``。
   提供 ``streaming_mode``（打字机流式）和 ``collapsible_panel``（可折叠面板）。
 
-为什么不能只用 2.0
-------------------
-CardKit v2 的 ``behaviors`` 回调是**客户端**交互，到不了 ``p2.card.action.trigger``
-这个 WebSocket 处理器；反过来，1.0 的 ``action`` 容器**嵌进 2.0 卡会被拒**。
-所以：**带按钮、要服务端接点击的卡 → 1.0；只要流式/折叠、不接点击的卡 → 2.0。**
-（结论来自 hermes_feishu_card/render.py 的 legacy-callback-card 实现与内置
-FeishuAdapter 的 ``_card()`` —— 两者在本机都是已验证可用的。）
+两种方言各自的点击怎么接
+------------------------
+**要接服务端点击的组件，必须在它所属的方言里用对应的声明**（``AGENTS.md`` 不变量 5）：
+
+* **1.0**：``{"tag": "action", "actions": [...]}`` 按钮行 + 按钮**顶层** ``value``；
+* **2.0**：**组件级** ``behaviors: [{"type": "callback", "value": {...}}]`` —— ``value``
+  会**原样**成为 ``event.action.value``；组件可以是 ``button`` / ``select_static``
+  （回调带 ``action.option``）/ ``multi_select_static``（带 ``action.options``）/
+  ``input``（带 ``action.input_value``）。
+
+在 2.0 卡里放 1.0 的 ``action`` 行、或只有顶层 ``value`` 的按钮 → 飞书**拒收**
+（IM API ``230099``）。混用是**静默失灵**（点了没反应），所以这条纪律要守。
+
+> **这里曾经写过相反的结论**（「2.0 的 ``behaviors`` 到不了 ``p2.card.action.trigger``，
+> 所以澄清卡只能是 1.0」）—— 那是**误诊**：当时那张「2.0 澄清卡」实际用的是没有
+> ``behaviors``、只有顶层 ``value`` 的 1.0 按钮，属于「2.0 卡里放 1.0 组件」这个病；
+> 论据还抄自第三方插件的**代码注释**。已在 2026-09-12 更正（见 ``AGENTS.md`` 不变量 5）。
 
 所以本模块导出两组构造函数：
-  * :func:`clarify_card` / :func:`clarify_resolved_card` —— 1.0（要接点击）
-  * :func:`reply_card` —— 2.0（要流式 + 折叠面板，不接点击）
+  * :func:`clarify_card` / :func:`clarify_resolved_card` —— 1.0（**当前默认**，真机跑通）
+  * :func:`clarify_card_2` / :func:`clarify_resolved_card_2` —— 2.0（由配置
+    ``clarify_dialect`` 选择；真机点击确证后再翻默认）
+  * :func:`reply_card` —— 2.0（流式 + 折叠面板；**不接点击**）
 
 元素级方言差异（实测，别再踩）
 ------------------------------

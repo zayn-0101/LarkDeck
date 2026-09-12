@@ -50,8 +50,8 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 | | legacy 1.0 | schema 2.0 |
 |---|---|---|
 | 结构 | 顶层 `elements` | `config` / `header` / `body.elements` |
-| 按钮 | `{"tag": "action", "actions": [...]}` | `behaviors` |
-| 点击能到服务端吗 | ✅ 走 `p2.card.action.trigger` | ❌ `behaviors` 是客户端交互 |
+| 交互组件 | `{"tag": "action", "actions": [...]}` 按钮行，按钮**顶层** `value` | 组件**自己**带 `behaviors: [{"type":"callback","value":{...}}]`；组件可为 `button` / `select_static` / `multi_select_static` / `input` |
+| 点击能到服务端吗 | ✅ 走 `p2.card.action.trigger` | ✅ **能**（组件级 `behaviors` 的 `value` 原样成为 `event.action.value`） |
 | 流式（打字机） | ❌ | ✅ `streaming_mode` |
 | 可折叠面板 | ❌ | ✅ `collapsible_panel` |
 | `config.summary` | 不需要 | **流式时必带**，漏了通知栏空白 |
@@ -59,11 +59,17 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 
 所以本项目的分界是：
 
-- **要接点击的卡 → 整条链路 1.0。** 澄清交互卡的*待答卡*和点击后*回填卡*都必须是 1.0 ——
-  回填卡混成 2.0 会被飞书**静默丢弃**，表现为"点了没反应"。
+- **澄清交互卡**：待答卡与点击后的*回填卡*必须**同方言**（混用会让回填那一帧被飞书静默
+  丢弃，表现为"点了没反应"）。当前默认 **1.0**（按钮，真机跑通）；2.0 版
+  （`select_static` / `multi_select_static` / `input` + 组件级 `behaviors`）也已实现，
+  由配置 `clarify_dialect` 选择 —— 默认值是等**真机点一次**确证后再翻的。
 - **流式回复卡 → 2.0。** `streaming_mode` 和统一面板的 `collapsible_panel` 是 2.0 独有能力。
 
-这条规则由 `tests/test_units.py::test_clarify_card_must_be_legacy_dialect` 锁住。
+> **历史上这里写过「2.0 的回调到不了服务端」—— 那是错的**（2026-09-12 更正，
+> 见 `AGENTS.md` 不变量 5）：当时那张「2.0 澄清卡」用的是**没有 `behaviors`** 的 1.0 按钮，
+> 属于"2.0 卡里放 1.0 组件"，而不是「2.0 回调不可用」。
+> `tests/test_units.py::test_clarify_card_must_be_legacy_dialect` 锁的是**当前默认实现
+> 别被误改**，不代表 2.0 不可行。
 
 ### 元素级方言差异（实测，非文档推断）
 
@@ -72,7 +78,7 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 | 元素 | 1.0 | 2.0 | 依据 |
 |---|---|---|---|
 | `note` | ✅ | ❌ | 飞书返回 `230099 / ErrCode 200861 · cards of schema V2 no longer support this capability`；2.0 的小字脚注改用 `markdown` + `text_size: "notation"`（即 `footnote()`） |
-| `action`（按钮行） | ✅ | ❌ | 1.0 的 `action` 容器嵌进 2.0 卡会被拒，点击永远到不了服务端 |
+| `action`（按钮行） | ✅ | ❌ | 1.0 的 `action` 容器嵌进 2.0 卡会被拒（`230099`）；2.0 里要用**组件级** `behaviors` |
 | `collapsible_panel` | ❌ | ✅ | 2.0 专属 |
 | 顶层文本元素 | `lark_md` / `plain_text` | 只认 `markdown` | 2.0 的 `body.elements` 里直接放 `lark_md` 或 `plain_text` 都会被拒（`ErrCode 200621`）；`plain_text` 只在嵌套位置有效（collapsible 标题、按钮 text） |
 | `i18n_content` | ✅ | ✅ | 文本元素级字段，两个方言均实测接受；1.0 的 header title 与按钮 text 也接受且生效（2026-09-12 互换实验确证） |
