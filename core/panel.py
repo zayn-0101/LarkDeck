@@ -252,48 +252,43 @@ def record_tool_finished(session_id: str, turn_id: str, tool_name: str = "",
 # --------------------------------------------------------------------------- #
 # 读快照
 # --------------------------------------------------------------------------- #
-def snapshot(turn_id: str = "") -> Optional[Dict[str, Any]]:
+def snapshot() -> Optional[Dict[str, Any]]:
     """最近活跃会话的面板数据；没有内容返回 ``None``（调用方据此不渲染）。
 
     返回 ``{"session_id", "turn_id", "reasoning", "tools", "age"}``：
     ``reasoning`` 是拼接好的整段推理，``tools`` 每项含
     ``name / status / duration_ms / preview``。
 
-    归属策略分两档：
-
-    * **给了 ``turn_id``（native 流式帧会带）→ 精确定位。** 钩子载荷与
-      ``send_stream_frame()`` 拿到的是同一个 ``turn_id`` —— 都由
-      ``agent/turn_context.py`` 生成，形如 ``session:task:uuid8``，内含 session
-      且带随机尾，跨会话唯一。所以并发会话各查各的，**不会串台**。
-      匹配到但没内容就返回 ``None``：空就是空，绝不退回别人的数据。
-    * **没给（edit 传输 / 老版本 Hermes）→ 回退「最近活跃」**，多会话并发时
-      可能短暂串台（已知限制，见 README）。
+    ⚠️ **不要试图用 ``turn_id`` 把卡片和会话对上 —— 两侧的 ``turn_id`` 不是同一个东西。**
+    2026-09-12 踩过：钩子载荷里的 ``turn_id`` 是 ``agent._current_turn_id``
+    （``f"{session_id}:{task_id}:{uuid4[:8]}"``，见 ``agent/turn_context.py``）；
+    而 ``send_stream_frame()`` 收到的 ``turn_id`` 是 ``GatewayStreamConsumer``
+    自己现生成的一个裸 uuid（``gateway/stream_consumer.py``：
+    ``self._turn_id = str(uuid.uuid4())  # keys send_stream_frame() per concurrent consumer``）。
+    两者命名空间不相干、**永远匹配不上** —— 按它 join 会让面板永久不渲染，
+    而且不报任何错。``grep -rn _current_turn_id gateway/`` 一处都没有可证。
+    要真正按会话精确定位，得靠 ``(platform, chat_id) -> session_id`` 的反查
+    （``gateway/mirror.py`` 的 ``_find_session_id`` 走 state.db），
+    代价是一次数据库查询 + 新的私有依赖，尚未接入。
     """
     now = _now()
-    tid = str(turn_id or "")
     with _LOCK:
         _purge_locked(now)
-        if tid:
-            matched = next(((s, st) for s, st in _STATE.items()
-                            if st.get("turn_id") == tid), None)
-            if matched is None:
-                return None  # 该回合确实没有面板数据，而不是「显示别人的」
-            sid, state = matched
-        else:
-            sid = _LAST_ACTIVE
-            state = _STATE.get(sid) if sid else None
-            if state is not None and not (state.get("reasoning_parts") or state.get("tools")):
-                state = None  # 活跃会话暂时没内容：走下面的回退
-            if state is None:
-                # 回退：找「最近更新且真的有内容」的会话 —— 只在拿不到 turn_id 时才走。
-                candidates = [(sid2, st) for sid2, st in _STATE.items()
-                              if st.get("reasoning_parts") or st.get("tools")]
-                if not candidates:
-                    return None
-                sid, state = max(candidates, key=lambda kv: kv[1].get("updated", 0.0))
+        sid = _LAST_ACTIVE
+        state = _STATE.get(sid) if sid else None
+        if state is not None and not (state.get("reasoning_parts") or state.get("tools")):
+            state = None  # 活跃会话暂时没内容：走下面的回退
+        if state is None:
+            # 回退：找「最近更新且真的有内容」的会话 —— 钩子载荷没有 chat_id，
+            # 会话路由只能尽力而为；多会话并发时可能短暂串台（已知限制）。
+            candidates = [(sid2, st) for sid2, st in _STATE.items()
+                          if st.get("reasoning_parts") or st.get("tools")]
+            if not candidates:
+                return None
+            sid, state = max(candidates, key=lambda kv: kv[1].get("updated", 0.0))
         parts = list(state.get("reasoning_parts") or [])
         tools = [dict(item) for item in state.get("tools") or []]
-        state_turn_id = state.get("turn_id", "")
+        turn_id = state.get("turn_id", "")
         updated = state.get("updated", now)
     # 拼接放到锁外 —— 推理最长可达 _MAX_REASONING_CHARS，锁里做会拖慢
     # fail-closed 的 pre_tool_call 回调（见模块 docstring 线程模型）。
@@ -302,7 +297,7 @@ def snapshot(turn_id: str = "") -> Optional[Dict[str, Any]]:
         return None
     return {
         "session_id": sid,
-        "turn_id": state_turn_id,
+        "turn_id": turn_id,
         "reasoning": reasoning,
         "tools": tools,
         "age": max(0.0, now - updated),

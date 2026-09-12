@@ -287,12 +287,8 @@ class LarkDeckMixin:
             return None
 
     @classmethod
-    def _ld_panel(cls, turn_id: str = "") -> Optional[Dict[str, Any]]:
+    def _ld_panel(cls) -> Optional[Dict[str, Any]]:
         """底部折叠面板：推理过程 + 工具步骤（数据来自 :mod:`larkdeck.core.panel`）。
-
-        ``turn_id`` 决定面板归属：native 流式帧会带上核心给的 ``turn_id``，与钩子
-        载荷里的同源，于是并发会话能各查各的（不串台）；``send`` / ``edit_message``
-        这两条回落路径拿不到它，传空串即退回「最近活跃会话」。
 
         没有数据（钩子未触发 / reasoning 未开启 / 面板关掉）就返回 ``None``，
         ``reply_card`` 会自然跳过这个元素。与页脚同理：**任何情况下不抛异常**，
@@ -301,7 +297,7 @@ class LarkDeckMixin:
         try:
             if not _cfg("unified_panel"):
                 return None
-            snap = _panel.snapshot(turn_id)
+            snap = _panel.snapshot()
             if not snap:
                 _log_empty_panel_once()
                 return None
@@ -457,7 +453,7 @@ class LarkDeckMixin:
                 # 没有活跃流可收尾：交核心回落（send/edit 会正常发出）。
                 return False
             card = _cards.reply_card(display, streaming=True,
-                                     panel=self._ld_panel(turn_id), footer=self._ld_footer(now))
+                                     panel=self._ld_panel(), footer=self._ld_footer(now))
             result = await self._ld_send_card(chat, card, reply_to=reply_to)
             if result is None or not getattr(result, "success", False):
                 return False
@@ -472,7 +468,7 @@ class LarkDeckMixin:
         message_id = state["message_id"]
         if finalize:
             card = _cards.reply_card(display or " ", streaming=False,
-                                     panel=self._ld_panel(turn_id),
+                                     panel=self._ld_panel(),
                                      footer=self._ld_footer(state.get("t0")))
             result = await self._ld_update_card(chat, message_id, card)
             if result is None or not getattr(result, "success", False):
@@ -487,7 +483,7 @@ class LarkDeckMixin:
                 and now - last_at < _STREAM_MIN_INTERVAL):
             return True  # 节流窗口内的中间帧：跳过，等下个 tick（首帧不节流）
         card = _cards.reply_card(display, streaming=True,
-                                 panel=self._ld_panel(turn_id),
+                                 panel=self._ld_panel(),
                                  footer=self._ld_footer(state.get("t0")))
         result = await self._ld_update_card(chat, message_id, card)
         if result is None or not getattr(result, "success", False):

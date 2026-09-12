@@ -39,7 +39,7 @@ core/         插件本体（Hermes 加载器以 hermes_plugins.larkdeck.core.* 
   i18n.py       双语文案（飞书原生 i18n_content）
   compat.py     版本 / 能力探测 —— Hermes 私有名的唯一存放处
   context.py    运行时指标（钩子写入 → 页脚读取的进程内全局快照）
-  panel.py      面板数据层（推理 / 工具钩子写入 → 卡片面板读取；按会话分桶 + turn_id 精确定位）
+  panel.py      面板数据层（推理 / 工具钩子写入 → 卡片面板读取；按会话分桶 + 最近活跃取用）
   hooks.py      官方钩子订阅（5 个观察型钩子）：只写内存、异常自吞、永不返回 directive
 install.sh    安装脚本（默认软链；NAS 用 --copy，其 FILES 数组是手动的，新增模块要同步）
 docs/         踩坑与开工索引、指标钩子原理、部署与迁移步骤
@@ -64,10 +64,8 @@ tests/        见「验证」
   （key = `chat:turn_id`），帧间有节流（`_STREAM_MIN_INTERVAL`）。
 - 页脚指标是进程内全局（钩子记「最近一次 API 请求」），多会话并发共享同一快照；
   要按会话隔离得从钩子载荷的 `session_id` 分桶（未做）。
-- 面板归属靠 `turn_id` 精确定位：`panel.snapshot(turn_id)` 与 `send_stream_frame` 拿到的
-  `turn_id` 同源（`agent/turn_context.py` 生成，内含 session + uuid，跨会话唯一），
-  所以并发会话不串台；**查不到就返回 None，绝不退回别人的数据**。只有 `send` /
-  `edit_message` 这条拿不到 `turn_id` 的回落路径才退回「最近活跃」。
+- 面板数据策略与页脚不同：`panel.py` 按 `session_id` 分桶、快照时取「最近活跃」——
+  流式/工具钩子载荷没有 chat_id，卡片渲染时无法自证归属，多会话并发可能短暂串台。
   钩子回调纪律源自 `pre_tool_call` 是 **fail-closed**（回调卡住会阻止工具执行）：
   只写内存、微秒级返回、异常自吞、**永不返回 directive**。
 

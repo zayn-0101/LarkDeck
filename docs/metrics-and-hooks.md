@@ -60,12 +60,8 @@ prompt_tokens, reasoning_tokens, request_count, total_tokens
 数据进 `panel.py`：按 `session_id` 分桶，`turn_id` 一变就重置（新回合不残留旧面板）。
 `on_stream_start` 的清理必须走在卡片首帧前 —— 流式首帧可能早于新回合第一个推理/工具事件，
 纯文本回合更是没有面板事件，不清就会把上一回合的面板带到新卡片上。
-**归属定位**：这些载荷只有 `session_id`、没有 chat_id，卡片渲染时本来无法自证属于哪个会话。
-但 native 流式帧带着核心给的 `turn_id`，**与钩子载荷里的同源**（都由 `agent/turn_context.py`
-生成，形如 `session:task:uuid8`，内含 session 且带随机尾，跨会话唯一），所以按 `turn_id`
-精确匹配即可 —— 并发会话各查各的。匹配不到就返回空面板，**不退回别人的数据**。
-只有 `send` / `edit_message` 这条拿不到 `turn_id` 的回落路径才退回「最近活跃会话」，
-那条路径下多会话并发仍可能短暂串台（README 已知限制里也有记录）。
+**限制**：这些载荷只有 `session_id`、没有 chat_id，卡片渲染时只能取「最近活跃会话」
+——多会话并发时可能短暂串台（README 已知限制里也有记录）。
 
 ## 两个坑（都踩过）
 
