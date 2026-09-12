@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -47,6 +48,29 @@ CALLBACK_ADAPTER_ATTRS: Tuple[str, ...] = (
 #: 并把 probe_report 的输出修准 —— ``_client`` 是实例属性，早先误登记在类属性组里，
 #: 导致 ``_has(cls, "_client")`` 恒为 False、探测结果长期误报。
 CALLBACK_INSTANCE_ATTRS: Tuple[str, ...] = ("_loop", "_client")
+
+#: **信号型**适配器契约：核心主动调我们（不是我们调核心），且是在 ``/stop``、``/new``
+#: 这些「必须立刻把卡片改成中止态」的路径上。核心的取法是
+#: ``getattr(type(adapter), name, None)``（见 ``gateway/run_agent_cache.py``），
+#: 所以混入层定义它就能被调到。
+#:
+#: 缺了不致命（卡片照发），但**中止后卡片永远不变色** —— 因为 native 模式下中止会让
+#: consumer 直接 return、**永远不会再有 finalize 帧**，没有任何别的地方会重绘那张卡。
+SIGNAL_ADAPTER_ATTRS: Tuple[str, ...] = (
+    "interrupt_session_activity",
+)
+
+#: 本插件订阅的**观察型**钩子清单（与 ``core/hooks.py`` 一一对应）。
+#: 这个元组存在的意义是让「订阅了几个」有单一事实来源：文档、门禁、自检都读它。
+OBSERVED_HOOKS: Tuple[str, ...] = (
+    "post_api_request",
+    "on_stream_start",
+    "on_stream_delta",
+    "pre_tool_call",
+    "post_tool_call",
+    "pre_gateway_dispatch",
+    "on_session_end",
+)
 
 
 def hermes_version() -> str:
@@ -119,9 +143,29 @@ def probe_report(cls: Optional[type]) -> Dict[str, Any]:
     report["missing_required"] = missing
     report["missing_optional"] = [n for n in OPTIONAL_ADAPTER_ATTRS if not _has(cls, n)]
     report["missing_callback"] = [n for n in CALLBACK_ADAPTER_ATTRS if not _has(cls, n)]
+    # 信号型契约：缺了只是「中止后卡片不变色」，但那是**静默**失灵，所以要上报
+    report["missing_signal"] = [n for n in SIGNAL_ADAPTER_ATTRS if not _has(cls, n)]
     # 会话归属是「卡片能否确定属于哪个会话」的前提，缺了只是退回旧行为（不阻断卡片）
     report["session_attribution_ok"] = session_attribution_available()
     return report
+
+
+def accepts_keyword(fn: Any, name: str) -> bool:
+    """``fn`` 是否接受关键字参数 ``name``（含 ``**kwargs``）。
+
+    核心用同一套判据（``agent/interrupt_compat.py`` 的 ``_accepts_keyword``）决定
+    怎么调用我们的覆盖方法：不认 ``metadata`` 就退回两参数形式。我们的覆盖方法要
+    **原样转发**给 ``super()``，所以也得按同样规则问一次父类，否则老版本上会 TypeError。
+    """
+    try:
+        parameters = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        p.kind is inspect.Parameter.VAR_KEYWORD
+        or (p.name == name and p.kind is not inspect.Parameter.POSITIONAL_ONLY)
+        for p in parameters
+    )
 
 
 # --------------------------------------------------------------------------- #

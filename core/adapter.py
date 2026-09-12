@@ -327,34 +327,58 @@ class LarkDeckMixin:
 
     @classmethod
     def _ld_footer(cls, started: Optional[float] = None) -> Optional[str]:
-        """页脚一行：``🤖 模型 · ctx 用量 · ⏱ 耗时``。
+        """页脚一行：只放**上下文用量**（``ctx 45.2k/200k · 23%``）。
 
-        数据全部来自官方钩子（见 :mod:`larkdeck.core.context`）：钩子还没触发时该段
-        自然缺失，全缺就返回 ``None``（不渲染脚注元素）。**任何情况下不抛异常**
-        —— 页脚是装饰，不能因为它把整张卡片搞坏。
+        模型名与耗时已经搬进面板标题行（决策 D2：卡片级 header 去掉了，信息压进面板头），
+        这里再写一遍就是同一屏里重复两行同样的信息。页脚留下的是面板头不显示的那一项。
+
+        数据来自官方钩子（见 :mod:`larkdeck.core.context`）：钩子还没触发时该段自然缺失，
+        全缺就返回 ``None``（不渲染脚注元素）。**任何情况下不抛异常** —— 页脚是装饰，
+        不能因为它把整张卡片搞坏。
         """
         try:
             if not _cfg("footer"):
                 return None
-            snap = _context.snapshot()
-            duration = max(0.0, time.monotonic() - started) if started else None
-            return _cards.footer_line(
-                model=(snap.get("model_display") or "") if _cfg("show_model") else "",
-                context=cls._ld_context_segment(snap),
-                duration=duration,
-            )
+            return _cards.footer_line(context=cls._ld_context_segment())
         except Exception:
             logger.debug("[larkdeck] 页脚渲染失败，跳过", exc_info=True)
             return None
 
     @classmethod
-    def _ld_panel(cls, chat_id: str = "") -> Optional[Dict[str, Any]]:
-        """底部折叠面板：推理过程 + 工具步骤（数据来自 :mod:`larkdeck.core.panel`）。
+    def _ld_panel_summary(cls, snap: Dict[str, Any], started: Optional[float]) -> str:
+        """面板标题行：``🤖 模型 · 🧠 3 · 🔧 5 · ⏱ 12.3s``（决策 D2 的信息落点）。
+
+        全是「符号 + 数字 + 英文缩写」，与页脚同理：天然无需翻译，也不该走 i18n。
+        各段数据缺失时自然缺段；全缺时返回空串，调用方退回固定标题。
+        """
+        try:
+            model = ""
+            if _cfg("show_model"):
+                model = str(_context.snapshot().get("model_display") or "")
+            duration = None
+            if started:
+                duration = max(0.0, time.monotonic() - float(started))
+            return _cards.footer_line(
+                model=model,
+                rounds=len(snap.get("rounds") or []),
+                tools=len(snap.get("tools") or []),
+                duration=duration,
+            ) or ""
+        except Exception:
+            logger.debug("[larkdeck] 面板标题渲染失败，跳过", exc_info=True)
+            return ""
+
+    @classmethod
+    def _ld_panel(cls, chat_id: str = "", started: Optional[float] = None
+                  ) -> Optional[Dict[str, Any]]:
+        """底部折叠面板：推理过程 + 工具步骤 + 状态色（数据来自 :mod:`larkdeck.core.panel`）。
 
         ``chat_id`` 决定面板归属：由 ``pre_gateway_dispatch`` 观察到的
         ``chat_id -> session_id`` 映射给出**确定性**归属，并发会话不再串台。
         拿不到映射时（新会话首回合 / 老版本 Hermes）自动退回「最近活跃会话」的旧行为
         —— **归属失败绝不能导致面板不渲染**。
+
+        ``started`` 是本回合的起始时刻（用于面板标题里的耗时）；拿不到就不显示耗时。
 
         没有数据（钩子未触发 / reasoning 未开启 / 面板关掉）就返回 ``None``，
         ``reply_card`` 会自然跳过这个元素。与页脚同理：**任何情况下不抛异常**，
@@ -381,6 +405,8 @@ class LarkDeckMixin:
                 rounds=snap.get("rounds") or [],
                 tools=steps,
                 expanded=_cfg("panel_expanded"),
+                status=snap.get("status"),
+                summary=cls._ld_panel_summary(snap, started),
                 max_reasoning_chars=_cfg_int("max_reasoning_chars", _cards.MAX_REASONING_CHARS),
                 max_tool_chars=_cfg_int("max_tool_result_chars", _cards.MAX_TOOL_RESULT_CHARS),
                 max_steps=_cfg_int("max_panel_steps", _cards.MAX_PANEL_STEPS),
@@ -474,7 +500,7 @@ class LarkDeckMixin:
         try:
             card = self._ld_build_card(
                 content, streaming=not finalize,
-                panel=self._ld_panel(chat_id),
+                panel=self._ld_panel(chat_id, state.get("t0")),
                 footer=self._ld_footer(state.get("t0")),
             )
             result = await self._ld_update_card(chat_id, message_id, card)
@@ -535,7 +561,7 @@ class LarkDeckMixin:
                 # 没有活跃流可收尾：交核心回落（send/edit 会正常发出）。
                 return False
             card = self._ld_build_card(display, streaming=True,
-                                       panel=self._ld_panel(chat),
+                                       panel=self._ld_panel(chat, now),
                                        footer=self._ld_footer(now))
             result = await self._ld_send_card(chat, card, reply_to=reply_to)
             if result is None or not getattr(result, "success", False):
@@ -550,7 +576,7 @@ class LarkDeckMixin:
         message_id = state["message_id"]
         if finalize:
             card = self._ld_build_card(display or " ", streaming=False,
-                                       panel=self._ld_panel(chat),
+                                       panel=self._ld_panel(chat, state.get("t0")),
                                        footer=self._ld_footer(state.get("t0")))
             result = await self._ld_update_card(chat, message_id, card)
             if result is None or not getattr(result, "success", False):
@@ -565,7 +591,7 @@ class LarkDeckMixin:
                 and now - last_at < _STREAM_MIN_INTERVAL):
             return True  # 节流窗口内的中间帧：跳过，等下个 tick（首帧不节流）
         card = self._ld_build_card(display, streaming=True,
-                                   panel=self._ld_panel(chat),
+                                   panel=self._ld_panel(chat, state.get("t0")),
                                    footer=self._ld_footer(state.get("t0")))
         result = await self._ld_update_card(chat, message_id, card)
         if result is None or not getattr(result, "success", False):
@@ -615,6 +641,100 @@ class LarkDeckMixin:
     def _ld_stream_pop(self, key: str) -> None:
         with self._ld_lock:
             self._ld_streams.pop(key, None)
+
+    # --------------------------------------------------- 中止信号（/stop 路径）
+    async def interrupt_session_activity(self, session_key: str, chat_id: str,
+                                         metadata: Optional[Dict[str, Any]] = None) -> None:
+        """核心在 ``/stop``、``/new`` 时调我们 —— **这是中止态唯一的落地机会**。
+
+        为什么不能只是「改个内存状态等下一帧」：``/stop`` 会让 stream consumer 直接
+        return（``gateway/stream_consumer.py``：「Session reset: abandon rather than
+        deliver stale deltas」），而 native 模式下 ``_abandon_native_stream`` 是**空操作**
+        —— 于是**永远不会有收尾帧**。状态改在内存里、卡片纹丝不动，而且不报任何错。
+        所以这里必须**自己把那张卡重绘成中止态**。
+
+        纪律：
+          * 全程包在 try 里，**永远不把异常往上抛**（这是核心的 ``/stop`` 路径，
+            弄炸它等于 /stop 失效）；异常时只记日志。
+          * 无论卡片重绘成功与否，都照常 ``super()`` —— 内核的「置停止标志 + 停打字」
+            必须发生，那是这个方法的**本职**，我们不能因为它挡住中止。
+          * 重绘用**现有的卡与现有的正文**（:attr:`_ld_streams` 里存着最后一帧的累积全文），
+            不新增消息、不改内容，只换状态色。
+        """
+        try:
+            self._ld_mark_stopped(chat_id)
+            await self._ld_redraw_stopped(chat_id)
+        except Exception as exc:  # pragma: no cover - 防御性
+            logger.warning("[larkdeck] 中止态卡片重绘失败（中止本身继续）: %s", exc, exc_info=True)
+        # 转发给内置实现：签名按父类能力决定（``agent/interrupt_compat._accepts_keyword``
+        # 是核心用的同一套判据）。
+        # ⚠️ 必须拿**父类方法本身**去探 —— 曾经写成 ``getattr(type(parent), ...)``，
+        # 而 ``parent`` 是 ``super()`` 对象、``type(parent)`` 恒为 ``super``，
+        # 于是探针永远说「不支持 metadata」→ metadata 被静默丢掉。
+        parent = super(LarkDeckMixin, self)
+        method = getattr(parent, "interrupt_session_activity", None)
+        if not callable(method):
+            return  # 父类没有这个能力（老版本）：没得转发，但卡片状态已经改好了
+        if _compat.accepts_keyword(method, "metadata"):
+            try:
+                return await method(session_key, chat_id, metadata=metadata)
+            except TypeError:  # pragma: no cover - 签名探测失准时退回两参数形式
+                logger.debug("[larkdeck] 中止转发带 metadata 失败，退回两参数形式",
+                             exc_info=True)
+        return await method(session_key, chat_id)
+
+    def _ld_mark_stopped(self, chat_id: str) -> str:
+        """把该 chat 对应会话标成中止（返回命中的 session_id，仅用于日志）。"""
+        sid = _panel.mark_stopped(chat_id)
+        if not sid:
+            # 没有面板数据可改（本回合没有过程信息）—— 卡片仍然会被重绘成中止色，
+            # 因为下面的 _ld_redraw_stopped 会显式带上 stopped 状态。
+            logger.debug("[larkdeck] 中止：没有找到 %s 对应的面板会话", chat_id)
+        return sid
+
+    async def _ld_redraw_stopped(self, chat_id: str) -> bool:
+        """把该 chat 自己发出的那张流式卡原地重绘成**中止态**。
+
+        数据来源是 :attr:`_ld_streams`（``chat:turn_id`` → 最后一帧的累积全文）——
+        就是「用户中止时屏幕上已经打出来的那段」。找不到活跃流时**什么都不做**：
+        非流式模式下本来就没有卡在流，凭空发一张新卡会多出一条消息。
+        """
+        chat = str(chat_id or "").strip()
+        if not chat or not getattr(self, "_client", None):
+            return False
+        with self._ld_lock:
+            keys = [key for key, state in self._ld_streams.items()
+                    if state.get("chat_id") == chat]
+        return await self._ld_redraw_stopped_keys(chat, keys)
+
+    async def _ld_redraw_stopped_keys(self, chat: str, keys: List[str]) -> bool:
+        redrawn = False
+        for key in keys:
+            state = self._ld_stream_get(key)
+            if not state:
+                continue
+            message_id = str(state.get("message_id") or "")
+            if not message_id:
+                continue
+            text = str(state.get("last") or "")
+            try:
+                # 面板是状态色**唯一**的载体。这里能直接复用 _ld_panel：上面已经把该会话
+                # 标成 stopped，而「只有状态、没有过程数据」的会话现在也会出一份快照
+                # （见 panel.snapshot 的收尾判断），所以中止色一定画得出来。
+                card = self._ld_build_card(text or " ", streaming=False,
+                                           panel=self._ld_panel(chat, state.get("t0")),
+                                           footer=self._ld_footer(state.get("t0")))
+                result = await self._ld_update_card(chat, message_id, card)
+                if result is None or not getattr(result, "success", False):
+                    logger.warning("[larkdeck] 中止态卡片更新未成功（%s）",
+                                   getattr(result, "error", "unknown"))
+                    continue
+                redrawn = True
+            except Exception as exc:  # pragma: no cover - 防御性
+                logger.warning("[larkdeck] 中止态卡片更新异常: %s", exc, exc_info=True)
+        if redrawn:
+            logger.info("[larkdeck] 已把中止态重绘到卡片（session_key 归属的 chat=%s）", chat)
+        return redrawn
 
     # ----------------------------------------------------------- send_clarify
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list],

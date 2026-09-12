@@ -64,6 +64,40 @@ _MIN_ROUND_CHARS = 120
 #: 统一面板最多保留多少条步骤；更早的收成一行计数。
 MAX_PANEL_STEPS = 30
 
+# --------------------------------------------------------------------------- #
+# 状态色 —— **唯一载体是面板边框**
+# --------------------------------------------------------------------------- #
+#: 飞书卡片的颜色枚举（官方 resource/colors.md：14 个基础色名，无后缀 = -600）。
+#: 这里只用其中四个，语义与 aiduPOP 对齐（它的源码是
+#: ``"green" if not is_error and not is_aborted else ("red" if is_error else "yellow")``；
+#: 注意它的 README 把红/黄写反了，以源码为准）。
+BORDER_NEUTRAL = "grey"   # 进行中 / 还没有结论
+BORDER_OK = "green"       # 完成
+BORDER_ERROR = "red"      # 报错
+BORDER_STOPPED = "yellow"  # 用户中止
+
+#: 回合状态 → 边框色。键必须与 ``panel.STATUS_*`` 一致
+#: （单测 ``test_status_colors_match_panel_constants`` 钉住这件事 —— 两边改名而另一边
+#: 没改的后果是**边框永远灰色**，即状态色整条静默失效）。
+STATUS_BORDERS: Dict[str, str] = {
+    "ok": BORDER_OK,
+    "error": BORDER_ERROR,
+    "stopped": BORDER_STOPPED,
+}
+
+
+def border_for_status(status: Any) -> str:
+    """状态 → 边框色；未知/未给一律中性灰（不猜）。"""
+    return STATUS_BORDERS.get(str(status or ""), BORDER_NEUTRAL)
+
+
+#: 状态 → 面板正文里的兜底文案键（面板没有别的内容时用）。
+_STATUS_TEXT_KEYS: Dict[str, str] = {
+    "ok": "panel.status_ok",
+    "error": "panel.status_error",
+    "stopped": "panel.status_stopped",
+}
+
 #: 上下文进度条的格子数（8 格是 fry-cards 实测过的宽度，手机上不换行）。
 CONTEXT_BAR_WIDTH = 8
 
@@ -119,6 +153,7 @@ def action_row(buttons: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
 
 def collapsible(title_node: Dict[str, Any], elements: Sequence[Dict[str, Any]], *,
                 expanded: bool = False, element_id: str = "auxiliary_timeline",
+                border_color: str = BORDER_NEUTRAL,
                 ) -> Dict[str, Any]:
     """可折叠面板（**2.0 专属**元素）。用于把推理过程 / 工具调用收进底部。
 
@@ -140,7 +175,8 @@ def collapsible(title_node: Dict[str, Any], elements: Sequence[Dict[str, Any]], 
             "icon_position": "right",
             "icon_expanded_angle": -180,
         },
-        "border": {"color": "grey", "corner_radius": "8px"},
+        "border": {"color": str(border_color or BORDER_NEUTRAL),
+                   "corner_radius": "8px"},
         "padding": "8px 8px 8px 8px",
         "elements": list(elements),
     }
@@ -217,15 +253,21 @@ def format_elapsed(seconds: float) -> str:
 
 
 def footer_line(*, duration: Optional[float] = None, model: str = "",
-                tools: Optional[int] = None, context: str = "") -> Optional[str]:
-    """页脚一行 —— 全部用「符号 + 数字 + 英文缩写」，天然无需翻译（不依赖 i18n）。
+                tools: Optional[int] = None, rounds: Optional[int] = None,
+                context: str = "") -> Optional[str]:
+    """「符号 + 数字 + 英文缩写」拼成的信息行 —— 天然无需翻译（不依赖 i18n）。
 
-    各段之间用 ``·`` 分隔；一段都没有时返回 ``None``，调用方就不渲染脚注元素。
+    两个调用点：**面板标题行**（``model + rounds + tools + duration``，决策 D2 把这些
+    从卡片级 header 搬进面板头）与**页脚**（只放 ``context``）。
+
+    各段之间用 ``·`` 分隔；一段都没有时返回 ``None``，调用方就不渲染。
     """
     parts: List[str] = []
     if model:
         parts.append(f"🤖 {model}")
-    # 注意排除 bool：Python 里 isinstance(True, int) 为真，不排会拼出「🔧 True」。
+    # 注意排除 bool：Python 里 isinstance(True, int) 为真，不排会拼出「🧠 True」。
+    if isinstance(rounds, int) and not isinstance(rounds, bool) and rounds > 0:
+        parts.append(f"🧠 {rounds}")
     if isinstance(tools, int) and not isinstance(tools, bool) and tools > 0:
         parts.append(f"🔧 {tools}")
     if context:
@@ -403,9 +445,13 @@ def _summary_of(text: str, *, fallback: str = "") -> Dict[str, Any]:
 
 
 def card(*, elements: Sequence[Dict[str, Any]], template: str = "blue",
-         title: str = DEFAULT_TITLE, streaming: Optional[bool] = None,
+         title: Optional[str] = DEFAULT_TITLE, streaming: Optional[bool] = None,
          update_multi: bool = True, summary: str = "") -> Dict[str, Any]:
-    """2.0 卡片：``config`` / ``header`` / ``body.elements``。
+    """2.0 卡片：``config`` / （可选）``header`` / ``body.elements``。
+
+    ``title=None`` 表示**不要卡片级 header** —— 决策 D2 走这条路：模型名与统计搬进
+    ``collapsible_panel`` 自己的 header，卡片只剩正文 + 面板（最接近 aiduPOP 的观感，
+    也是「状态色放边框」这个选择的配套）。``header`` 是 2.0 的可选字段，不给完全合法。
 
     **不带按钮行** —— 需要接点击的卡片请用 :func:`legacy_card`。
     """
@@ -419,26 +465,30 @@ def card(*, elements: Sequence[Dict[str, Any]], template: str = "blue",
     # 内容为空时（seed 帧 / 空 finalize 帧）退回卡片标题，不能留空串。
     if streaming or summary:
         config["summary"] = _summary_of(summary, fallback=str(title or DEFAULT_TITLE))
-    return {
+    node: Dict[str, Any] = {
         "schema": SCHEMA,
         "config": config,
-        "header": {"template": template,
-                   "title": {"tag": "plain_text", "content": title}},
         "body": {"elements": list(elements)},
     }
+    if title:
+        node["header"] = {"template": template,
+                          "title": {"tag": "plain_text", "content": title}}
+    return node
 
 
 def reply_card(answer: str, *, streaming: bool = False, panel: Optional[Dict[str, Any]] = None,
-               footer: Optional[str] = None, template: str = "blue",
-               title: str = DEFAULT_TITLE) -> Dict[str, Any]:
-    """正文回复卡：正文区 + 可选统一面板 + 可选脚注。"""
+               footer: Optional[str] = None) -> Dict[str, Any]:
+    """正文回复卡：正文区 + 可选统一面板 + 可选脚注。
+
+    **没有卡片级 header**（决策 D2）。原来标题固定是 "Hermes"，既没信息量又占一行，
+    现在模型名/轮数/工具数/耗时全在面板头里。
+    """
     elements: List[Dict[str, Any]] = [md(answer)]
     if panel:
         elements.append(panel)
     if footer:
         elements.append(footnote(footer))
-    return card(elements=elements, template=template, title=title,
-                streaming=streaming, summary=answer)
+    return card(elements=elements, title=None, streaming=streaming, summary=answer)
 
 
 #: 卡片 JSON 的 UTF-8 字节预算。飞书对 interactive 卡有大小上限，超了会被拒收。
@@ -467,7 +517,6 @@ def card_bytes(node: Dict[str, Any]) -> int:
 
 def fit_reply_card(answer: str, *, streaming: bool = False,
                    panel: Optional[Dict[str, Any]] = None, footer: Optional[str] = None,
-                   template: str = "blue", title: str = DEFAULT_TITLE,
                    budget: int = CARD_BYTE_BUDGET) -> "tuple[Dict[str, Any], str]":
     """构造回复卡，超预算时**分级丢装饰**。返回 ``(card, 降级档位)``。
 
@@ -484,13 +533,12 @@ def fit_reply_card(answer: str, *, streaming: bool = False,
                 (None, footer, "no-panel"),
                 (None, None, "bare"))
     for panel_try, footer_try, tier in attempts:
-        node = reply_card(answer, streaming=streaming, panel=panel_try, footer=footer_try,
-                          template=template, title=title)
+        node = reply_card(answer, streaming=streaming, panel=panel_try, footer=footer_try)
         if card_bytes(node) <= budget:
             return node, tier
     # 连装饰全摘都超预算：正文本身太大。**照常返回**，让发送失败去走官方回落
     # （官方会分块），而不是在这里把答案切掉。
-    return reply_card(answer, streaming=streaming, template=template, title=title), "over-budget"
+    return reply_card(answer, streaming=streaming), "over-budget"
 
 
 def _round_title(index: int, elapsed_ms: Any) -> str:
@@ -504,6 +552,8 @@ def _round_title(index: int, elapsed_ms: Any) -> str:
 def unified_panel(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
                   tools: Sequence[str] = (),
                   expanded: bool = False,
+                  status: Any = None,
+                  summary: Optional[str] = None,
                   max_reasoning_chars: int = MAX_REASONING_CHARS,
                   max_tool_chars: int = MAX_TOOL_RESULT_CHARS,
                   max_steps: int = MAX_PANEL_STEPS,
@@ -556,16 +606,23 @@ def unified_panel(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
         steps = steps[-max_steps:]
     for item in steps:
         inner.append(md(truncate(item, max_tool_chars)))
-    if not inner:
+    border = border_for_status(status)
+    if not inner and not status:
         return None
-    # 标题必须是 plain_text，且带上工具计数 —— 收起状态下这是用户唯一看得到的信息
-    if tools:
+    if not inner:
+        # 有结局但没有过程数据：补一行状态文字 —— 面板不能是空的（空面板飞书会拒，
+        # 而且用户看不到任何东西），状态色也需要一个可见的落点。
+        inner.append(md(_i18n.t(_STATUS_TEXT_KEYS.get(str(status or ""), "panel.title"))))
+    # 标题必须是 plain_text；优先级：调用方给的摘要行 > 固定的「执行详情」。
+    if summary:
+        title: Dict[str, Any] = {"tag": "plain_text", "content": str(summary)}
+    elif tools:
         # 英文单复数：1 tool call / N tool calls
         key = "panel.title_tools_one" if len(tools) == 1 else "panel.title_tools"
         title = _i18n.i18n_text(key, n=len(tools))
     else:
         title = _i18n.i18n_text("panel.title")
-    return collapsible(title, inner, expanded=expanded)
+    return collapsible(title, inner, expanded=expanded, border_color=border)
 
 
 # --------------------------------------------------------------------------- #

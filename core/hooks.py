@@ -6,14 +6,16 @@ larkdeck 是「平台插件 + 钩子订阅者」：``ctx.register_platform()`` �
 
 订阅分两类，纪律相同 —— **只写内存、异常自吞、返回值一律 None**：
 
-* 观察型：``post_api_request``（页脚指标）、``on_stream_start``（回合边界）、
-  ``on_stream_delta``（推理增量）；
+* 观察型：``post_api_request``（页脚指标 + 回合活跃）、``on_stream_start``（回合边界）、
+  ``on_stream_delta``（推理增量）、``on_session_end``（回合结局 → 卡片状态色）；
+* 分发型观察：``pre_gateway_dispatch``（只读地观察 ``chat_id -> session_id`` 归属）；
 * 工具生命周期：``pre_tool_call`` / ``post_tool_call``（面板里的工具步骤）。
 
 ``pre_tool_call`` 是 **fail-closed** 钩子 —— 核心会等它返回指令，回调卡住
-会阻止工具执行。所以这个回调只做一次 dict 写入（:mod:`larkdeck.core.panel` 内
-是微秒级的加锁写），绝不返回 directive、绝不 IO：哪怕 larkdeck 自己有 bug，
-最坏情况也只是面板少一行，不可能拦住任何工具。
+**不只是面板少一行，而是工具被判 skip 并按 block 处理**（超时 30s + 60s 抑制窗口，
+见 ``hermes_cli/plugins_dispatch.py``）。所以这个回调只做一次 dict 写入
+（:mod:`larkdeck.core.panel` 内是微秒级的加锁写），绝不返回 directive、绝不 IO。
+往这个回调里加任何阻塞物都是把后果从「少一行」升级成「拦工具」。
 
 推理增量有个 Hermes 侧前置条件：``plugins.stream_reasoning_deltas`` 为 true
 时核心才发 ``kind="reasoning"`` 的增量（默认 false，见 docs/metrics-and-hooks
@@ -67,6 +69,51 @@ def _on_stream_delta(**payload: Any) -> None:
             _panel.record_answer_delta(session_id, turn_id)
     except Exception:  # pragma: no cover - 防御性：钩子绝不能抛
         logger.debug("[larkdeck] on_stream_delta 采集忽略了一次异常", exc_info=True)
+
+
+def _on_api_request(**payload: Any) -> None:
+    """``post_api_request``：页脚指标 + **面板的「回合在动」信号**。
+
+    后半句为什么必要：非流式模式下 ``on_stream_start`` 完全不触发（它由流式 emitter 发），
+    「新回合开始」就没有别的来源 —— 上一回合的状态色会一直挂着（见 ``panel.note_turn``）。
+    这个钩子每回合至少发一次，且**带 turn_id**，正好补上这个缺口。
+    """
+    try:
+        _context.record_api_call(
+            model=payload.get("model", ""),
+            provider=payload.get("provider", ""),
+            usage=payload.get("usage"),
+            response_model=payload.get("response_model"),
+        )
+    except Exception:  # pragma: no cover - 防御性：钩子绝不能抛
+        logger.debug("[larkdeck] post_api_request 指标采集忽略了一次异常", exc_info=True)
+    try:
+        _panel.note_turn(payload.get("session_id", ""), payload.get("turn_id", ""))
+    except Exception:  # pragma: no cover - 防御性：钩子绝不能抛
+        logger.debug("[larkdeck] post_api_request 回合信号忽略了一次异常", exc_info=True)
+
+
+def _on_session_end(**payload: Any) -> None:
+    """``on_session_end``：**每回合一次**的权威结局 → 卡片状态色。
+
+    名字里的 session 是历史包袱：它由 ``agent/turn_finalizer.py`` 的 ``finalize_turn``
+    在**每次** ``run_conversation()`` 结尾同步发出，载荷是
+    ``completed`` / ``failed`` / ``interrupted`` / ``turn_exit_reason`` —— 这正是官方
+    对「完成 / 报错 / 中止」的权威判定，比任何推断都可靠。
+
+    判定优先级的坑（``interrupted > failed > completed``）与「不许按 error 字符串分类」
+    都写在 :func:`larkdeck.core.panel.record_turn_end` 里 —— 那里是唯一的判据处。
+    """
+    try:
+        _panel.record_turn_end(
+            payload.get("session_id", ""),
+            payload.get("turn_id", ""),
+            completed=bool(payload.get("completed")),
+            failed=bool(payload.get("failed")),
+            interrupted=bool(payload.get("interrupted")),
+        )
+    except Exception:  # pragma: no cover - 防御性：钩子绝不能抛
+        logger.debug("[larkdeck] on_session_end 采集忽略了一次异常", exc_info=True)
 
 
 def _on_pre_gateway_dispatch(**payload: Any) -> None:
@@ -141,8 +188,8 @@ def _on_post_tool_call(**payload: Any) -> None:
 
 #: 订阅清单：钩子名 -> 回调。全部只观察，不返回指令。
 SUBSCRIPTIONS: Tuple[Tuple[str, Callable[..., Any]], ...] = (
-    # 每次 API 调用后触发：model / provider / base_url / usage{in,out}_tokens
-    ("post_api_request", _context.record_api_call),
+    # 每次 API 调用后触发：model / provider / usage{in,out}_tokens + 回合活跃信号
+    ("post_api_request", _on_api_request),
     # 回合边界（清掉上一回合的面板残留；含重试，回调内幂等）
     ("on_stream_start", _on_stream_start),
     # 流式增量（仅取 kind="reasoning" 做面板）
@@ -153,6 +200,8 @@ SUBSCRIPTIONS: Tuple[Tuple[str, Callable[..., Any]], ...] = (
     # 入站消息的会话归属（chat_id -> session_id）—— 让卡片能确定地找到自己的会话。
     # 这个钩子能干预分发，我们**只观察、恒返回 None**。
     ("pre_gateway_dispatch", _on_pre_gateway_dispatch),
+    # 每回合一次的结局（完成 / 报错 / 中止）—— 卡片状态色的唯一来源
+    ("on_session_end", _on_session_end),
 )
 
 

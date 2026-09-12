@@ -71,8 +71,17 @@ _CHAT_SESSION: Dict[str, Any] = {}
 _CHAT_SESSION_MAX = 256
 _CHAT_SESSION_TTL = 86400.0
 
-#: ``session_id -> state``；state = turn_id / rounds / current_round / tools / ...
+#: ``session_id -> state``；state = turn_id / rounds / current_round / tools / status / ...
 _STATE: Dict[str, Dict[str, Any]] = {}
+
+# --------------------------------------------------------------------------- #
+# 回合状态（卡片颜色由它决定）
+# --------------------------------------------------------------------------- #
+#: 回合结局。``None`` = 还没有结论（进行中 / 没有信号），此时面板保持中性灰边。
+STATUS_OK = "ok"            # 正常完成 → 绿
+STATUS_ERROR = "error"      # 报错 → 红
+STATUS_STOPPED = "stopped"  # 用户中止 → 黄
+
 
 #: 最近有活动的会话 id —— 适配器没有 session_id，只能靠它关联。
 _LAST_ACTIVE: str = ""
@@ -143,7 +152,7 @@ def _touch_locked(session_id: str, turn_id: str, now: float) -> Optional[Dict[st
     state = _STATE.get(sid)
     if state is None:
         state = {"turn_id": "", "rounds": [], "current_round": None, "reasoning_len": 0,
-                 "tools": [], "started": now, "updated": now,
+                 "tools": [], "started": now, "updated": now, "status": None,
                  "closed": deque(maxlen=_MAX_CLOSED_TURNS)}
         _STATE[sid] = state
     closed = state.get("closed")
@@ -173,6 +182,9 @@ def _touch_locked(session_id: str, turn_id: str, now: float) -> Optional[Dict[st
             state["reasoning_len"] = 0
             state["tools"] = []
             state["started"] = now
+            # 新回合必须把上一回合的结局清掉 —— 否则新卡片会带着上一回合的颜色
+            # （尤其「上一回合报错、这一回合正常」时，一个红边会一直挂着）。
+            state["status"] = None
         state["turn_id"] = tid
     state["updated"] = now
     _LAST_ACTIVE = sid
@@ -350,6 +362,82 @@ def begin_turn(session_id: str, turn_id: str) -> None:
     with _LOCK:
         _touch_locked(sid, tid, now)
         _purge_locked(now)
+
+
+def note_turn(session_id: str, turn_id: str) -> None:
+    """``post_api_request`` 钩子回调的**轻量**用途：给会话记一次「这个回合在动」。
+
+    为什么需要：非流式模式下 ``on_stream_start`` 完全不触发（它由流式 emitter 发），
+    于是「新回合开始了」这个信号没有别的来源 —— 上一回合的``status``就永远清不掉，
+    新卡片会挂着旧颜色。``post_api_request`` 每回合至少发一次，且**带 turn_id**，
+    正好补上这个缺口（``turn_id`` 与流式/回合结束钩子同源，见 :func:`snapshot`）。
+
+    它只做 :func:`_touch_locked`（换回合即清空 + 刷新活跃度），不写任何业务数据。
+    """
+    sid = str(session_id or "")
+    if not sid:
+        return
+    now = _now()
+    with _LOCK:
+        _touch_locked(sid, str(turn_id or ""), now)
+        _purge_locked(now)
+
+
+def record_turn_end(session_id: str, turn_id: str, *, completed: bool = False,
+                    failed: bool = False, interrupted: bool = False) -> None:
+    """``on_session_end`` 钩子回调：记下本回合的结局（卡片状态色由它决定）。
+
+    名字叫 session，实际**每回合触发一次**（``agent/turn_finalizer.py`` 的 ``finalize_turn``），
+    载荷正好是官方对「完成 / 报错 / 中止」的权威判定。
+
+    ⚠️ **判定优先级必须 ``interrupted > failed > completed``**：官方 ``completed`` 的表达式
+    里**没有** ``interrupted``，所以「被中止但已产出部分正文」的回合会同时
+    ``completed=True, interrupted=True``。先看 ``completed`` 就会把中止显示成完成（绿色）。
+    官方源码：``finalize_turn`` 里 ``completed = final_response is not None and not failed and ...``。
+
+    ⚠️ **绝不对 ``error`` 之类的字符串做分类** —— 载荷里没有 ``reason`` / ``cancelled`` 字段，
+    中止与报错在字符串上不可区分（``docs/lessons.md`` 明令禁止）。
+
+    三个标志全为 False 时不改状态（例如 ``max_iterations`` 之外的一些收尾路径、
+    以及 ``/new`` 这类会话级收尾）—— 没有结论就保持中性，不猜。
+    """
+    if interrupted:
+        status = STATUS_STOPPED
+    elif failed:
+        status = STATUS_ERROR
+    elif completed:
+        status = STATUS_OK
+    else:
+        return
+    sid = str(session_id or "")
+    if not sid:
+        return
+    now = _now()
+    with _LOCK:
+        state = _touch_locked(sid, str(turn_id or ""), now)
+        if state is None:
+            return  # 已作废回合的收尾：丢弃（它属于被替换掉的那一回合）
+        state["status"] = status
+        _purge_locked(now)
+
+
+def mark_stopped(chat_id: str = "") -> str:
+    """把某个 chat 的会话标成「已中止」；返回命中的 ``session_id``（没命中返回空串）。
+
+    这条路径与 :func:`record_turn_end` 不重复，而且**必须由插件自己走**：
+    ``/stop`` 会让 stream consumer 直接 return（"abandon rather than deliver stale deltas"），
+    而 native 模式下 ``_abandon_native_stream`` 是空操作 —— **永远不会有收尾帧**。
+    所以状态改完还得由适配器**主动重绘那张卡**，否则状态在内存里变了、卡片纹丝不动，
+    而且不报任何错。归属用 :func:`_select_locked`，与渲染完全同一套。
+    """
+    now = _now()
+    with _LOCK:
+        sid, state = _select_locked(chat_id, now)
+        if state is None:
+            return ""
+        state["status"] = STATUS_STOPPED
+        state["updated"] = now
+        return sid
 
 
 def record_reasoning(session_id: str, turn_id: str, delta: str) -> None:
@@ -532,39 +620,26 @@ def snapshot(chat_id: str = "") -> Optional[Dict[str, Any]]:
     ``self._turn_id = str(uuid.uuid4())  # keys send_stream_frame() per concurrent consumer``）。
     两者命名空间不相干、**永远匹配不上** —— 按它 join 会让面板永久不渲染，
     而且不报任何错。``grep -rn _current_turn_id gateway/`` 一处都没有可证。
-    要真正按会话精确定位，得靠 ``(platform, chat_id) -> session_id`` 的反查
-    （``gateway/mirror.py`` 的 ``_find_session_id`` 走 state.db），
-    代价是一次数据库查询 + 新的私有依赖，尚未接入。
+
+    **注意区分**：钩子**之间**的 ``turn_id`` 是同一个值（``on_stream_start`` /
+    ``on_stream_delta`` / ``on_session_end`` / ``post_api_request`` 读的都是
+    ``agent._current_turn_id``，由 ``agent/turn_context.py`` 的 ``_bind_turn_identity``
+    每回合设一次），所以**回合状态可以按 turn_id 与面板数据精确对齐** ——
+    对不上的只有上面那个 consumer 自己生成的版本。
+
+    卡片与会话的精确对应走 ``chat_id -> session_id`` 反查（:func:`bind_chat_session`，
+    由 ``pre_gateway_dispatch`` 观察得到）。
     """
     now = _now()
     with _LOCK:
         _purge_locked(now)
-        sid = ""
-        state = None
-        # ① 优先用**确定性归属**：这个 chat_id 已知属于哪个会话（由 pre_gateway_dispatch
-        #    观察得到）。有绑定且那个会话真有内容就用它 —— 这就消掉了多会话串台。
-        if chat_id:
-            bound = _CHAT_SESSION.get(str(chat_id).strip())
-            if bound and now - bound[1] <= _CHAT_SESSION_TTL:
-                candidate = _STATE.get(bound[0])
-                if candidate is not None and _has_content(candidate):
-                    sid, state = bound[0], candidate
-        # ② 没有绑定（新会话第一回合 / 老版本 Hermes / 查找失败）→ 退回旧行为：
-        #    取「最近活跃会话」。**必须保住这条退路**，不能因为归属失败就不渲染面板。
+        sid, state = _select_locked(chat_id, now)
         if state is None:
-            sid = _LAST_ACTIVE
-            state = _STATE.get(sid) if sid else None
-            if state is not None and not _has_content(state):
-                state = None  # 活跃会话暂时没内容：走下面的回退
-        if state is None:
-            # 回退：找「最近更新且真的有内容」的会话
-            candidates = [(sid2, st) for sid2, st in _STATE.items() if _has_content(st)]
-            if not candidates:
-                return None
-            sid, state = max(candidates, key=lambda kv: kv[1].get("updated", 0.0))
+            return None
         rounds_raw = [dict(item) for item in (state.get("rounds") or [])]
-        tools = [dict(item) for item in state.get("tools") or []]
+        tools = [dict(item) for item in (state.get("tools") or [])]
         turn_id = state.get("turn_id", "")
+        status = state.get("status")
         updated = state.get("updated", now)
     # 拼接放到锁外 —— 推理最长可达 _MAX_REASONING_CHARS，锁里做会拖慢
     # fail-closed 的 pre_tool_call 回调（见模块 docstring 线程模型）。
@@ -581,7 +656,9 @@ def snapshot(chat_id: str = "") -> Optional[Dict[str, Any]]:
             elapsed = max(0, int((now - float(item.get("started") or now)) * 1000))
         rounds.append({"text": text, "elapsed_ms": elapsed})
     reasoning = "".join(item["text"] for item in rounds)
-    if not reasoning and not tools:
+    # 有结局（哪怕没有任何过程数据）也要出一份快照：状态色的**唯一载体**是面板，
+    # 没有面板就没有颜色 —— 一个「无推理无工具但结束了」的回合也该是绿的。
+    if not reasoning and not tools and not status:
         return None
     return {
         "session_id": sid,
@@ -589,8 +666,37 @@ def snapshot(chat_id: str = "") -> Optional[Dict[str, Any]]:
         "reasoning": reasoning,
         "rounds": rounds,
         "tools": tools,
+        "status": status,
         "age": max(0.0, now - updated),
     }
+
+
+def _select_locked(chat_id: str, now: float) -> "tuple[str, Optional[Dict[str, Any]]]":
+    """挑出这次渲染该用哪个会话桶（锁内调用）。归属策略见 :func:`snapshot`。
+
+    单独抽出来是因为 :func:`mark_stopped` 也要用**同一套**归属 —— 中止时若按别的方式
+    挑会话，就会出现「状态改在了 A 会话、重绘的是 B 那条卡」这种静默错位。
+    """
+    # ① 优先用**确定性归属**：这个 chat_id 已知属于哪个会话（由 pre_gateway_dispatch
+    #    观察得到）。有绑定且那个会话真有内容（或已有结局）就用它 —— 这就消掉了多会话串台。
+    if chat_id:
+        bound = _CHAT_SESSION.get(str(chat_id).strip())
+        if bound and now - bound[1] <= _CHAT_SESSION_TTL:
+            candidate = _STATE.get(bound[0])
+            if candidate is not None and (_has_content(candidate) or candidate.get("status")):
+                return str(bound[0]), candidate
+    # ② 没有绑定（新会话第一回合 / 老版本 Hermes / 查找失败）→ 退回旧行为：
+    #    取「最近活跃会话」。**必须保住这条退路**，不能因为归属失败就不渲染面板。
+    sid = _LAST_ACTIVE
+    state = _STATE.get(sid) if sid else None
+    if state is not None and (_has_content(state) or state.get("status")):
+        return sid, state
+    # ③ 回退：找「最近更新且真的有内容」的会话
+    candidates = [(key, st) for key, st in _STATE.items() if _has_content(st)]
+    if not candidates:
+        return "", None
+    sid, state = max(candidates, key=lambda kv: kv[1].get("updated", 0.0))
+    return sid, state
 
 
 def _has_content(state: Dict[str, Any]) -> bool:

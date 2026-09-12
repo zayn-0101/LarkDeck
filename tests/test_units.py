@@ -106,6 +106,10 @@ class StubAdapter:
         self.calls.append(("SUPER.trigger",))
         return "SUPER_RESULT"
 
+    # --- compat.SIGNAL_ADAPTER_ATTRS（核心在 /stop 路径调我们，我们再回落它） ---
+    async def interrupt_session_activity(self, session_key, chat_id, metadata=None):
+        self.calls.append(("SUPER.interrupt", session_key, chat_id, metadata))
+
     # --- 卡片点击路径依赖的辅助（内置适配器上有真实实现） ---
     def _is_interactive_operator_authorized(self, open_id):
         return open_id == "ou_ok"
@@ -1148,7 +1152,7 @@ def test_context_store_snapshot_and_aliases() -> None:
 
 
 def test_adapter_footer_wiring() -> None:
-    """页脚确实由「配置 + 钩子快照」拼出来，且开关立刻生效。"""
+    """页脚 = **只有上下文用量**；模型名与耗时归面板标题（决策 D2，别又搬回页脚）。"""
     defaults = dict(adapter._DEFAULTS)
     try:
         context.reset()
@@ -1160,9 +1164,10 @@ def test_adapter_footer_wiring() -> None:
         context.record_api_call(model="test-model",
                                 usage={"input_tokens": 1000, "output_tokens": 5})
         context.set_context_override(10000)
-        assert adapter.LarkDeckMixin._ld_footer() == "🤖 Test Model · ctx 1k/10k · 10%"
-        with_time = adapter.LarkDeckMixin._ld_footer(time.monotonic() - 12.3)
-        assert with_time.endswith("⏱ 12.3s")
+        assert adapter.LarkDeckMixin._ld_footer() == "ctx 1k/10k · 10%"
+        # 同一屏里不重复：模型名与耗时只在面板标题行出现
+        assert "🤖" not in adapter.LarkDeckMixin._ld_footer()
+        assert "⏱" not in adapter.LarkDeckMixin._ld_footer(time.monotonic() - 12.3)
 
         adapter.configure(context_style="bar")
         assert "[█░░░░░░░]" in adapter.LarkDeckMixin._ld_footer()
@@ -1193,16 +1198,27 @@ def test_adapter_panel_wiring() -> None:
         node = adapter.LarkDeckMixin._ld_panel()
         assert node is not None and node["tag"] == "collapsible_panel"
         title = node["header"]["title"]["content"]
-        assert "1 次工具调用" in title, title
+        # 决策 D2：卡片级 header 去掉了，模型名 / 轮数 / 工具数 / 耗时全在面板标题行
+        assert "🧠 1" in title and "🔧 1" in title, title
+        assert node["border"]["color"] == "grey", "还没有结局 → 中性灰边"
         texts = " ".join(e.get("content", "") for e in node["elements"])
         assert "先想一下。" in texts and "read_file" in texts and "✅" in texts
 
-        # 只有推理（没有工具）也给面板，标题退回通用文案
+        # 模型名与耗时进面板标题（show_model 控制前者）
+        adapter.configure(show_model=True, model_aliases="test-model=Test Model")
+        context.record_api_call(model="test-model", usage={"input_tokens": 1})
+        with_time = adapter.LarkDeckMixin._ld_panel("", time.monotonic() - 12.3)
+        header = with_time["header"]["title"]["content"]
+        assert "🤖 Test Model" in header and "⏱ 12.3s" in header, header
+        adapter.configure(show_model=False)
+        assert "🤖" not in adapter.LarkDeckMixin._ld_panel("", None)["header"]["title"]["content"]
+
+        # 只有推理（没有工具）也给面板，标题仍带轮数
         panel.reset()
         panel.record_reasoning("s1", "t1", "只有推理。")
         only = adapter.LarkDeckMixin._ld_panel()
         assert only is not None
-        assert only["header"]["title"]["content"] == i18n.t("panel.title", i18n.ZH)
+        assert "🧠 1" in only["header"]["title"]["content"]
 
         adapter.configure(unified_panel=False)
         assert adapter.LarkDeckMixin._ld_panel() is None, "开关关掉必须立刻生效"
@@ -1610,6 +1626,195 @@ def test_panel_splits_reasoning_into_rounds():
     panel.record_answer_delta("s1", "t1")
     assert panel.snapshot() is None
     panel.reset()
+
+
+
+def test_status_colors_match_panel_constants():
+    """状态字面量必须两边一致：``cards.STATUS_BORDERS`` 的键 = ``panel.STATUS_*``。
+
+    这两个模块刻意互不 import（cards 是纯渲染、零依赖），代价是键名可能各改各的。
+    一旦对不上，``border_for_status`` 会对每个状态都返回中性灰 —— **状态色整条静默失效**，
+    单看任何一侧都「没问题」。所以在这里把两边钉在一起。
+    """
+    assert set(cards.STATUS_BORDERS) == {panel.STATUS_OK, panel.STATUS_ERROR,
+                                        panel.STATUS_STOPPED}, cards.STATUS_BORDERS
+    assert cards.border_for_status(panel.STATUS_OK) == "green"
+    assert cards.border_for_status(panel.STATUS_ERROR) == "red"
+    assert cards.border_for_status(panel.STATUS_STOPPED) == "yellow"
+    # 未知 / 未给一律中性（不猜）
+    assert cards.border_for_status(None) == "grey"
+    assert cards.border_for_status("weird") == "grey"
+
+
+def test_panel_status_priority_and_turn_reset():
+    """回合结局的优先级与生命周期。
+
+    优先级必须是 ``interrupted > failed > completed``：官方 ``completed`` 的表达式里
+    **没有** ``interrupted``（``turn_finalizer.py``），所以「被中止但已产出部分正文」
+    的回合会同时 ``completed=True, interrupted=True`` —— 先看 completed 就会把中止
+    显示成绿色「已完成」。
+    """
+    panel.reset()
+    try:
+        # 正常完成
+        panel.record_reasoning("s1", "t1", "想一下")
+        panel.record_turn_end("s1", "t1", completed=True)
+        assert panel.snapshot()["status"] == panel.STATUS_OK
+
+        # 报错覆盖完成态
+        panel.record_turn_end("s1", "t1", completed=True, failed=True)
+        assert panel.snapshot()["status"] == panel.STATUS_ERROR
+
+        # 中止覆盖报错与完成（这一条就是上面那个坑）
+        panel.record_turn_end("s1", "t1", completed=True, failed=True, interrupted=True)
+        assert panel.snapshot()["status"] == panel.STATUS_STOPPED
+
+        # 三个都是 False 的收尾（会话级收尾等）不改状态 —— 没有结论就不猜
+        panel.record_turn_end("s1", "t1")
+        assert panel.snapshot()["status"] == panel.STATUS_STOPPED
+
+        # 新回合必须把上一回合的结局清掉，否则新卡片会挂着旧颜色
+        panel.begin_turn("s1", "t2")
+        snap = panel.snapshot()
+        assert snap is None or snap.get("status") is None, f"新回合没清状态：{snap!r}"
+    finally:
+        panel.reset()
+
+
+def test_panel_mark_stopped_targets_the_bound_session():
+    """``mark_stopped`` 必须改在**该 chat 绑定的那个会话**上（与渲染同一套归属）。
+
+    归属用错方向的后果是「状态改在 A 会话、重绘的是 B 那条卡」—— 卡片永远不变色，
+    而且两边都不报错。
+    """
+    panel.reset()
+    try:
+        panel.bind_chat_session("oc_one", "s1")
+        panel.bind_chat_session("oc_two", "s2")
+        panel.record_reasoning("s1", "t1", "会话一的推理")
+        panel.record_reasoning("s2", "t2", "会话二的推理")
+        assert panel.mark_stopped("oc_one") == "s1", "中止状态打到了别的会话上"
+        assert panel.snapshot("oc_one")["status"] == panel.STATUS_STOPPED
+        assert panel.snapshot("oc_two")["status"] is None, "别的会话被一起改色了"
+        # 完全没有面板数据时也不能抛，只是返回空串
+        panel.reset()
+        assert panel.mark_stopped("oc_none") == ""
+    finally:
+        panel.reset()
+
+
+def test_status_only_turn_still_renders_a_coloured_panel():
+    """没有任何过程数据的回合也要有状态色 —— 面板是状态色**唯一**的载体。
+
+    否则「简单问答」这种最常见的情形永远看不到完成色（效果 2 就等于没做）。
+    """
+    panel.reset()
+    try:
+        panel.bind_chat_session("oc_1", "s1")
+        panel.record_reasoning("s1", "t1", "想一下")
+        panel.record_turn_end("s1", "t1", interrupted=True)
+        adapter.configure(unified_panel=True)
+        node = adapter.LarkDeckMixin._ld_panel("oc_1")
+        assert node is not None, "有结局却没有面板 = 状态色无处可放"
+        assert node["border"]["color"] == "yellow", node["border"]
+        assert node["elements"], "空面板飞书会拒，且用户看不到任何东西"
+
+        # 连推理都没有的回合：快照仍要出，并且带状态
+        panel.reset()
+        panel.bind_chat_session("oc_1", "s1")
+        panel.record_turn_end("s1", "t9", completed=True)
+        snap = panel.snapshot("oc_1")
+        assert snap is not None and snap["status"] == "ok", snap
+        only = adapter.LarkDeckMixin._ld_panel("oc_1")
+        assert only is not None and only["border"]["color"] == "green"
+        assert "✅" in json.dumps(only, ensure_ascii=False), "状态文字没渲染"
+    finally:
+        panel.reset()
+
+
+def test_reply_card_has_no_card_level_header():
+    """决策 D2：回复卡没有卡片级 header（模型名/统计全在面板头）。
+
+    1.0 的澄清卡**必须保留** header —— 那是它的标题，与 D2 无关；
+    一起改掉会让澄清卡失去「需要你确认」这个唯一提示。
+    """
+    card = cards.reply_card("你好", streaming=True, footer="ctx 1k/2k")
+    assert "header" not in card, f"回复卡不该有 header：{card.get('header')!r}"
+    assert card["schema"] == "2.0" and card["body"]["elements"]
+    assert card["config"]["streaming_mode"] is True
+
+    legacy = cards.clarify_card("选一个", ["A", "B"], clarify_id="c1", session_key="sk")
+    assert "header" in legacy, "1.0 澄清卡必须保留 header"
+    assert "schema" not in legacy, "澄清卡不能混进 2.0"
+
+
+def test_interrupt_redraws_the_stream_card_in_stopped_color():
+    """``/stop`` 路径：**必须自己把卡重绘成中止态**，同时照常放行内核的中止。
+
+    为什么不能等下一帧：``/stop`` 让 stream consumer 直接 return，而 native 模式下
+    ``_abandon_native_stream`` 是空操作 —— **永远不会有收尾帧**。状态改在内存里、
+    卡片纹丝不动，而且不报任何错。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    try:
+        panel.reset()
+        panel.bind_chat_session("oc_1", "s1")
+        panel.record_reasoning("s1", "t1", "先想一下")
+        raw = _make()
+        updates = _wire_patch(raw)
+        _run(raw.send_stream_frame("正在写的答案", finalize=False, chat_id="oc_1",
+                                   turn_id="t1"))
+        assert not updates, "首帧是新建卡，不该有 patch"
+        assert _run(raw.send_stream_frame("正在写的答案，还没写完", finalize=False,
+                                          chat_id="oc_1", turn_id="t1")) is True
+        assert len(updates) == 1
+
+        _run(raw.interrupt_session_activity("sk1", "oc_1", metadata={"k": "v"}))
+        assert ("SUPER.interrupt", "sk1", "oc_1", {"k": "v"}) in raw.calls, \
+            "中止必须原样交给核心（那是这个方法的本质职责，不能被卡片挡住）"
+        assert len(updates) == 2, "中止后必须自己重绘那张卡"
+        body = json.loads(updates[1]["content"])
+        assert _find_collapsible(body)["border"]["color"] == "yellow", \
+            "中止态不是黄边 —— 状态色整条没落地"
+        assert not body["config"].get("streaming_mode")
+        joined = json.dumps(body, ensure_ascii=False)
+        assert "正在写的答案，还没写完" in joined, "重绘必须沿用已经打出来的正文"
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_interrupt_never_blocks_stop_when_redraw_fails():
+    """重绘怎么炸都不能影响中止本身 —— 那是内核最关键的路径之一。"""
+    defaults = dict(adapter._DEFAULTS)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    try:
+        panel.reset()
+        panel.record_reasoning("s1", "t1", "先想一下")
+        raw = _make()
+        _wire_patch(raw)
+        _run(raw.send_stream_frame("", finalize=False, chat_id="oc_1", turn_id="t1"))
+        raw._client.im.v1.message.patch = lambda request: {"code": 99999, "msg": "nope"}
+        _run(raw.interrupt_session_activity("sk1", "oc_1"))  # 不许抛
+        assert ("SUPER.interrupt", "sk1", "oc_1", None) in raw.calls
+
+        # 连 SDK 客户端都没有时也要放行
+        naked = _make()
+        naked._client = None
+        _run(naked.interrupt_session_activity("sk2", "oc_2"))
+        assert ("SUPER.interrupt", "sk2", "oc_2", None) in naked.calls
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
 
 
 def test_panel_concurrent_writes_are_safe():

@@ -31,6 +31,10 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "panel.round_n":      {ZH: "第 {n} 轮", EN: "Round {n}"},
     # 轮数超过渲染上限时，更早的轮整轮折叠（保证面板总量有界，见 cards.unified_panel）
     "panel.rounds_trimmed": {ZH: "…更早的 {n} 轮已折叠", EN: "…{n} earlier rounds folded"},
+    # 回合结局的文字兜底（面板没有别的正文时显示；边框色是主要载体）
+    "panel.status_ok":    {ZH: "✅ 已完成", EN: "✅ Completed"},
+    "panel.status_error": {ZH: "❌ 执行出错", EN: "❌ Failed"},
+    "panel.status_stopped": {ZH: "⛔ 已中止", EN: "⛔ Stopped"},
     # clarify
     "clarify.header":     {ZH: "需要你确认", EN: "Needs your input"},
     "clarify.other":      {ZH: "其他（我直接输入）", EN: "Other (I'll type it)"},

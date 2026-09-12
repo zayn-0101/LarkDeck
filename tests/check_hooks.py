@@ -9,8 +9,10 @@
 它做的事：
   1. 造临时 HERMES_HOME，软链本仓库，config 里启用 larkdeck；
   2. ``discover_plugins()`` 加载插件（真加载器）；
-  3. 六个观测钩子（``post_api_request`` / ``on_stream_start`` / ``on_stream_delta`` /
-     ``pre_tool_call`` / ``post_tool_call`` / ``pre_gateway_dispatch``）必须全部被登记；
+  3. 七个观测钩子（``post_api_request`` / ``on_stream_start`` / ``on_stream_delta`` /
+     ``pre_tool_call`` / ``post_tool_call`` / ``pre_gateway_dispatch`` /
+     ``on_session_end``）必须全部被登记；
+     清单以 ``compat.OBSERVED_HOOKS`` 为单一事实来源（下面断言两边一致）；
   4. 用真实载荷格式派发它们，核对数据真的流进 larkdeck 的数据层：
      - ``post_api_request`` 经 ``invoke_hook`` → 页脚指标（模型 / 上下文占用）；
      - ``pre/post_tool_call`` 经 ``invoke_hook`` → 面板工具步骤（含耗时 / 状态）；
@@ -52,7 +54,25 @@ from hermes_cli.lifecycle import has_hook, invoke_hook     # noqa: E402
 discover_plugins()
 
 WIRED_HOOKS = ("post_api_request", "on_stream_start", "on_stream_delta",
-               "pre_tool_call", "post_tool_call", "pre_gateway_dispatch")
+               "pre_tool_call", "post_tool_call", "pre_gateway_dispatch",
+               "on_session_end")
+# 「订阅了哪几个钩子」以插件自己的 compat.OBSERVED_HOOKS 为单一事实来源：
+# 门禁里写死一份清单，插件加钩子时就会悄悄漏掉验证（对照组里插件没加载，拿不到它）。
+if ENABLED:
+    _compat = None
+    for _name in ("hermes_plugins.larkdeck.core.compat", "larkdeck.core.compat"):
+        if _name in sys.modules:
+            _compat = sys.modules[_name]
+            break
+    if _compat is None:
+        print("FAIL: 插件已启用却找不到 compat 模块（订阅清单无法核对）")
+        raise SystemExit(8)
+    if tuple(WIRED_HOOKS) != tuple(_compat.OBSERVED_HOOKS):
+        print(f"FAIL: 本脚本的钩子清单与 compat.OBSERVED_HOOKS 不一致："
+              f"{WIRED_HOOKS!r} vs {_compat.OBSERVED_HOOKS!r}")
+        raise SystemExit(8)
+    print(f"OBSERVED_HOOKS = {list(_compat.OBSERVED_HOOKS)}")
+
 wired = {name: has_hook(name) for name in WIRED_HOOKS}
 print(f"has_hook = {wired}")
 
@@ -229,6 +249,35 @@ else:
             if "demo.txt" not in str(step.get("preview") or ""):
                 problems.append(f"参数预览丢了：{step.get('preview')!r}")
 
+    # 回合结局 → 面板状态色。这是「状态色」整条特性的唯一信号，
+    # 而且它有一条**极易踩反**的优先级规则：官方 completed 的表达式里没有 interrupted，
+    # 所以「被中止但已产出部分正文」的回合会同时 completed=True / interrupted=True。
+    # 先看 completed 就会把中止显示成绿色完成 —— 下面这条断言就是钉住它的。
+    invoke_hook("on_session_end", session_id="sess-panelcheck", task_id="t1",
+                turn_id="turn-p1", completed=True, failed=False, interrupted=False,
+                turn_exit_reason="text_response(stop)", model="deepseek-v4-flash",
+                platform="feishu")
+    st = _panel.snapshot()
+    print(f"status after completed=True → {st.get('status') if st else None!r}")
+    if not st or st.get("status") != "ok":
+        problems.append(f"正常完成没被记成 ok：{st.get('status') if st else None!r}")
+
+    invoke_hook("on_session_end", session_id="sess-panelcheck", task_id="t1",
+                turn_id="turn-p1", completed=True, failed=True, interrupted=False,
+                turn_exit_reason="api_error", model="deepseek-v4-flash", platform="feishu")
+    st = _panel.snapshot()
+    if not st or st.get("status") != "error":
+        problems.append(f"报错没被记成 error：{st.get('status') if st else None!r}")
+
+    invoke_hook("on_session_end", session_id="sess-panelcheck", task_id="t1",
+                turn_id="turn-p1", completed=True, failed=False, interrupted=True,
+                turn_exit_reason="interrupted", model="deepseek-v4-flash", platform="feishu")
+    st = _panel.snapshot()
+    if not st or st.get("status") != "stopped":
+        problems.append(
+            f"中止没被记成 stopped（优先级必须是 interrupted > failed > completed）："
+            f"{st.get('status') if st else None!r}")
+
     # 新回合边界：on_stream_start 一到，上一回合的推理 / 工具必须先清掉 ——
     # 否则新回合首帧（可能早于本回合第一个事件）会带着旧面板出门。
     enqueue_plugin_stream_hook(
@@ -244,6 +293,10 @@ else:
         time.sleep(0.05)
     if not cleared:
         problems.append(f"新回合开始时旧面板没被清掉：{_panel.snapshot()!r}")
+    # 状态色也必须随回合一起清：否则新卡片会挂着上一回合的颜色
+    st = _panel.snapshot()
+    if st is not None and st.get("status"):
+        problems.append(f"新回合没有清掉上一回合的结局状态：{st.get('status')!r}")
 
 if problems:
     for p in problems:
