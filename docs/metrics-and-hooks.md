@@ -46,22 +46,67 @@ prompt_tokens, reasoning_tokens, request_count, total_tokens
 `model@base_url` 缓存；探测不到时页脚退化成只显示已用量。也可以用
 `context_max_override` 直接钉住。
 
-## 面板数据：订阅四个钩子
+## 面板数据：订阅六个钩子
 
-推理与工具步骤的订阅在 `hooks.py`，同样是只读观察（返回值一律 `None`）：
+推理、工具步骤与回合结局的订阅在 `hooks.py`，同样是只读观察（返回值一律 `None`）。
+清单的单一事实来源是 `compat.OBSERVED_HOOKS`（门禁与文档都读它）：
 
 | 钩子 | 面板里变成 | 备注 |
 | --- | --- | --- |
 | `on_stream_start` | 回合边界：到达新回合先清空旧面板 | 每次 API 尝试（含重试）触发，靠 `turn_id` 比较保证同回合幂等 |
 | `on_stream_delta`（`kind="reasoning"`） | 推理文本 | **需要 `plugins.stream_reasoning_deltas: true`**，官方默认不发 reasoning 增量 |
+| `on_stream_delta`（`kind="text"`，正文） | 只用来**切断推理轮**，正文不进面板 | 「一轮 = 一段连续推理，被正文或工具打断」 |
 | `pre_tool_call` | 工具步骤（⏳ running） | fail-closed 钩子，回调纪律见坑 2 |
 | `post_tool_call` | 工具步骤（✅ / ❌ / ⛔ + 耗时） | 载荷带 `duration_ms`、`status`、`result` |
+| `post_api_request` | 页脚上下文用量 + 「回合在动」信号 | 见下面「非流式模式」一段 |
+| `on_session_end` | **回合结局 → 卡片边框色** | 名字叫 session，实际**每回合**一次 |
+| `pre_gateway_dispatch` | `chat_id -> session_id` 归属映射 | 只读观察，恒返回 None |
 
 数据进 `panel.py`：按 `session_id` 分桶，`turn_id` 一变就重置（新回合不残留旧面板）。
 `on_stream_start` 的清理必须走在卡片首帧前 —— 流式首帧可能早于新回合第一个推理/工具事件，
 纯文本回合更是没有面板事件，不清就会把上一回合的面板带到新卡片上。
-**限制**：这些载荷只有 `session_id`、没有 chat_id，卡片渲染时只能取「最近活跃会话」
-——多会话并发时可能短暂串台（README 已知限制里也有记录）。
+
+**归属**：钩子载荷只有 `session_id`，而卡片渲染只有 `chat_id`。`pre_gateway_dispatch`
+同时给出 `event.source.chat_id` 与 `session_store`，于是能算出确定性的
+`chat_id -> session_id` 映射（只读查找，绝不 `get_or_create_session`）。
+拿不到映射时（新会话第一回合 / 老版本）退回「最近活跃会话」。
+
+### 状态色（`on_session_end`）
+
+**它每回合触发一次**：由 `agent/turn_finalizer.py` 的 `finalize_turn` 在每次
+`run_conversation()` 结尾**同步**发出，载荷 `completed` / `failed` / `interrupted` /
+`turn_exit_reason` 就是官方对「完成 / 报错 / 中止」的权威判定。于是：
+
+- 判定优先级必须是 **`interrupted > failed > completed`**。官方源码里
+  `completed = final_response is not None and not failed and ...`，**不含 `interrupted`**，
+  所以「被中止但已产出部分正文」的回合会 `completed=True` 且 `interrupted=True`。
+  先看 `completed` 就会把中止显示成绿色完成。
+- **绝不对 `error` 之类的字符串做分类** —— 载荷里没有 `reason` / `cancelled`，中止与
+  报错在字符串上不可区分。
+- 时序红利：它在 `run_conversation()` 内同步执行，而流式收尾帧在那之后才发，
+  所以**收尾那一帧里已经能读到本回合结局**，不需要额外补一次 edit。
+- 颜色载体是面板边框 `collapsible_panel.border.color`（`green` / `red` / `yellow`）。
+  面板是状态色**唯一**的载体，所以「有结局」时会强制渲染出面板（哪怕没有推理与工具），
+  正文里补一行 ✅ / ❌ / ⛔ 兜底文案。
+
+**例外：`/stop` 没有收尾帧。** 它让 stream consumer 直接 return（"abandon rather than
+deliver stale deltas"），native 模式下 `_abandon_native_stream` 是空操作 —— 所以插件在
+`interrupt_session_activity(session_key, chat_id, metadata=None)` 里**自己把那张卡重绘**
+成中止态（沿用 `_ld_streams` 里最后一帧的累积全文），然后照常 `super()` 转发给内核。
+
+### 非流式模式下的降级路径
+
+`on_stream_start` **只在流式 emitter 里发**（`agent/stream_delivery.py` 的
+`_with_stream_emitters` 三个调用点），非流式回合（`agent/turn_api_call.py`）一个都没有。
+那样「新回合开始了」就没有信号，上一回合的状态色会一直挂着。补法是
+`post_api_request` —— 它每回合至少发一次、**且带 `turn_id`**，于是
+`panel.note_turn()` 能在开新回合时把旧状态清掉。
+
+> 顺带纠正一条曾经写错的事实：**钩子之间**的 `turn_id` 是同一个值
+> （`on_stream_start` / `on_stream_delta` / `on_session_end` / `post_api_request`
+> 读的都是 `agent._current_turn_id`，由 `agent/turn_context.py` 的 `_bind_turn_identity`
+> 每回合设一次）。对不上的只有 `send_stream_frame()` 收到的那个 —— 它是
+> `GatewayStreamConsumer` 自己生成的裸 uuid，与钩子侧毫无关系。
 
 ## 两个坑（都踩过）
 
@@ -91,5 +136,8 @@ prompt_tokens, reasoning_tokens, request_count, total_tokens
 $PY tests/check_hooks.py    # 真实派发器 + 真实 CanonicalUsage 载荷 + 面板数据层 + 对照组
 ```
 
-它会验证：6 个钩子（页脚 1 + 面板 4 + 归属 1）全部登记成功、真实 `invoke_hook` / 流式钩子队列能送达、指标语义正确、
-面板数据落桶正确、坏载荷不冲掉好数据、以及**未启用插件时钩子为空**（对照组，证明观测点可信）。
+它会验证：`compat.OBSERVED_HOOKS` 里的 7 个钩子全部登记成功（并核对门禁清单与插件清单一致）、
+真实 `invoke_hook` / 流式钩子队列能送达、指标语义正确、面板数据落桶正确、
+正文增量切轮正确、三种回合结局（含 `completed=True` 同时 `interrupted=True` 的优先级坑）
+落到正确的状态、新回合清空、坏载荷不冲掉好数据，以及**未启用插件时钩子为空**
+（对照组，证明观测点可信）。

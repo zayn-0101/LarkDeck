@@ -14,12 +14,16 @@
    宁可退回纯文本，也不能因为卡片报错而丢消息。改 `adapter.py` 时逐条保住这个性质。
    native streaming（`SUPPORTS_NATIVE_STREAMING` + `send_stream_frame`）的帧失败由核心
    自动回退 edit/send —— 这条 fail-open 链是官方契约，别绕过、别在帧里吞掉回落。
-3. **Hermes 私有接口只允许出现在 `compat.py`。** 目前分三组登记：适配器必需 3 个
-   （`REQUIRED_ADAPTER_ATTRS`，`probe_adapter_class()` 运行时校验，缺了拒绝覆盖）；
-   点击回调路径 5 个类属性（`CALLBACK_ADAPTER_ATTRS`）+ 1 个实例属性
-   （`CALLBACK_INSTANCE_ATTRS`，只探测上报 —— 缺了不致命但澄清按钮会静默失灵）；
-   澄清网关内部结构（`_lock` / `_entries` / `mark_awaiting_text` / `resolve_gateway_clarify`，
-   已封装成 `clarify_multi_select()` 等函数）。新增依赖一律先登记。
+3. **Hermes 私有接口只允许出现在 `compat.py`。** 目前分五组登记：
+   适配器必需 3 个（`REQUIRED_ADAPTER_ATTRS`，`probe_adapter_class()` 运行时校验，
+   缺了拒绝覆盖）；点击回调路径 5 个类属性（`CALLBACK_ADAPTER_ATTRS`）+ 1 个实例属性
+   （`CALLBACK_INSTANCE_ATTRS`）；**信号型契约 1 个**（`SIGNAL_ADAPTER_ATTRS` ——
+   核心在 `/stop`、`/new` 路径**主动调我们**的 `interrupt_session_activity`，
+   缺了不致命但「中止后卡片不变色」是静默失灵）；澄清网关内部结构
+   （`_lock` / `_entries` / `mark_awaiting_text` / `resolve_gateway_clarify`，
+   已封装成 `clarify_multi_select()` 等函数）；会话归属公开面
+   （`SESSION_ATTRIBUTION_API`）。订阅的钩子清单也在本文件（`OBSERVED_HOOKS`，
+   文档/门禁/自检都读它）。新增依赖一律先登记。
 4. **不假设版本。** Mac 与 NAS 都跑 Hermes 0.21.1（NAS 是镜像内固定版本），升级随时会发生。
    能力一律运行时探测，不写死版本号分支。
 5. **卡片方言不可混用 —— 但「2.0 的回调到不了服务端」是错的，2026-09-12 更正。**
@@ -54,8 +58,10 @@ core/         插件本体（Hermes 加载器以 hermes_plugins.larkdeck.core.* 
   i18n.py       双语文案（飞书原生 i18n_content）
   compat.py     版本 / 能力探测 —— Hermes 私有名的唯一存放处
   context.py    运行时指标（钩子写入 → 页脚读取的进程内全局快照）
-  panel.py      面板数据层（推理 / 工具钩子写入 → 卡片面板读取；按会话分桶 + 最近活跃取用）
-  hooks.py      官方钩子订阅（6 个观察型钩子）：只写内存、异常自吞、永不返回 directive
+  panel.py      面板数据层（推理轮 / 工具 / 回合结局写入 → 卡片面板读取；
+                按会话分桶 + chat_id→session_id 确定性归属，拿不到才退回「最近活跃」）
+  hooks.py      官方钩子订阅（7 个观察型钩子，清单见 compat.OBSERVED_HOOKS）：
+                只写内存、异常自吞、永不返回 directive
 install.sh    安装脚本（默认软链；NAS 用 --copy，其 FILES 数组是手动的，新增模块要同步）
 docs/         踩坑与开工索引、指标钩子原理、部署与迁移步骤
 tests/        见「验证」
@@ -79,8 +85,10 @@ tests/        见「验证」
   （key = `chat:turn_id`），帧间有节流（`_STREAM_MIN_INTERVAL`）。
 - 页脚指标是进程内全局（钩子记「最近一次 API 请求」），多会话并发共享同一快照；
   要按会话隔离得从钩子载荷的 `session_id` 分桶（未做）。
-- 面板数据策略与页脚不同：`panel.py` 按 `session_id` 分桶、快照时取「最近活跃」——
-  流式/工具钩子载荷没有 chat_id，卡片渲染时无法自证归属，多会话并发可能短暂串台。
+- 面板数据策略与页脚不同：`panel.py` 按 `session_id` 分桶；归属优先用
+  `pre_gateway_dispatch` 观察到的 `chat_id -> session_id` 映射（确定性），拿不到才退回
+  「最近活跃」。**回合状态色**（ok/error/stopped）走同一套归属，颜色载体是
+  `collapsible_panel.border.color`（见 `docs/metrics-and-hooks.md`）。
   钩子回调纪律源自 `pre_tool_call` 是 **fail-closed**（回调卡住会阻止工具执行）：
   只写内存、微秒级返回、异常自吞、**永不返回 directive**。
 

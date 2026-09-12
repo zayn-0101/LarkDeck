@@ -92,7 +92,10 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 | 澄清交互卡（按钮点击直接作答，不再手打选项） | ✅ |
 | 模型别名（可选：把 `deepseek-flash` 显示成你认得出来的名字；默认关闭） | ✅ |
 | 双语 UI（跟随飞书客户端语言） | ✅ 真机确证（2026-09-12）：互换实验证明客户端按 `i18n_content` 选语言 |
-| 页脚：模型名 + 上下文用量 + 耗时 | ✅ 真机渲染已确认 |
+| **回合状态色**：完成绿边 / 报错红边 / 中止黄边 | ✅ 数据来自官方 `on_session_end`（每回合一次）；颜色画在面板边框上 |
+| **推理按轮分段**（`第 N 轮 · 6.2s`；一轮 = 一段连续推理，被正文或工具打断） | ✅ |
+| 面板标题行：模型名 · 轮数 · 工具数 · 耗时 | ✅ 卡片级 header 已去掉，信息全在面板头（观感更接近 aiduPOP） |
+| 页脚：上下文用量（模型/耗时已并入面板标题） | ✅ 真机渲染已确认 |
 | 上下文用量三样式（纯文字 / 图形条 / 数字+条） | ✅ 真机渲染已确认 |
 | 推理文本 / 工具结果上限 + 元素溢出保护 | ✅ |
 
@@ -119,7 +122,7 @@ plugins:
 重启网关即可。启动日志里会有一行自检结果（下面是 0.21.1 实测原文）：
 
 ```
-[larkdeck] 启动自检通过：Hermes 0.21.1 · feishu 平台已由 larkdeck 接管 · 钩子 post_api_request/on_stream_start/on_stream_delta/pre_tool_call/post_tool_call
+[larkdeck] 启动自检通过：Hermes 0.21.1 · feishu 平台已由 larkdeck 接管 · 钩子 post_api_request/on_stream_start/on_stream_delta/pre_tool_call/post_tool_call/pre_gateway_dispatch/on_session_end
 ```
 
 如果自检失败，会打 `ERROR` 并**保持官方适配器原样工作** —— 卡片不生效，但飞书不会被弄坏。
@@ -144,8 +147,8 @@ plugins:
         clarify_cards: true      # 澄清用按钮卡
         unified_panel: true      # 推理 + 工具合并为一个底部面板
         panel_expanded: false    # 面板默认展开（默认收起）
-        footer: true             # 页脚（模型 + 上下文用量 + 耗时）
-        show_model: true         # 页脚里显示模型名
+        footer: true             # 页脚（只放上下文用量）
+        show_model: true         # 面板标题里显示模型名
         context_style: text      # 上下文用量样式：text | bar | both
         model_aliases: ""        # "真名=显示名, 真名2=显示名2"
         max_reasoning_chars: 1200   # 推理文本上限（超出截断并留痕；写 0 视为用默认值，不是不设限）
@@ -167,10 +170,17 @@ plugins:
   stream_reasoning_deltas: true   # 允许插件订阅推理增量；不开就只有工具步骤
 ```
 
-工具步骤不受这个开关影响。面板与页脚的数据全部来自官方钩子，不拦截核心代码。
+工具步骤不受这个开关影响。面板、状态色与页脚的数据全部来自官方钩子，不拦截核心代码。
 
-页脚的模型名和上下文数字**来自官方钩子**，不是拦截核心源码 —— 原理、载荷键名和
-两个踩过的坑见 [`docs/metrics-and-hooks.md`](docs/metrics-and-hooks.md)。
+面板标题行与上下文数字**来自官方钩子**，不是拦截核心源码。回合状态色来自
+`on_session_end` —— 它虽然叫 session，实际**每回合触发一次**，载荷是官方的
+`completed` / `failed` / `interrupted`。判定优先级是 `interrupted > failed > completed`
+（官方 `completed` 的表达式不含 `interrupted`，先看它会把中止显示成绿色完成）。
+原理、载荷键名与踩过的坑见 [`docs/metrics-and-hooks.md`](docs/metrics-and-hooks.md)。
+
+**中止（`/stop`）那条路要特别说明**：中止后核心不会再有收尾帧（stream consumer 直接
+放弃本回合、native 模式下也是空操作），所以插件覆盖了 `interrupt_session_activity`，
+在被通知时**自己把那张卡重绘成黄边**，然后照常把中止交给内核。
 
 ---
 
@@ -213,7 +223,16 @@ LarkDeck 接管后才生效）。
   **注意 AI 生成的正文不翻译**，双语只覆盖界面文案。
 - 与 hermes-feishu-streaming-card（HFC）**不能共存**：两边都要接管 `feishu` 平台，且 HFC 还改了源码。切换步骤见 [`docs/switch-from-hfc.md`](docs/switch-from-hfc.md)。
 - **页脚数据是进程内全局的**：钩子记录的是「最近一次 API 请求」，多会话并发时所有卡片共享同一份快照。单用户单会话无影响；真要按会话隔离，得从钩子载荷里的 `session_id` 分桶，目前没做。
-- **面板按「最近活跃会话」取用**：钩子载荷只有 `session_id`、没有 chat_id，卡片渲染时无法确定自己属于哪个会话，只能取最近有活动的那个。多会话并发时面板可能短暂显示另一个会话的推理/工具（正文与页脚不受影响）；单会话无感。
+- **面板归属**：钩子载荷只有 `session_id`、没有 chat_id。归属靠 `pre_gateway_dispatch` 观察到的
+  `chat_id -> session_id` 映射（确定性），**拿不到映射时才退回「最近活跃会话」**。
+  退回的窗口是**新会话的第一回合**（那一刻 session 还没落库）、会话映射过期（24h）、以及
+  老版本 Hermes；这些窗口里多会话并发可能短暂显示另一个会话的推理/工具（正文不受影响）。
+- **状态色的可信范围**：颜色来自 `on_session_end`（每回合一次，含非流式路径）。
+  `/stop` 那一帧由插件自己重绘（核心不会再有收尾帧）。若某回合连一次流式帧都没有
+  （没建卡），自然也没有卡可上色 —— 那时看到的仍是官方纯文本。
+- **卡片级 header 已去掉**（决策 D2）：模型名/轮数/工具数/耗时全在面板标题行。
+  面板被关（`unified_panel: false`）或被字节预算降载时，这些信息与状态色都会一起消失
+  （正文永远完整，见上面的降载策略）。
 
 ---
 

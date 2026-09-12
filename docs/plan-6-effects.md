@@ -1,6 +1,7 @@
 # 方案：补齐 aiduPOP 的 6 项卡片效果 + 清掉审计遗留
 
-> 状态：**草案，待方案审计**。第 5 条（clarify）有一个未决的决策门，见 §4。
+> 状态：**实施中**。阶段 0 / 1 / 2 已完成（进度与实测更正见 §9）；第 5 条（clarify）的
+> 决策门 D1 已解，见 §4。
 > 目标来源：`https://github.com/monkey2jack/aiduPOP` README 的「效果展示」6 条。
 
 ## 0. 约束（不可协商，来自 `AGENTS.md`）
@@ -359,3 +360,49 @@
 3. 起一个**独立子 Agent** 做对抗性代码审计（只读，只报能导致错误行为的问题）。
 4. 审计发现分级处置：真问题当阶段内修完；重构级建议记入下一阶段。
 5. 文档/rules 与代码同源更新，再 commit。
+
+## 9. 实施记录（进度 + 实施期发现的更正）
+
+### 已完成
+
+| 阶段 | commit | 门禁 | 备注 |
+|---|---|---|---|
+| 阶段 0（清审计遗留 + 归属层） | `ee2ac91` `520f1a2` | 四门禁全绿 | 含「一个环境变量就能静默打死插件」的缺陷 |
+| 阶段 2（推理按轮分段 + 每轮耗时 + `panel_expanded`） | `e1b5a1a` + `866fd3f` | 四门禁全绿 | `866fd3f` = 阶段 2 对抗审计的三条必修项（面板被撑爆 / 幻影长度 / 假轮）+ 6 条新哨兵 |
+| 阶段 1（三态状态色 + 决策 D2 去掉卡片 header） | `8e01490` | 四门禁全绿 | 见下面三条更正 |
+
+### 实施期发现的更正（**比方案里写的更准，以这里为准**）
+
+1. **钩子之间的 `turn_id` 是同一个值 —— 方案 R1 的第 2 条说反了。**
+   `on_stream_start` / `on_stream_delta` / `on_session_end` / `post_api_request` 读的都是
+   `agent._current_turn_id`（`agent/turn_context.py::_bind_turn_identity` 每回合设一次，
+   `finalize_turn` 的 `turn_id` 参数也来自它）。对不上的**只有**
+   `send_stream_frame(turn_id=)` —— 那是 `GatewayStreamConsumer` 自己生成的裸 uuid4。
+   ⇒ 结论：**回合状态可以按 `turn_id` 与面板数据精确对齐**，不需要方案里设想的
+   「chat 级 pending 槽」。卡片↔会话仍走 §7.4 的 `chat_id -> session_id` 映射。
+
+2. **`post_api_request` 的载荷也带 `turn_id`** ⇒ 它有第二个用处：非流式模式下
+   `on_stream_start` 完全不触发（它只在流式 emitter 里发），「新回合开始」就没有信号，
+   上一回合的状态色会一直挂着。`post_api_request` 每回合至少一次，正好补上这个缺口
+   （`panel.note_turn()`）。这是 §7.1 那条「必须有一条显式降级路径」的具体实现。
+
+3. **`streaming.transport: edit` 与本机走不走 native 无关。** 核心的
+   `StreamConsumer._resolve_native_streaming()`（`gateway/stream_consumer_transport.py`）
+   只看三件事：适配器是不是 `BasePlatformAdapter`、类级 `SUPPORTS_NATIVE_STREAMING`、
+   `supports_native_streaming()` 探针返回真。**完全不读 `transport` 配置** ——
+   native 先试，seed 帧失败才回落 edit。所以本机（`transport: edit`）实际走的是 native，
+   插件侧 `_ld_streams` 有数据，「中止重绘」那条路成立。
+
+4. **`getattr(type(parent), ...)` 是个永远失败的探针**：`parent = super(...)` 时
+   `type(parent)` 恒为 `super`，签名探测永远判「不支持 metadata」。要走 MRO 找父类实现，
+   必须 `getattr(parent, name)`。已写进 `docs/lessons.md`。
+
+### 阶段 1 的两处设计决定（超出方案文字、但由方案目标推出）
+
+- **有结局就强制渲染面板**：面板是状态色**唯一**的载体（颜色画在
+  `collapsible_panel.border.color` 上），而「简单问答」这种最常见的情形既没有推理轮
+  （`stream_reasoning_deltas` 官方默认关）也没有工具 —— 不强制渲染的话效果 2/3 在
+  最常见的回合里根本看不见。aiduPOP 的面板同样是常驻的。
+- **`/stop` 必须自己重绘**：方案 §7.1 已经论证「永远不会有 finalize 帧」，
+  实现落在覆盖 `interrupt_session_activity` 里（沿用 `_ld_streams` 最后一帧的累积全文），
+  且**无论重绘成败都照常 `super()`** —— 中止是内核的职责，不能被卡片挡住。

@@ -38,11 +38,11 @@ config_schema:
   footer:
     type: boolean
     default: true
-    description: "页脚显示 模型 / 上下文用量 / 耗时"
+    description: "页脚显示上下文用量（模型名与耗时在面板标题行）"
   show_model:
     type: boolean
     default: true
-    description: "页脚里包含模型名"
+    description: "面板标题行里包含模型名"
   context_style:
     type: string
     default: "text"
