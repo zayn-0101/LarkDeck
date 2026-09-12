@@ -107,9 +107,19 @@ python3 tests/test_units.py        # 纯单测，零网络、零 Hermes 依赖�
 python3 tests/check_override.py    # 真跑 Hermes 插件加载器（临时 HERMES_HOME），必须打印 OVERRIDE OK
 python3 tests/check_hooks.py       # 真钩子派发器验证指标采集 + 面板数据层，必须打印 HOOKS OK
 python3 tests/check_clarify_e2e.py # 澄清卡端到端，必须打印 CLARIFY E2E OK
+python3 tests/mutate_check.py      # 变异验证器：撤掉每条修复必须变红（改断言后必跑）
 ```
 
-没有 CI / lint / formatter，这四个脚本就是全部验证。系统 `python3` 跑不动时用 Hermes
+**改了任何断言，都要跑 `tests/mutate_check.py`。** 它是本仓库「先写变异，再写断言」的落点：
+清单里每条变异 = 一处「把某条修复撤掉」的定向改动，判定标准是**至少一个门禁变红**。
+四门禁全绿、却没有对应变异变红 ⇒ 那条断言**没有判别力**（本项目头号缺陷类型，见
+`docs/lessons.md` 推论 6/7/8）。三条已固化的历史形态：改常量口径后被同文件旧赋值覆盖、
+「真对象返回空列表」型断言（被观测对象要**真的缺东西**才有判别力）、`isinstance(x, int)`
+这类恒真断言。`-k <子串>` 只跑一部分。
+⚠️ 它自己踩过的坑：快照目录**必须叫 `larkdeck`**，否则 `import larkdeck` 会解析到未变异的
+基线（曾导致一批假绿）。
+
+没有 CI / lint / formatter，这五个脚本就是全部验证。系统 `python3` 跑不动时用 Hermes
 自带解释器 `/Users/Zayn/.hermes/hermes-agent/venv/bin/python3`。
 
 - `check_override.py` 是唯一能证明「注册表覆盖生效」的手段 —— 单测用替身，证明不了运行时行为。

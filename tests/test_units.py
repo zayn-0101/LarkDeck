@@ -225,6 +225,67 @@ def test_probe_adapter_class_reports_missing():
     assert not ok2 and "_run_blocking" in missing2, missing2
     assert "_card_response" in compat.probe_report(Missing)["missing_callback"]
 
+    # ⚠️ 「真适配器返回空列表」这一条**没有判别力**（第七路审计实测：把 `probe_report` 里
+    # `missing_reactions` 改成恒 `[]`，四个门禁全绿）。要证明探测**真的读了登记表**，
+    # 就得拿一个什么都没有的类去探：缺什么就必须如实报出什么。
+    class Bare:
+        pass
+
+    bare = compat.probe_report(Bare)
+    assert compat.REACTION_ADAPTER_ATTRS, "登记表是空的，探测等于没做"
+    assert compat.SIGNAL_ADAPTER_ATTRS, "登记表是空的，探测等于没做"
+    assert list(bare["missing_reactions"]) == list(compat.REACTION_ADAPTER_ATTRS), bare
+    assert list(bare["missing_signal"]) == list(compat.SIGNAL_ADAPTER_ATTRS), bare
+    assert list(bare["missing_callback"]) == list(compat.CALLBACK_ADAPTER_ATTRS), bare
+
+
+def test_probe_report_warnings_name_the_right_contract():
+    """`_log_probe_report` 的两条 WARNING 必须**逐条对得上**（第七路审计 P5）。
+
+    实测旧覆盖：删掉 `report["missing_reactions"]`、删掉任一条 WARNING、甚至把 WARNING 的
+    列表参数换成另一个（于是日志把「缺信号 ⇒ /stop 不变色」说成「reactions 失效」，
+    **把排查方向带反**），四个门禁**全绿**。这两条 WARNING 修的是「上游改名 → 静默失灵」，
+    所以它们自己绝不能是静默的。
+    """
+    def _report(**over):
+        base = {"adapter_class": "x.Y", "missing_callback": [], "missing_optional": [],
+                "missing_signal": [], "missing_reactions": []}
+        base.update(over)
+        return base
+
+    # ① 两条都缺：必须两条 WARNING，且各自的列表**一一对应**（换参数就会错位）
+    with _LogCapture("larkdeck") as records:
+        adapter._log_probe_report(_report(missing_signal=["interrupt_session_activity"],
+                                         missing_reactions=["_reactions_enabled"]))
+    warnings = [r.getMessage() for r in records if r.levelno >= 30]
+    signal_warns = [w for w in warnings if "中止色" in w]
+    reaction_warns = [w for w in warnings if "reactions: false" in w]
+    assert len(signal_warns) == 1 and len(reaction_warns) == 1, warnings
+    assert "interrupt_session_activity" in signal_warns[0], signal_warns[0]
+    assert "_reactions_enabled" in reaction_warns[0], reaction_warns[0]
+    assert "interrupt_session_activity" not in reaction_warns[0], "两条的列表串了（误诊）"
+    assert "_reactions_enabled" not in signal_warns[0], "两条的列表串了（误诊）"
+
+    # ② 只缺 reactions：不许冒出「中止色」那条
+    with _LogCapture("larkdeck") as records:
+        adapter._log_probe_report(_report(missing_reactions=["_reactions_enabled"]))
+    warnings = [r.getMessage() for r in records if r.levelno >= 30]
+    assert len(warnings) == 1 and "reactions: false" in warnings[0], warnings
+
+    # ③ 都不缺：一条 WARNING 都不能有（否则用户会去查一个不存在的缺口）
+    with _LogCapture("larkdeck") as records:
+        adapter._log_probe_report(_report())
+    assert [r.getMessage() for r in records if r.levelno >= 30] == []
+
+    # ④ 报告里**没有** `missing_reactions` 这个键时不许静默（上游改名/被误删）：
+    #    缺键要当成「探测失效」报出来，而不是当成「一切正常」。
+    broken = _report()
+    broken.pop("missing_reactions")
+    with _LogCapture("larkdeck") as records:
+        adapter._log_probe_report(broken)
+    warnings = [r.getMessage() for r in records if r.levelno >= 30]
+    assert warnings, "报告缺键时必须报警，否则和「契约齐全」无法区分"
+
 
 def test_clarify_gateway_bridge_degrades_safely():
     # 无 Hermes 环境（没有 tools 模块）时保守返回 False，而不是抛异常。
@@ -2523,10 +2584,25 @@ def test_long_body_still_redraws_on_stop_and_never_degrades_silently():
     ⇒ `_ld_redraw_stopped` 的非 native 回退分支一个候选都找不到 ⇒ `/stop` 之后卡片
     **一次 patch 都不发**、颜色不变、**零日志**。触发条件是真实可达的：20500 个**英文**
     字符（≈20.5KB，远在 40000 字节预算之内、卡片渲染得好好的）+ 本回合掉过 native。
+
+    ⚠️ 第七路审计的阻断项（就在这条测试身上）：阈值曾被**同一文件里另一句赋值**
+    `_MAX_TRACKED_TEXT = _cards.CARD_BYTE_BUDGET` 覆盖成 40000，而这第二条用例的 fixture
+    恰好卡在 40000 上 —— 也就是说这条测试当时的绿，**正来自那句覆盖**，修复从未真正生效。
+    现在 fixture 贴着**真阈值**写，并额外锁住「阈值 + 卡片固定开销 ≤ 飞书硬上限」这条关系。
     """
     defaults = dict(adapter._DEFAULTS)
     old_interval = adapter._STREAM_MIN_INTERVAL
     adapter._STREAM_MIN_INTERVAL = 0.0
+
+    # ⓪ 形状断言：阈值必须贴着飞书实测硬上限，且**只有一个定义处**
+    #    （这句就是那条阻断项的守卫：谁再把它改回 CARD_BYTE_BUDGET，这里立刻红）
+    overhead = cards.card_bytes(cards.fit_reply_card("x" * 100)) - 100
+    assert adapter._MAX_TRACKED_TEXT + overhead <= adapter._FEISHU_CARD_BYTE_LIMIT, (
+        f"阈值 {adapter._MAX_TRACKED_TEXT} + 卡片固定开销 {overhead} 超过飞书实测硬上限 "
+        f"{adapter._FEISHU_CARD_BYTE_LIMIT} —— 「发得出去就存得下」不再成立")
+    assert adapter._MAX_TRACKED_TEXT > cards.CARD_BYTE_BUDGET, (
+        "阈值不能退回卡片自己的降载预算：超预算的卡照样发得出去（真机实测 128000 仍 code=0）")
+
     try:
         # ① 20.5k 字符的英文正文：能上卡 ⇒ 必须保留 ⇒ `/stop` 必须重绘出黄边
         panel.reset()
@@ -2538,16 +2614,30 @@ def test_long_body_still_redraws_on_stop_and_never_degrades_silently():
         assert updates, "长正文的卡在 /stop 时没有重绘（原来的静默缺陷）"
         assert "yellow" in json.dumps(json.loads(updates[-1]["content"]), ensure_ascii=False)
 
-        # ② 超过字节预算（存不下）：允许不存，但**必须留一条日志**（不许静默）
+        # ①' 阈值之内但远超卡片自己的降载预算（= 那条阻断项的实测区间）：**必须**保留正文
         panel.reset()
-        adapter.LarkDeckMixin._ld_note_text._seen = None
+        raw1 = _make()
+        updates1 = _wire_patch(raw1)
+        big = "汉" * (60_000 // 3)                  # 60000 字节：飞书收得下，但 6 倍于降载预算
+        _run(raw1.send("oc_big", big))
+        assert adapter._MAX_TRACKED_TEXT >= 60_000, "阈值太低，这个区间的卡存不下正文"
+        assert raw1._ld_state["om_card_1"]["last_text"] == big, "阈值内的大正文被丢掉了"
+        _run(raw1.interrupt_session_activity("sk", "oc_big"))
+        assert updates1, "超降载预算但发得出去的卡，/stop 时没有重绘"
+
+        # ② 超过**真阈值**（连飞书都发不出去）：允许不存，但**必须留一条日志**（不许静默）
+        panel.reset()
+        adapter._log_note_text_skipped._at = 0.0   # 清限流窗口，否则这条断言会随机依赖前一个用例
         raw2 = _make()
         _wire_patch(raw2)
-        huge = "汉" * (adapter._cards.CARD_BYTE_BUDGET // 3 + 500)  # 超出字节预算
+        huge = "汉" * (adapter._MAX_TRACKED_TEXT // 3 + 500)
         with _LogCapture("larkdeck") as records:
             _run(raw2.send("oc_2", huge))
         text = _log_text(records)
         assert "未为「中止重绘」保留副本" in text, f"存不下时必须留痕，实得：{text!r}"
+        # 日志的单位口径必须是**字节**（第七路审计：这里曾传字符数，读起来像阈值算错了）
+        assert f"正文 {len(huge.encode('utf-8'))} 字节" in text, (
+            f"日志口径必须是 utf-8 字节，实得：{text!r}")
     finally:
         adapter._STREAM_MIN_INTERVAL = old_interval
         panel.reset()
@@ -2623,45 +2713,106 @@ def test_stream_leak_threshold_stays_hour_scale():
         f"阈值太小会把活跃回合当成泄漏：{adapter._STREAM_LEAK_SECONDS}"
 
 
+def _parse_config_schema(yaml_text: str) -> "Dict[str, Any]":
+    """把 `plugin.yaml` 的 `config_schema` 段解析成 `{键: default}`（零依赖）。
+
+    ⚠️ 这一段换过一版，因为第七路审计实测出旧版有**三条静默漏判**：
+      (a) 键名正则 `^  [a-z_]+:$` 看不见含数字/连字符/大写的键 —— 往 yaml 里塞一个
+          代码从不读的 `brand-new:` 键，四门禁**全绿**；
+      (b) 不用块作用域、拿「上一个匹配到的键」当隐式状态 ⇒ 一个匹配不上的键如果排在
+          某个匹配键**之后**，它的 `default:` 会被算到**上一个键**头上（值凑巧相等就静默通过）；
+      (c) 根本不读 `type:` —— 把 `streaming_print_ms` 改成 `type: boolean`（配置界面会
+          渲染成开关，`true` 经 `_cfg_int` 变 1ms）也全绿。
+    新版按**缩进块**解析（键 = 2 空格、属性 = 4 空格），键名不设字符限制，认不出的行
+    **直接失败**（宁可红，也不静默漏判），并把 `type:` 与代码默认值的类型一起核对。
+    """
+    import re
+
+    lines = yaml_text.split("config_schema:", 1)[1].splitlines()
+    declared: Dict[str, Any] = {}
+    types: Dict[str, str] = {}
+    current = None
+    props: "set" = set()
+
+    def _scalar(raw: str) -> Any:
+        raw = raw.strip()
+        if raw in ("true", "false"):
+            return raw == "true"
+        if raw[:1] in ("\"", "'") and raw[-1:] == raw[:1] and len(raw) >= 2:
+            return raw[1:-1]
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+        try:
+            return float(raw)
+        except ValueError:
+            return raw
+
+    for line in lines:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line.startswith(" "):        # 回到顶格 = config_schema 段结束
+            break
+        m = re.match(r"^  ([^\s:][^:]*):$", line)
+        if m:
+            current = m.group(1).strip()
+            assert current not in declared, f"plugin.yaml: 配置键 {current!r} 重复声明"
+            declared[current] = None
+            props = set()
+            continue
+        m = re.match(r"^    ([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$", line)
+        if m and current is not None:
+            prop, value = m.group(1), m.group(2)
+            assert prop not in props, f"plugin.yaml: {current}.{prop} 重复"
+            props.add(prop)
+            if prop == "default":
+                declared[current] = _scalar(value)
+            elif prop == "type":
+                types[current] = value.strip()
+            continue
+        raise AssertionError(
+            f"plugin.yaml config_schema 里有解析不了的行（旧版解析器会在这里静默漏判）："
+            f"{line!r}")
+
+    return declared, types
+
+
 def test_config_schema_matches_defaults_exactly():
-    """`plugin.yaml` 的 `config_schema` 必须与 `_DEFAULTS` **逐键、逐默认值**一致。
+    """`plugin.yaml` 的 `config_schema` 必须与 `_DEFAULTS` **逐键、逐默认值、逐类型**一致。
 
     这是「三处同步」里**唯一能机械核对**的一处（README 那份是文档，靠人读）。
     2026-09-13 审计实测：把 yaml 里 `streaming_print_ms` 的默认值改成 9999、`reactions`
     改成 false、甚至**整个键删掉**，四个门禁**全部照绿** —— 因为门禁只读过桥接
     （`check_override.py` 验的是 `ctx.get_config` 能不能生效），从来没读过 yaml 与代码是否一致。
+
+    第七路审计又实测出旧解析器的三条漏判（见 `_parse_config_schema` 的 docstring），
+    全部补上；顺带**不再**用 `str(got) == str(expected)` 这种宽松比较
+    （它会把 `"15"`、`15.0`、`1`（对 `true`）都放过去）。
     """
-    import re
     from pathlib import Path
 
-    yaml_text = Path(__file__, ).resolve().parent.parent.joinpath("plugin.yaml").read_text(
-        encoding="utf-8")
-    schema = yaml_text.split("config_schema:", 1)[1]
-    declared: Dict[str, Any] = {}
-    current = None
-    for line in schema.splitlines():
-        if re.match(r"^  [a-z_]+:$", line):
-            current = line.strip().rstrip(":")
-            declared[current] = None
-        elif current and line.startswith("    default:"):
-            raw = line.split("default:", 1)[1].strip()
-            if raw in ("true", "false"):
-                declared[current] = raw == "true"
-            elif raw.startswith(("\"", "'")):
-                declared[current] = raw.strip("\"'")
-            else:
-                try:
-                    declared[current] = int(raw)
-                except ValueError:
-                    declared[current] = raw
+    yaml_text = Path(__file__).resolve().parent.parent.joinpath(
+        "plugin.yaml").read_text(encoding="utf-8")
+    declared, types = _parse_config_schema(yaml_text)
+
     assert set(declared) == set(adapter._DEFAULTS), (
         f"plugin.yaml 与 _DEFAULTS 的键不一致："
         f"只在一处有 {sorted(set(declared) ^ set(adapter._DEFAULTS))}")
     for key, expected in adapter._DEFAULTS.items():
-        # 字符串型默认值在 yaml 里可能带引号；数值/布尔必须严格相等
         got = declared[key]
-        assert got == expected or str(got) == str(expected), (
-            f"{key} 的默认值不一致：yaml={got!r} 代码={expected!r}")
+        assert got == expected and type(got) is type(expected), (
+            f"{key} 的默认值不一致：yaml={got!r}（{type(got).__name__}）"
+            f"代码={expected!r}（{type(expected).__name__}）")
+        # `type:` 声明必须与代码默认值的 Python 类型对得上（配置界面按它渲染控件）
+        declared_type = types.get(key)
+        if declared_type is None:
+            continue
+        want = {bool: "boolean", int: "integer", str: "string",
+                float: "number"}.get(type(expected), "?")
+        assert declared_type == want, (
+            f"{key} 的 type 与代码默认值不符：yaml={declared_type!r} "
+            f"代码默认值 {expected!r} 应为 {want!r}")
 
 
 def test_invariant_2_fallbacks_survive_exceptions_not_just_failures():
@@ -2723,10 +2874,31 @@ def test_over_budget_tier_keeps_the_typewriter_and_never_truncates_body():
 def test_print_frequency_is_clamped_and_never_raises():
     """打字机间隔的坏值必须被夹住，且**绝不抛**（抛出去整张卡就回落到纯文本了）。
 
-    审计的 M22：把 `_positive` 里 nan/inf 那半段保护删掉，四条门禁全绿。
-    实测 `int(float("inf"))` 抛的是 `OverflowError` —— 与本项目此前那个
-    「一个环境变量就能静默打死插件」的缺陷同型。
+    ⚠️ 归因修正（第七路审计实测）：审计的 M22 变异（把 `_positive` 里 nan/inf 那半段
+    保护删掉）**四条门禁仍然全绿** —— 真正的保护在 `streaming_config()` 自己的
+    `try/except (OverflowError)`（`int(float("inf"))` 抛的是它）。下面 ③ 那条「遍历坏值」
+    的断言**没有判别力**：`nan` 走 `_positive → False` ⇒ 卡片里压根没这个字段 ⇒ `continue`；
+    `inf` 走 `_positive → True` ⇒ 由 `streaming_config` 接住。两条路都看不见 `_positive`。
+    所以这里 ① **直接打被保护的那一层**（`streaming_config`），② 单独锁 `_positive` 的行为
+    （它是有用的防御，只是不该被冒充成「这条断言守住了 M22」—— 那是 `lessons.md` 推论 6 的复发）。
     """
+    # ① 被保护的那一层：越界/坏值一律退回默认，**绝不抛**
+    for bad in (float("inf"), float("-inf"), float("nan"), 10 ** 9, 5000, 2001, 0, -5,
+                None, "abc", [], {}, "1e999"):
+        got = cards.streaming_config(bad)["print_frequency_ms"]["default"]
+        assert got == cards.DEFAULT_PRINT_FREQUENCY_MS, (bad, got)
+    # 边界内保留原值（夹取不该把合法值也吃掉）
+    assert cards.streaming_config(1)["print_frequency_ms"]["default"] == 1
+    assert cards.streaming_config(cards.PRINT_FREQUENCY_MAX_MS)[
+        "print_frequency_ms"]["default"] == cards.PRINT_FREQUENCY_MAX_MS
+
+    # ② `_positive` 自身的行为（第 ① 条的保护**不**来自它）
+    assert cards._positive(float("inf")) is False
+    assert cards._positive(float("nan")) is False
+    assert cards._positive(0) is False and cards._positive(-1) is False
+    assert cards._positive(1) is True and cards._positive("40") is True
+
+    # ③ 经完整卡片路径：任何坏值都不许抛，落进卡里的值必须在合法区间内
     for bad in (float("nan"), float("inf"), float("-inf"), None, "abc", [], {},
                 "1e999", 0, -5, 10 ** 9, 5000):
         node = cards.reply_card("正文", streaming=True, print_frequency_ms=bad)
@@ -2734,7 +2906,43 @@ def test_print_frequency_is_clamped_and_never_raises():
         if cfg is None:
             continue  # 0 / 负数 / 坏值 = 不带这个字段，也是允许的结果
         value = cfg["print_frequency_ms"]["default"]
-        assert 1 <= value <= cards._PRINT_FREQUENCY_MAX_MS, (bad, value)
+        assert 1 <= value <= cards.PRINT_FREQUENCY_MAX_MS, (bad, value)
+
+
+def test_out_of_range_print_frequency_is_logged_not_silent():
+    """`streaming_print_ms` 越界时必须**留痕**（第七路审计 P2）。
+
+    实测旧行为：写 `5000`（用户想要「最慢」）→ 卡片收到 15ms（视觉上等于没有动画），
+    **零日志** —— 与本项目「诊断路径不许静默」的纪律直接冲突（其他同类路径
+    `_log_note_text_skipped` / `_log_degrade_once` / `_log_empty_panel_once` 都有限流日志）。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    try:
+        for bad in ("5000", 5001, 10 ** 9):
+            adapter.configure(streaming_print_ms=bad)
+            adapter._print_frequency_ms._at = 0.0     # 清限流窗口
+            with _LogCapture("larkdeck") as records:
+                got = adapter._print_frequency_ms()
+            assert got == cards.DEFAULT_PRINT_FREQUENCY_MS, (bad, got)
+            text = _log_text(records)
+            assert "streaming_print_ms" in text and "退回默认" in text, (bad, text)
+
+        # 合法值 / 0（= 关掉打字机）不许报警，也别改值
+        for good in (1, 15, cards.PRINT_FREQUENCY_MAX_MS):
+            adapter.configure(streaming_print_ms=good)
+            adapter._print_frequency_ms._at = 0.0
+            with _LogCapture("larkdeck") as records:
+                assert adapter._print_frequency_ms() == good, good
+            assert _log_text(records) == "", (good, _log_text(records))
+        adapter.configure(streaming_print_ms=0)
+        with _LogCapture("larkdeck") as records:
+            assert adapter._print_frequency_ms() == 0, "0 = 关掉打字机，是正常取值"
+        assert _log_text(records) == "", "0 是合法取值，不许报警"
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+        adapter._print_frequency_ms._at = 0.0
 
 
 def test_reactions_override_respects_the_parent_and_is_registered():

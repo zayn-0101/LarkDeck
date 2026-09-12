@@ -84,13 +84,24 @@ _MAX_TRACKED = 512
 #:      要么没有颜色、要么把正文抹掉，两者都不可接受。
 #: 所以现在的口径是：**上限贴着飞书的硬上限**（128000 实测），留一点余量 ⇒
 #: 「只要这张卡发得出去，它的正文就存得下」成立。内存靠 :data:`_MAX_TEXT_ENTRIES` 收。
-_MAX_TRACKED_TEXT = 120000
+#:
+#: ⚠️ 第七路审计的阻断项：这里**曾经**还留着下面这句
+#: ``_MAX_TRACKED_TEXT = _cards.CARD_BYTE_BUDGET``（第一版的老行，改造时忘了删）。
+#: Python 后赋值覆盖前者 ⇒ 运行时实际是 40000，于是上面这整段修复**是死代码**：
+#: 正文 40000~128000 字节、确实发得出去的卡，`/stop` 时一次 patch 都不发、不变色。
+#: 更糟的是 `tests/test_units.py` 那条回归的 fixture 正好卡在 40000 上，所以它**当时的绿
+#: 恰恰来自这行赋值**。教训：改常量口径必须 grep 全部同名赋值，且回归的 fixture
+#: 要贴着**新**阈值写。现在只有一个定义处，`tests/test_units.py` 有一条形状断言守着。
+_FEISHU_CARD_BYTE_LIMIT = 128000
+#: 卡片 JSON 的固定开销（header/面板骨架/页脚…）实测 ≈426 字节，与正文长度无关。
+#: 想保证「发得出去就存得下」，比的就是 `正文字节 + 固定开销 ≤ _FEISHU_CARD_BYTE_LIMIT`。
+_CARD_BYTES_OVERHEAD = 1024
+_MAX_TRACKED_TEXT = _FEISHU_CARD_BYTE_LIMIT - _CARD_BYTES_OVERHEAD
 
-#: 最多让几个 chat 保留「中止重绘」用的正文（每个 ≤ 120KB）⇒ 内存上界 ≈ 1.9MB。
-#: 超出就清掉最久没用的那份（`last` 最小的）。
+#: 最多让几个 chat 保留「中止重绘」用的正文（每个 ≤ :data:`_MAX_TRACKED_TEXT` 字节
+#: ≈127KB）⇒ 内存上界 ≈2MB / 16 份。超出就清掉最久没用的那份（`last` 最小的）。
+#: （口径按 utf-8 字节算；Python 的 str 每字符 2 字节，纯中文正文的实际堆占用比这个更大。）
 _MAX_TEXT_ENTRIES = 16
-
-_MAX_TRACKED_TEXT = _cards.CARD_BYTE_BUDGET
 
 #: native 流式：并发回合上限 + 帧节流窗口（秒）。帧率过高会触发飞书限流，
 #: 窗口内的中间帧直接跳过（返回 True 但不下发；下个 tick 文本变了会重试）。
@@ -273,13 +284,42 @@ def _cfg_int(key: str, default: int = 0) -> int:
         return default
 
 
+def _print_frequency_ms() -> int:
+    """``streaming_print_ms`` 的取值（客户端打字机的逐字间隔）。
+
+    只做一件事：**越界不静默**。``cards.streaming_config()`` 会把越界值夹回默认
+    （那层是纯函数、不许有 I/O），但用户写 ``streaming_print_ms: 5000``（想要「最慢」）
+    时得到的是 15ms（视觉上等于没有动画）—— 第七路审计实测这时**零日志**，
+    排查方向会被完全带反。所以这里按本项目对诊断日志的约定（限流 60 秒一条）如实报出来。
+    """
+    value = _cfg_int("streaming_print_ms", _cards.DEFAULT_PRINT_FREQUENCY_MS)
+    if value <= 0:
+        # 0/负数 = 关掉打字机（`cards.card()` 那边 `_positive` 判掉这个字段）—— 是正常取值，不报警
+        return value
+    low, high = 1, _cards.PRINT_FREQUENCY_MAX_MS
+    if value > high:
+        now = time.monotonic()
+        if now - getattr(_print_frequency_ms, "_at", 0.0) >= 60.0:
+            _print_frequency_ms._at = now  # type: ignore[attr-defined]
+            logger.warning("[larkdeck] streaming_print_ms=%s 超出 [%d,%d]ms，"
+                           "已退回默认 %dms（0 才是「关掉打字机」）",
+                           value, low, high, _cards.DEFAULT_PRINT_FREQUENCY_MS)
+        return _cards.DEFAULT_PRINT_FREQUENCY_MS
+    return value
+
+
 def _log_note_text_skipped(size: int) -> None:
-    """正文太大、无法为「中止重绘」保留 —— 限流告警（60 秒一条），绝不静默。"""
+    """正文太大、无法为「中止重绘」保留 —— 限流告警（60 秒一条），绝不静默。
+
+    ``size`` 是**utf-8 字节数**，与阈值同口径。第七路审计抓到过这里传的是 `len(body)`
+    （字符数），打出「正文 14000 字符超过 40000 字节预算」这种读起来像阈值算错了的日志 ——
+    而这条日志是「卡片为什么不变色」的唯一线索，口径必须自洽。
+    """
     now = time.monotonic()
     if now - getattr(_log_note_text_skipped, "_at", 0.0) < 60.0:
         return
     _log_note_text_skipped._at = now  # type: ignore[attr-defined]
-    logger.warning("[larkdeck] 正文 %d 字符超过 %d 字节预算，未为「中止重绘」保留副本"
+    logger.warning("[larkdeck] 正文 %d 字节超过 %d 字节预算，未为「中止重绘」保留副本"
                    "—— 若本回合掉过 native，/stop 时这张卡不会变成中止色",
                    size, _MAX_TRACKED_TEXT)
 
@@ -371,14 +411,15 @@ class LarkDeckMixin:
     def _ld_note_text(self, message_id: str, text: str) -> None:
         """记下这张卡最后渲染过的正文（供非 native 路径的「中止重绘」用）。
 
-        上限按 **utf-8 字节**、与卡片自己的字节预算同口径：能上卡的正文就存得下。
-        真正超限（> ``CARD_BYTE_BUDGET``）时**不静默**：留一条限流日志说明「中止时
-        这张卡不会变色」—— 静默降级是本项目的头号失败模式（这条就是审计实测出来的）。
+        上限按 **utf-8 字节**、与飞书的卡片硬上限同口径：**发得出去的卡就存得下正文**
+        （见 :data:`_MAX_TRACKED_TEXT`）。真正超限时**不静默**：留一条限流日志说明
+        「中止时这张卡不会变色」—— 静默降级是本项目的头号失败模式（审计实测出来的）。
         """
         body = str(text or "")
-        if len(body.encode("utf-8", "ignore")) > _MAX_TRACKED_TEXT:
+        size = len(body.encode("utf-8", "ignore"))
+        if size > _MAX_TRACKED_TEXT:
             # 只有在**连飞书都发不出去**的量级上才会走到这里（见 _MAX_TRACKED_TEXT 注释）
-            _log_note_text_skipped(len(body))
+            _log_note_text_skipped(size)
             body = ""
         with self._ld_lock:
             entry = self._ld_state.get(message_id)
@@ -543,8 +584,7 @@ class LarkDeckMixin:
         card, tier = _cards.fit_reply_card(
             content, streaming=streaming, panel=panel, footer=footer,
             # 客户端打字机（只对流式帧有意义）：0 = 不带这个字段
-            print_frequency_ms=_cfg_int("streaming_print_ms",
-                                        _cards.DEFAULT_PRINT_FREQUENCY_MS),
+            print_frequency_ms=_print_frequency_ms(),
         )
         if tier != "ok":
             # 把元素数一起打出来：降载可能是**字节**触发的、也可能是**元素数**触发的
@@ -1310,7 +1350,18 @@ def _log_probe_report(report: Dict[str, Any]) -> None:
 
     这是「只探测上报」里那个**上报** —— 没有它，CALLBACK 两组的探测只在单测里跑过，
     生产代码从不调用，等于什么都没上报。
+
+    ⚠️ 「报告里没有这个键」与「这个键是空列表」必须**区分开**：前者是探测本身失效
+    （上游契约改名 / 有人误删），后者才是「契约齐全」。第七路审计实测：旧写法
+    `report.get(k) or []` 把两者混成一件事 —— 于是删掉 `probe_report` 里的
+    `missing_reactions`，启动自检**一声不响**，而它修的恰恰就是「静默失灵」。
     """
+    absent = [key for key in ("missing_optional", "missing_callback",
+                              "missing_signal", "missing_reactions")
+              if key not in report]
+    if absent:
+        logger.warning("[larkdeck] 能力探测报告缺少 %s —— 探测本身失效，"
+                       "上游契约改名会在启动自检里静默漏报", absent)
     missing_callback = list(report.get("missing_callback") or [])
     missing_optional = list(report.get("missing_optional") or [])
     missing_signal = list(report.get("missing_signal") or [])

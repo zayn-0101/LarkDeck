@@ -70,20 +70,34 @@ if getattr(adapter, "REQUIRES_EDIT_FINALIZE", None) is not True:
     problems.append("REQUIRES_EDIT_FINALIZE 不是 True，末帧会另发新消息而不是原地封口")
 
 # 覆盖面必须真的落到我们的实现上 —— 光看 MRO 顺序不够，绑定方法可能在构造期就被取走了。
+#
+# ⚠️ 名字**从 `compat` 的登记表派生**，不写死字面量：写死的话「把它从上表删掉」这种退化
+# 没有任何门禁能看见（第七路审计实测：从硬编码元组里去掉 `_reactions_enabled`，四门禁全绿）。
+# 现在唯一的单一事实来源是 `compat.REACTION_ADAPTER_ATTRS` / `SIGNAL_ADAPTER_ATTRS`，
+# 动它会被 `test_units` 抓住，动这里的派生逻辑则会被下面「Mixin 必须实现登记的名字」抓住。
+_compat_for_names = (sys.modules.get("hermes_plugins.larkdeck.core.compat")
+                     or sys.modules.get("larkdeck.core.compat"))
 ld_mixin = next((c for c in cls.__mro__ if c.__name__ == "LarkDeckMixin"), None)
 if ld_mixin is None:
     problems.append("找不到 LarkDeckMixin")
 else:
-    for name in ("send", "edit_message", "send_clarify", "_on_card_action_trigger"):
+    _must_cover = ["send", "edit_message", "send_clarify", "_on_card_action_trigger"]
+    if _compat_for_names is not None:
+        _must_cover += list(_compat_for_names.SIGNAL_ADAPTER_ATTRS)
+        _must_cover += list(_compat_for_names.REACTION_ADAPTER_ATTRS)
+    else:
+        problems.append("拿不到 compat 模块，无法派生覆盖清单")
+    for name in _must_cover:
         own = ld_mixin.__dict__.get(name)
         if own is None:
-            problems.append(f"LarkDeckMixin 没有实现 {name}")
+            problems.append(f"LarkDeckMixin 没有实现 {name}（登记在契约表里，覆盖会静默失效）")
             continue
         resolved = getattr(adapter, name, None)
         if getattr(resolved, "__func__", resolved) is not own:
             problems.append(
                 f"{name} 解析到的是 {getattr(resolved, '__qualname__', resolved)!r}，不是 larkdeck 的实现"
             )
+    print(f"resolved overrides: {len(_must_cover)} 个（含 compat 派生的契约名）")
 if not isinstance(getattr(adapter, "_ld_state", None), dict):
     problems.append("_ld_setup() 没跑，实例状态缺失")
 
@@ -145,6 +159,45 @@ else:
     if _subscribed != _declared:
         problems.append(f"hooks.SUBSCRIPTIONS 与 compat.OBSERVED_HOOKS 不一致："
                         f"{_subscribed!r} vs {_declared!r}")
+
+# 能力探测报告的**形状**：上游改名时靠它报警（`_reactions_enabled` / `interrupt_session_activity`
+# 缺了都是「静默失灵」——开关无声失效、/stop 后卡片不变色）。第七路审计实测：把
+# `compat.probe_report()` 里的 `missing_reactions` 整个删掉、或把 adapter 里两条 WARNING 删掉，
+# **四个门禁全绿** —— 也就是说「P3 修完之后再被改回去也没人管」。这里把形状钉住。
+if _compat_mod is None:
+    problems.append("拿不到 compat 模块，无法核对能力探测报告")
+else:
+    _required_keys = ("hermes_version", "adapter_class", "ok", "missing_required",
+                      "missing_optional", "missing_callback", "missing_signal",
+                      "missing_reactions", "session_attribution_ok")
+    _report = _compat_mod.probe_report(cls)
+    _absent = [k for k in _required_keys if k not in _report]
+    print(f"probe_report keys: {sorted(_report)}")
+    if _absent:
+        problems.append(f"probe_report 缺键 {_absent} —— 上游改名会在启动自检里静默漏报")
+    if _report.get("missing_reactions") != []:
+        problems.append(f"真适配器不该缺 reactions 契约，实得 {_report.get('missing_reactions')!r}")
+    if _report.get("missing_signal") != []:
+        problems.append(f"真适配器不该缺中断信号契约，实得 {_report.get('missing_signal')!r}")
+
+    # ⚠️ 「真适配器返回空列表」这一条**没有判别力**：把 `probe_report` 改成
+    # `report["missing_reactions"] = []`（探测彻底失效）它照样绿 —— 第七路审计实测到了。
+    # 所以再拿一个**什么都没有**的类探一次：缺什么就必须如实报出什么。
+    class _Bare:                                   # noqa: D401 - 故意什么都不实现
+        pass
+
+    _bare_report = _compat_mod.probe_report(_Bare)
+    for _key, _contracts, _what in (
+            ("missing_reactions", _compat_mod.REACTION_ADAPTER_ATTRS, "reactions 契约"),
+            ("missing_signal", _compat_mod.SIGNAL_ADAPTER_ATTRS, "中断信号契约"),
+            ("missing_callback", _compat_mod.CALLBACK_ADAPTER_ATTRS, "点击回调契约")):
+        if not _contracts:
+            problems.append(f"{_key} 对应的登记表是空的，探测等于没做")
+        elif list(_bare_report.get(_key) or []) != list(_contracts):
+            problems.append(f"空类应当缺全部{_what}：期望 {list(_contracts)}，"
+                            f"实得 {_bare_report.get(_key)!r}（探测没真读登记表）")
+    print(f"probe_report(bare) missing_reactions={_bare_report.get('missing_reactions')!r} "
+          f"missing_signal={_bare_report.get('missing_signal')!r}")
 
 if problems:
     for p in problems:

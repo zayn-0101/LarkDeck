@@ -151,20 +151,20 @@ DEFAULT_PRINT_FREQUENCY_MS = 15
 
 #: 逐字间隔的上限（毫秒）。超过就没有「打字机」可言了 —— 客户端永远追不上推送节奏，
 #: 卡片看起来是「慢慢挤牙膏」（而且它是**客户端**动画，调大到几千毫秒不会省任何额度）。
-_PRINT_FREQUENCY_MAX_MS = 2000
+PRINT_FREQUENCY_MAX_MS = 2000
 
 
 def streaming_config(print_frequency_ms: Any = DEFAULT_PRINT_FREQUENCY_MS) -> Dict[str, Any]:
     """``streaming_config`` 节点：15ms/字、每步 1 字、``fast`` 策略（两个同类项目的取值）。
 
-    间隔会夹到 ``[1, _PRINT_FREQUENCY_MAX_MS]``：越界值一律退回默认，**不是**原样下发 ——
+    间隔会夹到 ``[1, PRINT_FREQUENCY_MAX_MS]``：越界值一律退回默认，**不是**原样下发 ——
     配置写错不该让卡片变成挤牙膏（也不该让 ``int(inf)`` 抛出去把整张卡打回纯文本）。
     """
     try:
         value = int(print_frequency_ms)
     except (TypeError, ValueError, OverflowError):
         value = DEFAULT_PRINT_FREQUENCY_MS
-    if not 1 <= value <= _PRINT_FREQUENCY_MAX_MS:
+    if not 1 <= value <= PRINT_FREQUENCY_MAX_MS:
         value = DEFAULT_PRINT_FREQUENCY_MS
     return {
         "print_frequency_ms": {"default": value},

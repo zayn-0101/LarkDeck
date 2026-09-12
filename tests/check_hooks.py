@@ -383,8 +383,11 @@ else:
                                surface="feishu")
     _stream("reasoning", "先想")
     _stream("reasoning", "一下")            # 同一轮
+    time.sleep(0.02)                        # 让第 1 轮的最低耗时 > 0（下面有断言）
     _stream("text", "这是正文")              # 正文开始 → 切断第 1 轮
+    time.sleep(0.02)
     _stream("reasoning", "再看工具")          # 第 2 轮
+    time.sleep(0.02)
     invoke_hook("pre_tool_call", tool_name="terminal", args={"command": "ls"},
                 session_id=_SESSION, task_id="t1", tool_call_id="g-call-1",
                 turn_id=_TURN, api_request_id="greq1", middleware_trace=[])
@@ -398,15 +401,23 @@ else:
     # 未结束的轮，切与不切在快照里都表现为「2 轮」（实测：把工具那处切轮删掉，
     # 黄金路径照样全绿）。这一段把它变成可判定的。
     _stream("reasoning", "工具之后")
+    time.sleep(0.02)
     invoke_hook("on_session_end", session_id=_SESSION, task_id="t1", turn_id=_TURN,
                 completed=True, failed=False, interrupted=False,
                 turn_exit_reason="text_response(stop)", model="deepseek-v4-flash",
                 platform="feishu")
 
+    # ⚠️ 轮次形状依赖**异步** worker：`enqueue_plugin_stream_hook` 每个回调一条队列 + 守护线程，
+    # 而 `invoke_hook("pre_tool_call", ...)` 是同步的 —— 若 worker 还没消费掉「再看工具」，
+    # 工具那次切轮就切在空轮上，轮的切分会少一段（实测按「工具先到、推理增量迟到」的顺序
+    # 直接驱动 panel ⇒ 2 轮）。这里的失败方向是**变红**（不是静默放行），所以按「等队列排空」
+    # 处理：超时后如实报「可能是 worker 时序，不一定是退化」，免得有人用放宽断言来「修」它。
     golden = None
+    drained = False
     for _ in range(60):
         golden = _panel.snapshot()
         if golden and len(golden.get("rounds") or []) >= 3 and golden.get("status") == "ok":
+            drained = True
             break
         time.sleep(0.05)
     print(f"黄金路径 snapshot = {golden}")
@@ -416,11 +427,23 @@ else:
         rounds = golden.get("rounds") or []
         if len(rounds) != 3:
             problems.append(f"黄金路径：期望 3 轮（正文、工具各切断一次 + 工具后再来一段），"
-                            f"实得 {len(rounds)}")
+                            f"实得 {len(rounds)}"
+                            + ("" if drained else "（等排空超时 —— 可能是异步 worker 时序，"
+                                                  "不一定是退化）"))
         elif [r.get("text") for r in rounds] != ["先想一下", "再看工具", "工具之后"]:
             problems.append(f"黄金路径：轮的切分不对 {[r.get('text') for r in rounds]!r}")
+        # ⚠️ 原来这里断言的是 `isinstance(elapsed_ms, int)` —— **恒真**：钩子之间没有等待，
+        # 每一轮实测都是 0ms，而 0 是 int（第七路审计实测：把 `panel.py` 里
+        # `current["elapsed_ms"] = max(0, int(...))` 改成 `= 0`，四个门禁全绿 ⇒
+        # 效果 4 的「每轮相对耗时」整块消失、卡片上只剩「第 N 轮」）。
+        # 所以上面故意插了 sleep，这里改判 `> 0`。
+        notimed = [r for r in rounds if not isinstance(r.get("elapsed_ms"), int)
+                   or r["elapsed_ms"] <= 0]
+        if notimed:
+            problems.append(f"黄金路径：轮缺耗时（必须 > 0，否则效果 4 的「每轮耗时」静默消失）"
+                            f"{rounds!r}")
         if not all(isinstance(r.get("elapsed_ms"), int) for r in rounds):
-            problems.append(f"黄金路径：轮缺耗时 {rounds!r}")
+            problems.append(f"黄金路径：耗时的类型不对 {rounds!r}")
         tools = golden.get("tools") or []
         if len(tools) != 1 or tools[0].get("duration_ms") != 42 or tools[0].get("status") != "ok":
             problems.append(f"黄金路径：工具步骤不对 {tools!r}")
