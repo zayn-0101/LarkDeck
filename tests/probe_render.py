@@ -693,10 +693,12 @@ def probe_cardkit(client, chat: str, cards) -> int:
     from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
 
     element_id = "answer"
+    panel_id = "panel_body"
     text = ("这是一次**打字机传输**的对照实验。\n\n"
-            "甲卡走的是普通 message.create + config.streaming_config；"
-            "乙卡走的是 CardKit 卡片实体 + card_element.content 逐帧写入。\n\n"
+            "甲卡走的是普通 message.create + config.streaming_config（每帧 message.patch 整卡替换）；"
+            "乙卡走的是 CardKit 卡片实体，**正文与面板两个元素分别用 card_element.content 逐帧写**。\n\n"
             "哪张卡的字是一个个冒出来的，哪张就是真的打字机 —— 请盯住这两张卡。") * 2
+    panel_text = "**第 1 轮 · 1.2s**\n\n先想一下这个问题该怎么拆。\n\n🔧 terminal ✅ 42ms"
 
     # 甲：我们现在的做法
     plain = cards.reply_card(text, streaming=True, footer="LARKDECK-RENDER-PROBE · 甲（普通卡）")
@@ -706,9 +708,29 @@ def probe_cardkit(client, chat: str, cards) -> int:
         _save_sent_ids(_load_sent_ids() + [mid_a])
 
     # 乙：CardKit 实体
-    card_json = {"schema": "2.0", "config": {"streaming_mode": True},
-                 "body": {"elements": [{"tag": "markdown", "element_id": element_id,
-                                        "content": text[:8]}]}}
+    # ⚠️ 结构必须**在建实体时定死**：2026-09-13 真机实测 —— 任何**结构性写入**
+    # （`message.patch` 或 `cardkit.v1.card.update`）都会**关闭流式会话**，
+    # 之后再写元素会拿到 `300309 streaming mode is closed`。所以乙卡的结构是
+    # 「answer 元素 + 一个折叠面板（面板里一个 markdown 子元素）」，
+    # 流式期间只做 `card_element.content` 写入（正文与面板**两个元素分别写**，实测都 `code=0`），
+    # 收尾那一帧才 `message.patch` 整卡替换（补状态色/页脚）—— 那时流式本来就结束了。
+    card_json = {
+        "schema": "2.0",
+        "config": {"streaming_mode": True, "update_multi": True},
+        "body": {"elements": [
+            {"tag": "markdown", "element_id": element_id, "content": text[:8]},
+            {"tag": "collapsible_panel", "element_id": "panel", "expanded": False,
+             "header": {"title": {"tag": "plain_text", "content": "执行详情"},
+                        "vertical_align": "center",
+                        "icon": {"tag": "standard_icon", "token": "down-small-ccm_outlined",
+                                 "size": "16px 16px"},
+                        "icon_position": "right", "icon_expanded_angle": -180},
+             "border": {"color": "grey", "corner_radius": "8px"},
+             "padding": "8px 8px 8px 8px",
+             "elements": [{"tag": "markdown", "element_id": panel_id,
+                           "content": panel_text[:12]}]},
+        ]},
+    }
     create_body = (CreateCardRequestBody.builder().type("card_json")
                    .data(json.dumps(card_json, ensure_ascii=False)).build())
     resp = client.cardkit.v1.card.create(
@@ -738,33 +760,48 @@ def probe_cardkit(client, chat: str, cards) -> int:
     print("   甲 = message.patch 整卡替换（我们现在的方式，卡里带 streaming_config）")
     print("   乙 = CardKit card_element.content 逐帧写元素")
     print("   哪张在**逐字**打、哪张**整段**跳，就是这两条传输的差别。")
-    for seq in range(1, 9):
-        cut = min(len(text), 8 + seq * 12)
+    seq = 0
+    for step_no in range(1, 9):
+        cut = min(len(text), 8 + step_no * 12)
         grown = cards.reply_card(text[:cut], streaming=True,
+                                 panel=cards.unified_panel(reasoning=panel_text[:step_no * 3]),
                                  footer="LARKDECK-RENDER-PROBE · 甲（普通卡）")
         p_code, p_msg = patch(client, mid_a, grown) if mid_a else (None, "no id")
-        body = (ContentCardElementRequestBody.builder().content(text[:cut])
-                .sequence(seq).uuid(f"lk-probe-{seq}").build())
-        step = client.cardkit.v1.card_element.content(
-            ContentCardElementRequest.builder().card_id(card_id)
-            .element_id(element_id).request_body(body).build())
-        print(f"   seq={seq} 字符={cut} · 甲 patch code={p_code} · 乙 content code={step.code}")
-        if step.code != 0:
-            print("❌ card_element.content 被拒 —— 打字机的流式写入走不通")
+        codes = []
+        for eid, payload in ((element_id, text[:cut]),
+                            (panel_id, panel_text[:step_no * 4])):
+            seq += 1
+            body = (ContentCardElementRequestBody.builder().content(payload)
+                    .sequence(seq).uuid(f"lk-probe-{eid}-{seq}").build())
+            step = client.cardkit.v1.card_element.content(
+                ContentCardElementRequest.builder().card_id(card_id)
+                .element_id(eid).request_body(body).build())
+            codes.append((eid, step.code))
+        print(f"   seq={step_no} 字符={cut} · 甲 patch code={p_code} · 乙 content {codes}")
+        bad = [c for eid, c in codes if c != 0]
+        if bad:
+            print(f"❌ card_element.content 被拒 {codes} —— 打字机的流式写入走不通")
             return 1
         if p_code not in (0, None):
             print(f"❌ 甲（对照卡）的 patch 也失败了 code={p_code} —— 这张对照无效：{p_msg}")
             return 1
         _time.sleep(0.8)
-    fin = (SettingsCardRequestBody.builder()
-           .settings(json.dumps({"config": {"streaming_mode": False,
-                                           "update_multi": True}}, ensure_ascii=False))
-           .sequence(9).uuid("lk-probe-fin").build())
-    done = client.cardkit.v1.card.settings(
-        SettingsCardRequest.builder().card_id(card_id).request_body(fin).build())
-    print(f"   settings 收尾（streaming_mode=false）code={done.code} msg={done.msg}")
+    # 收尾：**整卡替换**（那时流式已经结束，patch 会把会话关掉，正好收尾）
+    final_card = cards.reply_card(text, streaming=False,
+                                  panel=cards.unified_panel(reasoning=panel_text, status="ok"),
+                                  footer="LARKDECK-RENDER-PROBE · 乙（CardKit）")
+    fin_code, fin_msg = patch(client, mid_b, final_card)
+    print(f"   收尾：乙卡 message.patch（带状态色/面板）code={fin_code} msg={fin_msg}")
+    if fin_code != 0:
+        print("❌ 乙卡收尾整卡替换失败 —— 实体卡上用 patch 收尾这条路走不通")
+        return 1
+    in_final = "green" in json.dumps(final_card, ensure_ascii=False)
+    print(f"   （收尾帧里带绿色状态色 = {in_final}；真机上应当能看到乙卡边框变绿）")
     print()
-    print("结论（传输层）：CardKit 实体链每一步都通。**动画本身只能眼睛判** ——")
+    print("结论（传输层）：CardKit 实体链每一步都通（正文与嵌套面板元素分别流式写入 + patch 收尾）。")
+    print("   实测到的硬约束：**任何结构性写入（message.patch / card.update）都会关闭流式会话**，")
+    print("   之后的 card_element.content 会拿到 300309 —— 所以结构必须建实体时定死。")
+    print("**动画本身只能眼睛判** ——")
     print("  甲逐字 ⇒ 我们现在的做法就够（不必付 CardKit 的复杂度）；")
     print("  乙逐字而甲整段 ⇒ 打字机必须走 CardKit 实体（实现是下一步的独立工作）。")
     return 0

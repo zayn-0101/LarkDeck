@@ -591,6 +591,30 @@
 （同样的节奏、同样的切分，走 `message.patch` + `streaming_config`），两张并排留在 DM 里。
 判定规则：甲逐字 ⇒ 现有做法够用，**不做这一阶段**；乙逐字而甲整段 ⇒ 才做。
 
+#### 2026-09-13 又量了一轮：这条路的**硬约束**与「甲/乙」的机制差别
+
+| 实测 | 结果 | 含义 |
+|---|---|---|
+| `message.patch` 是不是「流式会话」 | 收尾帧之后再 patch **照样 `code=0`** | patch 只是**整卡替换**，服务端不为它维护开关状态 ⇒ 我们 `_TRANSIENT_CODES` 里的 `300309`/`300317` **在当前路径上永远不会出现**（它们是 CardKit 专属码） |
+| 实体卡能不能用 `message.patch` | `code=0` ✅ | **`/stop` 重绘路径不用改**（`card.update` 与 patch 等价可用，且 `card.update` 的请求体要用 SDK 的 `Card` 模型，传 dict 会 `99992402 field validation failed`） |
+| 结构性写入对流式会话的影响 | `content` 写 → `patch` → 再 `content` ⇒ **`300309 streaming mode is closed`**（`card.update` 同样） | **任何结构性写入都会关闭流式会话** ⇒ 结构必须在 `card.create` 时定死，流式期间只做 `content` 写入 |
+| 嵌套元素能不能流式写 | 折叠面板**里面**的 markdown 子元素 `content` 写入 `code=0` ✅ | **打字机与实时面板可以共存**（正文元素 + 面板内的 markdown 子元素各写各的），不必牺牲效果 4 的实时性 |
+| 元素 id 写错 | `300313 not find elementID` | 又一个值得知道的码（不可重试） |
+| 会话能否重开 | `settings(streaming_mode:true)` `code=0`，但紧接着写元素 ⇒ **`300317 sequence number compare failed`** | 重开之后**序号必须重新对齐** |
+
+**于是阶段 9 的设计已经全部由实测钉死**（实现是机械的，不需要再探索）：
+
+1. `card.create`：`{"schema":"2.0","config":{"streaming_mode":true},"body":{"elements":[answer 元素, 折叠面板(内含一个 markdown 子元素)]}}`；
+2. 每帧：`card_element.content` 写 **answer** 与 **panel_body** 两个元素（单调递增 `sequence` + 唯一 `uuid`），**不做任何结构写入**；
+3. 收尾帧：`message.patch` 整卡替换（带面板 + 状态色 + 页脚）—— 那一刻流式本来就结束，patch 关掉会话正好；
+4. `/stop` 重绘：沿用 `message.patch`（实体卡上实测可用）；
+5. 任何一步失败 ⇒ `_ld_stream_fail()` 返回 `False`，交给核心的 fail-open 链回落 edit/send（不变量 2）。
+
+⚠️ **但仍然不做**：做不做取决于那一眼的答案。**如果甲（我们现在的做法）本来就在逐字打，
+CardKit 就是纯粹多余的复杂度**（多一条传输、多一套失败模式、多一份序号状态）。
+探针 `--cardkit` 现在按上面这套设计跑**完整对照**（正文 + 面板两个元素都流式写 + patch 收尾），
+所以那一看是拿**真实形态**在比，不是拿一个简化版在比。
+
 **如果要做，设计边界（现在就定下来，避免实现时越界）**：
 
 1. **只换 native 流式帧的传输**：`send_stream_frame` 走 CardKit；`send` / `edit_message`
