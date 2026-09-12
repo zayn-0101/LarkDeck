@@ -28,10 +28,12 @@ cron/scheduler_delivery.py
 
 ---
 
-## Mac（已完成，留作记录）
+## Mac（已完成）
 
-2026-09-12 核实：8 个核心文件里已无 HFC 注入，`plugins.enabled` 里只有 larkdeck，
-启动自检通过。下面是当时的执行顺序。
+2026-09-12 核实并收尾：8 个核心文件里已无 HFC 注入，`plugins.enabled` 里只有 larkdeck，
+启动自检通过；HFC 包与 `hermes-feishu-card` CLI 也从 venv 卸载了，
+`.hermes_feishu_card_recovery.lock` 一并清掉（插件发现数 61 → 60，少的就是它）。
+下面是当时的执行顺序，留作记录/复用。
 
 ```bash
 # 1) 卸载 HFC（必须用它自带的 CLI，pip uninstall 会留下核心文件里的注入）
@@ -46,12 +48,15 @@ cd ~/code/larkdeck && ./install.sh
 
 # 4) 把 larkdeck 加进 ~/.hermes/config.yaml 的 plugins.enabled，删掉 hermes-feishu-card
 # 5) 重启网关，看启动日志里的 [larkdeck] 自检行
+# 6) 注入回滚之后再卸 python 包：pip uninstall hermes-feishu-streaming-card
 ```
 
-**残留（别踩）**：第 1 步只回滚了注入，HFC 包本体（`hermes-feishu-streaming-card 4.4.5`）
-和 `hermes-feishu-card` CLI 仍留在 venv 里，且声明了 `hermes_agent.plugins` 入口 ——
-它不在 `plugins.enabled` 里所以不加载，但**误跑它的安装命令会把注入打回核心文件**，
-直接顶掉 larkdeck。
+**代价（已知并接受）**：`medflow-job-notifier` 借用 HFC 的 cron 投递卡能力给飞书任务发完成卡片。
+包卸载后那条路走 `ImportError` 兜底 —— 飞书任务通知从卡片退化为**纯文本**（不报错、不丢消息，
+只是样式变差）。要拿回卡片能力：把该通知改接 larkdeck，或按下条回滚 HFC。
+
+**回滚**：`~/.hermes/backups/hfc-4.4.5-<时间戳>/` 是卸载前做的**离线包**（含说明），
+或在线 `pip install hermes-feishu-streaming-card==4.4.5`。回滚后必须 `hermes gateway restart`。
 
 ---
 
