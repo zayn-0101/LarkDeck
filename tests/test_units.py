@@ -269,6 +269,14 @@ def test_clarify_card_buttons_and_i18n():
     # 双语：脚注元素同时带 content 与 i18n_content
     notes = [e for e in card["elements"] if e.get("tag") == "note"]
     assert notes and "i18n_content" in notes[0]["elements"][0], notes
+    # 双语：header 与「其他」按钮都走 i18n_text —— 1.0 的标题和按钮 text
+    # 接受 i18n_content，已由真机探针（probe_render 双语实验卡）确证。
+    resolved = cards.clarify_resolved_card(question="选哪个？", answer="A", user_name="汪老师")
+    for c in (card, resolved):
+        title = c["header"]["title"]
+        assert set(title["i18n_content"]) == {i18n.ZH, i18n.EN}, title
+    other = buttons[-1]["text"]
+    assert set(other["i18n_content"]) == {i18n.ZH, i18n.EN}, other
 
 
 def _buttons_of(card):

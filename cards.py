@@ -34,7 +34,7 @@ FeishuAdapter 的 ``_card()`` —— 两者在本机都是已验证可用的。�
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 from . import i18n as _i18n
 
@@ -89,12 +89,18 @@ def note_i18n(key: str, **fmt: Any) -> Dict[str, Any]:
     return {"tag": "note", "elements": [_i18n.i18n_text(key, **fmt)]}
 
 
-def button(label: str, value: Dict[str, Any], *, btype: str = "default") -> Dict[str, Any]:
-    """按钮元素（1.0 方言里必须放进 :func:`action_row`）。"""
+def button(label: Union[str, Dict[str, Any]], value: Dict[str, Any],
+           *, btype: str = "default") -> Dict[str, Any]:
+    """按钮元素（1.0 方言里必须放进 :func:`action_row`）。
+
+    ``label`` 可直接给 :func:`i18n.i18n_text` 的双语节点 —— 1.0 按钮的
+    ``text`` 接受 ``i18n_content``，已由真机探针确证。
+    """
+    text = label if isinstance(label, dict) else {"tag": "plain_text", "content": label}
     return {
         "tag": "button",
         "type": btype,
-        "text": {"tag": "plain_text", "content": label},
+        "text": text,
         "value": value,
     }
 
@@ -349,20 +355,23 @@ def unified_panel(*, reasoning: str = "", tools: Sequence[str] = (),
 # 1.0：澄清交互卡（必须接点击，所以整条链路都用 legacy 方言）
 # --------------------------------------------------------------------------- #
 def legacy_card(*, elements: Sequence[Dict[str, Any]], template: str = "orange",
-                title: str = DEFAULT_TITLE,
+                title: Union[str, Dict[str, Any]] = DEFAULT_TITLE,
                 update_multi: bool = True) -> Dict[str, Any]:
     """legacy 1.0 卡片 —— **顶层 ``elements``，绝不含 ``schema`` / ``body``**。
 
     混进 ``schema: "2.0"`` 会让飞书按 2.0 解析，从而拒绝 ``action`` 按钮行，
     按钮点击也就永远送不到服务端。这是本模块最需要守住的不变量。
+
+    ``title`` 可给 :func:`i18n.i18n_text` 的双语节点（1.0 header 接受
+    ``i18n_content``，真机已证）。
     """
     config: Dict[str, Any] = {"wide_screen_mode": True}
     if update_multi:
         config["update_multi"] = True
+    title_node = title if isinstance(title, dict) else {"tag": "plain_text", "content": title}
     return {
         "config": config,
-        "header": {"template": template,
-                   "title": {"tag": "plain_text", "content": title}},
+        "header": {"template": template, "title": title_node},
         "elements": list(elements),
     }
 
@@ -378,7 +387,7 @@ def _clarify_elements(question: str, choices: Sequence[str], *, clarify_id: str,
             btype="primary" if idx == 1 else "default",
         ))
     buttons.append(button(
-        _i18n.t("clarify.other"),
+        _i18n.i18n_text("clarify.other"),
         {"larkdeck_action": "clarify", "clarify_id": clarify_id,
          "session_key": session_key, "question": question, "answer": OTHER_VALUE},
     ))
@@ -396,7 +405,7 @@ def clarify_card(question: str, choices: Sequence[str], *, clarify_id: str,
                                  clarify_id=clarify_id, session_key=session_key)
     elements.append(note_i18n("clarify.multi_hint" if multi else "clarify.hint"))
     return legacy_card(elements=elements, template="orange",
-                       title=_i18n.t("clarify.header"))
+                       title=_i18n.i18n_text("clarify.header"))
 
 
 def clarify_resolved_card(*, question: str, answer: str, user_name: str) -> Dict[str, Any]:
@@ -408,5 +417,5 @@ def clarify_resolved_card(*, question: str, answer: str, user_name: str) -> Dict
     label = _i18n.t("clarify.other") if answer == OTHER_VALUE else answer
     return legacy_card(
         elements=[md(f"\u2753 {question}"), md(f"\u2705 **{label}**\u3000\u2014\u3000{user_name}")],
-        template="green", title=_i18n.t("clarify.header"),
+        template="green", title=_i18n.i18n_text("clarify.header"),
     )

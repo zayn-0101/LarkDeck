@@ -12,7 +12,7 @@
 2. **先删掉自己上次发的探针卡**——按记录的消息 ID 删，再用内容里的 ``__PROBE__``
    标记补扫。**2.0 流式卡在飞书里是 cardkit 实体，读回来只剩一句「请升级至最新
    版本客户端，以查看内容」**，标记根本读不到，所以消息 ID 才是唯一靠得住的凭据
-3. 用 ``lark_oapi`` 以 ``im/v1/messages`` 发出**三类**卡片
+3. 用 ``lark_oapi`` 以 ``im/v1/messages`` 发出**探针卡**（功能卡 + 双语互换实验 + 页脚样式对照）
 4. 打印每张卡的 API 返回码 —— **code != 0 就是卡片被拒，msg 是飞书给的原因**
 
 它不做什么
@@ -192,9 +192,9 @@ def build_footer_cases(cards) -> list:
 
     mark = f"{PROBE_MARK} · 页脚样式对照 · 只验渲染"
     started = _time.monotonic() - 12.3
-    labels = (("text", "⑤ 页脚【纯文字】当前默认"),
-              ("bar", "⑥ 页脚【图形条】"),
-              ("both", "⑦ 页脚【数字+条】"))
+    labels = (("text", "⑦ 页脚【纯文字】当前默认"),
+              ("bar", "⑧ 页脚【图形条】"),
+              ("both", "⑨ 页脚【数字+条】"))
     cases = []
     for style, label in labels:
         _adapter._CONFIG["context_style"] = style
@@ -247,6 +247,52 @@ def build_cases(cards) -> list:
     ]
 
 
+def build_bilingual_cases(cards) -> list:
+    """双语机制回归探针：互换实验，验证客户端确实按 i18n_content 选语言。
+
+    「互换实验」：把 i18n_content 的 ``zh_cn`` 里放英文。中文客户端如果显示英文，
+    就证明它确实按 i18n_content 选语言，而不是回落到默认 ``content``；显示中文
+    则说明 i18n 没生效（该去查飞书是不是改了行为）。
+
+    为什么保留而非常规单测：生产卡两种语言各显示一份，**只看当前语言的卡片看不出
+    机制死活** —— 互换方向才能主动探测。受试对象两层：2.0 的 markdown 元素（普通 +
+    notation 脚注样式），以及 1.0 澄清卡的 header 标题 + 按钮；后者还兼作「飞书接不
+    接受 1.0 标题/按钮上的 i18n_content」的探针，本地读代码读不出结论，只有 API
+    返回码说了算。
+    """
+    swap = {"zh_cn": "SWAP HIT：看到这句英文 = 客户端确实在用 i18n_content ✅",
+            "en_us": "SWAP MISS：看到这句中文 = 走了 en_us 分支"}
+
+    def swap_text(tag: str, default: str) -> dict:
+        return {"tag": tag, "content": default, "i18n_content": dict(swap)}
+
+    # ⑤ 2.0：markdown + 纯文本两个元素各来一个互换实验（默认 content 是中文，作对照）
+    two = cards.reply_card("双语机制实验（2.0）。下面两行是互换过语言的元素：",
+                           streaming=True,
+                           footer=f"{PROBE_MARK} · 双语实验 2.0 · 只验渲染")
+    two["body"]["elements"][1:1] = [
+        swap_text("markdown", "【互换 · 正文】默认中文：看到这行 = i18n 没生效"),
+        {**swap_text("markdown", "【互换 · 脚注样式】默认中文：看到这行 = i18n 没生效"),
+         "text_size": "notation"},
+    ]
+
+    # ⑥ 1.0：header 标题 + 每个按钮都带互换的 i18n_content
+    legacy = cards.clarify_card("双语实验：这张 1.0 卡的标题和按钮都带了 i18n_content。",
+                                ["选项 A", "选项 B"], clarify_id="probe-bi",
+                                session_key="probe-sk")
+    legacy["header"]["title"]["i18n_content"] = dict(swap)
+    for el in legacy["elements"]:
+        if el.get("tag") == "action":
+            for btn in el.get("actions", []):
+                text = btn.get("text")
+                if isinstance(text, dict):
+                    text["i18n_content"] = dict(swap)
+    legacy["elements"].append(cards.note(f"{PROBE_MARK} · 双语实验 1.0 · 只验渲染"))
+
+    return [("⑤ 双语实验（2.0）：markdown / 纯文本互换", two),
+            ("⑥ 双语实验（1.0）：澄清卡 header + 按钮带 i18n_content", legacy)]
+
+
 def main(argv: list) -> int:
     clean_only = "--clean-only" in argv
     do_clean = "--no-clean" not in argv
@@ -268,7 +314,7 @@ def main(argv: list) -> int:
     if clean_only:
         return 0
 
-    cases = build_cases(cards) + build_footer_cases(cards)
+    cases = build_cases(cards) + build_bilingual_cases(cards) + build_footer_cases(cards)
     ok = True
     for label, card in cases:
         code, msg, mid = send(client, chat, card)
@@ -285,7 +331,7 @@ def main(argv: list) -> int:
             _save_sent_ids(_load_sent_ids() + [mid])
 
     print()
-    print("全部被飞书接收 ✅ —— 去飞书 DM 看七张卡（③ 记得点一下三角箭头；⑤⑥⑦ 是页脚三样式对照）" if ok
+    print("全部被飞书接收 ✅ —— 去飞书 DM 看九张卡（③ 记得点一下三角箭头；⑤⑥ 是双语互换实验，看到英文说明 i18n 生效；⑦⑧⑨ 是页脚三样式对照）" if ok
           else "有卡片被拒 ❌ —— 按上面飞书给的 msg 改")
     print("注意：按钮点击不会被处理（点击路由目前还在 HFC 手里），本探针只验渲染。")
     return 0 if ok else 1

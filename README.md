@@ -71,15 +71,15 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 
 | 元素 | 1.0 | 2.0 | 依据 |
 |---|---|---|---|
-| `note` | ✅ | ❌ | 飞书返回 `230099 / ErrCode 200861 · cards of schema V2 no longer support this capability` |
+| `note` | ✅ | ❌ | 飞书返回 `230099 / ErrCode 200861 · cards of schema V2 no longer support this capability`；2.0 的小字脚注改用 `markdown` + `text_size: "notation"`（即 `footnote()`） |
 | `action`（按钮行） | ✅ | ❌ | 1.0 的 `action` 容器嵌进 2.0 卡会被拒，点击永远到不了服务端 |
 | `collapsible_panel` | ❌ | ✅ | 2.0 专属 |
-| `i18n_content` | ✅ | ✅ | 文本元素级字段，两个方言都实测被接受 |
+| 顶层文本元素 | `lark_md` / `plain_text` | 只认 `markdown` | 2.0 的 `body.elements` 里直接放 `lark_md` 或 `plain_text` 都会被拒（`ErrCode 200621`）；`plain_text` 只在嵌套位置有效（collapsible 标题、按钮 text） |
+| `i18n_content` | ✅ | ✅ | 文本元素级字段，两个方言均实测接受；1.0 的 header title 与按钮 text 也接受且生效（2026-09-12 互换实验确证） |
 
 **结论：本地单测只能验结构，验不了合法性。** 改完卡片必须跑 `tests/probe_render.py` ——
-用真凭据把三类卡发到自己的飞书 DM，看飞书返回的 `code`（`tests/probe_render.py` 会
-自动先删掉上次发的探针卡，不留垃圾）。`note` / `action` 两条已在本地被
-`test_dialect_element_exclusivity` 锁死。
+用真凭据把探针卡发到自己的飞书 DM，看飞书返回的 `code`（它会自动先删掉上次发的探针卡，
+不留垃圾）。`note` / `action` 两条已在本地被 `test_dialect_element_exclusivity` 锁死。
 
 ---
 
@@ -91,7 +91,7 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 | 统一面板（推理 + 工具合并为一个可折叠底部面板） | ✅ 数据来自官方钩子（`on_stream_delta` / `pre_tool_call` / `post_tool_call`）；推理流需开启 Hermes 侧 `plugins.stream_reasoning_deltas` |
 | 澄清交互卡（按钮点击直接作答，不再手打选项） | ✅ |
 | 模型别名（`deepseek-v4-flash` → 你认得出来的名字） | ✅ |
-| 双语 UI（跟随飞书客户端语言） | ✅ 机制已实现，待真机确认 |
+| 双语 UI（跟随飞书客户端语言） | ✅ 真机确证（2026-09-12）：互换实验证明客户端按 `i18n_content` 选语言 |
 | 页脚：模型名 + 上下文用量 + 耗时 | ✅ 真机渲染已确认 |
 | 上下文用量三样式（纯文字 / 图形条 / 数字+条） | ✅ 真机渲染已确认 |
 | 推理文本 / 工具结果上限 + 元素溢出保护 | ✅ |
@@ -204,7 +204,9 @@ LarkDeck 接管后才生效）。
 - **必须和官方适配器同一进程**：官方 `feishu` 平台被禁用时，LarkDeck 无处附着。
 - **依赖官方适配器的内部方法**：发送/编辑路径 5 个必需（`_feishu_send_with_retry` 等，启动自检校验），点击回调路径 5 个（`_submit_on_loop`、`_card_response` 等）+ 澄清网关内部结构（`_lock` / `_entries` / `mark_awaiting_text`）。全部集中登记在 `compat.py`，并用 `probe_adapter_class()` / `probe_report()` 在运行时探测 —— 官方哪天改了名字，自检会直接报出来，而不是静默失效。
 - ~~**`i18n_content` 的元素级支持需真机确认**~~ → **已实测确认**（2026-09-12）：
-  文本元素同时带 `content` 与 `i18n_content`，1.0 与 2.0 卡均被飞书接受。
+  文本元素同时带 `content` 与 `i18n_content`，1.0 与 2.0 卡均被飞书接受；
+  1.0 的 header title 与按钮 text 也接受且生效。**互换实验**（把 `zh_cn` 分支里放英文）
+  在中文客户端上显示出英文，证明客户端确实按 `i18n_content` 选语言，而不是永远读默认值。
   兜底仍然安全：客户端不认时回落到 `content`，不会让卡片发不出去。
   **注意 AI 生成的正文不翻译**，双语只覆盖界面文案。
 - 与 hermes-feishu-streaming-card（HFC）**不能共存**：两边都要接管 `feishu` 平台，且 HFC 还改了源码。切换步骤见 `docs/`。

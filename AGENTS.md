@@ -81,7 +81,8 @@ python3 tests/check_clarify_e2e.py # 澄清卡端到端，必须打印 CLARIFY E
 - 测试里要用加载器那份 `context` 模块（`hermes_plugins.larkdeck.context`）；
   直接 `import larkdeck.context` 会拿到第二个模块对象，读写状态对不上（`check_hooks.py` 盯这个）。
 - **改 `cards.py` 或任何卡片结构后必须跑 `tests/probe_render.py`**：唯一连真实飞书的测试
-  （从 `~/.hermes/.env` 读凭据，把三类卡真发到自己的飞书 DM，自动先清理上次的探针卡）。
+  （从 `~/.hermes/.env` 读凭据，把探针卡真发到自己的飞书 DM：功能卡 + 双语互换实验 +
+  页脚样式对照，自动先清理上次的探针卡）。
   本地单测只能验结构，卡片合法性由飞书 API 返回码说了算。它只验渲染，不验点击。
 
 ## 部署
