@@ -49,13 +49,12 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from . import cards as _cards
 from . import compat as _compat
 from . import context as _context
 from . import hooks as _hooks
-from . import i18n as _i18n
 from . import panel as _panel
 
 logger = logging.getLogger("larkdeck")

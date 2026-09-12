@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import inspect
 import logging
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("larkdeck.compat")
 
