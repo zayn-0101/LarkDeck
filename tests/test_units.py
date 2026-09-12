@@ -246,6 +246,23 @@ def _all_tags(node) -> list:
     return found
 
 
+def _find_collapsible(node):
+    """找出卡片里的 ``collapsible_panel`` 节点（没有则 None）。"""
+    if isinstance(node, dict):
+        if node.get("tag") == "collapsible_panel":
+            return node
+        for value in node.values():
+            found = _find_collapsible(value)
+            if found is not None:
+                return found
+    elif isinstance(node, list):
+        for item in node:
+            found = _find_collapsible(item)
+            if found is not None:
+                return found
+    return None
+
+
 def test_reply_card_shape():
     card = cards.reply_card("正文 **加粗**", streaming=True, footer="⏱ 3.2s")
     assert card["schema"] == "2.0"
@@ -1411,10 +1428,148 @@ def test_panel_renders_reasoning_rounds_with_durations():
     assert "一整段推理" in flat["elements"][0]["content"]
     assert "轮" not in flat["elements"][0]["content"]
 
-    # 每轮额度是总量的均分：两轮 + 小上限 → 每段都不许独占上限
+    # 每轮额度是总量的均分，而且**渲染轮数收在预算 // _MIN_ROUND_CHARS 以内**。
+    # 旧断言是 `len(...) < 1000` —— 近乎恒真：实测「均分」290 字符、「一轮吃满上限」
+    # 450 字符，两种实现都过。这里改成按预算算出来的确切边界。
     capped = cards.unified_panel(rounds=[{"text": "x" * 500}, {"text": "y" * 500}],
                                  max_reasoning_chars=200)
-    assert len("".join(e.get("content", "") for e in capped["elements"])) < 1000
+    capped_text = "".join(e.get("content", "") for e in capped["elements"])
+    assert "y" * 200 in capped_text, "最近那轮没吃满预算（0.5 倍预算都没用上）"
+    assert "x" * 200 not in capped_text, f"两轮吃进了同一份预算：{capped_text!r}"
+    assert "轮已折叠" in capped_text, f"被折叠掉的轮必须说出来：{capped_text!r}"
+
+    # 预算够时两轮都在，各拿一半
+    roomy = cards.unified_panel(rounds=[{"text": "x" * 500}, {"text": "y" * 500}],
+                                max_reasoning_chars=1200)
+    roomy_text = "".join(e.get("content", "") for e in roomy["elements"])
+    assert "轮已折叠" not in roomy_text, "预算充足时不该折叠任何轮"
+    assert "x" * 500 in roomy_text and "y" * 500 in roomy_text, roomy_text
+
+
+def test_panel_round_bytes_never_inflate_with_round_count():
+    """**轮数不能把面板总量撑开** —— 否则面板会顶穿卡片字节预算、整块消失。
+
+    旧写法 ``share = max(120, 预算 // N)``：N > 预算/120 时渲染总量恒等于 ``120·N``，
+    与 ``max_reasoning_chars`` 无关（默认预算 1200 → 第 11 轮起线性膨胀）。
+    这里的场景是修复前真会踩到的：51 轮 + 9000 字正文，面板把总字节顶过
+    ``CARD_BYTE_BUDGET`` → ``fit_reply_card`` 降载到 ``no-panel``，**推理面板凭空消失**，
+    日志里只有一行 INFO（正是 docs/lessons.md 里最怕的静默降级）。
+    """
+    rounds = [{"text": "推理" * 1000, "elapsed_ms": 1000} for _ in range(51)]
+    node = cards.unified_panel(rounds=rounds, max_reasoning_chars=1200)
+    rendered = "".join(str(e.get("content", "")) for e in node["elements"])
+    assert len(rendered) <= 1200 * 2, \
+        f"轮数把面板总量撑开了：{len(rendered)} 字符（预算 1200，旧实现是 7845）"
+    assert "轮已折叠" in rendered, "折叠掉多少轮必须写出来，不能静默丢内容"
+    assert rendered.count("**第") <= 1200 // cards._MIN_ROUND_CHARS, \
+        f"渲染轮数没有收在预算以内：{rendered.count('**第')} 轮"
+
+    tip = cards.tool_step("bash", status="ok", duration_ms=100, preview="ls")
+    card, tier = cards.fit_reply_card("答" * 9000, streaming=True, panel=node, footer="🤖 m · ⏱ 1s")
+    assert tier == "ok", f"面板把卡片顶穿字节预算（降载到 {tier}）—— 用户看到的是面板凭空消失"
+    assert "collapsible_panel" in _all_tags(card), "降载把面板整块摘掉了"
+
+
+def test_panel_empty_round_drop_must_not_leave_phantom_length():
+    """空轮被丢弃时**必须同时扣掉它的长度**，否则幻影长度会提前回收真实轮。
+
+    ``record_reasoning`` 是逐片段给 ``reasoning_len`` 加账的，纯空白轮（``"\\n"``、``"  "``）
+    也一样加过；而 ``_compact_locked`` 唯一的判据就是这个账本。不扣 → 有内容的真实轮
+    被**比配置更早地整轮回收**（面板过程信息凭空少一段，不报错、不告警）。
+    """
+    limit_before = panel._MAX_REASONING_CHARS
+    panel.reset()
+    try:
+        # 尺寸刻意选得让「空白轮还在进行中」的那一刻**不**触发回收
+        # （那一刻的账本等于各轮内容之和，是自洽的；真正错的是**丢弃后不扣账**）
+        panel._MAX_REASONING_CHARS = 100
+        panel.record_reasoning("s1", "t1", "A" * 50)   # 第 1 轮：50 字，有内容
+        panel.record_answer_delta("s1", "t1")          # 正文 → 切轮
+        panel.record_reasoning("s1", "t1", " " * 20)   # 第 2 轮：纯空白（会被丢掉）
+        panel.record_answer_delta("s1", "t1")          # 切轮 → 空轮摘除
+        panel.record_reasoning("s1", "t1", "B" * 40)   # 第 3 轮：40 字
+        snap = panel.snapshot()
+        assert "A" * 50 in snap["reasoning"], (
+            "空轮留下了幻影长度（reasoning_len 虚高 20），把有内容的真实轮提前回收了")
+        assert len(snap["rounds"]) == 2, snap["rounds"]
+    finally:
+        panel._MAX_REASONING_CHARS = limit_before
+        panel.reset()
+
+
+def test_panel_round_cut_ignores_unattributable_delta():
+    """正文增量**归属不明时不许切轮** —— 否则会造出一个跨越两回合的假轮。
+
+    旧 guard ``if tid and state["turn_id"] not in ("", tid)`` 在 ``state["turn_id"]`` 为空
+    （该会话此前的事件都没带 turn_id，即老版本 Hermes 路径）时对**带 tid 的**载荷放行，
+    于是拿新回合的正文去 finalize 上一回合残留的轮，耗时按上一回合的 started 起算 ——
+    实测能渲染出「第 1 轮 · 600.0s」这种离谱数字。
+    """
+    panel.reset()
+    try:
+        panel.record_reasoning("s1", "", "没有 turn_id 的推理")
+        panel.record_answer_delta("s1", "t2")  # 载荷带 tid，本会话此前是空 tid → 无法归属
+        # 观测点：轮有没有被结束。被结束了下一条推理会**另开一轮**（2 轮），
+        # 没被结束则接着写进同一轮（1 轮）。
+        panel.record_reasoning("s1", "t2", "再补一句")
+        snap = panel.snapshot()
+        assert len(snap["rounds"]) == 1, \
+            f"归属不明的正文把上一回合残留的轮切掉了（假轮）：{snap['rounds']!r}"
+        assert snap["rounds"][0]["text"] == "没有 turn_id 的推理再补一句"
+
+        # 同一个回合的正文照常切轮（别把正常路径也堵死）
+        panel.reset()
+        panel.record_reasoning("s1", "t1", "第一段")
+        panel.record_answer_delta("s1", "t1")
+        panel.record_reasoning("s1", "t1", "第二段")
+        assert len(panel.snapshot()["rounds"]) == 2, "正常路径的切轮被堵死了"
+
+        # 老版本 Hermes 路径（两边都没 turn_id）也必须照常切轮
+        panel.reset()
+        panel.record_reasoning("s1", "", "第一段")
+        panel.record_answer_delta("s1", "")
+        panel.record_reasoning("s1", "", "第二段")
+        assert len(panel.snapshot()["rounds"]) == 2, "无 turn_id 的老路径被堵死了"
+    finally:
+        panel.reset()
+
+
+def test_panel_card_renders_rounds_and_honours_panel_expanded():
+    """卡片必须**真的**把 ``rounds`` 与 ``panel_expanded`` 用起来。
+
+    变异测试的结论（2026-09-12）：把 adapter 里 ``rounds=snap.get("rounds")`` 删掉、
+    或把 ``expanded=_cfg("panel_expanded")`` 写成死值 ``False``，四个门禁**全部照绿**。
+    也就是说「整回合推理连成一个巨大的第 1 轮」「展开配置成摆设」这两种静默退化
+    没有任何哨兵。这里补端到端断言：真走 ``send()``、真看卡片 JSON。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    panel.reset()
+    try:
+        panel.bind_chat_session("oc_1", "s1")
+        panel.record_reasoning("s1", "t1", "第一段推理")
+        panel.record_answer_delta("s1", "t1")
+        panel.record_reasoning("s1", "t1", "第二段推理")
+
+        raw = _make()
+        _run(raw.send("oc_1", "你好"))
+        card = json.loads(raw.calls[0][2])
+        blob = json.dumps(card, ensure_ascii=False)
+        assert "第 1 轮" in blob and "第 2 轮" in blob, \
+            f"卡片没按轮渲染（rounds 没传到卡片层）：{blob}"
+        collapsed = _find_collapsible(card)
+        assert collapsed is not None, "面板元素不见了"
+        assert collapsed["expanded"] is False, "默认应当收起（panel_expanded 默认 False）"
+
+        adapter.configure(panel_expanded=True)
+        raw2 = _make()
+        _run(raw2.send("oc_1", "你好"))
+        assert _find_collapsible(json.loads(raw2.calls[0][2]))["expanded"] is True, \
+            "panel_expanded=True 没生效 —— 配置成了摆设"
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+        panel.reset()
 
 
 def test_panel_splits_reasoning_into_rounds():

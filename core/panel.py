@@ -206,17 +206,33 @@ def _finalize_round_locked(state: Dict[str, Any], now: float) -> None:
     """结束当前推理轮（正文开始 / 工具开始 / 换回合时调用）。
 
     纯空白的轮直接丢掉 —— 否则面板里会多出一个没有内容的「第 N 轮」标题。
+
+    ⚠️ **丢轮必须把它的长度从 ``reasoning_len`` 里扣掉**。``record_reasoning`` 是逐片段
+    加长度的，空轮（例如只有 ``"\\n"``、``"  "`` 的增量）也一样加过账；不扣就留下**幻影
+    长度**，而 ``_compact_locked`` 唯一的判据就是这个账本 —— 后果是把**有内容的真实轮**
+    比配置更早地整轮回收掉（面板过程信息凭空少一段，且不报错）。
+
+    两处**已知的固有偏差**（不是 bug，别当 bug 修）：
+      * 由工具打断的轮，耗时包含模型生成 tool-call 参数的那段时间（``pre_tool_call``
+        是在 API 响应结束后才触发的）；由正文打断的轮则是精确的。
+      * 跨钩子**没有顺序保证**（``pre_tool_call`` 与 ``on_stream_delta`` 是两套派发）：
+        若工具回调被饿死整整一个工具执行时长，第 N、N+1 轮会被并成一整轮。概率很低，
+        而且公开契约里没有任何跨钩时序可依赖 —— 无法缓解，只能知道。
     """
     current = state.get("current_round")
     if not isinstance(current, dict):
         return
     state["current_round"] = None
     rounds = _rounds_locked(state)
-    if not "".join(current.get("parts") or []).strip():
+    parts = current.get("parts") or []
+    if not "".join(parts).strip():
+        state["reasoning_len"] = max(0, state.get("reasoning_len", 0) - len("".join(parts)))
         try:
             rounds.remove(current)
         except ValueError:
-            pass
+            # 当前不变量下不可达（``current_round`` 恒等于 ``rounds[-1]``）。留 debug 而不是
+            # 静默 pass：将来不变量若破了，这是唯一的线索。
+            logger.debug("larkdeck: 待丢弃的空轮不在 rounds 中（不变量可能已破）")
         return
     current["elapsed_ms"] = max(0, int((now - float(current.get("started") or now)) * 1000))
     # 只保留最近的若干轮
@@ -366,6 +382,12 @@ def record_answer_delta(session_id: str, turn_id: str) -> None:
 
     热路径（每个正文 token 一次），必须极快：没有正在进行的轮时**立即返回**，
     不做任何状态写入。
+
+    ⚠️ 这里**刻意不调** ``_touch_locked``（所以不刷新 ``updated`` / ``_LAST_ACTIVE``）：
+    上面那条早退已经盖住了绝大多数正文 token，而剩下的每一次都要多写两个状态字段。
+    代价只是「纯正文长回合不会续上 TTL 与最近活跃」—— 归属改成
+    ``chat_id -> session_id`` 确定性绑定（:func:`bind_chat_session`）之后，这条代价
+    已经不再影响渲染正确性。哪天真要改，先想清楚它对 fail-closed 热路径的影响。
     """
     now = _now()
     sid = str(session_id or "")
@@ -376,8 +398,14 @@ def record_answer_delta(session_id: str, turn_id: str) -> None:
         if not isinstance(state, dict) or not isinstance(state.get("current_round"), dict):
             return  # 没有正在进行的轮：这是热路径，立刻返回，不写任何状态
         tid = str(turn_id or "")
-        if tid and str(state.get("turn_id") or "") not in ("", tid):
-            return  # 迟到的旧回合正文：不切当前轮
+        # 只有**载荷回合与会话当前回合一致**时才切轮。
+        # 旧写法 ``if tid and state["turn_id"] not in ("", tid)`` 只挡住了「载荷是旧 tid」，
+        # 漏了「载荷有 tid、会话侧为空」这一支（两者不一致却是新回合的正文）—— 实测会拿
+        # 新回合的正文去 finalize 上一回合残留的轮，耗时按上一回合的 started 算，
+        # 面板上冒出「第 1 轮 · 600.0s」这种跨越回合的假轮。
+        # 对称比较把「一边有一边没有」都判成无法归属：宁可少切一轮，也不要造假数据。
+        if tid != str(state.get("turn_id") or ""):
+            return
         _finalize_round_locked(state, now)
         _purge_locked(now)
 
@@ -543,7 +571,9 @@ def snapshot(chat_id: str = "") -> Optional[Dict[str, Any]]:
     rounds: List[Dict[str, Any]] = []
     for item in rounds_raw:
         text = "".join(item.get("parts") or [])
-        if not text:
+        # 判空口径必须与 ``_finalize_round_locked`` 丢空轮的口径**一致**（都用 ``strip()``）。
+        # 用真值判断时，一个尚未结束的纯空白轮会被渲染成空着身子的「第 1 轮」标题。
+        if not text.strip():
             continue
         elapsed = item.get("elapsed_ms")
         if elapsed is None:
@@ -564,11 +594,15 @@ def snapshot(chat_id: str = "") -> Optional[Dict[str, Any]]:
 
 
 def _has_content(state: Dict[str, Any]) -> bool:
-    """这个会话桶里有没有值得渲染的东西（工具步骤或非空推理轮）。"""
+    """这个会话桶里有没有值得渲染的东西（工具步骤或非空推理轮）。
+
+    与 :func:`snapshot` 的渲染口径保持一致（``strip()`` 判空），否则归属回退会选中一个
+    「快照里其实什么都没有」的会话桶，把真正的面板挤掉。
+    """
     if state.get("tools"):
         return True
     for item in state.get("rounds") or []:
-        if isinstance(item, dict) and "".join(item.get("parts") or ""):
+        if isinstance(item, dict) and "".join(item.get("parts") or "").strip():
             return True
     return False
 

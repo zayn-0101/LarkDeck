@@ -57,6 +57,10 @@ SUMMARY_MAX = 120
 MAX_REASONING_CHARS = 1200
 MAX_TOOL_RESULT_CHARS = 600
 
+#: 单轮推理至少渲染这么多字符才读得下去；同时它也是**渲染轮数的分母** ——
+#: 面板最多渲染 ``max_reasoning_chars // _MIN_ROUND_CHARS`` 轮（见 :func:`unified_panel`）。
+_MIN_ROUND_CHARS = 120
+
 #: 统一面板最多保留多少条步骤；更早的收成一行计数。
 MAX_PANEL_STEPS = 30
 
@@ -511,8 +515,9 @@ def unified_panel(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
 
     传了 ``rounds`` 就**按轮分段渲染**（每轮一个耗时标题行），这是 aiduPOP 的观感：
     「一轮 = 一段连续推理，被正文或工具打断」。没传就退回把 ``reasoning`` 当一整段渲染。
-    每轮分到的截断额度是 ``max_reasoning_chars`` 的均分 —— 这样「推理文本上限」这个配置
-    仍然约束**总量**，不会因为轮数变多而整体膨胀。
+    每轮分到的截断额度是 ``max_reasoning_chars`` 的均分，且**渲染轮数收在
+    ``max_reasoning_chars // _MIN_ROUND_CHARS`` 以内**（更早的轮补一行「…更早的 N 轮已折叠」）
+    —— 这样「推理文本上限」这个配置约束的是**总量**，不会因为轮数变多而整体膨胀。
 
     所有进来的长文本都过 :func:`truncate`：面板是「收纳」不是「倾倒」，
     真跑一个长任务，原始推理和工具输出能把卡片撑到几十屏。
@@ -527,8 +532,18 @@ def unified_panel(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
 
     round_list = [item for item in rounds if isinstance(item, dict) and str(item.get("text") or "")]
     if round_list:
-        share = max(120, max_reasoning_chars // len(round_list))
-        for index, item in enumerate(round_list, start=1):
+        # 每轮至少给 _MIN_ROUND_CHARS 才读得下去，但这意味着**轮数必须收住**：
+        # 旧写法 share = max(120, 预算 // N) 在 N > 预算/120 时让渲染总量恒等于 120·N，
+        # 与配置无关 —— 默认预算 1200 时第 11 轮起线性膨胀，实测 40 轮撑到 7845 字符，
+        # 把 1500 字的正文一起顶穿字节预算 → fit_reply_card 降载到 no-panel，
+        # **整个推理面板消失**（只剩一行 INFO 日志，正是本项目最怕的静默降级）。
+        # 所以宁可有界地少显示历史轮：渲染轮数 ≤ 预算 // _MIN_ROUND_CHARS。
+        keep = max(1, min(len(round_list), max_reasoning_chars // _MIN_ROUND_CHARS))
+        share = max(_MIN_ROUND_CHARS, max_reasoning_chars // keep)
+        dropped = len(round_list) - keep
+        if dropped > 0:
+            inner.append(md(_i18n.t("panel.rounds_trimmed", n=dropped)))
+        for index, item in enumerate(round_list[-keep:], start=dropped + 1):
             body = truncate(str(item.get("text") or ""), share)
             inner.append(md(f"**{_round_title(index, item.get('elapsed_ms'))}**\n\n{body}"))
     elif reasoning:

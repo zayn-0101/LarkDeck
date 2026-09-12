@@ -15,7 +15,8 @@
      - ``post_api_request`` 经 ``invoke_hook`` → 页脚指标（模型 / 上下文占用）；
      - ``pre/post_tool_call`` 经 ``invoke_hook`` → 面板工具步骤（含耗时 / 状态）；
      - ``on_stream_delta`` 经**核心专用的流式队列**（``agent.plugin_stream_hooks``）
-       → 面板推理文本；只有 ``kind="reasoning"`` 能进，正文增量必须被丢弃；
+       → 面板推理文本；``kind="reasoning"`` 进面板，``kind="text"``（正文）**进不了
+       面板但必须切断推理轮** —— 轮次定义就是「被正文或工具打断」；
      - ``pre_tool_call`` 的返回值必须全是 ``None`` —— 观察者绝不能变成拦截者；
   5. 对照组：不启用插件时 ``has_hook`` 必须全为 False（证明上面的 True 不是因为
      内置了什么默认订阅）。
@@ -167,7 +168,14 @@ else:
         middleware_trace=[],
     )
 
-    # on_stream_delta 走核心真正的专用队列（每个回调一个 daemon worker）
+    # on_stream_delta 走核心真正的专用队列（每个回调一个 daemon worker）。
+    #
+    # ⚠️ 这里必须**同时**覆盖两种 kind 的顺序语义：两种 kind 走的是同一个钩子名 +
+    # 同一个回调，而 Hermes 的队列键是 ``(hook_name, id(callback))``
+    # （``agent/plugin_stream_hooks.py``）⇒ 共享同一条 FIFO，顺序是硬的。
+    # 而「正文切断推理轮」这条关键线路原先**没有任何门禁**：把 ``hooks.py`` 里
+    # ``kind == "text"`` 那个分支整条删掉，四个门禁**全部照绿**（2026-09-12 变异测试实证）。
+    # 那意味着推理永久连成一个巨大的「第 1 轮」—— 静默退化，用户只会觉得「轮次没用」。
     enqueue_plugin_stream_hook(
         "on_stream_delta", delta="先看目录结构。", kind="reasoning",
         session_id="sess-panelcheck", turn_id="turn-p1",
@@ -178,13 +186,19 @@ else:
         session_id="sess-panelcheck", turn_id="turn-p1",
         model="deepseek-v4-flash", provider="deepseek", surface="feishu",
     )
+    enqueue_plugin_stream_hook(
+        "on_stream_delta", delta="正文之后的推理。", kind="reasoning",
+        session_id="sess-panelcheck", turn_id="turn-p1",
+        model="deepseek-v4-flash", provider="deepseek", surface="feishu",
+    )
 
+    expected_reasoning = "先看目录结构。正文之后的推理。"
     p_snap = None
     for _ in range(60):  # 等 worker 线程消费，最多约 3 秒
+        # 等到**最后一条**推理也落账（否则会在只处理完第一条时就跳出，误判轮次）
         p_snap = _panel.snapshot()
-        if p_snap and p_snap["reasoning"] and not any(
-            t.get("status") == "running" for t in p_snap["tools"]
-        ):
+        if (p_snap and p_snap["reasoning"] == expected_reasoning
+                and not any(t.get("status") == "running" for t in p_snap["tools"])):
             break
         time.sleep(0.05)
 
@@ -192,8 +206,17 @@ else:
     if not p_snap:
         problems.append("面板快照为空：推理 / 工具数据没进数据层")
     else:
-        if p_snap["reasoning"] != "先看目录结构。":
-            problems.append(f"推理文本不对（正文混入 / 丢失）：{p_snap['reasoning']!r}")
+        if p_snap["reasoning"] != expected_reasoning:
+            problems.append(f"推理文本不对（正文混入 / 丢失 / 迟到）：{p_snap['reasoning']!r}")
+        rounds = p_snap.get("rounds") or []
+        if len(rounds) != 2:
+            problems.append(
+                f"正文没有切断推理轮：期望 2 轮，实得 {len(rounds)} 轮 {rounds!r} —— "
+                "「轮次」这个特性整条失效（且是静默的）")
+        elif rounds[0].get("text") != "先看目录结构。" or rounds[1].get("text") != "正文之后的推理。":
+            problems.append(f"轮的切分点不对：{[r.get('text') for r in rounds]!r}")
+        elif not isinstance(rounds[0].get("elapsed_ms"), int):
+            problems.append(f"已结束的轮没有耗时：{rounds[0]!r}")
         steps = p_snap["tools"]
         if not steps:
             problems.append("工具步骤为空：pre/post_tool_call 没进数据层")

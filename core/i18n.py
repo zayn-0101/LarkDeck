@@ -29,6 +29,8 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "panel.trimmed":      {ZH: "…更早的 {n} 步已折叠", EN: "…{n} earlier steps folded"},
     # 推理轮标题。注意「轮」= 一段连续推理（被正文或工具打断），不是 API 调用次数。
     "panel.round_n":      {ZH: "第 {n} 轮", EN: "Round {n}"},
+    # 轮数超过渲染上限时，更早的轮整轮折叠（保证面板总量有界，见 cards.unified_panel）
+    "panel.rounds_trimmed": {ZH: "…更早的 {n} 轮已折叠", EN: "…{n} earlier rounds folded"},
     # clarify
     "clarify.header":     {ZH: "需要你确认", EN: "Needs your input"},
     "clarify.other":      {ZH: "其他（我直接输入）", EN: "Other (I'll type it)"},
