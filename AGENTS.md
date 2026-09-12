@@ -12,6 +12,8 @@
    `LarkDeckMixin`）。任何"顺手 patch 一下"都是设计错误，不是权宜之计。
 2. **卡片是增强，不是替代。** 任何卡片路径失败都必须回落到 `super()` 的官方实现。
    宁可退回纯文本，也不能因为卡片报错而丢消息。改 `adapter.py` 时逐条保住这个性质。
+   native streaming（`SUPPORTS_NATIVE_STREAMING` + `send_stream_frame`）的帧失败由核心
+   自动回退 edit/send —— 这条 fail-open 链是官方契约，别绕过、别在帧里吞掉回落。
 3. **Hermes 私有接口只允许出现在 `compat.py`。** 目前分三组登记：适配器必需 5 个
    （`REQUIRED_ADAPTER_ATTRS`，`probe_adapter_class()` 运行时校验，缺了拒绝覆盖）；
    点击回调路径 5 个（`CALLBACK_ADAPTER_ATTRS` + 实例属性 `CALLBACK_INSTANCE_ATTRS`，
@@ -32,7 +34,7 @@
 plugin.yaml   插件清单（kind: platform，含 requires_env 与 config_schema 声明）
 __init__.py   插件入口：只从 core.adapter 转发 register
 core/         插件本体（Hermes 加载器以 hermes_plugins.larkdeck.core.* 命名空间加载）
-  adapter.py    覆盖层：LarkDeckMixin + merged_class() + build_adapter() + register() + 启动自检
+  adapter.py    覆盖层：LarkDeckMixin（含 native streaming 契约）+ merged_class() + build_adapter() + register() + 启动自检
   cards.py      卡片 JSON 构造（纯函数、无 I/O）—— 两种方言的边界在这里
   i18n.py       双语文案（飞书原生 i18n_content）
   compat.py     版本 / 能力探测 —— Hermes 私有名的唯一存放处
@@ -57,6 +59,9 @@ tests/        见「验证」
   `LARKDECK_<KEY>` > config.yaml settings > `_DEFAULTS`。新增配置项必须同时加到
   `_DEFAULTS` 和 `plugin.yaml` 的 `config_schema`；未接入业务的配置项要在 README 标 no-op。
 - 运行时只 import 标准库与 Hermes 环境；不新增第三方依赖。
+- native 流式是官方契约：`send_stream_frame(text, ...)` 的 `text` 是**累积全文**
+  （不是增量），整卡替换到同一张卡；回合状态挂 `self._ld_streams`
+  （key = `chat:turn_id`），帧间有节流（`_STREAM_MIN_INTERVAL`）。
 - 页脚指标是进程内全局（钩子记「最近一次 API 请求」），多会话并发共享同一快照；
   要按会话隔离得从钩子载荷的 `session_id` 分桶（未做）。
 - 面板数据策略与页脚不同：`panel.py` 按 `session_id` 分桶、快照时取「最近活跃」——

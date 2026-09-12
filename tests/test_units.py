@@ -491,6 +491,165 @@ def test_send_first_frame_after_turn_switch_has_no_stale_panel():
         adapter._apply_metrics_config()
 
 
+def test_native_streaming_probe_and_seed():
+    """native 流式探测 + seed 建卡：text 为空时建卡（流式态），并纳入追踪。"""
+    defaults = dict(adapter._DEFAULTS)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    try:
+        panel.reset()
+        assert adapter.LarkDeckMixin.SUPPORTS_NATIVE_STREAMING is True
+        raw = _make()
+        assert raw.supports_native_streaming() is True
+        assert raw.supports_native_streaming("p2p", None) is True
+        assert raw.supports_native_streaming(chat_type="p2p", metadata={"x": 1}) is True
+
+        assert _run(raw.send_stream_frame("", finalize=False, chat_id="oc_1",
+                                          reply_to="om_orig", turn_id="t1")) is True
+        kind, msg_type, payload = raw.calls[0]
+        assert kind == "send" and msg_type == "interactive"
+        card = json.loads(payload)
+        assert card["config"].get("streaming_mode") is True, "seed 建卡必须是流式态"
+        assert raw._ld_known("om_card_1") is not None, "native 卡必须被追踪"
+        assert "oc_1:t1" in raw._ld_streams
+
+        naked = _make()
+        naked._client = None
+        assert naked.supports_native_streaming() is False
+        adapter.configure(cards=False)
+        assert raw.supports_native_streaming() is False
+        adapter.configure(cards=True, native_streaming=False)
+        assert raw.supports_native_streaming() is False, "native_streaming=False 时不得启用"
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_native_streaming_frame_lifecycle():
+    """普通帧原地更新 + 幂等去重；finalize 收尾并清状态。"""
+    defaults = dict(adapter._DEFAULTS)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    try:
+        panel.reset()
+        panel.record_reasoning("s1", "t1", "先想一下")
+        raw = _make()
+        updates = []
+        raw._client.im.v1.message.update = lambda request: (
+            updates.append(request)
+            or {"code": 0, "data": {"message_id": request["message_id"]}}
+        )
+        assert _run(raw.send_stream_frame("", finalize=False, chat_id="oc_1",
+                                          turn_id="t1")) is True
+        assert _run(raw.send_stream_frame("你好", finalize=False, chat_id="oc_1",
+                                          turn_id="t1")) is True
+        assert len(updates) == 1, "普通帧应更新同一张卡"
+        body = json.loads(updates[0]["body"]["content"])
+        assert body["config"].get("streaming_mode") is True
+        joined = json.dumps(body, ensure_ascii=False)
+        assert "你好" in joined and "先想一下" in joined, "面板推理应随帧更新"
+
+        assert _run(raw.send_stream_frame("你好", finalize=False, chat_id="oc_1",
+                                          turn_id="t1")) is True
+        assert len(updates) == 1, "文本没变不该重复更新（幂等）"
+
+        assert _run(raw.send_stream_frame("最终答案", finalize=True, chat_id="oc_1",
+                                          turn_id="t1")) is True
+        assert len(updates) == 2, "finalize 要落到同一张卡"
+        final = json.loads(updates[1]["body"]["content"])
+        assert not final["config"].get("streaming_mode"), "finalize 后不再是流式态"
+        assert "oc_1:t1" not in raw._ld_streams, "finalize 后回合状态必须清掉"
+        assert raw._ld_known("om_card_1") is None, "finalize 后卡片停止追踪"
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_native_streaming_failures_fall_back():
+    """任何一步失败都返回 False（核心回落 send/edit）；finalize 失败保住状态等重试。"""
+    defaults = dict(adapter._DEFAULTS)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    try:
+        panel.reset()
+        refused = _make()
+        refused._fail_cards = True
+        assert _run(refused.send_stream_frame("", finalize=False, chat_id="oc_9",
+                                              turn_id="t9")) is False
+        assert not refused._ld_streams, "建卡失败不该留状态"
+
+        raw = _make()
+        assert _run(raw.send_stream_frame("", finalize=False, chat_id="oc_2",
+                                          turn_id="t2")) is True
+        raw._client.im.v1.message.update = lambda request: {"code": 99999, "msg": "update rejected"}
+        assert _run(raw.send_stream_frame("收尾", finalize=True, chat_id="oc_2",
+                                          turn_id="t2")) is False
+        assert "oc_2:t2" in raw._ld_streams, "finalize 失败要保住状态，让回落路径再试"
+
+        # 模拟核心回落：edit_message(finalize=True) 成功 → _ld_forget 应把流状态一并清掉
+        raw._client.im.v1.message.update = lambda request: (
+            {"code": 0, "data": {"message_id": request["message_id"]}})
+        result = _run(raw.edit_message("oc_2", "om_card_1", "收尾", finalize=True))
+        assert getattr(result, "success", False) is True
+        assert "oc_2:t2" not in raw._ld_streams, "回落 edit 成功后流状态不该残留"
+
+        assert _run(raw.send_stream_frame("x", finalize=True, chat_id="oc_none",
+                                          turn_id="tz")) is False, "没有活跃流的 finalize 返回 False"
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_native_streaming_throttle_skips_midframes_but_not_first():
+    """首帧不被节流（首字即时）；窗口内的后续中间帧跳过；finalize 不受节流。"""
+    defaults = dict(adapter._DEFAULTS)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    try:
+        panel.reset()
+        raw = _make()
+        updates = []
+        raw._client.im.v1.message.update = lambda request: (
+            updates.append(request)
+            or {"code": 0, "data": {"message_id": request["message_id"]}}
+        )
+        assert _run(raw.send_stream_frame("", finalize=False, chat_id="oc_t",
+                                          turn_id="tt")) is True
+        adapter._STREAM_MIN_INTERVAL = 10.0
+        assert _run(raw.send_stream_frame("第一帧", finalize=False, chat_id="oc_t",
+                                          turn_id="tt")) is True
+        assert len(updates) == 1, "首帧（last 为空）不该被节流"
+        assert _run(raw.send_stream_frame("第二帧", finalize=False, chat_id="oc_t",
+                                          turn_id="tt")) is True
+        assert len(updates) == 1, "窗口内的中间帧应被跳过"
+        assert _run(raw.send_stream_frame("最终", finalize=True, chat_id="oc_t",
+                                          turn_id="tt")) is True
+        assert len(updates) == 2, "finalize 不受节流影响"
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_native_streaming_state_cap_evicts_oldest():
+    """回合状态表有上限，满了淘汰最旧的四分之一。"""
+    raw = _make()
+    for i in range(adapter._MAX_STREAMS + 5):
+        raw._ld_stream_put(f"session-{i}", {"t0": float(i), "message_id": f"om_{i}"})
+    assert len(raw._ld_streams) <= adapter._MAX_STREAMS
+    assert "session-0" not in raw._ld_streams, "最旧的回合应被淘汰"
+
+
 def test_send_clarify_without_choices_falls_back():
     raw = _make()
     _run(raw.send_clarify("oc_1", "开放式问题？", None, "cid", "sk"))

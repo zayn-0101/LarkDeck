@@ -71,8 +71,14 @@ ACTION_CLARIFY = "clarify"
 #: 追踪中的卡片上限，防止长跑会话无限增长。
 _MAX_TRACKED = 512
 
+#: native 流式：并发回合上限 + 帧节流窗口（秒）。帧率过高会触发飞书限流，
+#: 窗口内的中间帧直接跳过（返回 True 但不下发；下个 tick 文本变了会重试）。
+_MAX_STREAMS = 64
+_STREAM_MIN_INTERVAL = 0.25
+
 _DEFAULTS: Dict[str, Any] = {
     "cards": True,            # 用卡片渲染回复
+    "native_streaming": True, # 官方 native streaming：一回合一张卡（工具进度合入同卡）
     "clarify_cards": True,    # 澄清使用按钮卡
     "unified_panel": True,    # 推理 + 工具合并为底部一个可折叠面板
     "footer": True,           # 页脚：模型 + 上下文用量 + 耗时
@@ -196,6 +202,7 @@ class LarkDeckMixin:
     # ------------------------------------------------------------------ 状态
     def _ld_setup(self) -> None:
         self._ld_state: Dict[str, Dict[str, Any]] = {}
+        self._ld_streams: Dict[str, Dict[str, Any]] = {}
         self._ld_lock = threading.Lock()
 
     def _ld_track(self, message_id: str, chat_id: str) -> None:
@@ -217,6 +224,12 @@ class LarkDeckMixin:
     def _ld_forget(self, message_id: str) -> None:
         with self._ld_lock:
             self._ld_state.pop(message_id, None)
+            # native 回合状态也一并清掉：finalize 失败后核心回落 edit_message 成功时，
+            # 单靠 edit_message 的 _ld_forget 会漏掉 _ld_streams 里的回合残留。
+            stale = [key for key, state in self._ld_streams.items()
+                     if state.get("message_id") == message_id]
+            for key in stale:
+                self._ld_streams.pop(key, None)
 
     @staticmethod
     def _ld_context_segment(snap: Optional[Dict[str, Any]] = None) -> str:
@@ -354,6 +367,103 @@ class LarkDeckMixin:
         except Exception as exc:
             logger.warning("[larkdeck] 卡片更新异常，回落内置编辑: %s", exc, exc_info=True)
         return await super().edit_message(chat_id, message_id, content, finalize=finalize)
+
+    # ------------------------------------------------- native 流式（官方契约）
+    #: Hermes 官方 native streaming 协议（gateway/stream_consumer_transport.py 消费）：
+    #: 启用后工具进度合入流式帧、工具边界不再另发消息 —— 一回合一张卡的正规路径。
+    #: 任何一帧失败都会让核心自动禁用 native 并回落 send/edit（消息不会丢）。
+    SUPPORTS_NATIVE_STREAMING = True
+
+    def supports_native_streaming(self, chat_type: Optional[str] = None,
+                                  metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """保守探测：配置关了卡片 / native / 没有 SDK 客户端时返回 False，核心走老路径。"""
+        return (bool(_cfg("cards")) and bool(_cfg("native_streaming"))
+                and bool(getattr(self, "_client", None)))
+
+    async def send_stream_frame(self, text: str, *, finalize: bool = False,
+                                chat_id: Optional[str] = None,
+                                reply_to: Optional[str] = None,
+                                **kwargs: Any) -> bool:
+        """官方流式帧：``text`` 是**累积全文**，整卡替换到同一张卡片。
+
+        seed 帧（空文本）建卡；普通帧原地更新；finalize 收尾。返回 False 时
+        核心自动禁用 native 并回落 send/edit —— 卡片失败绝不丢消息。
+        """
+        try:
+            return await self._ld_stream_frame(
+                text, finalize=finalize, chat_id=chat_id, reply_to=reply_to,
+                turn_id=str(kwargs.get("turn_id") or ""),
+            )
+        except Exception:
+            logger.warning("[larkdeck] native 流式帧异常，交由核心回落", exc_info=True)
+            return False
+
+    async def _ld_stream_frame(self, text: str, *, finalize: bool, chat_id: Optional[str],
+                               reply_to: Optional[str], turn_id: str) -> bool:
+        chat = str(chat_id or "").strip()
+        if not chat or not getattr(self, "_client", None):
+            return False
+        key = f"{chat}:{turn_id}" if turn_id else chat
+        state = self._ld_stream_get(key)
+        now = time.monotonic()
+        if state is None:
+            if finalize:
+                # 没有活跃流可收尾：交核心回落（send/edit 会正常发出）。
+                return False
+            card = _cards.reply_card(text, streaming=True,
+                                     panel=self._ld_panel(), footer=self._ld_footer(now))
+            result = await self._ld_send_card(chat, card, reply_to=reply_to)
+            if result is None or not getattr(result, "success", False):
+                return False
+            message_id = getattr(result, "message_id", "") or ""
+            if not message_id:
+                return False
+            self._ld_track(message_id, chat)
+            self._ld_stream_put(key, {"message_id": message_id, "chat_id": chat,
+                                      "t0": now, "last": text, "last_at": now})
+            return True
+        message_id = state["message_id"]
+        if finalize:
+            card = _cards.reply_card(text or " ", streaming=False,
+                                     panel=self._ld_panel(),
+                                     footer=self._ld_footer(state.get("t0")))
+            result = await self._ld_update_card(chat, message_id, card)
+            if result is None or not getattr(result, "success", False):
+                return False
+            self._ld_stream_pop(key)
+            self._ld_forget(message_id)
+            return True
+        if text == state.get("last"):
+            return True
+        last_at = state.get("last_at")
+        if (state.get("last") and isinstance(last_at, (int, float))
+                and now - last_at < _STREAM_MIN_INTERVAL):
+            return True  # 节流窗口内的中间帧：跳过，等下个 tick（首帧不节流）
+        card = _cards.reply_card(text, streaming=True,
+                                 panel=self._ld_panel(),
+                                 footer=self._ld_footer(state.get("t0")))
+        result = await self._ld_update_card(chat, message_id, card)
+        if result is None or not getattr(result, "success", False):
+            return False
+        self._ld_stream_put(key, {**state, "last": text, "last_at": now})
+        return True
+
+    def _ld_stream_get(self, key: str) -> Optional[Dict[str, Any]]:
+        with self._ld_lock:
+            state = self._ld_streams.get(key)
+            return dict(state) if state else None
+
+    def _ld_stream_put(self, key: str, state: Dict[str, Any]) -> None:
+        with self._ld_lock:
+            if len(self._ld_streams) >= _MAX_STREAMS and key not in self._ld_streams:
+                oldest = sorted(self._ld_streams.items(), key=lambda kv: kv[1].get("t0", 0.0))
+                for stale, _ in oldest[: max(1, _MAX_STREAMS // 4)]:
+                    self._ld_streams.pop(stale, None)
+            self._ld_streams[key] = state
+
+    def _ld_stream_pop(self, key: str) -> None:
+        with self._ld_lock:
+            self._ld_streams.pop(key, None)
 
     # ----------------------------------------------------------- send_clarify
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list],

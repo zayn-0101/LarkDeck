@@ -37,7 +37,7 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 > `TypeError: __class__ assignment: object layout differs`。
 > 直接构造子类没有这个约束，MRO 也更干净。
 
-流式本身走的是 Hermes 官方给卡片类平台设计的 **edit 传输**（DingTalk AI Card 用的同一条路）：`send()` 建卡 → `edit_message()` 连续更新 → `edit_message(finalize=True)` 封口，由 `REQUIRES_EDIT_FINALIZE = True` 驱动。配置里 `streaming.transport: edit` 就是它。
+流式主路径是 Hermes 官方的 **native streaming 协议**：核心把整回合的正文与工具进度合成一条流、逐帧交给 `send_stream_frame()` 原地更新同一张卡 —— **一次回复只有一张卡**，工具调用不再另起消息。任何一帧失败，核心会自动回退到 **edit 传输**（`send()` 建卡 → `edit_message()` 连续更新 → `edit_message(finalize=True)` 封口，由 `REQUIRES_EDIT_FINALIZE = True` 驱动）—— 卡片永远只做增强，不会弄丢消息。
 
 > 为什么不去 `import` 官方适配器模块：目录名、包名、加载方式都可能变。从注册表拿"上一个工厂"是唯一不依赖路径的接法。
 
@@ -87,7 +87,7 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 
 | 功能 | 状态 |
 |---|---|
-| 流式卡片（同一张卡原位更新） | ✅ |
+| 流式卡片（一回合一张卡，工具进度合入同卡） | ✅ 走 Hermes 官方 native streaming 协议；失败自动回落到内置发送 |
 | 统一面板（推理 + 工具合并为一个可折叠底部面板） | ✅ 数据来自官方钩子（`on_stream_delta` / `pre_tool_call` / `post_tool_call`）；推理流需开启 Hermes 侧 `plugins.stream_reasoning_deltas` |
 | 澄清交互卡（按钮点击直接作答，不再手打选项） | ✅ |
 | 模型别名（`deepseek-v4-flash` → 你认得出来的名字） | ✅ |
@@ -140,6 +140,7 @@ plugins:
     larkdeck:
       settings:
         cards: true              # 用卡片渲染回复（关掉则完全退回官方纯文本行为）
+        native_streaming: true   # 一回合一张卡（工具进度合入同卡）；关掉退回逐段新消息
         clarify_cards: true      # 澄清用按钮卡
         unified_panel: true      # 推理 + 工具合并为一个底部面板
         footer: true             # 页脚（模型 + 上下文用量 + 耗时）

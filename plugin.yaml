@@ -19,6 +19,10 @@ config_schema:
     type: boolean
     default: true
     description: "用卡片渲染回复；任何卡片失败自动回落纯文本"
+  native_streaming:
+    type: boolean
+    default: true
+    description: "官方 native streaming：一回合一张卡（工具进度合入同卡）；失败自动回落"
   clarify_cards:
     type: boolean
     default: true
