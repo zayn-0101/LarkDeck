@@ -156,6 +156,9 @@ _DEFAULTS: Dict[str, Any] = {
     # 列进了即时响应的观感。**默认保持 Hermes 的行为**（true）：它自己也并没有真的关
     # （抑制 wrapper 被注释掉了），关掉纯属观感偏好 —— 想关就设 false。
     "reactions": True,
+    # 客户端打字机的逐字间隔（毫秒）。**只对流式帧有意义**：流式模式下我们推全文、
+    # 平台自己算增量逐字渲染。默认 15（与 aiduPOP、hermes-fry-cards 一致）；写 0 = 不带。
+    "streaming_print_ms": _cards.DEFAULT_PRINT_FREQUENCY_MS,
     "unified_panel": True,    # 推理 + 工具合并为底部一个可折叠面板
     "panel_expanded": False,  # 面板默认收起（展开态很占屏；aiduPOP 同为默认收起）
     "footer": True,           # 页脚：只放上下文用量（模型/耗时已并入面板标题行）
@@ -502,8 +505,12 @@ class LarkDeckMixin:
         fail-open 链回落到官方分块（退化成多条纯文本，但**答案完整**）。
         静默截断会让用户以为模型就说了这么多。
         """
-        card, tier = _cards.fit_reply_card(content, streaming=streaming,
-                                           panel=panel, footer=footer)
+        card, tier = _cards.fit_reply_card(
+            content, streaming=streaming, panel=panel, footer=footer,
+            # 客户端打字机（只对流式帧有意义）：0 = 不带这个字段
+            print_frequency_ms=_cfg_int("streaming_print_ms",
+                                        _cards.DEFAULT_PRINT_FREQUENCY_MS),
+        )
         if tier != "ok":
             # 把元素数一起打出来：降载可能是**字节**触发的、也可能是**元素数**触发的
             # （飞书硬上限 200，真机实测 202 就被 230099/11310 拒），

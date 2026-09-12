@@ -114,6 +114,35 @@ _STATUS_TEXT_KEYS: Dict[str, str] = {
     "stopped": "panel.status_stopped",
 }
 
+# --------------------------------------------------------------------------- #
+# 客户端打字机（`streaming_config`）
+# --------------------------------------------------------------------------- #
+#: 流式卡片里的 ``streaming_config``：**客户端**逐字渲染的节奏。
+#:
+#: 关键事实（aiduPOP 与 hermes-fry-cards 两个独立项目取值完全一致，都是 15/1/fast）：
+#: 流式模式下我们推的是**全文**，**平台自己算增量、逐字打出来** —— 所以这是纯客户端动画，
+#: 与我们推帧的快慢无关。而 2026-09-13 真机实测：``message.patch`` 往返 ≈0.5s/帧
+#: （`probe_render.py --rate-limit`，16 次连打零拒绝）⇒ **推帧侧最快也就 ~2 帧/秒**，
+#: 想让观感顺滑，唯一有效的杠杆就是这个字段。
+#:
+#: 实测已确证「飞书接受它」：带它的卡在 create 与 patch 两条路径上都是 ``code=0``。
+#: **唯一没能本地验证的是「客户端到底打不打字」**（纯客户端行为，API 看不到）——
+#: 所以给了 ``streaming_print_ms`` 配置：写 0 就完全不带这个字段。
+#:
+#: ⚠️ **只在流式帧上带**（``streaming=True``）：收尾帧是 ``streaming_mode: false``，
+#: 带上它可能让客户端把整段答案**再打一遍**，那是明确要避免的观感。
+DEFAULT_PRINT_FREQUENCY_MS = 15
+
+
+def streaming_config(print_frequency_ms: Any = DEFAULT_PRINT_FREQUENCY_MS) -> Dict[str, Any]:
+    """``streaming_config`` 节点：15ms/字、每步 1 字、``fast`` 策略（两个同类项目的取值）。"""
+    return {
+        "print_frequency_ms": {"default": int(print_frequency_ms)},
+        "print_step": {"default": 1},
+        "print_strategy": "fast",
+    }
+
+
 #: 上下文进度条的格子数（8 格是 fry-cards 实测过的宽度，手机上不换行）。
 CONTEXT_BAR_WIDTH = 8
 
@@ -321,6 +350,15 @@ def tool_step(name: str, *, status: str = "ok", duration_ms: Any = None,
 # --------------------------------------------------------------------------- #
 # 溢出保护：任何一段用户不可控的长文本，进卡片前都必须过这一关
 # --------------------------------------------------------------------------- #
+def _positive(value: Any) -> bool:
+    """配置值是否为正数（用于「0 = 关掉这个特性」的开关型配置，**不是**上限）。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return number == number and number not in (float("inf"), float("-inf")) and number > 0
+
+
 def _cap(value: Any, default: int) -> int:
     """把配置来的上限归一到**正数**。
 
@@ -462,7 +500,8 @@ def _summary_of(text: str, *, fallback: str = "") -> Dict[str, Any]:
 
 def card(*, elements: Sequence[Dict[str, Any]], template: str = "blue",
          title: Optional[str] = DEFAULT_TITLE, streaming: Optional[bool] = None,
-         update_multi: bool = True, summary: str = "") -> Dict[str, Any]:
+         update_multi: bool = True, summary: str = "",
+         print_frequency_ms: Any = DEFAULT_PRINT_FREQUENCY_MS) -> Dict[str, Any]:
     """2.0 卡片：``config`` / （可选）``header`` / ``body.elements``。
 
     ``title=None`` 表示**不要卡片级 header** —— 决策 D2 走这条路：模型名与统计搬进
@@ -477,6 +516,9 @@ def card(*, elements: Sequence[Dict[str, Any]], template: str = "blue",
         config["update_multi"] = True
     if streaming is not None:
         config["streaming_mode"] = bool(streaming)
+    # 打字机只挂在**流式帧**上，理由见 DEFAULT_PRINT_FREQUENCY_MS 的说明
+    if streaming and _positive(print_frequency_ms):
+        config["streaming_config"] = streaming_config(print_frequency_ms)
     # 流式卡必须带 summary，否则通知栏空白、且部分场景会被拒。
     # 内容为空时（seed 帧 / 空 finalize 帧）退回卡片标题，不能留空串。
     if streaming or summary:
@@ -500,7 +542,8 @@ def card(*, elements: Sequence[Dict[str, Any]], template: str = "blue",
 
 
 def reply_card(answer: str, *, streaming: bool = False, panel: Optional[Dict[str, Any]] = None,
-               footer: Optional[str] = None) -> Dict[str, Any]:
+               footer: Optional[str] = None,
+               print_frequency_ms: Any = DEFAULT_PRINT_FREQUENCY_MS) -> Dict[str, Any]:
     """正文回复卡：正文区 + 可选统一面板 + 可选脚注。
 
     **没有卡片级 header**（决策 D2）。原来标题固定是 "Hermes"，既没信息量又占一行，
@@ -511,7 +554,8 @@ def reply_card(answer: str, *, streaming: bool = False, panel: Optional[Dict[str
         elements.append(panel)
     if footer:
         elements.append(footnote(footer))
-    return card(elements=elements, title=None, streaming=streaming, summary=answer)
+    return card(elements=elements, title=None, streaming=streaming, summary=answer,
+                print_frequency_ms=print_frequency_ms)
 
 
 #: 飞书 Card 2.0 的**硬上限**：整张卡里（含嵌套）带 ``tag`` 键的对象总数 ≤ 200。
@@ -574,7 +618,8 @@ def card_bytes(node: Dict[str, Any]) -> int:
 def fit_reply_card(answer: str, *, streaming: bool = False,
                    panel: Optional[Dict[str, Any]] = None, footer: Optional[str] = None,
                    budget: int = CARD_BYTE_BUDGET,
-                   element_limit: int = FEISHU_ELEMENT_LIMIT - _ELEMENT_LIMIT_RESERVE
+                   element_limit: int = FEISHU_ELEMENT_LIMIT - _ELEMENT_LIMIT_RESERVE,
+                   print_frequency_ms: Any = DEFAULT_PRINT_FREQUENCY_MS,
                    ) -> "tuple[Dict[str, Any], str]":
     """构造回复卡，超预算时**分级丢装饰**。返回 ``(card, 降级档位)``。
 
@@ -593,7 +638,8 @@ def fit_reply_card(answer: str, *, streaming: bool = False,
                 (None, footer, "no-panel"),
                 (None, None, "bare"))
     for panel_try, footer_try, tier in attempts:
-        node = reply_card(answer, streaming=streaming, panel=panel_try, footer=footer_try)
+        node = reply_card(answer, streaming=streaming, panel=panel_try, footer=footer_try,
+                          print_frequency_ms=print_frequency_ms)
         # 两道**独立**的墙：字节数（我们自己的保守预算）与元素数（飞书硬上限 200）。
         # 后者是 2026-09-13 真机量出来的（202 个元素 → 230099 / ErrCode 11310），
         # 撞上它不是「卡片变小」而是**整张卡不渲染**，所以必须一起判。
@@ -601,7 +647,8 @@ def fit_reply_card(answer: str, *, streaming: bool = False,
             return node, tier
     # 连装饰全摘都超预算：正文本身太大。**照常返回**，让发送失败去走官方回落
     # （官方会分块），而不是在这里把答案切掉。
-    return reply_card(answer, streaming=streaming), "over-budget"
+    return reply_card(answer, streaming=streaming,
+                      print_frequency_ms=print_frequency_ms), "over-budget"
 
 
 def _round_title(index: int, elapsed_ms: Any) -> str:

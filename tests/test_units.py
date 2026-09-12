@@ -2462,6 +2462,47 @@ def test_reactions_switch_overrides_only_itself():
         adapter._apply_metrics_config()
 
 
+def test_streaming_config_only_on_streaming_frames():
+    """客户端打字机只挂在**流式帧**上，且能被配置关掉。
+
+    为什么只挂流式帧：收尾帧是 `streaming_mode: false`，如果也带 `streaming_config`，
+    客户端可能把整段答案**再逐字打一遍** —— 那是明确要避免的观感。
+    为什么默认开：2026-09-13 真机实测 `message.patch` 往返 ≈0.5s/帧（16 次连打零拒绝），
+    也就是**推帧侧最快约 2 帧/秒**，「顺滑」只能靠客户端动画；同类两个项目取值一致
+    （15ms / 每步 1 字 / fast），且飞书在 create 与 patch 两条路径上都是 `code=0`。
+    """
+    stream = cards.reply_card("正文", streaming=True)
+    final = cards.reply_card("正文", streaming=False)
+    assert stream["config"].get("streaming_config") == {
+        "print_frequency_ms": {"default": 15},
+        "print_step": {"default": 1},
+        "print_strategy": "fast"}, stream["config"].get("streaming_config")
+    assert "streaming_config" not in final["config"], "收尾帧不能带打字机配置"
+
+    # 配置 0 / 负数 / 垃圾值 = 不带这个字段（不是「用默认值」）
+    for off in (0, -1, None, "abc"):
+        node = cards.reply_card("正文", streaming=True, print_frequency_ms=off)
+        assert "streaming_config" not in node["config"], f"{off!r} 应该关掉打字机"
+
+    # 自定义间隔要真的生效（不是硬编码 15）
+    custom = cards.reply_card("正文", streaming=True, print_frequency_ms=40)
+    assert custom["config"]["streaming_config"]["print_frequency_ms"] == {"default": 40}
+
+    # 适配器要把它接上（配置 → 卡片），且 0 时整条链路都不带
+    defaults = dict(adapter._DEFAULTS)
+    try:
+        raw = _make()
+        node = raw._ld_build_card("正文", streaming=True, panel=None, footer=None)
+        assert node["config"].get("streaming_config"), "适配器没把打字机传下去"
+        adapter.configure(streaming_print_ms=0)
+        node2 = raw._ld_build_card("正文", streaming=True, panel=None, footer=None)
+        assert "streaming_config" not in node2["config"], "配置 0 没有关掉打字机"
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
 def test_panel_concurrent_writes_are_safe():
     panel.reset()
     errors: list = []

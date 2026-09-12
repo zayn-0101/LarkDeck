@@ -39,6 +39,10 @@ config_schema:
     type: boolean
     default: false
     description: "面板默认展开（默认收起；展开态很占屏）"
+  streaming_print_ms:
+    type: integer
+    default: 15
+    description: "客户端打字机的逐字间隔（毫秒，只对流式帧有效）；写 0 关闭打字机"
   reactions:
     type: boolean
     default: true
