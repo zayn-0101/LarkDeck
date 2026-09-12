@@ -572,3 +572,38 @@
 ① 断言要盯**副作用的内容**，不能只数它发生了没有（`assert updates` 的教训）；
 ② 新写的「响亮失败」保证自己也要有测试，否则随时会被静默改回去；
 ③ 常量只锁**关系**不够 —— 要把实测来源、余量的**上界**与「必须是算出来的」一起锁住。
+
+---
+
+## 阶段 9（**待批准，未实现**）：CardKit 实体传输 —— 只为「打字机」这一项
+
+**为什么现在才写这一节**：效果 1b（打字机）的传输问题在 2026-09-13 有了实测答案的一半 ——
+`tests/probe_render.py --cardkit` 把 CardKit 那整条链跑通了（**每一步 `code=0`**）：
+
+| 步骤 | 接口 | 实测 |
+|---|---|---|
+| 1 | `cardkit.v1.card.create`（`type: card_json` + `data: <卡片 JSON 字符串>`） | `code=0`，拿到 `card_id` |
+| 2 | `im.v1.message.create`，`msg_type=interactive`，`content={"type":"card","data":{"card_id":…}}` | `code=0` |
+| 3 | `cardkit.v1.card_element.content`（`card_id` + `element_id` + `content` + `sequence` + `uuid`），× 8 帧 | 每帧 `code=0` |
+| 4 | `cardkit.v1.card.settings`（`{"config":{"streaming_mode":false}}`） | `code=0` |
+
+**另一半（客户端会不会逐字打）只有眼睛能判** —— 探针同时发一张**公平对照卡**
+（同样的节奏、同样的切分，走 `message.patch` + `streaming_config`），两张并排留在 DM 里。
+判定规则：甲逐字 ⇒ 现有做法够用，**不做这一阶段**；乙逐字而甲整段 ⇒ 才做。
+
+**如果要做，设计边界（现在就定下来，避免实现时越界）**：
+
+1. **只换 native 流式帧的传输**：`send_stream_frame` 走 CardKit；`send` / `edit_message`
+   （非 native 路径）、澄清卡、探针**都不动**。非 native 路径掉 native 时的回落链因此完全不变。
+2. **fail-open 优先**：任何一步（建实体 / 发实体卡 / 写元素 / 收尾）失败 ⇒ 立刻按现有
+   `_ld_stream_fail` 返回 `False`，让核心按官方契约回落到 edit/send。绝不吞掉回落。
+3. **开关**：新增配置 `native_transport: "patch" | "cardkit"`，**默认 `patch`**；翻默认要
+   先有「乙逐字而甲整段」的实测记录（本项目对默认值的规矩：先看到差异，再改默认）。
+4. **元素布局必须固定**：实体卡的结构在 `card.create` 时定死，之后只能按 `element_id` 写内容
+   ⇒ 正文一个元素（`answer`），面板/页脚的结构变化要么也拆成固定元素、要么在收尾帧用
+   `card.update` / `batch_update` 整卡替换。**这件事必须在实现前先做实验**
+   （`batch_update` 能不能替换面板那种嵌套结构），否则会掉进「推理面板更新不了」的坑。
+5. **收尾**：最后一帧必须 `settings(streaming_mode=false)`，否则卡片会一直停在流式态。
+6. **验证**：`--cardkit` 全链 `code=0` + `--stop-redraw` 在 `cardkit` 模式下同样通过
+   （正文留住 + 载荷带颜色）+ 默认探针 16 卡不被拒 + 四门禁与变异清单全绿。
+   `mutate_check.py` 要加一组「传输回落到 patch 路径」的变异（撤掉回落 ⇒ 红）。
