@@ -98,6 +98,7 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 | 澄清交互卡（按钮点击直接作答，不再手打选项） | ✅ |
 | 模型别名（可选：把 `deepseek-flash` 显示成你认得出来的名字；默认关闭） | ✅ |
 | 双语 UI（跟随飞书客户端语言） | ✅ 真机确证（2026-09-12）：互换实验证明客户端按 `i18n_content` 选语言 |
+| 即时响应：首帧早于首个 token（native seed 帧）+ 可关的「处理中」表情 | ✅ `reactions: false` 关掉飞书那侧相当于「输入提示」的 Typing 表情 |
 | **回合状态色**：完成绿边 / 报错红边 / 中止黄边 | ✅ 数据来自官方 `on_session_end`（每回合一次）；颜色画在面板边框上 |
 | **推理按轮分段**（`第 N 轮 · 6.2s`；一轮 = 一段连续推理，被正文或工具打断） | ✅ |
 | 面板标题行：模型名 · 轮数 · 工具数 · 耗时 | ✅ 卡片级 header 已去掉，信息全在面板头（观感更接近 aiduPOP） |
@@ -154,6 +155,7 @@ plugins:
         clarify_dialect: "1.0"   # 澄清卡方言：1.0 按钮（默认）/ 2.0 下拉+输入框（需真机点击验证）
         unified_panel: true      # 推理 + 工具合并为一个底部面板
         panel_expanded: false    # 面板默认展开（默认收起）
+        reactions: true          # 在用户消息上打「处理中」表情（飞书的「输入提示」）；关掉更接近 aiduPOP 的观感
         footer: true             # 页脚（只放上下文用量）
         show_model: true         # 面板标题里显示模型名
         context_style: text      # 上下文用量样式：text | bar | both

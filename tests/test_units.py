@@ -2423,6 +2423,45 @@ def test_every_text_node_carries_a_string_not_a_nested_node():
     assert not problems, "；".join(problems)
 
 
+def test_reactions_switch_overrides_only_itself():
+    """「处理中」表情开关（aiduPOP 效果 1 的「无输入提示」）。
+
+    做法是在**子类里覆盖判据**，而不是让用户改宿主的环境变量 `FEISHU_REACTIONS` ——
+    覆盖自己的平台实现是这个插件的存在方式（不变量 1），而且只影响我们这个实例。
+    默认必须与 Hermes 一致（开），关闭是显式选择。
+    """
+    defaults = dict(adapter._DEFAULTS)
+
+    class _Base:
+        def _reactions_enabled(self):
+            return True
+
+    try:
+        merged = type("M", (adapter.LarkDeckMixin, _Base), {})
+        assert merged()._reactions_enabled() is True, "默认必须保持 Hermes 的行为"
+        adapter.configure(reactions=False)
+        assert merged()._reactions_enabled() is False, "配置成 false 应当关掉"
+        adapter.configure(reactions=True)
+        assert merged()._reactions_enabled() is True
+
+        # 内置没有这个方法（版本差异）时：我们的显式配置仍然算数，且**绝不抛**
+        # （父类的反应代码根本不存在，返回什么都不会被用到）
+        class _NoReactions:
+            pass
+
+        merged2 = type("M2", (adapter.LarkDeckMixin, _NoReactions), {})
+        adapter.configure(reactions=False)
+        assert merged2()._reactions_enabled() is False, \
+            "显式关掉时，父类有没有这个方法都该是关"
+        adapter.configure(reactions=True)
+        assert merged2()._reactions_enabled() is True, \
+            "父类没有这个方法时要如实说「开着」，而不是静默替它决定"
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
 def test_panel_concurrent_writes_are_safe():
     panel.reset()
     errors: list = []
@@ -2511,10 +2550,19 @@ def test_args_preview_is_bounded_for_nested_and_long_inputs():
     deep = {"a": {"b": {"c": big}}}
     huge_list = {"items": ["y"] * 2_000_000}
 
+    def _cost_ms(payload) -> float:
+        """取多次测量的**最小值**：这条断言要判的是「有没有 O(参数规模) 的工作」，
+        而最小值最不受机器负载影响（2026-09-13 实测：并发跑别的重活时单次采样会
+        从 0.02ms 飘到 10ms，把一条正确的实现判成红的 —— 测量方式本身要有抗噪设计）。"""
+        best = float("inf")
+        for _ in range(5):
+            t0 = time.perf_counter()
+            got = panel._args_preview(payload)
+            best = min(best, (time.perf_counter() - t0) * 1000)
+        return best, got
+
     for label, payload in (("嵌套", nested), ("深层", deep), ("超长列表", huge_list)):
-        t0 = time.perf_counter()
-        got = panel._args_preview(payload)
-        cost_ms = (time.perf_counter() - t0) * 1000
+        cost_ms, got = _cost_ms(payload)
         assert cost_ms < 5.0, f"{label}参数预览耗时 {cost_ms:.1f}ms —— 有界序列化失效了"
         assert len(got) <= panel._ARGS_PREVIEW_CHARS + 1, (label, len(got))
     # 自引用结构不许无限递归

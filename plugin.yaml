@@ -39,6 +39,10 @@ config_schema:
     type: boolean
     default: false
     description: "面板默认展开（默认收起；展开态很占屏）"
+  reactions:
+    type: boolean
+    default: true
+    description: "在用户消息上打「处理中」表情（飞书的输入提示）；关掉更接近 aiduPOP 的即时响应观感"
   footer:
     type: boolean
     default: true

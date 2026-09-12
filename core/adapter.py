@@ -143,6 +143,11 @@ _DEFAULTS: Dict[str, Any] = {
     # 澄清卡方言：1.0（按钮 + 顶层 value，真机已跑通，**默认**）/ 2.0（下拉 + 输入框 +
     # 组件级 behaviors，需真机点击确证后再翻默认；见 AGENTS.md 不变量 5）
     "clarify_dialect": "1.0",
+    # 「处理中」表情反应：Hermes 会在用户消息上打一个 Typing 表情、处理完撤掉 ——
+    # 在飞书上这就相当于「输入提示」。流式卡片本身已是即时反馈，aiduPOP 把「无输入提示」
+    # 列进了即时响应的观感。**默认保持 Hermes 的行为**（true）：它自己也并没有真的关
+    # （抑制 wrapper 被注释掉了），关掉纯属观感偏好 —— 想关就设 false。
+    "reactions": True,
     "unified_panel": True,    # 推理 + 工具合并为底部一个可折叠面板
     "panel_expanded": False,  # 面板默认收起（展开态很占屏；aiduPOP 同为默认收起）
     "footer": True,           # 页脚：只放上下文用量（模型/耗时已并入面板标题行）
@@ -759,6 +764,31 @@ class LarkDeckMixin:
     def _ld_stream_pop(self, key: str) -> None:
         with self._ld_lock:
             self._ld_streams.pop(key, None)
+
+    # ------------------------------------------------------ 即时响应观感
+    def _reactions_enabled(self) -> bool:
+        """「处理中」表情反应开关 —— 对应 aiduPOP README 效果 1 里的「无输入提示」。
+
+        Hermes 默认在用户消息上打一个 Typing 表情、处理完再撤掉；在飞书上这正是这个项目的
+        「输入提示」。流式卡片本身已经提供了即时反馈，所以「无提示」是即时响应观感的一部分。
+
+        ⚠️ 实现方式是**在子类里覆盖这一个判据**，而不是让用户去改宿主的环境变量
+        ``FEISHU_REACTIONS``：覆盖自己的平台实现本来就是这个插件的存在方式（不变量 1），
+        而且只影响我们这个实例、随时能用配置回退。内置没有这个方法时返回 True ——
+        版本差异不该被我们当成「把反应关掉」的理由。
+        """
+        try:
+            if not _cfg("reactions"):
+                return False
+        except Exception:  # pragma: no cover - 防御性
+            return True
+        parent = getattr(super(), "_reactions_enabled", None)
+        if not callable(parent):
+            return True
+        try:
+            return bool(parent())
+        except Exception:  # pragma: no cover - 防御性
+            return True
 
     # --------------------------------------------------- 中止信号（/stop 路径）
     async def interrupt_session_activity(self, session_key: str, chat_id: str,
