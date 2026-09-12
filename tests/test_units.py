@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import sys
 import threading
@@ -1809,6 +1810,143 @@ def test_interrupt_never_blocks_stop_when_redraw_fails():
         naked._client = None
         _run(naked.interrupt_session_activity("sk2", "oc_2"))
         assert ("SUPER.interrupt", "sk2", "oc_2", None) in naked.calls
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def _log_text(records: list) -> str:
+    """把日志记录拼成一段文本（断言「必须留痕」这类性质用）。
+
+    用 ``getMessage()``（它已经把 ``%s`` 参数代进去），**不要**再 ``% r.args``
+    —— 那是二次格式化，会抛 ``TypeError: not all arguments converted``。
+    """
+    return "\n".join(str(r.getMessage()) for r in records)
+
+
+class _LogCapture:
+    """把某个 logger 的日志收进列表（用来断言「必须留痕」这类性质）。"""
+
+    def __init__(self, name: str) -> None:
+        self.records: list = []
+        self._logger = logging.getLogger(name)
+        self._handler = logging.Handler()
+        self._handler.emit = self.records.append  # type: ignore[method-assign]
+
+    def __enter__(self):
+        self._logger.addHandler(self._handler)
+        self._old_level = self._logger.level
+        self._logger.setLevel(logging.INFO)
+        return self.records
+
+    def __exit__(self, *exc):
+        self._logger.removeHandler(self._handler)
+        self._logger.setLevel(self._old_level)
+        return False
+
+    def text(self) -> str:
+        return "\n".join(r.getMessage() % r.args if r.args else r.getMessage()
+                          for r in self.records)
+
+
+def test_transient_feishu_errors_are_retried_not_fatal():
+    """瞬态错误码要退避重试；非瞬态错误立刻返回（让内核按 fail-open 链回落）。
+
+    为什么这条重要：一帧失败会被内核判成「本回合 native 不可用」，之后输出改走
+    ``send()``、可能变成多条纯文本消息 —— 而飞书的限流错误**不匹配**内核的 flood
+    启发式，走的是硬失败分支、连自适应退避都不启动。所以退避只能我们自己在这一层做。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    old_backoff = adapter._TRANSIENT_BACKOFF
+    adapter._TRANSIENT_BACKOFF = (0.0, 0.0, 0.0)  # 测试里不等真实退避
+    try:
+        raw = _make()
+        raw._ld_build_patch_request = lambda *, message_id, content: {
+            "message_id": message_id, "content": content}
+        calls: list = []
+
+        def flaky(request):
+            calls.append(request)
+            if len(calls) == 1:
+                return {"code": 99991400, "msg": "triggered rate limit"}
+            return {"code": 0, "data": {"message_id": request["message_id"]}}
+
+        raw._client.im.v1.message.patch = flaky
+        with _LogCapture("larkdeck") as records:
+            result = _run(raw._ld_update_card("oc_1", "om_1", {"schema": "2.0"}))
+        assert getattr(result, "success", False), "瞬态错误重试后应当成功"
+        assert len(calls) == 2, f"应当重试一次：{len(calls)}"
+        assert "瞬态错误码" in _log_text(records), "重试必须留痕"
+
+        # 非瞬态错误码：不重试，立刻把失败交回去
+        raw2 = _make()
+        raw2._ld_build_patch_request = lambda *, message_id, content: {
+            "message_id": message_id, "content": content}
+        calls2: list = []
+        raw2._client.im.v1.message.patch = lambda request: (
+            calls2.append(request) or {"code": 230001, "msg": "invalid msg_type"})
+        result2 = _run(raw2._ld_update_card("oc_1", "om_1", {"schema": "2.0"}))
+        assert not getattr(result2, "success", True)
+        assert len(calls2) == 1, f"非瞬态错误不该重试：{len(calls2)}"
+
+        # 一直瞬态失败：重试用尽后如实返回失败（不无限重试）
+        raw3 = _make()
+        raw3._ld_build_patch_request = lambda *, message_id, content: {
+            "message_id": message_id, "content": content}
+        calls3: list = []
+        raw3._client.im.v1.message.patch = lambda request: (
+            calls3.append(request) or {"code": 300317, "msg": "sequence conflict"})
+        result3 = _run(raw3._ld_update_card("oc_1", "om_1", {"schema": "2.0"}))
+        assert not getattr(result3, "success", True)
+        assert len(calls3) == 1 + len(old_backoff), f"重试次数应受上限约束：{len(calls3)}"
+    finally:
+        adapter._TRANSIENT_BACKOFF = old_backoff
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_native_frame_failure_and_success_are_both_visible_in_logs():
+    """native 流式必须**自证**：收尾时证明它跑完了，失败时留下线索。
+
+    帧失败会让内核静默关掉本回合的 native（输出退化成多条纯文本），用户在飞书那侧
+    只看到「卡片怎么变成一条条消息了」。所以两个方向都要有日志：成功 = 帧数，
+    失败 = 明确的 WARNING（docs/lessons.md 推论 1）。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    try:
+        panel.reset()
+        raw = _make()
+        _wire_patch(raw)
+        with _LogCapture("larkdeck") as records:
+            _run(raw.send_stream_frame("", finalize=False, chat_id="oc_1", turn_id="t1"))
+            _run(raw.send_stream_frame("写完了一半", finalize=False,
+                                       chat_id="oc_1", turn_id="t1"))
+            _run(raw.send_stream_frame("写完了", finalize=True, chat_id="oc_1", turn_id="t1"))
+        text = _log_text(records)
+        assert "native 流式收尾" in text, f"收尾没有自证日志：{text!r}"
+        assert "更新 2 帧" in text, f"帧数不对（首帧 + 一次更新）：{text!r}"
+
+        # 失败方向：必须有明确 WARNING（且返回 False 让内核回落）
+        adapter.LarkDeckMixin._ld_stream_fail._at = 0.0  # 清掉限流窗口
+        raw2 = _make()
+        _wire_patch(raw2)
+        raw2._client.im.v1.message.patch = lambda request: {"code": 230001, "msg": "nope"}
+        with _LogCapture("larkdeck") as records2:
+            seed_ok = _run(raw2.send_stream_frame("", finalize=False,
+                                                  chat_id="oc_2", turn_id="t1"))
+            frame_ok = _run(raw2.send_stream_frame("第一帧", finalize=False,
+                                                   chat_id="oc_2", turn_id="t1"))
+        text2 = _log_text(records2)
+        assert seed_ok is True, "建卡那一步应当成功（失败的是后面的更新帧）"
+        assert frame_ok is False, "帧失败必须如实返回 False —— 内核据此回落"
+        assert "native 流式帧失败" in text2, f"帧失败没有留痕：{text2!r}"
+        assert "回落 send/edit" in text2, "日志要说清后果（用户会看到什么）"
     finally:
         adapter._STREAM_MIN_INTERVAL = old_interval
         panel.reset()

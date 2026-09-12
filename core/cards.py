@@ -46,6 +46,10 @@ SCHEMA = "2.0"
 #: 「其他（自己输入）」按钮的哨兵值；点它不提交答案，而是让网关等用户下一条文字。
 OTHER_VALUE = "__larkdeck_other__"
 
+#: **方言探针卡**专用键：值里带它的点击只会在日志里留一行载荷，不改任何状态。
+#: 用途见 ``adapter._ld_log_probe_click`` 与 ``tests/probe_render.py`` 的探针卡。
+PROBE_VALUE_KEY = "larkdeck_probe"
+
 DEFAULT_TITLE = "Hermes"
 
 #: 2.0 卡片在通知栏 / 会话列表里显示的一句话摘要上限，超长会被截断。

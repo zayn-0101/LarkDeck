@@ -76,6 +76,21 @@ _MAX_TRACKED = 512
 _MAX_STREAMS = 64
 _STREAM_MIN_INTERVAL = 0.25
 
+#: 飞书的**瞬态**错误码 —— 命中就退避重试，而不是当成定义性失败。
+#: 为什么这件事重要：一帧失败会被内核判成「本回合 native 不可用」
+#: （``stream_consumer_transport.py`` 里定义性失败后置 ``_use_native_streaming = False``），
+#: 之后本回合的输出改走 ``send()``，可能变成**多条纯文本消息**。而飞书的限流错误**不匹配**
+#: 内核的 flood 启发式（错误被格式化成 ``[code] msg``，flood 只匹配
+#: ``flood`` / ``retry after`` / ``rate``）⇒ 走硬失败分支、连自适应退避都不启动。
+#: 所以退避得由我们自己在这一层做。
+#:   * ``99991400`` —— 触发限频
+#:   * ``300309``   —— streaming 已关闭（本帧晚到）
+#:   * ``300317``   —— sequence 冲突（同卡并发更新）
+_TRANSIENT_CODES = frozenset({99991400, 300309, 300317})
+
+#: 瞬态失败的退避间隔（秒）；总代价上限 ≈ 1.0s，远小于内核的帧循环容忍度。
+_TRANSIENT_BACKOFF = (0.1, 0.3, 0.6)
+
 #: 流状态被判为「泄漏」的静默时长（秒）。必须取**小时级**：`last_at` 只在有正文帧时
 #: 推进，一个长时间只跑工具的回合看起来会很陈旧，用分钟级阈值会把活跃回合踢掉、
 #: 造成重复卡。这里只用来收「核心始终没发 finalize」的真正泄漏。
@@ -446,16 +461,31 @@ class LarkDeckMixin:
         return self._finalize_send_result(response, "larkdeck card send failed")
 
     async def _ld_update_card(self, chat_id: str, message_id: str, card: Dict[str, Any]) -> Any:
-        """把 ``interactive`` 卡片整卡替换。
+        """把 ``interactive`` 卡片整卡替换（瞬态错误退避重试）。
 
         必须走 **patch** 接口：``message.update`` 只收文本/帖子，卡片会被飞书拒
         （``[230001] invalid msg_type``，三种卡片方言真机实测均如此）。
+
+        ``_ld_send_card`` 复用的内置发送原语自带重试，**patch 这条没有** —— 而它的失败
+        代价最高（整回合掉 native，见 ``_TRANSIENT_CODES`` 的说明）。所以这里补一层
+        **只对瞬态码**的重试；非瞬态错误立刻返回，让内核按既有 fail-open 链回落。
         """
-        request = self._ld_build_patch_request(
-            message_id=message_id, content=json.dumps(card, ensure_ascii=False),
-        )
-        response = await self._run_blocking(self._client.im.v1.message.patch, request)
-        return self._finalize_send_result(response, "larkdeck card patch failed")
+        content = json.dumps(card, ensure_ascii=False)
+        result: Any = None
+        for attempt in range(len(_TRANSIENT_BACKOFF) + 1):
+            request = self._ld_build_patch_request(message_id=message_id, content=content)
+            response = await self._run_blocking(self._client.im.v1.message.patch, request)
+            result = self._finalize_send_result(response, "larkdeck card patch failed")
+            if getattr(result, "success", False):
+                return result
+            if _ld_response_code(response) not in _TRANSIENT_CODES:
+                return result
+            if attempt < len(_TRANSIENT_BACKOFF):
+                delay = _TRANSIENT_BACKOFF[attempt]
+                logger.info("[larkdeck] 卡片更新命中瞬态错误码 %s，%.1fs 后重试（第 %d 次）",
+                            _ld_response_code(response), delay, attempt + 1)
+                await asyncio.sleep(delay)
+        return result
 
     def _ld_build_patch_request(self, *, message_id: str, content: str) -> Any:
         """构造 patch 请求对象（SDK 懒加载；测试替身可在实例上覆写本方法）。"""
@@ -548,7 +578,7 @@ class LarkDeckMixin:
                                reply_to: Optional[str], turn_id: str) -> bool:
         chat = str(chat_id or "").strip()
         if not chat or not getattr(self, "_client", None):
-            return False
+            return self._ld_stream_fail("没有 chat / SDK 客户端")
         key = f"{chat}:{turn_id}" if turn_id else chat
         state = self._ld_stream_get(key)
         now = time.monotonic()
@@ -558,20 +588,23 @@ class LarkDeckMixin:
         display = text
         if state is None:
             if finalize:
-                # 没有活跃流可收尾：交核心回落（send/edit 会正常发出）。
+                # 没有活跃流可收尾：交核心回落（send/edit 会正常发出）。这是**正常路径**
+                # （native 没开、或本回合首帧就没建成卡），所以不告警。
                 return False
             card = self._ld_build_card(display, streaming=True,
                                        panel=self._ld_panel(chat, now),
                                        footer=self._ld_footer(now))
             result = await self._ld_send_card(chat, card, reply_to=reply_to)
             if result is None or not getattr(result, "success", False):
-                return False
+                return self._ld_stream_fail(
+                    f"建卡失败（{getattr(result, 'error', 'unknown')}）")
             message_id = getattr(result, "message_id", "") or ""
             if not message_id:
-                return False
+                return self._ld_stream_fail("建卡成功但没拿到 message_id")
             self._ld_track(message_id, chat)
             self._ld_stream_put(key, {"message_id": message_id, "chat_id": chat,
-                                      "t0": now, "last": text, "last_at": now})
+                                      "t0": now, "last": text, "last_at": now,
+                                      "frames": 0, "skipped": 0})
             return True
         message_id = state["message_id"]
         if finalize:
@@ -580,24 +613,53 @@ class LarkDeckMixin:
                                        footer=self._ld_footer(state.get("t0")))
             result = await self._ld_update_card(chat, message_id, card)
             if result is None or not getattr(result, "success", False):
-                return False
+                return self._ld_stream_fail(
+                    f"收尾帧失败（{getattr(result, 'error', 'unknown')}）")
             self._ld_stream_pop(key)
             self._ld_forget(message_id)
+            # 能走到这一行 = 本回合 native 全程可用。这是**自证**：帧一旦失败，内核会
+            # 关掉本回合的 native 并改走 send/edit，**不会再发 finalize 帧**（见
+            # _TRANSIENT_CODES 的说明）—— 所以这行日志本身就是「native 还在工作」的证据，
+            # 也是发现「悄悄退回纯文本」的唯一线索（docs/lessons.md 推论 1）。
+            logger.info("[larkdeck] native 流式收尾：更新 %d 帧（跳过 %d 帧）",
+                        int(state.get("frames") or 0) + 1, int(state.get("skipped") or 0))
             return True
         if text == state.get("last"):
             return True
         last_at = state.get("last_at")
         if (state.get("last") and isinstance(last_at, (int, float))
                 and now - last_at < _STREAM_MIN_INTERVAL):
-            return True  # 节流窗口内的中间帧：跳过，等下个 tick（首帧不节流）
+            # 节流窗口内的中间帧：跳过，等下个 tick（首帧不节流）
+            self._ld_stream_put(key, {**state, "skipped": int(state.get("skipped") or 0) + 1})
+            return True
         card = self._ld_build_card(display, streaming=True,
                                    panel=self._ld_panel(chat, state.get("t0")),
                                    footer=self._ld_footer(state.get("t0")))
         result = await self._ld_update_card(chat, message_id, card)
         if result is None or not getattr(result, "success", False):
-            return False
-        self._ld_stream_put(key, {**state, "last": text, "last_at": now})
+            return self._ld_stream_fail(
+                f"帧更新失败（{getattr(result, 'error', 'unknown')}）")
+        self._ld_stream_put(key, {**state, "last": text, "last_at": now,
+                                  "frames": int(state.get("frames") or 0) + 1})
         return True
+
+    def _ld_stream_fail(self, reason: str) -> bool:
+        """一帧失败：**必须留下日志**，然后返回 False 让内核回落。
+
+        为什么不能只是 ``return False``：失败会让内核**关掉本回合的 native 流式**，
+        之后输出改走 ``send()``（可能变成多条纯文本消息）—— 而这是**静默**的，
+        用户在飞书那侧只会觉得「卡片怎么变成一条条消息了」。限流：同一进程 30 秒一条，
+        既留痕又不刷屏。
+        """
+        now = time.monotonic()
+        # 限流状态挂在**函数对象**上（不是 self）：本方法同名于类属性，裸名字在方法体里
+        # 不在作用域内，必须经类名取 —— 写成 ``getattr(_ld_stream_fail, ...)`` 会
+        # NameError（第一次跑就撞上了）。
+        if now - getattr(LarkDeckMixin._ld_stream_fail, "_at", 0.0) >= 30.0:
+            LarkDeckMixin._ld_stream_fail._at = now  # type: ignore[attr-defined]
+            logger.warning("[larkdeck] native 流式帧失败（%s）—— 本回合 native 将被内核停用，"
+                           "后续输出回落 send/edit（可能变成多条纯文本）", reason)
+        return False
 
     def _ld_stream_get(self, key: str) -> Optional[Dict[str, Any]]:
         with self._ld_lock:
@@ -785,9 +847,37 @@ class LarkDeckMixin:
             value = getattr(action, "value", {}) or {}
             if isinstance(value, dict) and value.get(ACTION_KEY) == ACTION_CLARIFY:
                 return self._ld_handle_clarify_click(event=event, value=value)
+            if isinstance(value, dict) and value.get(_cards.PROBE_VALUE_KEY):
+                return self._ld_log_probe_click(event=event, action=action)
         except Exception as exc:
             logger.warning("[larkdeck] 处理卡片点击时异常: %s", exc, exc_info=True)
         return self._ld_passthrough_click(data)
+
+    def _ld_log_probe_click(self, *, event: Any, action: Any) -> Any:
+        """**方言探针**：把一次探针点击的原始载荷按 INFO 打进日志，别的什么都不做。
+
+        为什么需要它：卡片方言的结论只能靠**真机点击**确立（官方文档 + 一手实测，
+        不抄第三方注释 —— 见 ``AGENTS.md`` 不变量 5）。而点击事件被 WebSocket 送进
+        正在跑的网关，探针脚本接不到，所以「到底有没有点进来、载荷长什么样」只能由
+        生产代码里这一处如实记录。
+
+        它只在值里带 ``cards.PROBE_VALUE_KEY`` 时触发（真卡从不带这个键），
+        所以不是常规流量上的噪声；返回「无卡片变更」，不改任何状态。
+        """
+        def _get(obj: Any, name: str) -> Any:
+            return getattr(obj, name, None)
+
+        operator = _get(event, "operator")
+        context = _get(event, "context")
+        logger.info(
+            "[larkdeck] 探针点击到达 ✅ tag=%s option=%r input_value=%r value=%r "
+            "open_id=%s chat_id=%s token=%s",
+            _get(action, "tag"), _get(action, "option"), _get(action, "input_value"),
+            _get(action, "value"), _get(operator, "open_id"),
+            _get(context, "open_chat_id") or _get(context, "chat_id"),
+            bool(_get(event, "token")),
+        )
+        return self._ld_card_response_safe()
 
     def _ld_passthrough_click(self, data: Any) -> Any:
         """把点击原样交回内置实现；内置没有该方法时安全收场，绝不抛进回调线程。"""
@@ -869,6 +959,18 @@ class LarkDeckMixin:
 # --------------------------------------------------------------------------- #
 _BASE_CLASSES: Dict[Any, type] = {}
 _MERGED_CLASSES: Dict[type, type] = {}
+
+
+def _ld_response_code(response: Any) -> int:
+    """从飞书 SDK 响应里取出错误码（取不到返回 0，即「不是已知错误码」）。"""
+    if isinstance(response, dict):
+        raw = response.get("code")
+    else:
+        raw = getattr(response, "code", None)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _log_probe_report(report: Dict[str, Any]) -> None:

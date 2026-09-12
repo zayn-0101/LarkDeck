@@ -244,7 +244,98 @@ def build_cases(cards) -> list:
         ("④ 回复卡 + 面板【展开】（对照组，只应比 ③ 多展开状态）",
          cards.reply_card("这张卡的面板是展开态，用来和 ③ 对照。",
                           streaming=True, panel=panel_open, footer=mark)),
-    ]
+    ] + build_status_cases(cards, mark)
+
+
+def build_status_cases(cards, mark: str) -> list:
+    """状态色探针（阶段 1）：三种回合结局的边框色 + 无卡片 header 的观感。
+
+    为什么必须真机跑（对应方案 R3「颜色枚举与样式都可能被飞书静默忽略」）：
+    本地单测只能验 JSON 结构，颜色枚举合不合法、边框画不画得出来**只有飞书说了算** ——
+    非法颜色不会报错，只会被忽略（边框回到默认灰），从返回码上完全看不出来。
+
+    颜色语义与 aiduPOP 对齐（以它的**源码**为准，它的 README 把红/黄写反了）：
+    绿 = 完成、红 = 报错、黄 = 中止。
+    """
+    todos = (("ok", "应该看到【绿色】边框"),
+             ("error", "应该看到【红色】边框"),
+             ("stopped", "应该看到【黄色】边框"))
+    cases = []
+    for status, expect in todos:
+        node = cards.unified_panel(
+            rounds=[{"text": "先看目录结构。", "elapsed_ms": 1200},
+                    {"text": "再核对一下签名。", "elapsed_ms": 800}],
+            tools=[cards.tool_step("read_file", status="ok", duration_ms=12,
+                                   preview='{"path": "cards.py"}')],
+            status=status,
+            summary="🤖 deepseek-v4-flash · 🧠 2 · 🔧 1 · ⏱ 12.3s",
+            expanded=True)
+        card = cards.reply_card(f"状态色探针（status={status}）：{expect}。",
+                               streaming=False, panel=node,
+                               footer=f"{PROBE_MARK} · 状态色 {status} · 只验渲染")
+        cases.append((f"⑩ 状态色【{status}】—— {expect}（这张卡没有卡片级 header）", card))
+
+    # 只有结局、没有任何过程数据的回合：面板必须仍然渲染（否则状态色无处可放）
+    only = cards.unified_panel(status="ok", summary="🤖 模型 · ⏱ 2.1s")
+    cases.append(("⑪ 状态色【只有结局、无推理无工具】—— 应为绿边 + 一行 ✅ 文案",
+                  cards.reply_card("这个回合没有工具调用、也没有推理增量。",
+                                   streaming=False, panel=only,
+                                   footer=f"{PROBE_MARK} · 状态色兜底 · 只验渲染")))
+    return cases
+
+
+def build_dialect_probe_cards(cards) -> list:
+    """**2.0 交互组件探针**（阶段 4 的第一步：先量，不猜）。
+
+    要回答的问题：决策门 D1 的结论「2.0 卡里用**组件级** ``behaviors`` 能把点击送到
+    ``p2.card.action.trigger``」目前只有官方文档 + 第三方实测两重印证，**没有我们自己的
+    一手真机证据**。而它是「澄清卡能不能改 2.0」的唯一前提 —— 要是它不成立，澄清卡就
+    只能永远停在 1.0。
+
+    为什么必须你亲手点：点击事件被 WebSocket 送进**正在跑的网关**，这个探针脚本接不到。
+    适配器里为此留了一条只认 ``cards.PROBE_VALUE_KEY`` 的日志分支
+    （``adapter._ld_log_probe_click``），点击真的到达时会打一行 INFO：
+
+    ```
+    [larkdeck] 探针点击到达 ✅ tag=select_static option='opt_b' input_value=None value={...}
+    ```
+
+    看到这行 = 2.0 组件的服务端回调**成立**（且能读出 ``action.option`` /
+    ``action.input_value`` 的形状）；日志里什么都没有 = 点击根本没到服务端，
+    澄清卡就继续用 1.0。
+
+    卡片刻意只做两件事：一个下拉（选完就该回调）+ 一个输入框（回车就该回调）。
+    按 ``AGENTS.md`` 不变量 5，**不许**在这张卡里混 1.0 的 ``action`` 按钮行。
+    """
+    probe = {cards.PROBE_VALUE_KEY: True}
+    card = {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True, "update_multi": True, "summary":
+                   {"content": "LARKDECK 方言探针：点一下下拉 + 在输入框里回车"}},
+        "body": {"elements": [
+            {"tag": "markdown", "content":
+             "**方言探针（2.0 组件级 behaviors）**\n"
+             "请依次做两件事，每做一件就会有一条日志：\n"
+             "1. 点开下面的下拉，随便选一项；\n"
+             "2. 在输入框里敲几个字，然后**回车**。"},
+            {"tag": "select_static",
+             "placeholder": {"tag": "plain_text", "content": "选一个（应产生一条日志）"},
+             "options": [
+                 {"text": {"tag": "plain_text", "content": "选项 A"}, "value": "opt_a"},
+                 {"text": {"tag": "plain_text", "content": "选项 B"}, "value": "opt_b"},
+             ],
+             "behaviors": [{"type": "callback", "value": {**probe, "kind": "select"}}]},
+            {"tag": "input",
+             "placeholder": {"tag": "plain_text", "content": "敲几个字再回车"},
+             "label": {"tag": "plain_text", "content": "输入框（回车应产生一条日志）"},
+             "behaviors": [{"type": "callback", "value": {**probe, "kind": "input"}}]},
+            {"tag": "markdown", "text_size": "notation",
+             "content": "LARKDECK-RENDER-PROBE · 方言探针 · 只验点击能不能到服务端"},
+        ]},
+    }
+    # 对照组：1.0 的按钮行**不能**放进 2.0 卡（会被飞书拒收，230099）。
+    # 不把它塞进用例里 —— 那会让整个探针跑出红色，而它「被拒」才是正确行为。
+    return [("⑫ 方言探针【2.0 select_static + input】← 请点下拉 + 回车", card)]
 
 
 def build_bilingual_cases(cards) -> list:
@@ -293,6 +384,82 @@ def build_bilingual_cases(cards) -> list:
             ("⑥ 双语实验（1.0）：澄清卡 header + 按钮带 i18n_content", legacy)]
 
 
+#: 打字机探针的文案（逐帧长大，模拟真实流式）。
+_TYPING_STEPS = (
+    "飞书客户端会不会把新出现",
+    "飞书客户端会不会把新出现的字**逐字打出来**？",
+    "飞书客户端会不会把新出现的字**逐字打出来**？\n\n"
+    "（如果是一次性整段跳出来 = 没有打字机，内核的流式节奏就是最终观感）",
+)
+
+
+def patch(client, message_id: str, card: dict) -> tuple:
+    """整卡替换（与生产 `send_stream_frame` / `edit_message` 同一条 API）。"""
+    from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
+    body = PatchMessageRequestBody.builder().content(json.dumps(card, ensure_ascii=False)).build()
+    req = PatchMessageRequest.builder().message_id(message_id).request_body(body).build()
+    resp = client.im.v1.message.patch(req)
+    return resp.code, resp.msg
+
+
+def probe_typewriter(client, chat: str, cards) -> int:
+    """**打字机探针**（阶段 3 的第一步：先量，不猜）。
+
+    要回答的问题：aiduPOP 的「15ms 打字机」是卡里的
+    ``streaming_config.print_frequency_ms`` 造成的**客户端逐字动画**。我们目前走
+    ``im.v1.message.patch`` 整卡替换、卡里**没有** ``streaming_config`` ——
+    于是「能不能拿到打字机」取决于两件事，都不是读代码能定的：
+
+      1. 飞书**接不接受** ``message.patch`` 送来的 ``streaming_config``（不接受会返回非 0）；
+      2. 接受之后**客户端有没有真的逐字打**（这是纯客户端的，API 返回码看不出来，只能肉眼）。
+
+    所以这里发两张卡、逐帧长大，A/B 对照：甲带 ``streaming_config``、乙不带。
+    哪张是逐字打出来的，一眼就知道 —— 结论直接决定阶段 3 要不要换传输
+    （换成 CardKit 卡片实体 + ``card_element.content``）。
+    """
+    import time as _time
+
+    cfg = cards.STREAMING_CONFIG if hasattr(cards, "STREAMING_CONFIG") else {
+        "print_frequency_ms": {"default": 15},
+        "print_step": {"default": 1},
+        "print_strategy": "fast",
+    }
+    variants = (
+        ("甲（带 streaming_config，print_frequency_ms=15）", dict(cfg)),
+        ("乙（对照组：不带 streaming_config）", None),
+    )
+    codes = []
+    for label, streaming_config in variants:
+        base = cards.reply_card("", streaming=True, footer="LARKDECK-RENDER-PROBE · 打字机探针")
+        if streaming_config is not None:
+            base["config"]["streaming_config"] = streaming_config
+        code, msg, mid = send(client, chat, base)
+        codes.append((label, code, msg))
+        print(f"{'✅' if code == 0 else '❌'} 打字机探针 · {label}  code={code} msg={msg} id={mid}")
+        if code != 0:
+            continue
+        _save_sent_ids(_load_sent_ids() + [mid])
+        # 逐帧长大：每步 150ms（≈ 生产节流 250ms 的节奏），模拟真实流式
+        for text in _TYPING_STEPS:
+            node = cards.reply_card(text, streaming=True,
+                                    footer="LARKDECK-RENDER-PROBE · 打字机探针")
+            if streaming_config is not None:
+                node["config"]["streaming_config"] = streaming_config
+            pcode, pmsg = patch(client, mid, node)
+            if pcode != 0:
+                print(f"   ❌ patch 被拒：code={pcode} msg={pmsg} —— "
+                      f"streaming_config 在 patch 路径上不被接受，阶段 3 不能直接加它")
+                codes[-1] = (label, pcode, pmsg)
+                break
+            _time.sleep(0.15)
+    print()
+    print("👀 现在去飞书 DM 看那两张「打字机探针」卡：哪一张的字是**逐个打出来**的？")
+    print("   * 甲逐字打、乙整段跳 → 只要给流式卡加 streaming_config 就够了（阶段 3 大幅缩小）；")
+    print("   * 两张都是整段跳   → message.patch 拿不到打字机，要换 CardKit 卡片实体传输；")
+    print("   * 飞书直接拒了甲   → streaming_config 不适用于 patch 路径（上面会打 ❌）。")
+    return 0 if all(code == 0 for _, code, _ in codes) else 1
+
+
 def main(argv: list) -> int:
     clean_only = "--clean-only" in argv
     do_clean = "--no-clean" not in argv
@@ -313,8 +480,11 @@ def main(argv: list) -> int:
         print(f"清理旧探针卡: {n} 条")
     if clean_only:
         return 0
+    if "--typing" in argv:
+        return probe_typewriter(client, chat, cards)
 
-    cases = build_cases(cards) + build_bilingual_cases(cards) + build_footer_cases(cards)
+    cases = (build_cases(cards) + build_bilingual_cases(cards) + build_footer_cases(cards)
+             + build_dialect_probe_cards(cards))
     ok = True
     byte_report: list = []
     for label, card in cases:
@@ -347,7 +517,8 @@ def main(argv: list) -> int:
     print()
     print("全部被飞书接收 ✅ —— 去飞书 DM 看九张卡（③ 记得点一下三角箭头；⑤⑥ 是双语互换实验，看到英文说明 i18n 生效；⑦⑧⑨ 是页脚三样式对照）" if ok
           else "有卡片被拒 ❌ —— 按上面飞书给的 msg 改")
-    print("注意：按钮点击不会被处理（点击路由目前还在 HFC 手里），本探针只验渲染。")
+    print("注意：按钮点击不会被处理（本探针只验渲染，不验点击）；"
+          "打字机单独跑：`--typing`。")
     return 0 if ok else 1
 
 
