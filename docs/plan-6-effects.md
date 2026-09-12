@@ -466,7 +466,9 @@
 「验证到什么程度」分三档，**不要混着说**：
 **A 本地门禁**（单测/结构检查能自证）· **B 真机 API**（`probe_render.py` 真发到飞书，返回码说了算）·
 **D 真机端到端**（走生产适配器路径 + 真飞书 API，断言用户可见的那部分结果：
-`tests/probe_render.py --stop-redraw`）。
+`tests/probe_render.py --stop-redraw` —— 它**两条重绘路径都跑**：非 native（`send` + patch）
+与真 native 流式（`send_stream_frame` 建卡 → 若干帧 → `/stop`）。2026-09-13 实测两条都通过：
+60000 字节正文 + 1 次 patch + 载荷含黄边 + `code=0`）。
 **C 真机肉眼**（客户端渲染/动画，API 看不到 —— 只能人看）。
 
 | # | 效果 | 实现位置 | 默认 | 验证到 |
