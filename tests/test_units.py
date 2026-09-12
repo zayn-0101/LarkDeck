@@ -569,6 +569,35 @@ def test_native_streaming_frame_lifecycle():
         adapter._apply_metrics_config()
 
 
+def test_stream_frame_panel_follows_turn_id_not_last_active():
+    """并发会话不串台：帧自带 turn_id，面板就取那一个回合的，不取「最近活跃」。"""
+    defaults = dict(adapter._DEFAULTS)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    try:
+        panel.reset()
+        adapter.configure(unified_panel=True)
+        panel.record_reasoning("s1", "t1", "会话一的推理")
+        panel.record_reasoning("s2", "t2", "会话二的推理")  # s2 才「最近活跃」
+
+        raw = _make()
+        updates = _wire_patch(raw)
+        assert _run(raw.send_stream_frame("", finalize=False,
+                                          chat_id="oc_1", turn_id="t1")) is True
+        assert _run(raw.send_stream_frame("甲的回答", finalize=False,
+                                          chat_id="oc_1", turn_id="t1")) is True
+        assert len(updates) == 1, "普通帧应更新同一张卡"
+        joined = json.dumps(json.loads(updates[0]["content"]), ensure_ascii=False)
+        assert "会话一的推理" in joined, "必须取与帧同一个 turn_id 的面板"
+        assert "会话二的推理" not in joined, "绝不能串到另一个会话"
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
 def test_native_streaming_failures_fall_back():
     """任何一步失败都返回 False（核心回落 send/edit）；finalize 失败保住状态等重试。"""
     defaults = dict(adapter._DEFAULTS)
@@ -1151,6 +1180,35 @@ def test_panel_snapshot_empty_returns_none():
     panel.record_tool_started("s1", "t1", "noop", {}, "c0")
     panel._STATE["s1"]["tools"] = []
     assert panel.snapshot() is None
+
+
+def test_panel_snapshot_by_turn_id_disambiguates_sessions():
+    """并发会话：给了 turn_id 就必须精确定位，不能拿「最近活跃」那个。"""
+    panel.reset()
+    panel.record_reasoning("s1", "t1", "会话一的推理")
+    panel.record_reasoning("s2", "t2", "会话二的推理")
+    # s2 最近活跃：不带 turn_id 的老路径只能取到它（这是被替换掉的旧行为）
+    assert panel.snapshot()["session_id"] == "s2"
+
+    got1 = panel.snapshot("t1")
+    assert got1["session_id"] == "s1" and "会话一的推理" in got1["reasoning"]
+    got2 = panel.snapshot("t2")
+    assert got2["session_id"] == "s2" and "会话二的推理" in got2["reasoning"]
+    panel.reset()
+
+
+def test_panel_snapshot_unknown_turn_id_is_empty_not_someone_elses():
+    """turn_id 查不到 = 这个回合真没数据 → None，绝不退回别人的面板。"""
+    panel.reset()
+    panel.record_reasoning("s1", "t1", "别人的推理")
+    assert panel.snapshot("t-not-mine") is None, "宁可空面板，也不能串台"
+    assert panel.snapshot("t1") is not None, "存在且非空的 turn_id 照常返回"
+
+    # 翻页后旧 turn_id 必须变成空 —— 包括「匹配到但内容已被清空」这一种
+    panel.begin_turn("s1", "t1b")
+    assert panel.snapshot("t1") is None
+    assert panel.snapshot("t1b") is None, "匹配到但没内容也要返回 None"
+    panel.reset()
 
 
 def test_panel_ttl_expires_sessions():
