@@ -221,6 +221,31 @@ def footer_line(*, duration: Optional[float] = None, model: str = "",
     return " · ".join(parts) or None
 
 
+#: 工具步骤状态符号（符号语言无关，无需 i18n；未知状态用「•」兜底）。
+_TOOL_STATUS_MARKS = {"running": "⏳", "ok": "✅", "error": "❌", "blocked": "⛔"}
+
+
+def tool_step(name: str, *, status: str = "ok", duration_ms: Any = None,
+              preview: str = "") -> str:
+    """一步工具调用的单行摘要，供 :func:`unified_panel` 的 ``tools`` 参数使用。
+
+    形如 ``✅ read_file · 2.3s · `` ``{"path": "…"}``。耗时毫秒转秒复用
+    :func:`format_elapsed`（不足 0.1s 显示 ``0.1s``，避免难看的 ``0.0s``）；
+    参数预览包成行内代码 —— 预览是 JSON，可能有 markdown 特殊字符，
+    内部的反引号会被换成单引号，避免破坏行内代码的边界。
+    """
+    mark = _TOOL_STATUS_MARKS.get(str(status or ""), "•")
+    line = f"{mark} {name or 'tool'}"
+    if isinstance(duration_ms, (int, float)) and not isinstance(duration_ms, bool):
+        ms = max(0.0, float(duration_ms))
+        if ms > 0:
+            line += f" · {format_elapsed(max(0.1, ms / 1000.0))}"
+    if preview:
+        safe_preview = str(preview).replace("`", "'")
+        line += f" · `{safe_preview}`"
+    return line
+
+
 # --------------------------------------------------------------------------- #
 # 溢出保护：任何一段用户不可控的长文本，进卡片前都必须过这一关
 # --------------------------------------------------------------------------- #

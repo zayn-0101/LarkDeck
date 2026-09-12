@@ -4,11 +4,12 @@
 
     python3 tests/test_units.py
 
-覆盖四件事：
+覆盖五件事：
   1. ``build_adapter()`` 的「换 class」把戏真的成立（MRO 顺序、幂等、能力探测）；
   2. 卡片 JSON 结构合法、双语字段齐全、统一面板空则不渲染；
   3. 覆盖层的四条主路径在**失败时都回落**内置实现 —— 卡片是增强，不能弄丢消息；
-  4. 指标层（上下文用量 / 页脚 / 模型别名）与溢出保护的每个边界。
+  4. 指标层（上下文用量 / 页脚 / 模型别名）与溢出保护的每个边界；
+  5. 面板数据层（推理累积 / 回合重置 / 工具配对 / TTL 与容量淘汰）。
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ _REPO_PARENT = os.path.dirname(os.path.dirname(_HERE))  # .../code —— 使 `i
 if _REPO_PARENT not in sys.path:
     sys.path.insert(0, _REPO_PARENT)
 
-from larkdeck import adapter, cards, compat, context, i18n  # noqa: E402
+from larkdeck import adapter, cards, compat, context, i18n, panel  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -427,6 +428,61 @@ def test_edit_message_falls_back_when_card_update_fails():
     assert result.message_id == "om_card_1"
 
 
+def test_send_and_edit_include_panel():
+    """面板数据（panel 快照）确实接进 send 首帧与 edit_message 流式更新。"""
+    defaults = dict(adapter._DEFAULTS)
+    try:
+        panel.reset()
+        adapter.configure(unified_panel=True)
+        panel.record_reasoning("s1", "t1", "推理中……")
+        raw = _make()
+        _run(raw.send("oc_1", "你好"))
+        payload = json.loads(raw.calls[0][2])
+        assert "collapsible_panel" in _all_tags(payload), "首帧就该带上面板"
+
+        raw.calls.clear()
+        captured = []
+        raw._client.im.v1.message.update = lambda request: (
+            captured.append(request) or {"code": 0, "data": {"message_id": request["message_id"]}}
+        )
+        panel.record_tool_started("s1", "t1", "bash", {"cmd": "ls"}, "c9")
+        _run(raw.edit_message("oc_1", "om_card_1", "更新", finalize=False))
+        body = json.loads(captured[0]["body"]["content"])
+        assert "collapsible_panel" in _all_tags(body)
+        joined = json.dumps(body, ensure_ascii=False)
+        assert "推理中……" in joined and "bash" in joined
+    finally:
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_send_first_frame_after_turn_switch_has_no_stale_panel():
+    """新回合首帧不能带上一个回合的面板（on_stream_start 一到就先清）。"""
+    defaults = dict(adapter._DEFAULTS)
+    try:
+        panel.reset()
+        adapter.configure(unified_panel=True)
+        panel.record_reasoning("s1", "t1", "上一回合的推理")
+        raw = _make()
+        _run(raw.send("oc_1", "你好"))
+        first = json.loads(raw.calls[0][2])
+        assert "collapsible_panel" in _all_tags(first), "有数据时首帧应带面板"
+
+        # 模型开始了新回合：on_stream_start 先清旧数据（真实派发在 check_hooks 验）。
+        panel.begin_turn("s1", "t2")
+        raw.calls.clear()
+        _run(raw.send("oc_1", "新回合第一句话"))
+        second = json.loads(raw.calls[0][2])
+        assert "collapsible_panel" not in _all_tags(second), "新回合首帧不该带上回合的面板"
+    finally:
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
 def test_send_clarify_without_choices_falls_back():
     raw = _make()
     _run(raw.send_clarify("oc_1", "开放式问题？", None, "cid", "sk"))
@@ -605,6 +661,22 @@ def test_truncate_marks_omission() -> None:
     assert cut.split("\n")[0].endswith("word")
 
 
+def test_tool_step_formatting() -> None:
+    assert cards.tool_step("read_file", status="ok", duration_ms=2300,
+                           preview='{"path": "/tmp/a.txt"}') \
+        == '✅ read_file · 2.3s · `{"path": "/tmp/a.txt"}`'
+    assert cards.tool_step("bash", status="running") == "⏳ bash"
+    assert cards.tool_step("bash", status="error", duration_ms=50).startswith("❌ bash · 0.1s")
+    assert cards.tool_step("bash", status="blocked") == "⛔ bash"
+    # 未知状态兜底；耗时缺失 / 0 / 非数字都不渲染时长
+    assert cards.tool_step("x", status="weird") == "• x"
+    assert cards.tool_step("x", duration_ms=None) == "✅ x"
+    assert cards.tool_step("x", duration_ms=0) == "✅ x"
+    assert cards.tool_step("x", duration_ms=True) == "✅ x", "bool 不是数字"
+    assert cards.tool_step("", status="ok") == "✅ tool"
+    assert cards.tool_step("x", preview="a`b") == "✅ x · `a'b`", "预览里的反引号不能破坏行内代码"
+
+
 def test_unified_panel_applies_caps() -> None:
     panel = cards.unified_panel(reasoning="x" * 5000, tools=["a"])
     assert panel is not None
@@ -704,6 +776,41 @@ def test_adapter_footer_wiring() -> None:
         adapter._apply_metrics_config()
 
 
+def test_adapter_panel_wiring() -> None:
+    """面板确实由「配置 + panel 快照」拼出来，且开关立刻生效。"""
+    defaults = dict(adapter._DEFAULTS)
+    try:
+        panel.reset()
+        adapter.configure(unified_panel=True)
+        assert adapter.LarkDeckMixin._ld_panel() is None, "没有数据不该渲染面板"
+
+        panel.record_reasoning("s1", "t1", "先想一下。")
+        panel.record_tool_started("s1", "t1", "read_file", {"path": "/tmp/a.txt"}, "c1")
+        panel.record_tool_finished("s1", "t1", tool_name="read_file", status="ok",
+                                   duration_ms=42, tool_call_id="c1")
+        node = adapter.LarkDeckMixin._ld_panel()
+        assert node is not None and node["tag"] == "collapsible_panel"
+        title = node["header"]["title"]["content"]
+        assert "1 次工具调用" in title, title
+        texts = " ".join(e.get("content", "") for e in node["elements"])
+        assert "先想一下。" in texts and "read_file" in texts and "✅" in texts
+
+        # 只有推理（没有工具）也给面板，标题退回通用文案
+        panel.reset()
+        panel.record_reasoning("s1", "t1", "只有推理。")
+        only = adapter.LarkDeckMixin._ld_panel()
+        assert only is not None
+        assert only["header"]["title"]["content"] == i18n.t("panel.title", i18n.ZH)
+
+        adapter.configure(unified_panel=False)
+        assert adapter.LarkDeckMixin._ld_panel() is None, "开关关掉必须立刻生效"
+    finally:
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
 def test_ctx_settings_bridge() -> None:
     """官方插件配置（ctx.get_config）是 YAML 配置进 _CONFIG 的唯一通道。"""
     defaults = dict(adapter._DEFAULTS)
@@ -728,6 +835,191 @@ def test_ctx_settings_bridge() -> None:
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)
         adapter._apply_metrics_config()
+
+
+# --------------------------------------------------------------------------- #
+# 5. 面板数据层
+# --------------------------------------------------------------------------- #
+def test_panel_reasoning_accumulates_and_snapshots():
+    panel.reset()
+    panel.record_reasoning("s1", "t1", "第一段")
+    panel.record_reasoning("s1", "t1", "，第二段。")
+    snap = panel.snapshot()
+    assert snap is not None
+    assert snap["session_id"] == "s1" and snap["turn_id"] == "t1"
+    assert snap["reasoning"] == "第一段，第二段。", snap
+    assert snap["tools"] == [], snap
+    assert snap["age"] >= 0.0
+
+
+def test_panel_reasoning_tolerates_non_str_delta():
+    # 坏载荷（数字 / None）不能留下「片段已加、长度未加」的半更新状态。
+    panel.reset()
+    panel.record_reasoning("s1", "t1", 123)
+    panel.record_reasoning("s1", "t1", None)
+    panel.record_reasoning("s1", "t1", "尾巴")
+    snap = panel.snapshot()
+    assert snap is not None and snap["reasoning"] == "123尾巴", snap
+
+
+def test_panel_turn_change_resets_process_data():
+    panel.reset()
+    panel.record_reasoning("s1", "t1", "旧回合的思考")
+    panel.record_tool_started("s1", "t1", "read_file", {"path": "x"}, "c1")
+    panel.record_tool_finished("s1", "t1", "read_file", status="ok",
+                               duration_ms=5, tool_call_id="c1")
+    panel.record_reasoning("s1", "t2", "新回合的思考")
+    snap = panel.snapshot()
+    assert snap["turn_id"] == "t2"
+    assert snap["reasoning"] == "新回合的思考", snap
+    assert snap["tools"] == [], "换回合后不能残留上一回合的工具"
+
+
+def test_panel_turn_id_absent_keeps_accumulating():
+    # 老版本 Hermes 载荷没有 turn_id：保守地继续累积，不误清。
+    panel.reset()
+    panel.record_reasoning("s1", "", "甲")
+    panel.record_reasoning("s1", "", "乙")
+    assert panel.snapshot()["reasoning"] == "甲乙"
+
+
+def test_panel_begin_turn_clears_before_new_events():
+    # 新回合首帧可能早于本回合第一个面板事件：on_stream_start 一到就先清；
+    # 同回合的重复通知（重试 / 工具轮的多次 API 调用）必须幂等、不误清。
+    panel.reset()
+    panel.record_reasoning("s1", "t1", "旧回合")
+    panel.record_tool_started("s1", "t1", "bash", {"cmd": "ls"}, "c1")
+    panel.begin_turn("s1", "t2")
+    assert panel.snapshot() is None, "新回合还没数据，不该看到旧面板"
+    panel.record_reasoning("s1", "t2", "新回合")
+    panel.begin_turn("s1", "t2")  # 同回合再来一次：不清
+    assert panel.snapshot()["reasoning"] == "新回合"
+    # 拿不准的载荷（空 session / 空 turn）不动状态
+    panel.begin_turn("", "t9")
+    panel.begin_turn("s1", "")
+    assert panel.snapshot()["reasoning"] == "新回合"
+
+
+def test_panel_tool_pairing_by_call_id():
+    panel.reset()
+    panel.record_tool_started("s1", "t1", "read_file", {"path": "cards.py"}, "call_1")
+    snap = panel.snapshot()
+    assert snap["tools"][0]["status"] == "running"
+    assert "cards.py" in snap["tools"][0]["preview"]
+    panel.record_tool_finished("s1", "t1", "read_file", status="ok",
+                               duration_ms=1234, tool_call_id="call_1")
+    tool = panel.snapshot()["tools"][0]
+    assert tool["status"] == "ok" and tool["duration_ms"] == 1234, tool
+    assert tool["name"] == "read_file"
+
+
+def test_panel_tool_finish_without_start_appends_fallback():
+    # pre 丢包 / 顺序颠倒：post 兜底补一条，不让调用凭空消失。
+    panel.reset()
+    panel.record_tool_finished("s2", "t1", "web_search", status="error",
+                               duration_ms=9, tool_call_id="call_9")
+    tools = panel.snapshot()["tools"]
+    assert len(tools) == 1 and tools[0]["status"] == "error"
+    assert tools[0]["name"] == "web_search" and tools[0]["duration_ms"] == 9
+
+
+def test_panel_duration_falls_back_to_clock():
+    # 钩子没给 duration_ms 时按墙钟差兜底（数据层自己的 t0 差值）。
+    panel.reset()
+    panel.record_tool_started("s1", "t1", "grep", {}, "c2")
+    panel.record_tool_finished("s1", "t1", "grep", status="ok", tool_call_id="c2")
+    ms = panel.snapshot()["tools"][0]["duration_ms"]
+    assert isinstance(ms, int) and ms >= 0, ms
+
+
+def test_panel_unknown_status_passthrough():
+    # status 原样保留（ok / error / blocked 与未来新值都不丢），渲染层再映射。
+    panel.reset()
+    panel.record_tool_finished("s1", "t1", "terminal", status="blocked", tool_call_id="c3")
+    assert panel.snapshot()["tools"][0]["status"] == "blocked"
+
+
+def test_panel_snapshot_empty_returns_none():
+    panel.reset()
+    assert panel.snapshot() is None
+    # 有会话但没有任何内容：同样返回 None（调用方据此不渲染空面板）。
+    panel.record_tool_started("s1", "t1", "noop", {}, "c0")
+    panel._STATE["s1"]["tools"] = []
+    assert panel.snapshot() is None
+
+
+def test_panel_ttl_expires_sessions():
+    panel.reset()
+    ttl_before = panel._TTL_SECONDS
+    try:
+        panel._TTL_SECONDS = 0.01
+        panel.record_reasoning("s1", "t1", "会过期的思考")
+        time.sleep(0.03)
+        assert panel.snapshot() is None, "过期会话不应再被看到"
+        assert "s1" not in panel._STATE
+    finally:
+        panel._TTL_SECONDS = ttl_before
+        panel.reset()
+
+
+def test_panel_session_cap_evicts_oldest():
+    panel.reset()
+    cap_before = panel._MAX_SESSIONS
+    try:
+        panel._MAX_SESSIONS = 2
+        for sid in ("s1", "s2", "s3"):
+            panel.record_reasoning(sid, "t1", f"来自{sid}")
+        assert "s1" not in panel._STATE, "超出容量应淘汰最旧会话"
+        assert set(panel._STATE) == {"s2", "s3"}
+        assert panel.snapshot()["session_id"] == "s3"
+    finally:
+        panel._MAX_SESSIONS = cap_before
+        panel.reset()
+
+
+def test_panel_reasoning_buffer_compacts_and_caps():
+    panel.reset()
+    limit_before = panel._MAX_REASONING_CHARS
+    try:
+        # 片段合并：大量小片段最终会被压成单段，内容不丢。
+        for i in range(panel._PARTS_COMPACT_AT + 50):
+            panel.record_reasoning("s1", "t1", "x")
+        state = panel._STATE["s1"]
+        assert len(state["reasoning_parts"]) < panel._PARTS_COMPACT_AT
+        assert panel.snapshot()["reasoning"] == "x" * (panel._PARTS_COMPACT_AT + 50)
+        # 上限：超长时保留最早部分（渲染层再截断并留痕）。
+        panel.reset()
+        panel._MAX_REASONING_CHARS = 10
+        panel.record_reasoning("s1", "t1", "0123456789ABCDEF")
+        assert panel.snapshot()["reasoning"] == "0123456789"
+    finally:
+        panel._MAX_REASONING_CHARS = limit_before
+        panel.reset()
+
+
+def test_panel_concurrent_writes_are_safe():
+    panel.reset()
+    errors: list = []
+
+    def worker(n: int) -> None:
+        try:
+            for i in range(100):
+                panel.record_reasoning(f"s{n}", "t1", "y")
+                panel.record_tool_started(f"s{n}", "t1", "tool", {}, f"c{i}")
+                panel.record_tool_finished(f"s{n}", "t1", "tool",
+                                           tool_call_id=f"c{i}")
+                panel.snapshot()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(n,)) for n in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors, errors
+    assert panel.snapshot() is not None
+    panel.reset()
 
 
 # --------------------------------------------------------------------------- #

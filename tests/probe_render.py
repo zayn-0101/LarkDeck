@@ -211,7 +211,14 @@ def build_cases(cards) -> list:
                        "1. 1.0 方言只带顶层 elements\n"
                        "2. 按钮必须在 action 容器里\n"
                        "3. 2.0 卡必须有 config.summary")
-    panel_tools = ["read_file(cards.py)", "grep(render.py)", "terminal(probe_render.py)"]
+    panel_tools = [
+        cards.tool_step("read_file", status="ok", duration_ms=12,
+                        preview='{"path": "cards.py"}'),
+        cards.tool_step("grep", status="ok", duration_ms=2300,
+                        preview='{"pattern": "render.py"}'),
+        cards.tool_step("terminal", status="running",
+                        preview="probe_render.py --send"),
+    ]
     panel = cards.unified_panel(reasoning=panel_reasoning, tools=panel_tools,
                                 expanded=False)
     panel_open = cards.unified_panel(reasoning=panel_reasoning, tools=panel_tools,

@@ -55,6 +55,7 @@ from . import compat as _compat
 from . import context as _context
 from . import hooks as _hooks
 from . import i18n as _i18n
+from . import panel as _panel
 
 logger = logging.getLogger("larkdeck")
 
@@ -250,6 +251,40 @@ class LarkDeckMixin:
             logger.debug("[larkdeck] 页脚渲染失败，跳过", exc_info=True)
             return None
 
+    @classmethod
+    def _ld_panel(cls) -> Optional[Dict[str, Any]]:
+        """底部折叠面板：推理过程 + 工具步骤（数据来自 :mod:`larkdeck.panel`）。
+
+        没有数据（钩子未触发 / reasoning 未开启 / 面板关掉）就返回 ``None``，
+        ``reply_card`` 会自然跳过这个元素。与页脚同理：**任何情况下不抛异常**，
+        面板是装饰，不能因为它把整张卡片搞坏。
+        """
+        try:
+            if not _cfg("unified_panel"):
+                return None
+            snap = _panel.snapshot()
+            if not snap:
+                return None
+            steps = [
+                _cards.tool_step(
+                    str(t.get("name") or "tool"),
+                    status=str(t.get("status") or "ok"),
+                    duration_ms=t.get("duration_ms"),
+                    preview=str(t.get("preview") or ""),
+                )
+                for t in (snap.get("tools") or [])
+            ]
+            return _cards.unified_panel(
+                reasoning=str(snap.get("reasoning") or ""),
+                tools=steps,
+                max_reasoning_chars=_cfg_int("max_reasoning_chars", _cards.MAX_REASONING_CHARS),
+                max_tool_chars=_cfg_int("max_tool_result_chars", _cards.MAX_TOOL_RESULT_CHARS),
+                max_steps=_cfg_int("max_panel_steps", _cards.MAX_PANEL_STEPS),
+            )
+        except Exception:
+            logger.debug("[larkdeck] 面板渲染失败，跳过", exc_info=True)
+            return None
+
     # ---------------------------------------------------------------- 发送原语
     async def _ld_send_card(self, chat_id: str, card: Dict[str, Any], *,
                             reply_to: Optional[str] = None,
@@ -284,7 +319,8 @@ class LarkDeckMixin:
             # 首帧没有「已耗时」可言（这一帧就是起点），所以不带 ⏱；⏱ 由后续
             # edit_message 按 t0 计算。之前这里传的是 time.monotonic()，等于
             # 恒等于 0.0s —— 属于白占一个字段，顺手修掉。
-            card = _cards.reply_card(content, streaming=False, footer=self._ld_footer())
+            card = _cards.reply_card(content, streaming=False,
+                                     panel=self._ld_panel(), footer=self._ld_footer())
             result = await self._ld_send_card(chat_id, card, reply_to=reply_to, metadata=metadata)
             if result is not None and getattr(result, "success", False):
                 self._ld_track(getattr(result, "message_id", "") or "", chat_id)
@@ -305,6 +341,7 @@ class LarkDeckMixin:
         try:
             card = _cards.reply_card(
                 content, streaming=not finalize,
+                panel=self._ld_panel(),
                 footer=self._ld_footer(state.get("t0")),
             )
             result = await self._ld_update_card(chat_id, message_id, card)

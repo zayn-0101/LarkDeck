@@ -14,7 +14,7 @@ HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 PLUGINS_DIR="$HERMES_HOME/plugins"
 TARGET="$PLUGINS_DIR/larkdeck"
 MODE="link"
-FILES=(plugin.yaml __init__.py adapter.py cards.py i18n.py compat.py context.py hooks.py)
+FILES=(plugin.yaml __init__.py adapter.py cards.py i18n.py compat.py context.py hooks.py panel.py)
 
 usage() {
   cat <<'EOF'

@@ -26,7 +26,7 @@ config_schema:
   unified_panel:
     type: boolean
     default: true
-    description: "推理 + 工具合并为底部一个可折叠面板（数据接入待做，暂为预留）"
+    description: "推理 + 工具合并为底部一个可折叠面板（数据来自官方钩子）"
   footer:
     type: boolean
     default: true
@@ -45,15 +45,15 @@ config_schema:
   max_reasoning_chars:
     type: integer
     default: 1200
-    description: "统一面板中推理文本上限（面板接入前 no-op）"
+    description: "统一面板中推理文本上限（超出部分截断并留痕）"
   max_tool_result_chars:
     type: integer
     default: 600
-    description: "统一面板中工具结果上限（面板接入前 no-op）"
+    description: "统一面板中工具结果上限（超出部分截断并留痕）"
   max_panel_steps:
     type: integer
     default: 30
-    description: "统一面板步骤数上限（面板接入前 no-op）"
+    description: "统一面板步骤数上限（超出保留最近的步骤）"
   context_max_override:
     type: integer
     default: 0

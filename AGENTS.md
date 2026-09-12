@@ -36,7 +36,8 @@ cards.py      卡片 JSON 构造（纯函数、无 I/O）—— 两种方言的�
 i18n.py       双语文案（飞书原生 i18n_content）
 compat.py     版本 / 能力探测 —— Hermes 私有名的唯一存放处
 context.py    运行时指标（钩子写入 → 页脚读取的进程内全局快照）
-hooks.py      官方钩子订阅：只订阅、不改写
+panel.py      面板数据层（推理 / 工具钩子写入 → 卡片面板读取；按会话分桶 + 最近活跃取用）
+hooks.py      官方钩子订阅（5 个观察型钩子）：只写内存、异常自吞、永不返回 directive
 install.sh    安装脚本（默认软链；NAS 用 --copy，其 FILES 数组是手动的，新增模块要同步）
 docs/         HFC 切换步骤、指标与钩子原理
 tests/        见「验证」
@@ -57,13 +58,17 @@ tests/        见「验证」
 - 运行时只 import 标准库与 Hermes 环境；不新增第三方依赖。
 - 页脚指标是进程内全局（钩子记「最近一次 API 请求」），多会话并发共享同一快照；
   要按会话隔离得从钩子载荷的 `session_id` 分桶（未做）。
+- 面板数据策略与页脚不同：`panel.py` 按 `session_id` 分桶、快照时取「最近活跃」——
+  流式/工具钩子载荷没有 chat_id，卡片渲染时无法自证归属，多会话并发可能短暂串台。
+  钩子回调纪律源自 `pre_tool_call` 是 **fail-closed**（回调卡住会阻止工具执行）：
+  只写内存、微秒级返回、异常自吞、**永不返回 directive**。
 
 ## 验证
 
 ```bash
 python3 tests/test_units.py        # 纯单测，零网络、零 Hermes 依赖，必须全绿
 python3 tests/check_override.py    # 真跑 Hermes 插件加载器（临时 HERMES_HOME），必须打印 OVERRIDE OK
-python3 tests/check_hooks.py       # 真钩子派发器验证指标采集，必须打印 HOOKS OK
+python3 tests/check_hooks.py       # 真钩子派发器验证指标采集 + 面板数据层，必须打印 HOOKS OK
 python3 tests/check_clarify_e2e.py # 澄清卡端到端，必须打印 CLARIFY E2E OK
 ```
 

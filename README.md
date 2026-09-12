@@ -88,7 +88,7 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 | 功能 | 状态 |
 |---|---|
 | 流式卡片（同一张卡原位更新） | ✅ |
-| 统一面板（推理 + 工具合并为一个可折叠底部面板） | 🟡 卡片层已实现并真机渲染通过；**数据接入待做**（推理流 / 工具钩子的订阅还没写） |
+| 统一面板（推理 + 工具合并为一个可折叠底部面板） | ✅ 数据来自官方钩子（`on_stream_delta` / `pre_tool_call` / `post_tool_call`）；推理流需开启 Hermes 侧 `plugins.stream_reasoning_deltas` |
 | 澄清交互卡（按钮点击直接作答，不再手打选项） | ✅ |
 | 模型别名（`deepseek-v4-flash` → 你认得出来的名字） | ✅ |
 | 双语 UI（跟随飞书客户端语言） | ✅ 机制已实现，待真机确认 |
@@ -141,14 +141,14 @@ plugins:
       settings:
         cards: true              # 用卡片渲染回复（关掉则完全退回官方纯文本行为）
         clarify_cards: true      # 澄清用按钮卡
-        unified_panel: true      # 推理 + 工具合并为一个底部面板（数据接入待做）
+        unified_panel: true      # 推理 + 工具合并为一个底部面板
         footer: true             # 页脚（模型 + 上下文用量 + 耗时）
         show_model: true         # 页脚里显示模型名
         context_style: text      # 上下文用量样式：text | bar | both
         model_aliases: ""        # "真名=显示名, 真名2=显示名2"
-        max_reasoning_chars: 1200   # 推理文本上限（统一面板接入前 no-op）
-        max_tool_result_chars: 600  # 单条工具结果上限（统一面板接入前 no-op）
-        max_panel_steps: 30         # 面板最多保留多少步（统一面板接入前 no-op）
+        max_reasoning_chars: 1200   # 推理文本上限（超出截断并留痕）
+        max_tool_result_chars: 600  # 单条工具结果上限（超出截断并留痕）
+        max_panel_steps: 30         # 面板最多保留多少步（超出保留最近的）
         context_max_override: 0     # 非 0 时钉住上下文上限（探测不准时兜底）
 ```
 
@@ -157,6 +157,15 @@ plugins:
 
 也可以用环境变量临时覆盖，如 `LARKDECK_CARDS=0`、`LARKDECK_CONTEXT_STYLE=bar`
 （优先级：环境变量 > config.yaml 设置 > 默认值）。
+
+面板里的**推理过程**依赖 Hermes 侧开关（官方默认关闭）：
+
+```yaml
+plugins:
+  stream_reasoning_deltas: true   # 允许插件订阅推理增量；不开就只有工具步骤
+```
+
+工具步骤不受这个开关影响。面板与页脚的数据全部来自官方钩子，不拦截核心代码。
 
 页脚的模型名和上下文数字**来自官方钩子**，不是拦截核心源码 —— 原理、载荷键名和
 两个踩过的坑见 [`docs/metrics-and-hooks.md`](docs/metrics-and-hooks.md)。
@@ -200,6 +209,7 @@ LarkDeck 接管后才生效）。
   **注意 AI 生成的正文不翻译**，双语只覆盖界面文案。
 - 与 hermes-feishu-streaming-card（HFC）**不能共存**：两边都要接管 `feishu` 平台，且 HFC 还改了源码。切换步骤见 `docs/`。
 - **页脚数据是进程内全局的**：钩子记录的是「最近一次 API 请求」，多会话并发时所有卡片共享同一份快照。单用户单会话无影响；真要按会话隔离，得从钩子载荷里的 `session_id` 分桶，目前没做。
+- **面板按「最近活跃会话」取用**：钩子载荷只有 `session_id`、没有 chat_id，卡片渲染时无法确定自己属于哪个会话，只能取最近有活动的那个。多会话并发时面板可能短暂显示另一个会话的推理/工具（正文与页脚不受影响）；单会话无感。
 
 ---
 
