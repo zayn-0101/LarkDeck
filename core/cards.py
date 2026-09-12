@@ -126,8 +126,23 @@ _STATUS_TEXT_KEYS: Dict[str, str] = {
 #: 想让观感顺滑，唯一有效的杠杆就是这个字段。
 #:
 #: 实测已确证「飞书接受它」：带它的卡在 create 与 patch 两条路径上都是 ``code=0``。
-#: **唯一没能本地验证的是「客户端到底打不打字」**（纯客户端行为，API 看不到）——
-#: 所以给了 ``streaming_print_ms`` 配置：写 0 就完全不带这个字段。
+#:
+#: ⚠️ **但「客户端到底打不打字」仍未确证，而且有反证倾向**（2026-09-13 追查）：
+#:   * 官方文档只有一句「``streaming_mode`` 流式更新模式（配 ``streaming_config``）」，
+#:     没有说清哪种写入 API 才触发动画；
+#:   * **Hermes 上游自己有两个 PR 明确把「打字机」与 CardKit 流式接口绑在一起**
+#:     （标题原文：*Card Kit streaming — typewriter-style output via Card Kit API*、
+#:     *streaming cards for native typewriter effect using Feishu's CardKit streaming
+#:     update API*）—— 这倾向于「``im.v1.message.patch`` 拿不到动画」；
+#:   * 同类项目 lark-hls-v2 的注释也说**第一次推送必须用 ``card_element.content``**
+#:     才有打字机，之后改 ``partial_update_element`` 是为了**避免**动画重放。
+#: 反方向只有 HFC 归档代码的三处注释（patch + ``streaming_config``，作者相信它能打字，
+#: 但那段代码已不在运行路径上）。
+#:
+#: 结论：这一条**只能靠肉眼定**，`tests/probe_render.py --typing` 就是为它准备的
+#: （两张卡交替长大 12 秒，一眼看得出哪张在逐字）。带上它本身无害（飞书接受、
+#: 收尾帧不带），所以默认开着；**确证无效就写 ``streaming_print_ms: 0`` 关掉，
+#: 真要打字机则得换 CardKit 卡片实体传输**（那时才值得付那份复杂度）。
 #:
 #: ⚠️ **只在流式帧上带**（``streaming=True``）：收尾帧是 ``streaming_mode: false``，
 #: 带上它可能让客户端把整段答案**再打一遍**，那是明确要避免的观感。

@@ -400,12 +400,22 @@ def build_bilingual_cases(cards) -> list:
 
 
 #: 打字机探针的文案（逐帧长大，模拟真实流式）。
-_TYPING_STEPS = (
-    "飞书客户端会不会把新出现",
-    "飞书客户端会不会把新出现的字**逐字打出来**？",
-    "飞书客户端会不会把新出现的字**逐字打出来**？\n\n"
-    "（如果是一次性整段跳出来 = 没有打字机，内核的流式节奏就是最终观感）",
-)
+#: 打字机探针的正文：**逐字长出来**，让「是逐字打还是一整段跳」这件事有一个可看的窗口。
+#: 一次 2 个字、每步 0.35s ⇒ 一行字要 ~10 秒才长完。原来只推 3 步、每步 0.15s
+#: （共 0.45 秒），等于要求人正好盯着屏幕 —— 那不是「可验证」，那是碰运气。
+_TYPING_BASE = ("打字机对照：这一行应该一个字一个字地冒出来，而不是整段一起跳出来。"
+                "看到这里说明这一行已经长完了 —— 甲卡是逐步冒的，乙卡是一次跳的。")
+_TYPING_CHAR_MS = 350
+_TYPING_CHARS_PER_STEP = 2
+
+
+def _typing_frames() -> list:
+    """把正文切成逐步长出来的若干帧（最后多留一帧完整态）。"""
+    text = _TYPING_BASE
+    frames = [text[:i] for i in range(_TYPING_CHARS_PER_STEP, len(text),
+                                      _TYPING_CHARS_PER_STEP)]
+    frames.append(text)
+    return frames
 
 
 def patch(client, message_id: str, card: dict) -> tuple:
@@ -444,6 +454,13 @@ def probe_typewriter(client, chat: str, cards) -> int:
         ("乙（对照组：不带 streaming_config）", None),
     )
     codes = []
+    frames = _typing_frames()
+    print()
+    print("=" * 64)
+    print(f"👀 现在盯住飞书 DM —— 接下来约 {len(frames) * _TYPING_CHAR_MS / 1000:.0f} 秒里，")
+    print("   那张【甲】卡的字应该一个个往外冒；【乙】卡应该一整段跳出来。")
+    print("=" * 64)
+    targets: list = []          # [(label, message_id, streaming_config)]，顺序即甲乙
     for label, streaming_config in variants:
         base = cards.reply_card("", streaming=True, footer="LARKDECK-RENDER-PROBE · 打字机探针")
         if streaming_config is not None:
@@ -451,22 +468,25 @@ def probe_typewriter(client, chat: str, cards) -> int:
         code, msg, mid = send(client, chat, base)
         codes.append((label, code, msg))
         print(f"{'✅' if code == 0 else '❌'} 打字机探针 · {label}  code={code} msg={msg} id={mid}")
-        if code != 0:
-            continue
-        _save_sent_ids(_load_sent_ids() + [mid])
-        # 逐帧长大：每步 150ms（≈ 生产节流 250ms 的节奏），模拟真实流式
-        for text in _TYPING_STEPS:
+        if code == 0 and mid:
+            _save_sent_ids(_load_sent_ids() + [mid])
+            targets.append((label, mid, streaming_config))
+    if len(targets) < 2:
+        print("   ⚠️ 两张卡没都建起来，A/B 对照不成立（看上面的错误码）")
+        return 1
+    # 两张卡**交替**更新：同一时刻屏幕上各有一张在动，A/B 对照才成立
+    for index, text in enumerate(frames):
+        for label, mid, streaming_config in targets:
             node = cards.reply_card(text, streaming=True,
                                     footer="LARKDECK-RENDER-PROBE · 打字机探针")
-            if streaming_config is not None:
-                node["config"]["streaming_config"] = streaming_config
+            node["config"]["streaming_config"] = streaming_config or {}
+            if not streaming_config:
+                node["config"].pop("streaming_config", None)
             pcode, pmsg = patch(client, mid, node)
             if pcode != 0:
-                print(f"   ❌ patch 被拒：code={pcode} msg={pmsg} —— "
-                      f"streaming_config 在 patch 路径上不被接受，阶段 3 不能直接加它")
-                codes[-1] = (label, pcode, pmsg)
-                break
-            _time.sleep(0.15)
+                print(f"   ❌ 第 {index + 1} 帧 patch 被拒（{label}）：code={pcode} msg={pmsg}")
+                return 1
+        _time.sleep(_TYPING_CHAR_MS / 1000)
     print()
     print("👀 现在去飞书 DM 看那两张「打字机探针」卡：哪一张的字是**逐个打出来**的？")
     print("   * 甲逐字打、乙整段跳 → 只要给流式卡加 streaming_config 就够了（阶段 3 大幅缩小）；")

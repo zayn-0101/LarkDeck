@@ -430,6 +430,24 @@
 1. 真机点一次 ⑫ 方言探针卡，日志里出现 `[larkdeck] 探针点击到达 ✅`；
 2. A1（多选）与 A2（输入框错配）的修复已在 `check_clarify_e2e.py` 里被真实判据覆盖（已完成）。
 
+### 打字机到底靠哪个 API（2026-09-13 追查，**仍未定论，但天平偏向 CardKit**）
+
+| 证据 | 指向 |
+|---|---|
+| 官方文档（本地 reference pack 全量 grep） | 只有一句「`streaming_mode` 流式更新模式（配 `streaming_config`）」，**没说清哪种写入 API 触发动画** |
+| **Hermes 上游两个 PR** 的标题 | *「Card Kit streaming — typewriter-style output via Card Kit API」*、*「streaming cards for native typewriter effect using Feishu's CardKit streaming update API」* ⇒ 倾向「`im.v1.message.patch` 拿不到打字机」 |
+| lark-hls-v2 的代码注释 | 「第一次推送必须用 `card_element.content` 才有打字机；之后改 `partial_update_element` 是为了**避免**动画重放导致的文字碎片」 |
+| HFC 归档代码（三处注释） | patch + `streaming_config` 被作者称作「打字机」—— 但那段代码**不在运行路径上**，且真正的 CardKit 元素接口是死代码 |
+| 我们的真机实测 | 带 `streaming_config` 的卡在 create 与 patch 两条路径上都是 `code=0`（**接受≠动画**） |
+
+⇒ 现状：`streaming_print_ms`（默认 15）**带上但无害**，动画与否只能肉眼定。
+`probe_render.py --typing` 已改成**可看的对照**：两张卡交替长大 12 秒，甲带字段、乙不带。
+* 甲在逐字 ⇒ 收工（agent 侧不用改）；
+* 两张都跳 ⇒ **确认无效**，把 `streaming_print_ms` 设 0，想真打字机就得换 CardKit 传输；
+* 顺带一个**升级观察点**：上游正在往内置适配器里加 CardKit 流式，将来某个版本可能自带；
+  但那会走 `send_stream_frame` / native streaming 这条路，而**我们覆盖了它** ——
+  升级时值得看一眼内置实现有没有长出新能力（这也是本项目「不假设版本」的又一处落点）。
+
 ### 真机实测的两个数字（2026-09-13）
 
 | 测什么 | 怎么测 | 结果 |
