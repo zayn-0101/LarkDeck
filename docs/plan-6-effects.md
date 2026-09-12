@@ -455,3 +455,23 @@
 | 卡片字节上限 | `probe_render.py --bytes`（20KB→80KB 阶梯 + 同尺寸 PATCH） | **80KB 仍 `code=0`**（create 与 patch 都是）⇒ 40000 的预算有 2 倍余量；第三方流传的「28000 / 30KB」不成立 |
 | 卡片元素数上限 | `probe_render.py --elements`（递归计数阶梯） | 198 收下、**202 拒收**（`230099 / ErrCode 11310 element exceeds the limit`）⇒ 官方 200 成立，且**必须递归数含 `tag` 的对象** |
 | 推送节奏 | `probe_render.py --rate-limit`（16 次连打） | 往返 **≈0.5s/帧**、**零拒绝** ⇒ `_STREAM_MIN_INTERVAL` 不是瓶颈，打字机只能靠客户端动画 |
+
+### 6 项效果的实施完成度（截至 2026-09-13）
+
+「验证到什么程度」分三档，**不要混着说**：
+**A 本地门禁**（单测/结构检查能自证）· **B 真机 API**（`probe_render.py` 真发到飞书，返回码说了算）·
+**C 真机肉眼**（客户端渲染/动画，API 看不到 —— 只能人看）。
+
+| # | 效果 | 实现位置 | 默认 | 验证到 |
+|---|---|---|---|---|
+| 1a | 即时响应（首帧早于首个 token） | native seed 帧（核心契约，`stream_frame("")` 建卡） | 开 | **A**（单测覆盖 seed 帧生命周期） |
+| 1b | 打字机 | `cards.streaming_config()` + 配置 `streaming_print_ms`（15） | 开 | **B**（飞书接受字段，create/patch 都是 `code=0`）+ **C 待定**（动画本身；`--typing` 探针已做成 12 秒可看的对照） |
+| 1c | 无输入提示 | 覆盖 `_reactions_enabled()`（配置 `reactions`，默认保持 Hermes 行为） | 保持 | **A**（覆盖逻辑与回退都有断言） |
+| 2 | 完成态绿色面板 | `on_session_end` → `panel.record_turn_end` → `cards.border_for_status` | 开 | **A** + **B**（三种状态色的探针卡都被飞书接受） |
+| 3 | 中止黄边 / 报错红边 | 同上 + 覆盖 `interrupt_session_activity` 自己重绘 | 开 | **A**（含「空回合也要画出黄边」「必须落在绑定会话」）+ **B** |
+| 4 | 展开面板 + 每轮相对耗时 | `cards.unified_panel`（`第 N 轮 · 6.2s`）+ `panel_expanded` | 收起 | **A** + **B** + **C 待定**（展开/收起的观感） |
+| 5 | Clarify 2.0 选项卡 | `cards.clarify_card_2`（`select_static` / `multi_select_static` / `input` + 组件级 `behaviors`） | `clarify_dialect: "1.0"` | **B**（真 2.0 卡飞书接受）+ **C 待定**（点一次确证回调到服务端后再翻默认） |
+| 6 | Clarify 回填 + 确认徽章 | `clarify_resolved_card` / `_2`（✅ + 答案 + 用户） | 开 | **A**（含「提交未生效不回填」）+ **B**（回填帧的响应形式与官方示例一致） |
+
+**剩下要人看的三处（C 档）**：打字机动画（`--typing`）、面板展开观感、2.0 澄清卡点击。
+前两处**已经落地并在跑**，只是「好不好看」需要人判；第三处是**翻默认的前提**。
