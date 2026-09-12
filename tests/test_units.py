@@ -204,7 +204,8 @@ def test_reply_card_shape():
     assert card["config"]["update_multi"] is True
     json.dumps(card, ensure_ascii=False)  # 必须可序列化
     tags = _all_tags(card)
-    assert "markdown" in tags and "note" in tags, tags
+    assert "markdown" in tags, tags
+    assert "note" not in tags, f"2.0 卡不能用 note（飞书已废弃），应用 footnote: {tags}"
 
 
 def test_streaming_flag_off_on_finalize():
@@ -278,6 +279,41 @@ def test_reply_card_is_20_with_summary():
     summary = card["config"].get("summary")
     assert isinstance(summary, dict) and summary.get("content"), "流式卡漏了 summary"
     assert len(summary["content"]) <= cards.SUMMARY_MAX
+
+
+def test_dialect_element_exclusivity():
+    """元素级方言互斥 —— 本地就能拦，不必等飞书拒。
+
+    实测飞书裁决：
+      * ``note``   在 2.0 卡里被废弃（im/v1/messages 返回 230099 / ErrCode 200861）
+      * ``action`` 按钮容器在 2.0 卡里被拒（按钮点击永远到不了服务端）
+      * ``collapsible_panel`` 是 2.0 专属，1.0 里没有
+    """
+    panel = cards.unified_panel(reasoning="想一下", tools=["read_file(a.py)"])
+    samples = {
+        "clarify_card": cards.clarify_card("Q?", ["A", "B"], clarify_id="c", session_key="s"),
+        "clarify_resolved_card": cards.clarify_resolved_card(
+            question="Q?", answer="A", user_name="汪老师"),
+        "reply_card": cards.reply_card("答案", streaming=True, panel=panel, footer="脚注"),
+    }
+    for name, card in samples.items():
+        tags = set(_all_tags(card))
+        if card.get("schema") == cards.SCHEMA:
+            assert "note" not in tags, f"{name}: 2.0 卡不能用 note（飞书已废弃该元素）"
+            assert "action" not in tags, f"{name}: 2.0 卡不能用 action 容器（按钮会静默失效）"
+        else:
+            assert "schema" not in card, f"{name}: 1.0 卡不能带 schema 字段"
+            assert "collapsible_panel" not in tags, f"{name}: collapsible_panel 是 2.0 专属"
+
+
+def test_reply_card_footer_uses_20_footnote():
+    """2.0 卡的脚注必须是 markdown + text_size=notation，不能是 note。"""
+    tail = cards.reply_card("答案", streaming=True, footer="脚注")["body"]["elements"][-1]
+    assert tail["tag"] == "markdown", tail
+    assert tail["text_size"] == "notation", tail
+    assert "脚注" in tail["content"]
+    legacy = cards.clarify_card("Q?", ["A"], clarify_id="c", session_key="s")
+    assert "note" in _all_tags(legacy["elements"]), "1.0 卡仍应能用 note 做脚注"
 
 
 def test_i18n_text_is_bilingual():

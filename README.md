@@ -55,6 +55,7 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 | 流式（打字机） | ❌ | ✅ `streaming_mode` |
 | 可折叠面板 | ❌ | ✅ `collapsible_panel` |
 | `config.summary` | 不需要 | **流式时必带**，漏了通知栏空白 |
+| `note` 小字脚注 | ✅ | ❌ **飞书已废弃** → 改用 `footnote()` |
 
 所以本项目的分界是：
 
@@ -63,6 +64,22 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 - **流式回复卡 → 2.0。** `streaming_mode` 和统一面板的 `collapsible_panel` 是 2.0 独有能力。
 
 这条规则由 `tests/test_units.py::test_clarify_card_must_be_legacy_dialect` 锁住。
+
+### 元素级方言差异（实测，非文档推断）
+
+飞书对卡片**不做静态校验** —— 不支持的字段是*发送时*才拒。所以下面这些只能靠真发一次卡才知道：
+
+| 元素 | 1.0 | 2.0 | 依据 |
+|---|---|---|---|
+| `note` | ✅ | ❌ | 飞书返回 `230099 / ErrCode 200861 · cards of schema V2 no longer support this capability` |
+| `action`（按钮行） | ✅ | ❌ | 1.0 的 `action` 容器嵌进 2.0 卡会被拒，点击永远到不了服务端 |
+| `collapsible_panel` | ❌ | ✅ | 2.0 专属 |
+| `i18n_content` | ✅ | ✅ | 文本元素级字段，两个方言都实测被接受 |
+
+**结论：本地单测只能验结构，验不了合法性。** 改完卡片必须跑 `tests/probe_render.py` ——
+用真凭据把三类卡发到自己的飞书 DM，看飞书返回的 `code`（`tests/probe_render.py` 会
+自动先删掉上次发的探针卡，不留垃圾）。`note` / `action` 两条已在本地被
+`test_dialect_element_exclusivity` 锁死。
 
 ---
 
@@ -136,11 +153,16 @@ plugins:
 python3 tests/test_units.py            # 纯单测，零网络零 Hermes 依赖
 python3 tests/check_override.py        # 对真实 Hermes 安装验证平台覆盖是否生效
 python3 tests/check_clarify_e2e.py     # 澄清卡端到端：发送 → 点击 → 网关解除阻塞
+python3 tests/probe_render.py         # 真发卡片到自己的飞书 DM，验飞书接不接受（要凭据）
 ```
 
 `check_clarify_e2e.py` 用的是从平台注册表里取出来的**真内置适配器类**，只把最底层
 `_feishu_send_with_retry` 换成捕获器，**不连飞书、不发网络请求**。它能抓到桩类抓不到
 的问题：签名不匹配、私有原语改名、覆盖没生效、返回类型不对。
+
+`probe_render.py` 是唯一**连真实飞书**的测试，也是唯一能判定卡片合法性的手段 ——
+它会先删掉自己上次发的探针卡再发新的。只验渲染，**不验点击**（点击路由要平台被
+LarkDeck 接管后才生效）。
 
 ---
 
@@ -148,9 +170,10 @@ python3 tests/check_clarify_e2e.py     # 澄清卡端到端：发送 → 点击 
 
 - **必须和官方适配器同一进程**：官方 `feishu` 平台被禁用时，LarkDeck 无处附着。
 - **依赖 6 个官方适配器的内部方法**（`_feishu_send_with_retry` 等）。全部集中登记在 `compat.py` 里，并用 `probe_adapter_class()` 在运行时校验 —— 官方哪天改了名字，自检会直接报出来，而不是静默失效。
-- **`i18n_content` 的元素级支持需真机确认**：机制按飞书文档实现（文本元素同时带
-  `content` 与 `i18n_content`），但具体哪些元素在 **1.0** 卡里接受该字段需在你的租户上跑一遍确认。
-  兜底是安全的：客户端不认时回落到 `content`，不会让卡片发不出去。
+- ~~**`i18n_content` 的元素级支持需真机确认**~~ → **已实测确认**（2026-09-12）：
+  文本元素同时带 `content` 与 `i18n_content`，1.0 与 2.0 卡均被飞书接受。
+  兜底仍然安全：客户端不认时回落到 `content`，不会让卡片发不出去。
+  **注意 AI 生成的正文不翻译**，双语只覆盖界面文案。
 - 与 hermes-feishu-streaming-card（HFC）**不能共存**：两边都要接管 `feishu` 平台，且 HFC 还改了源码。切换步骤见 `docs/`。
 
 ---

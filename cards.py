@@ -22,6 +22,13 @@ FeishuAdapter 的 ``_card()`` —— 两者在本机都是已验证可用的。�
   * :func:`clarify_card` / :func:`clarify_resolved_card` —— 1.0（要接点击）
   * :func:`reply_card` —— 2.0（要流式 + 折叠面板，不接点击）
 
+元素级方言差异（实测，别再踩）
+------------------------------
+``note`` 元素在 **2.0 卡里已被飞书废弃**：实测 ``im/v1/messages`` 返回
+``230099 / ErrCode 200861 · "cards of schema V2 no longer support this capability"``，
+而同样的 ``note`` 放在 1.0 卡里正常通过。2.0 想要小字脚注只能用 :func:`footnote`。
+**结构正确 ≠ 飞书接受** —— 卡片合法性只有真发一次才知道，见 ``tests/probe_render.py``。
+
 界面文案走 :mod:`larkdeck.i18n`，靠飞书原生 ``i18n_content`` 做双语。
 """
 
@@ -51,7 +58,18 @@ def md(content: str) -> Dict[str, Any]:
 
 
 def note(content: str) -> Dict[str, Any]:
+    """**1.0 专属**小字脚注行 —— 放进 2.0 卡会被飞书拒（请用 :func:`footnote`）。"""
     return {"tag": "note", "elements": [{"tag": "plain_text", "content": content}]}
+
+
+def footnote(content: str) -> Dict[str, Any]:
+    """**2.0 专属**小字脚注：``markdown`` + ``text_size: "notation"``。
+
+    飞书已废掉 2.0 里的 ``note`` 元素，2.0 想要灰字小字只能走 markdown 的 text_size。
+    """
+    node: Dict[str, Any] = {"tag": "markdown", "content": content if content else " "}
+    node["text_size"] = "notation"
+    return node
 
 
 def note_i18n(key: str, **fmt: Any) -> Dict[str, Any]:
@@ -127,7 +145,7 @@ def reply_card(answer: str, *, streaming: bool = False, panel: Optional[Dict[str
     if panel:
         elements.append(panel)
     if footer:
-        elements.append(note(footer))
+        elements.append(footnote(footer))
     return card(elements=elements, template=template, title=title,
                 streaming=streaming, summary=answer)
 
