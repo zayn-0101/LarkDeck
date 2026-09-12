@@ -247,7 +247,7 @@
 
 ### 一处结构性差异，需要你做决定
 
-**aiduPOP 删掉了 card-level header**（`tests/test_v220.py` 断言 `"header" not in card`），把模型名与统计
+**aiduPOP 删掉了 card-level header**（**它仓库里的** `tests/test_v220.py` 断言 `"header" not in card`），把模型名与统计
 搬进 `collapsible_panel` 自己的 header；我们保留着蓝色 card header。保留蓝头**不影响**绿边/红边效果，
 但观感会与它的截图不同。→ **决策点 D2，见 §4。**
 

@@ -14,7 +14,8 @@
    宁可退回纯文本，也不能因为卡片报错而丢消息。改 `adapter.py` 时逐条保住这个性质。
    native streaming（`SUPPORTS_NATIVE_STREAMING` + `send_stream_frame`）的帧失败由核心
    自动回退 edit/send —— 这条 fail-open 链是官方契约，别绕过、别在帧里吞掉回落。
-3. **Hermes 私有接口只允许出现在 `compat.py`。** 目前分五组登记（另见「会话归属」一节）：
+3. **Hermes 私有接口只允许出现在 `compat.py`。** 目前分五组登记
+   （会话归属那一组见 `SESSION_ATTRIBUTION_API` 与「约定」里的归属条目）：
    适配器必需 3 个（`REQUIRED_ADAPTER_ATTRS`，`probe_adapter_class()` 运行时校验，
    缺了拒绝覆盖）；点击回调路径 5 个类属性（`CALLBACK_ADAPTER_ATTRS`）+ 1 个实例属性
    （`CALLBACK_INSTANCE_ATTRS`）；**信号型契约 1 个**（`SIGNAL_ADAPTER_ATTRS` ——
