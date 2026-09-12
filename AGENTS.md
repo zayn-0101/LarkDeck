@@ -15,6 +15,12 @@
    再由 `probe_adapter_class()` 在运行时校验 —— 官方改名时要"自检报错"，不是静默失效。
 4. **不假设版本。** Mac 与 NAS 都跑 Hermes 0.21.1（NAS 是 Docker 镜像内固定版本），
    但升级随时会发生。能力一律运行时探测，不写死版本号分支。
+5. **卡片方言不可混用：要接点击的卡只能是 legacy 1.0。** 2.0 的 `behaviors` 回调
+   到不了 `p2.card.action.trigger` 这个 WebSocket 处理器；反过来，1.0 的 `action`
+   按钮行**嵌进 2.0 卡会被飞书拒绝**。所以澄清卡（待答 + 回填）走 `legacy_card()`，
+   只有流式回复卡走 2.0。`cards.py` 的 docstring 与
+   `tests/test_units.py::test_clarify_card_must_be_legacy_dialect` 一起锁住这条 ——
+   混用不会报错，只会让按钮**静默失灵**，很难查。
 
 ## 目录
 
@@ -22,10 +28,10 @@
 plugin.yaml        插件清单（kind: platform）
 __init__.py        导出 register
 adapter.py         覆盖层：LarkDeckMixin + build_adapter() + register() + 启动自检
-cards.py           飞书卡片 JSON 构造（纯函数、无 I/O）
+cards.py           飞书卡片 JSON 构造（纯函数、无 I/O）—— 两种方言的边界在这里
 i18n.py            双语文案（飞书原生 i18n_content）
 compat.py          版本 / 能力探测 —— Hermes 私有名的唯一存放处
-tests/             单测 + 真机覆盖验证
+tests/             单测 + 真机覆盖验证 + 澄清卡端到端
 ```
 
 ## 键盘约定

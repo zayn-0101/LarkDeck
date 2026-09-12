@@ -224,14 +224,60 @@ def test_unified_panel_empty_is_none():
 def test_clarify_card_buttons_and_i18n():
     card = cards.clarify_card("选哪个？", ["A 方案", "B 方案"],
                               clarify_id="cid-1", session_key="sk-1")
-    buttons = [e for e in card["body"]["elements"] if e.get("tag") == "button"]
+    buttons = _buttons_of(card)
     assert len(buttons) == 3, "两个选项 + 一个『其他』"
     assert buttons[0]["value"]["answer"] == "A 方案"
     assert buttons[0]["value"]["clarify_id"] == "cid-1"
+    assert buttons[0]["value"]["question"] == "选哪个？", "回填卡要用到问题原文"
     assert buttons[-1]["value"]["answer"] == cards.OTHER_VALUE
     # 双语：脚注元素同时带 content 与 i18n_content
-    notes = [e for e in card["body"]["elements"] if e.get("tag") == "note"]
+    notes = [e for e in card["elements"] if e.get("tag") == "note"]
     assert notes and "i18n_content" in notes[0]["elements"][0], notes
+
+
+def _buttons_of(card):
+    """从 1.0 卡的 ``action`` 按钮行里取出所有按钮。"""
+    row = card.get("elements") or []
+    for el in row:
+        if el.get("tag") == "action":
+            return el["actions"]
+    raise AssertionError(f"卡片里没有 action 按钮行: {card}")
+
+
+def test_clarify_card_must_be_legacy_dialect():
+    """要接服务端点击的卡片只能是 1.0 —— 混进 2.0 会让飞书拒绝 action 行。
+
+    这是本插件最容易被改崩的不变量：2.0 的 behaviors 回调到不了
+    ``p2.card.action.trigger``，而 1.0 的 action 容器嵌进 2.0 卡会被拒。
+    """
+    card = cards.clarify_card("选哪个？", ["A", "B"], clarify_id="c", session_key="s")
+    assert "schema" not in card, "澄清卡不能带 schema —— 带了她就是 2.0 卡，action 行会被拒"
+    assert "body" not in card, "澄清卡必须用顶层 elements，不能包在 body 里"
+    assert isinstance(card.get("elements"), list), card
+    assert _buttons_of(card), "按钮必须在 action 容器里"
+    assert card["config"]["wide_screen_mode"] is True
+    assert card["header"]["template"] == "orange"
+
+
+def test_clarify_resolved_card_shares_the_same_dialect():
+    """回调里回填的卡必须与待答卡同方言，否则飞书会静默丢弃这一帧。"""
+    pending = cards.clarify_card("选哪个？", ["A"], clarify_id="c", session_key="s")
+    resolved = cards.clarify_resolved_card(question="选哪个？", answer="A", user_name="汪老师")
+    for card in (pending, resolved):
+        assert "schema" not in card and "body" not in card, card
+        assert isinstance(card.get("elements"), list), card
+    assert resolved["header"]["template"] == "green"
+
+
+def test_reply_card_is_20_with_summary():
+    """流式回复卡走 2.0，且必须带 config.summary（官方 SDK 与 HFC 都强制带）。"""
+    card = cards.reply_card("一段很长的回答" * 30, streaming=True)
+    assert card["schema"] == "2.0"
+    assert "elements" not in card, "2.0 卡的正文在 body.elements 里"
+    assert card["body"]["elements"]
+    summary = card["config"].get("summary")
+    assert isinstance(summary, dict) and summary.get("content"), "流式卡漏了 summary"
+    assert len(summary["content"]) <= cards.SUMMARY_MAX
 
 
 def test_i18n_text_is_bilingual():
