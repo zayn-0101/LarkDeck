@@ -9,7 +9,7 @@ AI 生成的正文**不翻译**，只本地化界面文案（面板标题、按�
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 ZH = "zh_cn"
 EN = "en_us"
@@ -22,28 +22,14 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     # 统一面板
     "panel.title":        {ZH: "执行详情", EN: "Run details"},
     "panel.title_tools":  {ZH: "思考与工具 · {n} 次工具调用", EN: "Thinking & tools · {n} tool calls"},
-    "panel.reasoning":    {ZH: "推理过程", EN: "Reasoning"},
-    "panel.tools":        {ZH: "工具调用", EN: "Tool calls"},
-    "panel.collapsed":    {ZH: "已折叠 {n} 步", EN: "Collapsed · {n} steps"},
-    "panel.expand":       {ZH: "展开查看", EN: "Expand"},
     # 溢出保护：内容被截断 / 步骤被裁掉时补一行说明，让用户知道「还有东西但没显示」
     "panel.overflow":     {ZH: "…已省略 {n} 字符", EN: "…{n} chars omitted"},
     "panel.trimmed":      {ZH: "…更早的 {n} 步已折叠", EN: "…{n} earlier steps folded"},
-    # 状态
-    "status.thinking":    {ZH: "思考中…", EN: "Thinking…"},
-    "status.streaming":   {ZH: "生成中…", EN: "Streaming…"},
-    "status.done":        {ZH: "已完成", EN: "Done"},
-    "status.failed":      {ZH: "出错了", EN: "Failed"},
-    "status.stopped":     {ZH: "已中断", EN: "Stopped"},
     # clarify
     "clarify.header":     {ZH: "需要你确认", EN: "Needs your input"},
     "clarify.other":      {ZH: "其他（我直接输入）", EN: "Other (I'll type it)"},
     "clarify.hint":       {ZH: "点按钮，或直接回复文字都行。", EN: "Tap a button, or just reply with text."},
     "clarify.multi_hint": {ZH: "可多选，回复编号用逗号隔开。", EN: "Multi-select — reply with numbers separated by commas."},
-    # 页脚
-    "footer.tools":       {ZH: "{n} 次工具调用", EN: "{n} tool calls"},
-    "footer.elapsed":     {ZH: "耗时 {s}s", EN: "{s}s"},
-    "footer.model":       {ZH: "模型 {name}", EN: "model {name}"},
 }
 
 
@@ -72,14 +58,3 @@ def i18n_text(key: str, **fmt: Any) -> Dict[str, Any]:
         "content": t(key, DEFAULT_LOCALES[0], **fmt),
         "i18n_content": {loc: t(key, loc, **fmt) for loc in DEFAULT_LOCALES},
     }
-
-
-def md_i18n_text(key: str, **fmt: Any) -> Dict[str, Any]:
-    """同上，但 ``tag`` 为 ``lark_md``（用于正文类 markdown 文本元素）。"""
-    node = i18n_text(key, **fmt)
-    node["tag"] = "lark_md"
-    return node
-
-
-def known_keys() -> tuple:
-    return tuple(_STRINGS)

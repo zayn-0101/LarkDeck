@@ -136,22 +136,27 @@ plugins:
 
 ```yaml
 plugins:
-  larkdeck:
-    cards: true              # 用卡片渲染回复（关掉则完全退回官方纯文本行为）
-    i18n: true               # 界面文案双语
-    unified_panel: true      # 推理 + 工具合并为一个底部面板
-    clarify_cards: true      # 澄清用按钮卡
-    footer: true             # 页脚（模型 + 上下文用量 + 耗时）
-    show_model: true         # 页脚里显示模型名
-    context_style: text      # 上下文用量样式：text | bar | both
-    model_aliases: ""        # "真名=显示名, 真名2=显示名2"
-    max_reasoning_chars: 1200   # 推理文本上限，超出折叠成一行
-    max_tool_result_chars: 600  # 单条工具结果上限
-    max_panel_steps: 30         # 面板最多保留多少步，更早的收成一行计数
-    context_max_override: 0     # 非 0 时钉住上下文上限（探测不准时兜底）
+  entries:
+    larkdeck:
+      settings:
+        cards: true              # 用卡片渲染回复（关掉则完全退回官方纯文本行为）
+        clarify_cards: true      # 澄清用按钮卡
+        unified_panel: true      # 推理 + 工具合并为一个底部面板（数据接入待做）
+        footer: true             # 页脚（模型 + 上下文用量 + 耗时）
+        show_model: true         # 页脚里显示模型名
+        context_style: text      # 上下文用量样式：text | bar | both
+        model_aliases: ""        # "真名=显示名, 真名2=显示名2"
+        max_reasoning_chars: 1200   # 推理文本上限（统一面板接入前 no-op）
+        max_tool_result_chars: 600  # 单条工具结果上限（统一面板接入前 no-op）
+        max_panel_steps: 30         # 面板最多保留多少步（统一面板接入前 no-op）
+        context_max_override: 0     # 非 0 时钉住上下文上限（探测不准时兜底）
 ```
 
-也可以用环境变量临时覆盖，如 `LARKDECK_CARDS=0`、`LARKDECK_CONTEXT_STYLE=bar`。
+键名、默认值与类型声明在 `plugin.yaml` 的 `config_schema` 里（写错类型 Hermes 会告警，
+不会阻止加载）。插件在 `register()` 时经官方 `ctx.get_config()` 读入这些设置。
+
+也可以用环境变量临时覆盖，如 `LARKDECK_CARDS=0`、`LARKDECK_CONTEXT_STYLE=bar`
+（优先级：环境变量 > config.yaml 设置 > 默认值）。
 
 页脚的模型名和上下文数字**来自官方钩子**，不是拦截核心源码 —— 原理、载荷键名和
 两个踩过的坑见 [`docs/metrics-and-hooks.md`](docs/metrics-and-hooks.md)。
@@ -161,10 +166,10 @@ plugins:
 ## 测试
 
 ```bash
-PY=/Users/Zayn/.hermes/hermes-agent/venv/bin/python3   # 用 Hermes 自带解释器；系统 python3 太老会 ImportError
+PY=/Users/Zayn/.hermes/hermes-agent/venv/bin/python3   # 用 Hermes 自带解释器最贴近线上；系统 python3 也能跑（零第三方依赖）
 
 $PY tests/test_units.py            # 纯单测，零网络零 Hermes 依赖
-$PY tests/check_override.py        # 对真实 Hermes 安装验证平台覆盖是否生效
+$PY tests/check_override.py        # 对真实 Hermes 安装验证平台覆盖 + 插件配置桥接
 $PY tests/check_hooks.py           # 对真实钩子派发器验证指标采集是否接通
 $PY tests/check_clarify_e2e.py     # 澄清卡端到端：发送 → 点击 → 网关解除阻塞
 $PY tests/probe_render.py          # 真发卡片到自己的飞书 DM，验飞书接不接受（要凭据）
@@ -188,7 +193,7 @@ LarkDeck 接管后才生效）。
 ## 已知限制
 
 - **必须和官方适配器同一进程**：官方 `feishu` 平台被禁用时，LarkDeck 无处附着。
-- **依赖 6 个官方适配器的内部方法**（`_feishu_send_with_retry` 等）。全部集中登记在 `compat.py` 里，并用 `probe_adapter_class()` 在运行时校验 —— 官方哪天改了名字，自检会直接报出来，而不是静默失效。
+- **依赖官方适配器的内部方法**：发送/编辑路径 5 个必需（`_feishu_send_with_retry` 等，启动自检校验），点击回调路径 5 个（`_submit_on_loop`、`_card_response` 等）+ 澄清网关内部结构（`_lock` / `_entries` / `mark_awaiting_text`）。全部集中登记在 `compat.py`，并用 `probe_adapter_class()` / `probe_report()` 在运行时探测 —— 官方哪天改了名字，自检会直接报出来，而不是静默失效。
 - ~~**`i18n_content` 的元素级支持需真机确认**~~ → **已实测确认**（2026-09-12）：
   文本元素同时带 `content` 与 `i18n_content`，1.0 与 2.0 卡均被飞书接受。
   兜底仍然安全：客户端不认时回落到 `content`，不会让卡片发不出去。

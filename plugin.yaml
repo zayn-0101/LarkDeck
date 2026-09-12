@@ -12,6 +12,52 @@ description: >
   No Hermes source file is modified and no monkeypatching is used, so a Hermes
   upgrade never requires reinstalling or re-patching this plugin.
 author: zayn-0101
+# 插件配置写在 config.yaml 的 plugins.entries.larkdeck.settings.<key>；
+# 同名环境变量 LARKDECK_<KEY> 优先。default 与代码 _DEFAULTS 保持一致。
+config_schema:
+  cards:
+    type: boolean
+    default: true
+    description: "用卡片渲染回复；任何卡片失败自动回落纯文本"
+  clarify_cards:
+    type: boolean
+    default: true
+    description: "澄清提问用按钮卡；无线索或其他失败时回落内置文字提问"
+  unified_panel:
+    type: boolean
+    default: true
+    description: "推理 + 工具合并为底部一个可折叠面板（数据接入待做，暂为预留）"
+  footer:
+    type: boolean
+    default: true
+    description: "页脚显示 模型 / 上下文用量 / 耗时"
+  show_model:
+    type: boolean
+    default: true
+    description: "页脚里包含模型名"
+  context_style:
+    type: string
+    default: "text"
+    description: "上下文用量样式：text | bar | both"
+  model_aliases:
+    default: ""
+    description: "模型别名：'真名=显示名, ...' 或 {model@base_url: 显示名} 映射"
+  max_reasoning_chars:
+    type: integer
+    default: 1200
+    description: "统一面板中推理文本上限（面板接入前 no-op）"
+  max_tool_result_chars:
+    type: integer
+    default: 600
+    description: "统一面板中工具结果上限（面板接入前 no-op）"
+  max_panel_steps:
+    type: integer
+    default: 30
+    description: "统一面板步骤数上限（面板接入前 no-op）"
+  context_max_override:
+    type: integer
+    default: 0
+    description: "非 0 时钉住上下文窗口上限（自动探测不准时兜底）"
 requires_env:
   - name: FEISHU_APP_ID
     description: "Feishu/Lark app ID"

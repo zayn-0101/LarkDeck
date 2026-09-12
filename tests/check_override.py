@@ -87,6 +87,26 @@ else:
 if not isinstance(getattr(adapter, "_ld_state", None), dict):
     problems.append("_ld_setup() 没跑，实例状态缺失")
 
+# 配置桥接：plugins.entries.larkdeck.settings 里的键必须经 ctx.get_config 生效，
+# 没写的键必须保持默认（这两条一起才能证明桥接"精确"而不是乱写一桶）。
+if ld_mixin is None:
+    problems.append("找不到 LarkDeckMixin，无法验证配置桥接")
+else:
+    ld_mod = sys.modules.get(getattr(ld_mixin, "__module__", ""))
+    if ld_mod is None:
+        problems.append("拿不到 larkdeck.adapter 模块对象，无法验证配置桥接")
+    else:
+        got_clarify = ld_mod._cfg("clarify_cards")
+        got_style = ld_mod._cfg_raw("context_style")
+        got_cards = ld_mod._cfg("cards")
+        print(f"settings bridge: clarify_cards={got_clarify!r} context_style={got_style!r} cards={got_cards!r}")
+        if got_clarify is not False:
+            problems.append(f"ctx settings 未生效：clarify_cards={got_clarify!r}（期望 False）")
+        if got_style != "bar":
+            problems.append(f"ctx settings 未生效：context_style={got_style!r}（期望 'bar'）")
+        if got_cards is not True:
+            problems.append(f"未配置的键没有保持默认：cards={got_cards!r}（期望 True）")
+
 if problems:
     for p in problems:
         print("FAIL:", p)
@@ -113,7 +133,15 @@ def main() -> int:
         # 软链仓库本身 —— 改代码立即生效，不需要重装。
         (home / "plugins" / "larkdeck").symlink_to(REPO, target_is_directory=True)
         (home / "config.yaml").write_text(
-            "plugins:\n  enabled:\n    - larkdeck\n", encoding="utf-8"
+            "plugins:\n"
+            "  enabled:\n"
+            "    - larkdeck\n"
+            "  entries:\n"
+            "    larkdeck:\n"
+            "      settings:\n"
+            "        clarify_cards: false\n"
+            "        context_style: bar\n",
+            encoding="utf-8",
         )
         # 让软链里的包能被 import（父目录上 sys.path）。
         env = dict(os.environ)

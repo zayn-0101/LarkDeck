@@ -25,7 +25,6 @@ REQUIRED_ADAPTER_ATTRS: Tuple[str, ...] = (
     "_build_update_message_body",    # 编辑请求体构造
     "_build_update_message_request", # 编辑请求对象构造
     "_run_blocking",                 # 把阻塞 SDK 调用丢到适配器线程池
-    "format_message",                # 文本格式化（代码块围栏）
 )
 
 # 缺少也不致命：有则用、无则退回内置实现。
@@ -35,6 +34,20 @@ OPTIONAL_ADAPTER_ATTRS: Tuple[str, ...] = (
     "supports_draft_streaming",
     "edit_message",
 )
+
+# 卡片点击路径复用的内置适配器私有接口。缺了不致命（点击回落给内置实现），
+# 但澄清按钮会静默失灵 —— 只探测上报，不阻断卡片加载。
+CALLBACK_ADAPTER_ATTRS: Tuple[str, ...] = (
+    "_is_interactive_operator_authorized",  # 点击人是否获授权
+    "_loop_accepts_callbacks",              # loop 是否已就绪
+    "_submit_on_loop",                      # 把协程提交进 loop
+    "_get_cached_sender_name",              # open_id -> 显示名
+    "_card_response",                       # 卡片回调响应构造
+)
+
+#: 实例属性（不是类属性），无法在类上静态探测：运行时缺失会抛 ``AttributeError``，
+#: 由 ``_on_card_action_trigger`` 捕获并回落。登记在此只为把私有名集中到本文件。
+CALLBACK_INSTANCE_ATTRS: Tuple[str, ...] = ("_loop",)
 
 
 def hermes_version() -> str:
@@ -106,7 +119,38 @@ def probe_report(cls: Optional[type]) -> Dict[str, Any]:
     report["ok"] = ok
     report["missing_required"] = missing
     report["missing_optional"] = [n for n in OPTIONAL_ADAPTER_ATTRS if not _has(cls, n)]
+    report["missing_callback"] = [n for n in CALLBACK_ADAPTER_ATTRS if not _has(cls, n)]
     return report
+
+
+# --------------------------------------------------------------------------- #
+# 澄清网关（``tools.clarify_gateway``）—— 卡片点击与「其他」待答状态直接依赖。
+# 私有名（_lock / _entries / entry.multi_select）只出现在本文件，升级时一处修。
+# --------------------------------------------------------------------------- #
+def clarify_multi_select(clarify_id: str) -> bool:
+    """该澄清是否允许多选；网关不可用时保守返回 False（单选用卡片）。"""
+    try:
+        from tools import clarify_gateway as _cg
+
+        with _cg._lock:
+            entry = _cg._entries.get(str(clarify_id))
+            return bool(getattr(entry, "multi_select", False))
+    except Exception:
+        return False
+
+
+def clarify_mark_awaiting_text(clarify_id: str) -> None:
+    """把该澄清切成「等待文字输入」（点「其他」时用）。失败抛给调用方决定。"""
+    from tools.clarify_gateway import mark_awaiting_text
+
+    mark_awaiting_text(str(clarify_id))
+
+
+def clarify_resolve_gateway_clarify(clarify_id: str, answer: str) -> None:
+    """提交澄清答案、解除网关阻塞。失败抛给调用方决定。"""
+    from tools.clarify_gateway import resolve_gateway_clarify
+
+    resolve_gateway_clarify(str(clarify_id), str(answer))
 
 
 def _has(cls: type, name: str) -> bool:

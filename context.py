@@ -243,7 +243,11 @@ def snapshot() -> Dict[str, Any]:
 
 
 def reset() -> None:
-    """清空全部状态（测试 / ``/new`` 会话用）。"""
+    """清空采集数据（最近快照 + 上下文上限缓存）。
+
+    配置类状态（``_MAX_OVERRIDE`` / ``_ALIASES``）**不清** —— 它们来自用户配置，
+    只能被新的配置覆盖，不该被测试或 ``/new`` 顺手抹掉。
+    """
     with _LOCK:
         _LATEST.clear()
         _MAX_CACHE.clear()

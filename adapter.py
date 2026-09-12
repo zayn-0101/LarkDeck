@@ -74,7 +74,6 @@ _DEFAULTS: Dict[str, Any] = {
     "cards": True,            # 用卡片渲染回复
     "clarify_cards": True,    # 澄清使用按钮卡
     "unified_panel": True,    # 推理 + 工具合并为底部一个可折叠面板
-    "panel_min_seconds": 0.0, # 短于该耗时的回复不渲染面板
     "footer": True,           # 页脚：模型 + 上下文用量 + 耗时
     "show_model": True,       # 页脚显示模型名（关掉只剩上下文和耗时）
     "context_style": "text",  # 上下文用量样式：text（默认）| bar | both
@@ -113,6 +112,28 @@ def configure(**kwargs: Any) -> None:
         if key in _DEFAULTS:
             _CONFIG[key] = value
     _apply_metrics_config()
+
+
+def _apply_ctx_settings(ctx: Any) -> None:
+    """从 Hermes 官方插件配置读本插件的设置。
+
+    官方契约是 ``ctx.get_config(key, default)``，读的是
+    ``plugins.entries.<plugin_id>.settings.<key>``（旧 ``config`` 子树为迁移兼容）。
+    老版本 Hermes / 测试替身没有该方法时静默跳过，环境变量与默认值照旧生效。
+    """
+    get_config = getattr(ctx, "get_config", None)
+    if not callable(get_config):
+        return
+    found: Dict[str, Any] = {}
+    for key in _DEFAULTS:
+        try:
+            value = get_config(key, None)
+        except Exception:
+            continue
+        if value is not None:
+            found[key] = value
+    if found:
+        configure(**found)
 
 
 def _cfg_raw(key: str, default: Any = None) -> Any:
@@ -312,12 +333,9 @@ class LarkDeckMixin:
         if not _cfg("clarify_cards") or not choices or not getattr(self, "_client", None):
             return await fallback()
         try:
-            multi = False
             try:
-                from tools import clarify_gateway as _cg
-                with _cg._lock:
-                    multi = bool(getattr(_cg._entries.get(clarify_id), "multi_select", False))
-            except Exception:
+                multi = _compat.clarify_multi_select(clarify_id)
+            except Exception:  # pragma: no cover - compat 内部已兜底
                 multi = False
             card = _cards.clarify_card(question, list(choices), clarify_id=clarify_id,
                                        session_key=session_key, multi=multi)
@@ -371,12 +389,11 @@ class LarkDeckMixin:
 
         async def _job() -> None:
             try:
-                from tools.clarify_gateway import mark_awaiting_text, resolve_gateway_clarify
                 if is_other:
                     # 「其他」不提交答案，只把该 clarify 切成等待文字输入。
-                    mark_awaiting_text(clarify_id)
+                    _compat.clarify_mark_awaiting_text(clarify_id)
                 else:
-                    resolve_gateway_clarify(clarify_id, str(answer))
+                    _compat.clarify_resolve_gateway_clarify(clarify_id, str(answer))
             except Exception as exc:
                 logger.error("[larkdeck] resolve_gateway_clarify 失败: %s", exc, exc_info=True)
 
@@ -465,6 +482,9 @@ def register(ctx: Any) -> None:
     except Exception as exc:  # pragma: no cover - 只可能在非 Hermes 环境触发
         _remember_selfcheck(False, f"无法导入 Hermes 平台注册表: {exc}")
         return
+
+    # 0) 读官方插件配置（plugins.entries.larkdeck.settings.*）—— 环境变量仍优先。
+    _apply_ctx_settings(ctx)
 
     # 1) 先把内置 feishu 解析出来（这一步会触发它的 deferred loader）。
     try:

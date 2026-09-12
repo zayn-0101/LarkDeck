@@ -5,7 +5,7 @@
     python3 tests/test_units.py
 
 覆盖四件事：
-  1. ``enrich()`` 的「换 class」把戏真的成立（MRO 顺序、幂等、能力探测）；
+  1. ``build_adapter()`` 的「换 class」把戏真的成立（MRO 顺序、幂等、能力探测）；
   2. 卡片 JSON 结构合法、双语字段齐全、统一面板空则不渲染；
   3. 覆盖层的四条主路径在**失败时都回落**内置实现 —— 卡片是增强，不能弄丢消息；
   4. 指标层（上下文用量 / 页脚 / 模型别名）与溢出保护的每个边界。
@@ -95,9 +95,6 @@ class StubAdapter:
     async def _run_blocking(self, func, *args):
         return func(*args)
 
-    def format_message(self, content):
-        return content
-
     # --- 被继承的行为（用于验证「回落」） ---
     async def send(self, chat_id, content, reply_to=None, metadata=None, **kw):
         self.calls.append(("SUPER.send", content))
@@ -173,6 +170,10 @@ def test_probe_adapter_class_reports_missing():
     ok, missing = compat.probe_adapter_class(StubAdapter)
     assert ok and missing == [], missing
 
+    report = compat.probe_report(StubAdapter)
+    assert report["missing_callback"] == [], "点击路径接口齐全时不应有回调缺口"
+    assert report["adapter_class"].endswith("StubAdapter")
+
     class Missing:
         """只有一半接口的假适配器。"""
 
@@ -181,6 +182,13 @@ def test_probe_adapter_class_reports_missing():
 
     ok2, missing2 = compat.probe_adapter_class(Missing)
     assert not ok2 and "_run_blocking" in missing2, missing2
+    assert "_card_response" in compat.probe_report(Missing)["missing_callback"]
+
+
+def test_clarify_gateway_bridge_degrades_safely():
+    # 无 Hermes 环境（没有 tools 模块）时保守返回 False，而不是抛异常。
+    assert compat.clarify_multi_select("cid-x") is False
+    assert compat.CALLBACK_INSTANCE_ATTRS == ("_loop",)
 
 
 # --------------------------------------------------------------------------- #
@@ -371,6 +379,29 @@ def test_send_falls_back_to_text_on_card_failure():
     assert any(c[0] == "SUPER.send" for c in raw.calls), raw.calls
 
 
+def test_send_empty_content_or_missing_client_falls_back():
+    empty = _make()
+    _run(empty.send("oc_1", ""))
+    assert empty.calls[0][0] == "SUPER.send", "空内容不该发卡片"
+    naked = _make()
+    naked._client = None
+    _run(naked.send("oc_1", "你好"))
+    assert naked.calls[0][0] == "SUPER.send", "没有 SDK 客户端时只能走内置"
+
+
+def test_send_cards_off_falls_back():
+    defaults = dict(adapter._DEFAULTS)
+    try:
+        adapter.configure(cards=False)
+        raw = _make()
+        _run(raw.send("oc_1", "你好"))
+        assert raw.calls[0][0] == "SUPER.send", "cards=False 必须完全退回纯文本"
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
 def test_edit_message_untracked_goes_to_builtin():
     raw = _make()
     _run(raw.edit_message("oc_1", "om_unknown", "x", finalize=False))
@@ -386,10 +417,33 @@ def test_edit_message_updates_tracked_card_and_finalizes():
     assert "om_card_1" not in raw._ld_state, "finalize 后应停止追踪"
 
 
+def test_edit_message_falls_back_when_card_update_fails():
+    raw = _make()
+    _run(raw.send("oc_1", "流式中"))
+    raw.calls.clear()
+    raw._client.im.v1.message.update = lambda request: {"code": 99999, "msg": "update rejected"}
+    result = _run(raw.edit_message("oc_1", "om_card_1", "答案", finalize=True))
+    assert ("SUPER.edit", "答案", True) in raw.calls, "卡片更新失败必须回落内置编辑"
+    assert result.message_id == "om_card_1"
+
+
 def test_send_clarify_without_choices_falls_back():
     raw = _make()
     _run(raw.send_clarify("oc_1", "开放式问题？", None, "cid", "sk"))
     assert raw.calls[0][0] == "SUPER.clarify", raw.calls
+
+
+def test_send_clarify_cards_off_falls_back():
+    defaults = dict(adapter._DEFAULTS)
+    try:
+        adapter.configure(clarify_cards=False)
+        raw = _make()
+        _run(raw.send_clarify("oc_1", "选哪个？", ["A", "B"], "cid", "sk"))
+        assert raw.calls[0][0] == "SUPER.clarify", raw.calls
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
 
 
 def test_card_action_unrelated_value_falls_through():
@@ -645,6 +699,32 @@ def test_adapter_footer_wiring() -> None:
     finally:
         context.set_context_override(None)
         context.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_ctx_settings_bridge() -> None:
+    """官方插件配置（ctx.get_config）是 YAML 配置进 _CONFIG 的唯一通道。"""
+    defaults = dict(adapter._DEFAULTS)
+
+    class _Ctx:
+        def __init__(self, values: Dict[str, Any]) -> None:
+            self.values = values
+
+        def get_config(self, key: str, default: Any = None) -> Any:
+            return self.values.get(key, default)
+
+    try:
+        adapter._apply_ctx_settings(_Ctx({"footer": False, "context_style": "bar",
+                                          "no_such_key": 1}))
+        assert adapter._cfg("footer") is False
+        assert adapter._cfg_raw("context_style") == "bar"
+        # 老版本 / 测试替身没有 get_config：静默跳过，不抛不炸
+        adapter._apply_ctx_settings(object())
+        adapter._apply_ctx_settings(_Ctx({}))
+        assert adapter._cfg("footer") is False, "空 settings 不应回写默认值"
+    finally:
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)
         adapter._apply_metrics_config()
