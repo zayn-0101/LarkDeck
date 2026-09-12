@@ -2622,6 +2622,37 @@ def test_panel_attribution_is_deterministic_by_chat_id():
     panel.reset()
 
 
+def test_session_key_includes_profile_when_multiplexed():
+    """开了 ``multiplex_profiles`` 时算键必须带 profile —— 否则绑定永远写不进去。
+
+    2026-09-13 审计发现的潜在坑：``build_session_key`` 在 multiplex 模式下会把 profile
+    段算进键里，我们少传一个参数就会**永远匹配不上**，于是归属整体静默退回「最近活跃」
+    （不报错、日志里也看不出来）。本机没开这个开关，所以是潜在坑而非现症 ——
+    但正因如此才需要一条断言把它钉住。
+    """
+    class _Cfg:
+        group_sessions_per_user = True
+        thread_sessions_per_user = False
+        multiplex_profiles = False
+
+    class _Store:
+        def __init__(self, multiplex: bool) -> None:
+            self.config = _Cfg()
+            self.config.multiplex_profiles = multiplex
+
+        def _resolve_profile_for_key(self, source):
+            return "work" if getattr(source, "chat_id", "") == "oc_work" else None
+
+    source = types.SimpleNamespace(chat_id="oc_work", platform="feishu")
+    # 没开 multiplex：不传 profile（与核心默认行为一致）
+    assert compat.profile_for_source(_Store(False), source) == ""
+    # 开了：要把 profile 算进键
+    assert compat.profile_for_source(_Store(True), source) == "work"
+    # 算不出 profiles / 老版本 store：退回空串，不抛
+    assert compat.profile_for_source(object(), source) == ""
+    assert compat.profile_for_source(None, source) == ""
+
+
 def test_session_attribution_helpers_degrade_safely():
     """归属辅助函数拿不到东西时**必须返回空/False，绝不抛**；且**只读**。"""
     assert compat.lookup_session_id(None, "k") == ""
