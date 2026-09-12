@@ -495,6 +495,24 @@ def reply_card(answer: str, *, streaming: bool = False, panel: Optional[Dict[str
     return card(elements=elements, title=None, streaming=streaming, summary=answer)
 
 
+#: 飞书 Card 2.0 的**硬上限**：整张卡里（含嵌套）带 ``tag`` 键的对象总数 ≤ 200。
+#: 超了不是「截断」，而是**整张卡完全不渲染**。
+#:
+#: **2026-09-13 真机实测（tests/probe_render.py --elements）**，不是抄来的：
+#:   * 递归实测 198 个元素 → ``code=0`` 收下；
+#:   * 递归实测 202 个元素 → **拒收**：``code=230099``，
+#:     ``ext=ErrCode: 11310; ErrMsg: element exceeds the limit``。
+#: 所以墙在 198~202 之间，官方口径的 200 成立；``230099`` 是**不可重试**的
+#: 确定性错误（同样内容重试必然同样失败），别把它塞进退避重试集合。
+#:
+#: ⚠️ 计数必须是**递归数所有含 tag 的对象**，不是数 ``body.elements`` 的长度：
+#: 折叠面板里的每个 markdown 都算一个，只数顶层会低估几倍 —— 上面那两次实测用的
+#: 就是「一个折叠面板塞 N 个子元素」的真实形状。
+FEISHU_ELEMENT_LIMIT = 200
+
+#: 给正文 / 脚注 / 收尾留的余量（收尾帧会补脚注，不能刚好卡在 200）。
+_ELEMENT_LIMIT_RESERVE = 6
+
 #: 卡片 JSON 的 UTF-8 字节预算。飞书对 interactive 卡有大小上限，超了会被拒收。
 #: **量纲必须是字节**：``ensure_ascii=False`` 下汉字占 3 字节，按字符估会低估 3 倍。
 #:
@@ -511,6 +529,21 @@ def reply_card(answer: str, *, streaming: bool = False, panel: Optional[Dict[str
 CARD_BYTE_BUDGET = 40000
 
 
+def count_elements(node: Any) -> int:
+    """递归数出卡片里**所有**带 ``tag`` 键的对象（嵌套面板的子元素全算）。
+
+    见 :data:`FEISHU_ELEMENT_LIMIT`：这是飞书的硬墙，撞上不是截断而是整卡不渲染。
+    """
+    if isinstance(node, dict):
+        total = 1 if "tag" in node else 0
+        for value in node.values():
+            total += count_elements(value)
+        return total
+    if isinstance(node, (list, tuple)):
+        return sum(count_elements(item) for item in node)
+    return 0
+
+
 def card_bytes(node: Dict[str, Any]) -> int:
     """卡片 JSON 的 utf-8 字节数（发送时用的就是这份序列化）。"""
     try:
@@ -521,10 +554,14 @@ def card_bytes(node: Dict[str, Any]) -> int:
 
 def fit_reply_card(answer: str, *, streaming: bool = False,
                    panel: Optional[Dict[str, Any]] = None, footer: Optional[str] = None,
-                   budget: int = CARD_BYTE_BUDGET) -> "tuple[Dict[str, Any], str]":
+                   budget: int = CARD_BYTE_BUDGET,
+                   element_limit: int = FEISHU_ELEMENT_LIMIT - _ELEMENT_LIMIT_RESERVE
+                   ) -> "tuple[Dict[str, Any], str]":
     """构造回复卡，超预算时**分级丢装饰**。返回 ``(card, 降级档位)``。
 
     档位：``ok`` → ``no-panel`` → ``bare`` → ``over-budget``。
+    降载由**两道独立的墙**触发：字节预算（我们自己的保守值）与元素数硬上限（飞书 200）。
+    两者任一超了就往下丢装饰 —— 元素那一侧撞上不是「卡片变小」而是**整张卡不渲染**。
 
     **刻意不截断正文。** 按审计核实：Hermes 官方明确把 native 流式下的长度责任推给适配器
     （``gateway/stream_consumer.py`` 的注释写着 "Native streaming bypasses this: the adapter
@@ -538,7 +575,10 @@ def fit_reply_card(answer: str, *, streaming: bool = False,
                 (None, None, "bare"))
     for panel_try, footer_try, tier in attempts:
         node = reply_card(answer, streaming=streaming, panel=panel_try, footer=footer_try)
-        if card_bytes(node) <= budget:
+        # 两道**独立**的墙：字节数（我们自己的保守预算）与元素数（飞书硬上限 200）。
+        # 后者是 2026-09-13 真机量出来的（202 个元素 → 230099 / ErrCode 11310），
+        # 撞上它不是「卡片变小」而是**整张卡不渲染**，所以必须一起判。
+        if card_bytes(node) <= budget and count_elements(node) <= element_limit:
             return node, tier
     # 连装饰全摘都超预算：正文本身太大。**照常返回**，让发送失败去走官方回落
     # （官方会分块），而不是在这里把答案切掉。
@@ -583,6 +623,11 @@ def unified_panel(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
     max_tool_chars = _cap(max_tool_chars, MAX_TOOL_RESULT_CHARS)
     max_steps = _cap(max_steps, MAX_PANEL_STEPS)
     inner: List[Dict[str, Any]] = []
+    # 面板**自己**也要为飞书的元素硬墙让路（见 :data:`FEISHU_ELEMENT_LIMIT`）：
+    # 面板的元素 = 轮次行 + 步骤行 + 可能的折叠提示。`max_panel_steps` 是用户可配的，
+    # 配大了会把整张卡顶废（超限是**整卡不渲染**，不是截断），所以这里先算可用额度。
+    # 这只是预防性的粗算 —— 真正的兜底在 :func:`fit_reply_card` 里递归数。
+    panel_room = max(2, FEISHU_ELEMENT_LIMIT - _ELEMENT_LIMIT_RESERVE - 2)
 
     round_list = [item for item in rounds if isinstance(item, dict) and str(item.get("text") or "")]
     if round_list:
@@ -592,7 +637,11 @@ def unified_panel(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
         # 把 1500 字的正文一起顶穿字节预算 → fit_reply_card 降载到 no-panel，
         # **整个推理面板消失**（只剩一行 INFO 日志，正是本项目最怕的静默降级）。
         # 所以宁可有界地少显示历史轮：渲染轮数 ≤ 预算 // _MIN_ROUND_CHARS。
-        keep = max(1, min(len(round_list), max_reasoning_chars // _MIN_ROUND_CHARS))
+        # 两个约束一起收：字符预算（均分额度）与元素硬墙（给步骤行留出位置，
+        # 有工具时至少留 1 行，没工具时轮次可以吃满面板额度）。
+        keep = max(1, min(len(round_list),
+                          max_reasoning_chars // _MIN_ROUND_CHARS,
+                          max(1, panel_room - (1 if tools else 0) - 1)))
         share = max(_MIN_ROUND_CHARS, max_reasoning_chars // keep)
         dropped = len(round_list) - keep
         if dropped > 0:
@@ -603,6 +652,8 @@ def unified_panel(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
     elif reasoning:
         inner.append(md(truncate(reasoning, max_reasoning_chars)))
     steps = [str(item) for item in tools]
+    # 面板里已经放了几个元素，剩下的额度才是步骤能用的
+    max_steps = max(1, min(max_steps, panel_room - len(inner)))
     if max_steps > 0 and len(steps) > max_steps:
         # 保留最近几步：排查问题基本只看尾部，早期的步骤价值随时间递减。
         dropped = len(steps) - max_steps

@@ -2106,6 +2106,45 @@ def test_clarify_free_text_only_commits_when_the_core_accepts_it():
         panel.reset()
 
 
+def test_element_limit_is_enforced_recursively():
+    """飞书的**元素数硬上限**必须真的挡住 —— 撞上不是「卡片变小」而是整张卡不渲染。
+
+    2026-09-13 真机实测（`probe_render.py --elements`）：递归 198 个元素收下、
+    202 个拒收（`code=230099` · `ext=ErrCode: 11310 element exceeds the limit`）。
+    所以墙在 200 附近，而**计数必须递归**：折叠面板里每个子元素都算一个，
+    只数顶层 ``body.elements`` 会低估几倍。
+    """
+    # 计数口径：含嵌套
+    inner = cards.collapsible({"tag": "plain_text", "content": "t"},
+                             [cards.md(f"行 {i}") for i in range(5)])
+    card = cards.reply_card("正文", panel=inner, footer="脚注")
+    # 正文 1 + 面板 1 + 面板标题 1 + **面板标题的 icon 1** + 5 个子元素 + 脚注 1 = 10
+    # （`header.icon` 也是带 tag 的对象 —— 只数「看得见的元素」就会漏掉它）
+    assert cards.count_elements(card) == 10, cards.count_elements(card)
+
+    # 面板自己就要收住：步数配置得再大也不能把整卡顶过墙
+    panel = cards.unified_panel(tools=[f"✅ step {i}" for i in range(500)],
+                               max_steps=500, max_tool_chars=20)
+    assert cards.count_elements(panel) < cards.FEISHU_ELEMENT_LIMIT, \
+        f"面板自己的元素数没收住：{cards.count_elements(panel)}"
+
+    # 兜底闸门：`unified_panel` 的预算已经拦住了上面那种情况，所以这里用**底层原语**
+    # 手工造一个超限的面板，模拟「上游硬塞进来一张注定被拒的卡」。
+    fat = cards.collapsible({"tag": "plain_text", "content": "胖面板"},
+                            [cards.md(f"行 {i}") for i in range(250)])
+    assert cards.count_elements(fat) > cards.FEISHU_ELEMENT_LIMIT, \
+        "（构造前提）这个面板本身应当超限，否则这条测试没意义"
+    node, tier = cards.fit_reply_card("答案", streaming=True, panel=fat, footer="脚注")
+    assert tier != "ok", "超限的面板必须被降载掉"
+    assert cards.count_elements(node) <= cards.FEISHU_ELEMENT_LIMIT, \
+        f"降载后仍然超限：{cards.count_elements(node)} 个元素"
+
+    # 字节那道墙不受影响（两道德独立判定）
+    _small, tier2 = cards.fit_reply_card("答案" * 100, streaming=True, panel=fat,
+                                         footer="脚注", budget=100)
+    assert tier2 == "over-budget", tier2
+
+
 def test_panel_concurrent_writes_are_safe():
     panel.reset()
     errors: list = []

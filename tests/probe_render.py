@@ -460,6 +460,93 @@ def probe_typewriter(client, chat: str, cards) -> int:
     return 0 if all(code == 0 for _, code, _ in codes) else 1
 
 
+#: 字节阶梯探针要试探的目标大小（utf-8 字节）。两个同类项目给的上限各不相同：
+#: hermes-feishu-streaming-card 的 ``SAFE_CARD_JSON_BYTES = 28_000``、
+#: hermes-lark-streaming 注释里的「卡片总大小 30KB 上限」（``200860``）——
+#: 而本项目的 ``CARD_BYTE_BUDGET`` 是个**没有权威依据的保守猜测（40000）**。
+#: 上限高估的后果不是「卡片太大被拒」这么简单：一帧失败会被内核判成「本回合 native
+#: 不可用」，之后输出退化成多条纯文本。所以这件事必须真机量出来。
+_BYTE_LADDER = (40000, 48000, 56000, 64000, 80000)
+
+#: 元素阶梯：同类项目（hermes-feishu-streaming-card）用 ``FEISHU_MAX_ELEMENTS = 200``，
+#: 但那是它的常量、不是官方数字。计数口径是「**整卡里所有带 tag 的对象**」（含嵌套），
+#: 所以这里按生产卡的真实形状来试探 —— 把一个折叠面板塞满，而不是平铺一堆元素。
+_ELEMENT_LADDER = (196, 200, 201, 204)
+
+
+def probe_byte_limit(client, chat: str, cards) -> int:
+    """**卡片字节上限探针**：一路加码发到飞书拒收，把真实阈值钉出来。
+
+    做法：正文用纯 ASCII（1 字符 = 1 字节，好控），把整卡 JSON 的 utf-8 字节数
+    顶到目标值附近再发。返回码就是答案（``code=0`` 收下、非 0 拒收）。
+    每一张卡都带探针标记，会被下次清理带走。
+    """
+    print("逐档试探卡片字节上限（正文用 ASCII 精确控字节）：")
+    accepted = []
+    for target in _BYTE_LADDER:
+        # 先估一个正文长度，再按实际序列化字节回调到目标附近（迭代两次足够）
+        body = "x" * max(1, target - 1500)
+        card = cards.reply_card(body, streaming=False,
+                                footer=f"{PROBE_MARK} · 字节阶梯 {target}")
+        for _ in range(3):
+            actual = len(json.dumps(card, ensure_ascii=False).encode("utf-8"))
+            delta = target - actual
+            if abs(delta) < 200:
+                break
+            body = "x" * max(1, len(body) + delta)
+            card = cards.reply_card(body, streaming=False,
+                                    footer=f"{PROBE_MARK} · 字节阶梯 {target}")
+        nbytes = len(json.dumps(card, ensure_ascii=False).encode("utf-8"))
+        code, msg, mid = send(client, chat, card)
+        flag = "✅" if code == 0 else "❌"
+        print(f"  {flag} 目标 {target:>6} 字节 → 实际 {nbytes:>6} 字节  code={code}  msg={msg}")
+        if code == 0:
+            accepted.append(nbytes)
+            _save_sent_ids(_load_sent_ids() + [mid])
+            # **流式路径走的是 PATCH，不是 create** —— 上限可能不同，必须单独量。
+            # 建卡成功后原地 patch 成同样大的卡，看得的是同一个数字。
+            pcode, pmsg = patch(client, mid, card)
+            print(f"     ↳ 同尺寸 PATCH（流式帧走的就是这条）code={pcode}  msg={pmsg}")
+            if pcode != 0:
+                print("       ⚠️ PATCH 的上限比 CREATE 低！流式卡必须按 PATCH 的上限来定预算")
+        else:
+            print(f"     ↑ 被拒的那张卡带在飞书侧，msg 是唯一线索：{msg}")
+    if accepted:
+        print(f"\n📏 实测被接受的**最大**卡片 = {max(accepted)} 字节")
+        print("   → CARD_BYTE_BUDGET 必须小于它（建议留 15%~30% 余量），"
+              "并把这个数字写回 core/cards.py 的注释里")
+    return 0
+
+
+def probe_element_limit(client, chat: str, cards) -> int:
+    """**元素数上限探针**：把折叠面板塞满 markdown，一路加到飞书拒收。
+
+    为什么要真机量：``FEISHU_ELEMENT_LIMIT`` 这类常量在同类项目里各写各的（200 / 180），
+    而撞上它的后果是**整张卡完全不渲染**（不是截断）。我们的面板元素数由
+    ``max_panel_steps`` 与推理轮数决定，用户把配置调大就会直接撞墙 ——
+    所以这个数字必须是量出来的，不是抄来的。
+    """
+    print("逐档试探卡片元素数上限（把折叠面板塞满）：")
+    accepted = []
+    for target in _ELEMENT_LADDER:
+        children = [cards.md(f"第 {i} 行") for i in range(max(1, target - 3))]
+        panel = cards.collapsible({"tag": "plain_text", "content": "元素阶梯"},
+                                  children, expanded=True)
+        card = cards.reply_card("元素数探针", streaming=False, panel=panel,
+                                footer=f"{PROBE_MARK} · 元素阶梯 {target}")
+        counted = cards.count_elements(card)
+        code, msg, mid = send(client, chat, card)
+        flag = "✅" if code == 0 else "❌"
+        print(f"  {flag} 目标 {target:>4} 元素 → 递归实测 {counted:>4} 元素  code={code}  msg={msg}")
+        if code == 0:
+            accepted.append(counted)
+            _save_sent_ids(_load_sent_ids() + [mid])
+    if accepted:
+        print(f"\n📏 实测被接受的**最大**元素数 = {max(accepted)}")
+        print("   → cards.FEISHU_ELEMENT_LIMIT 必须小于它")
+    return 0
+
+
 def main(argv: list) -> int:
     clean_only = "--clean-only" in argv
     do_clean = "--no-clean" not in argv
@@ -482,6 +569,10 @@ def main(argv: list) -> int:
         return 0
     if "--typing" in argv:
         return probe_typewriter(client, chat, cards)
+    if "--bytes" in argv:
+        return probe_byte_limit(client, chat, cards)
+    if "--elements" in argv:
+        return probe_element_limit(client, chat, cards)
 
     cases = (build_cases(cards) + build_bilingual_cases(cards) + build_footer_cases(cards)
              + build_dialect_probe_cards(cards))

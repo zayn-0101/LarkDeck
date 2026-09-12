@@ -232,18 +232,22 @@ def _cfg_int(key: str, default: int = 0) -> int:
         return default
 
 
-def _log_degrade_once(tier: str) -> None:
+def _log_degrade_once(tier: str, elements: int = 0) -> None:
     """卡片降载日志 —— **限流**：60 秒最多一条。
 
     降载是在每个流式帧上判定的，不限流的话超预算期间每秒会刷 4 条
     （本项目自己的约定是诊断日志必须限流，见 _log_empty_panel_once）。
+
+    ``elements`` 是这张卡递归数出来的元素数（飞书硬上限 200，真机实测 202 就被
+    ``230099/11310`` 拒）。必须打出来：光看档位名分不出降载是**字节**触发的还是
+    **元素数**触发的，而两者的处置完全不同（后者要收轮数 / 步数，不是收长度）。
     """
     now = time.monotonic()
     if now - getattr(_log_degrade_once, "_at", 0.0) < 60.0:
         return
     _log_degrade_once._at = now
-    logger.warning("[larkdeck] 卡片超字节预算，降载档位=%s（正文不截断；"
-                   "若仍发不出会回落官方分块）", tier)
+    logger.warning("[larkdeck] 卡片超限（元素 %d/200），降载档位=%s"
+                   "（正文不截断；若仍发不出会回落官方分块）", elements, tier)
 
 
 def _log_empty_panel_once() -> None:
@@ -456,7 +460,10 @@ class LarkDeckMixin:
         card, tier = _cards.fit_reply_card(content, streaming=streaming,
                                            panel=panel, footer=footer)
         if tier != "ok":
-            _log_degrade_once(tier)
+            # 把元素数一起打出来：降载可能是**字节**触发的、也可能是**元素数**触发的
+            # （飞书硬上限 200，真机实测 202 就被 230099/11310 拒），
+            # 光看档位名分不出是哪一种，而两者的处置完全不同（后者要收轮数/步数）。
+            _log_degrade_once(tier, _cards.count_elements(card))
         return card
 
     # ---------------------------------------------------------------- 发送原语
