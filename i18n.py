@@ -26,6 +26,9 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "panel.tools":        {ZH: "工具调用", EN: "Tool calls"},
     "panel.collapsed":    {ZH: "已折叠 {n} 步", EN: "Collapsed · {n} steps"},
     "panel.expand":       {ZH: "展开查看", EN: "Expand"},
+    # 溢出保护：内容被截断 / 步骤被裁掉时补一行说明，让用户知道「还有东西但没显示」
+    "panel.overflow":     {ZH: "…已省略 {n} 字符", EN: "…{n} chars omitted"},
+    "panel.trimmed":      {ZH: "…更早的 {n} 步已折叠", EN: "…{n} earlier steps folded"},
     # 状态
     "status.thinking":    {ZH: "思考中…", EN: "Thinking…"},
     "status.streaming":   {ZH: "生成中…", EN: "Streaming…"},

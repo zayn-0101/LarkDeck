@@ -52,6 +52,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import cards as _cards
 from . import compat as _compat
+from . import context as _context
+from . import hooks as _hooks
 from . import i18n as _i18n
 
 logger = logging.getLogger("larkdeck")
@@ -73,11 +75,36 @@ _DEFAULTS: Dict[str, Any] = {
     "clarify_cards": True,    # 澄清使用按钮卡
     "unified_panel": True,    # 推理 + 工具合并为底部一个可折叠面板
     "panel_min_seconds": 0.0, # 短于该耗时的回复不渲染面板
+    "footer": True,           # 页脚：模型 + 上下文用量 + 耗时
+    "show_model": True,       # 页脚显示模型名（关掉只剩上下文和耗时）
+    "context_style": "text",  # 上下文用量样式：text（默认）| bar | both
+    "model_aliases": "",      # 模型别名："真名=显示名, ..." 或 dict
+    "max_reasoning_chars": _cards.MAX_REASONING_CHARS,
+    "max_tool_result_chars": _cards.MAX_TOOL_RESULT_CHARS,
+    "max_panel_steps": _cards.MAX_PANEL_STEPS,
+    "context_max_override": 0,  # 非 0 时钉住上下文上限（自动探测不准时兜底）
 }
 _CONFIG: Dict[str, Any] = dict(_DEFAULTS)
 
 #: 启动自检结论，供日志 / doctor 查看。
 SELFCHECK: Dict[str, Any] = {"ok": None, "detail": "not run"}
+
+#: 钩子订阅结论：``{钩子名: 是否成功}``；空 dict 表示还没跑过 register()。
+HOOKS: Dict[str, bool] = {}
+
+
+def _apply_metrics_config() -> None:
+    """把「别名 + 上下文上限覆盖」推给 :mod:`larkdeck.context`（幂等）。"""
+    aliases = _cfg_raw("model_aliases")
+    if isinstance(aliases, dict):
+        _context.set_aliases(aliases)
+    else:
+        spec = str(aliases or "").strip()
+        env = os.environ.get("LARKDECK_MODEL_ALIASES", "")
+        _context.set_aliases({}, spec=f"{spec},{env}" if env else spec)
+    pinned = _cfg_int("context_max_override", 0)
+    if pinned:
+        _context.set_context_override(pinned)
 
 
 def configure(**kwargs: Any) -> None:
@@ -85,13 +112,34 @@ def configure(**kwargs: Any) -> None:
     for key, value in kwargs.items():
         if key in _DEFAULTS:
             _CONFIG[key] = value
+    _apply_metrics_config()
 
 
-def _cfg(key: str) -> Any:
+def _cfg_raw(key: str, default: Any = None) -> Any:
+    """取原始配置值（字符串/数字原样返回，供样式类开关用）。
+
+    环境变量优先 —— 与 :func:`_cfg` 同一套优先级，只是不做布尔强转。
+    """
     env = os.environ.get("LARKDECK_" + key.upper())
-    if env is not None:
-        return env.strip().lower() not in ("0", "false", "no", "off", "")
-    return _CONFIG.get(key, _DEFAULTS.get(key))
+    if env is not None and env.strip() != "":
+        return env.strip()
+    return _CONFIG.get(key, _DEFAULTS.get(key, default))
+
+
+def _cfg(key: str) -> bool:
+    value = _cfg_raw(key)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in ("0", "false", "no", "off", "")
+    return bool(value)
+
+
+def _cfg_int(key: str, default: int = 0) -> int:
+    try:
+        return int(float(_cfg_raw(key)))
+    except (TypeError, ValueError):
+        return default
 
 
 def _remember_selfcheck(ok: bool, detail: str) -> None:
@@ -149,12 +197,37 @@ class LarkDeckMixin:
             self._ld_state.pop(message_id, None)
 
     @staticmethod
-    def _ld_footer(started: Optional[float]) -> Optional[str]:
-        """页脚 —— 刻意用「符号 + 数字」，天然无需翻译。"""
-        if not started:
+    def _ld_context_segment(snap: Optional[Dict[str, Any]] = None) -> str:
+        """页脚里的上下文用量片段；样式由 ``context_style`` 决定（text / bar / both）。"""
+        snap = snap if snap is not None else _context.snapshot()
+        style = str(_cfg_raw("context_style") or "text").strip().lower()
+        if style not in ("text", "bar", "both"):
+            style = "text"
+        return _cards.context_indicator(
+            snap.get("input_tokens"), snap.get("context_max"), style=style,
+        )
+
+    @classmethod
+    def _ld_footer(cls, started: Optional[float] = None) -> Optional[str]:
+        """页脚一行：``🤖 模型 · ctx 用量 · ⏱ 耗时``。
+
+        数据全部来自官方钩子（见 :mod:`larkdeck.context`）：钩子还没触发时该段
+        自然缺失，全缺就返回 ``None``（不渲染脚注元素）。**任何情况下不抛异常**
+        —— 页脚是装饰，不能因为它把整张卡片搞坏。
+        """
+        try:
+            if not _cfg("footer"):
+                return None
+            snap = _context.snapshot()
+            duration = max(0.0, time.monotonic() - started) if started else None
+            return _cards.footer_line(
+                model=(snap.get("model_display") or "") if _cfg("show_model") else "",
+                context=cls._ld_context_segment(snap),
+                duration=duration,
+            )
+        except Exception:
+            logger.debug("[larkdeck] 页脚渲染失败，跳过", exc_info=True)
             return None
-        elapsed = max(0.0, time.monotonic() - started)
-        return f"⏱ {elapsed:.1f}s"
 
     # ---------------------------------------------------------------- 发送原语
     async def _ld_send_card(self, chat_id: str, card: Dict[str, Any], *,
@@ -187,8 +260,10 @@ class LarkDeckMixin:
         if not _cfg("cards") or not getattr(self, "_client", None) or not content:
             return await fallback()
         try:
-            card = _cards.reply_card(content, streaming=False,
-                                     footer=self._ld_footer(time.monotonic()))
+            # 首帧没有「已耗时」可言（这一帧就是起点），所以不带 ⏱；⏱ 由后续
+            # edit_message 按 t0 计算。之前这里传的是 time.monotonic()，等于
+            # 恒等于 0.0s —— 属于白占一个字段，顺手修掉。
+            card = _cards.reply_card(content, streaming=False, footer=self._ld_footer())
             result = await self._ld_send_card(chat_id, card, reply_to=reply_to, metadata=metadata)
             if result is not None and getattr(result, "success", False):
                 self._ld_track(getattr(result, "message_id", "") or "", chat_id)
@@ -426,6 +501,15 @@ def register(ctx: Any) -> None:
         _remember_selfcheck(False, "register_platform 未接管成功（同名注册被拒）")
         return
 
+    # 3.5) 订阅官方钩子（只读观察型），给页脚喂模型名 / 上下文用量。
+    #      注册失败不改变自检结论：卡片照常工作，只是页脚少一两段。
+    _apply_metrics_config()
+    try:
+        HOOKS.clear()
+        HOOKS.update(_hooks.register(ctx))
+    except Exception as exc:  # pragma: no cover - 防御性
+        logger.warning("[larkdeck] 钩子订阅异常: %s", exc, exc_info=True)
+
     # 4) 启动自检：确认解析出来的 feishu 工厂确实是我们这个。
     try:
         current = platform_registry.get(PLATFORM_NAME)
@@ -433,8 +517,10 @@ def register(ctx: Any) -> None:
     except Exception:
         ours = False
     if ours:
-        _remember_selfcheck(
-            True, f"Hermes {_compat.hermes_version()} · feishu 平台已由 larkdeck 接管",
-        )
+        hooks_ok = [name for name, ok in HOOKS.items() if ok]
+        detail = f"Hermes {_compat.hermes_version()} · feishu 平台已由 larkdeck 接管"
+        detail += (f" · 钩子 {'/'.join(hooks_ok)}" if hooks_ok
+                   else " · 未订阅到钩子（页脚缺模型/上下文用量）")
+        _remember_selfcheck(True, detail)
     else:
         _remember_selfcheck(False, "注册表里 feishu 仍指向别处，卡片不会生效")

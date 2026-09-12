@@ -4,10 +4,11 @@
 
     python3 tests/test_units.py
 
-覆盖三件事：
+覆盖四件事：
   1. ``enrich()`` 的「换 class」把戏真的成立（MRO 顺序、幂等、能力探测）；
   2. 卡片 JSON 结构合法、双语字段齐全、统一面板空则不渲染；
-  3. 覆盖层的四条主路径在**失败时都回落**内置实现 —— 卡片是增强，不能弄丢消息。
+  3. 覆盖层的四条主路径在**失败时都回落**内置实现 —— 卡片是增强，不能弄丢消息；
+  4. 指标层（上下文用量 / 页脚 / 模型别名）与溢出保护的每个边界。
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import json
 import os
 import sys
 import threading
+import time
 import types
 from typing import Any, Dict
 
@@ -25,7 +27,7 @@ _REPO_PARENT = os.path.dirname(os.path.dirname(_HERE))  # .../code —— 使 `i
 if _REPO_PARENT not in sys.path:
     sys.path.insert(0, _REPO_PARENT)
 
-from larkdeck import adapter, cards, compat, i18n  # noqa: E402
+from larkdeck import adapter, cards, compat, context, i18n  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -467,6 +469,185 @@ def test_clarify_click_from_unauthorized_user_is_ignored():
     )
     raw._on_card_action_trigger(data)
     assert raw.submitted == [], "未授权用户的点击不得触发澄清解析"
+
+
+# --------------------------------------------------------------------------- #
+# 指标渲染：上下文用量 / 页脚（纯函数边界）
+# --------------------------------------------------------------------------- #
+def test_compact_tokens() -> None:
+    assert cards.compact_tokens(0) == "0"
+    assert cards.compact_tokens(999) == "999"
+    assert cards.compact_tokens(1000) == "1k"          # 不留 "1.0k"
+    assert cards.compact_tokens(45200) == "45.2k"
+    assert cards.compact_tokens(200000) == "200k"      # 不留 "200.0k"
+    assert cards.compact_tokens(1000000) == "1m"
+    assert cards.compact_tokens(1500000) == "1.5m"
+    assert cards.compact_tokens(2000000) == "2m"
+    # 脏输入一律空串，绝不吐出 "None" 这种字符串拼进卡片
+    assert cards.compact_tokens(None) == ""
+    assert cards.compact_tokens("x") == ""
+    assert cards.compact_tokens(-5) == ""
+    assert cards.compact_tokens(True) == "", "bool 是 int 的子类，必须挡掉"
+
+
+def test_progress_cells_boundaries() -> None:
+    assert cards.progress_cells(0) == "░" * 8
+    assert cards.progress_cells(100) == "█" * 8
+    assert cards.progress_cells(50) == "████░░░░"
+    assert cards.progress_cells(150) == "█" * 8, "超过 100% 必须夹住，不能画出越界条"
+    assert cards.progress_cells(-10) == "░" * 8
+    assert len(cards.progress_cells(23)) == 8, "格子数恒定，否则页脚会跳宽"
+    # 单调性：占用只增不减时，每格密度不允许回退
+    ranks = {"░": 0, "▒": 1, "▓": 2, "█": 3}
+    prev = [-1] * 8
+    for pct in range(0, 101, 5):
+        now = [ranks[c] for c in cards.progress_cells(pct)]
+        assert all(n >= p for n, p in zip(now, prev)), f"{pct}% 处进度条回退了"
+        prev = now
+
+
+def test_context_indicator_styles() -> None:
+    assert cards.context_indicator(45200, 200000) == "ctx 45.2k/200k · 23%"
+    assert cards.context_indicator(45200, 200000, style="bar") == "ctx [██░░░░░░] 23%"
+    both = cards.context_indicator(45200, 200000, style="both")
+    assert both.startswith("ctx 45.2k/200k [") and both.endswith("23%")
+    # 未知样式回落 text，不抛也不空白
+    assert cards.context_indicator(45200, 200000, style="瞎写") == "ctx 45.2k/200k · 23%"
+    # 数据不全 → 空串（调用方据此不渲染这一段）
+    assert cards.context_indicator(None, 200000) == ""
+    assert cards.context_indicator(100, None) == ""
+    assert cards.context_indicator(100, 0) == ""
+    assert cards.context_indicator(0, 200000) == ""
+    # 超过上限夹在 100%，不显示 250%
+    assert "100%" in cards.context_indicator(500000, 200000)
+
+
+def test_format_elapsed_and_footer_line() -> None:
+    assert cards.format_elapsed(12.34) == "12.3s"
+    assert cards.format_elapsed(60) == "1m00s"
+    assert cards.format_elapsed(125.7) == "2m05s"
+    assert cards.format_elapsed(-1) == "0.0s"
+    line = cards.footer_line(model="Sonnet 4.6", context="ctx 45.2k/200k · 23%", duration=12.3)
+    assert line == "🤖 Sonnet 4.6 · ctx 45.2k/200k · 23% · ⏱ 12.3s"
+    assert cards.footer_line() is None
+    assert cards.footer_line(model="m") == "🤖 m"
+    assert cards.footer_line(duration=0.0) is None, "0 秒不算耗时（首帧就是这个情况）"
+    assert cards.footer_line(tools=3) == "🔧 3"
+    assert cards.footer_line(tools=0) is None
+
+
+# --------------------------------------------------------------------------- #
+# 溢出保护（统一面板上限）
+# --------------------------------------------------------------------------- #
+def test_truncate_marks_omission() -> None:
+    assert cards.truncate("hello", 100) == "hello"
+    assert cards.truncate("hello", 0) == "hello", "limit<=0 表示不限制"
+    long_text = "word " * 400
+    cut = cards.truncate(long_text, 100)
+    assert len(cut) < len(long_text)
+    assert "已省略" in cut, "截断必须留痕，不能静默切掉"
+    assert cut.count(">") == 1, "只补一行说明"
+    # 截断点回退到词边界：不会把词劈成两半
+    assert cut.split("\n")[0].endswith("word")
+
+
+def test_unified_panel_applies_caps() -> None:
+    panel = cards.unified_panel(reasoning="x" * 5000, tools=["a"])
+    assert panel is not None
+    first = panel["elements"][0]["content"]
+    assert "已省略" in first and len(first) < 5000
+    trimmed = cards.unified_panel(tools=[f"step{i}" for i in range(40)])
+    joined = " ".join(e.get("content", "") for e in trimmed["elements"])
+    assert "更早的 10 步已折叠" in joined
+    assert "step0" not in joined and "step39" in joined, "保留最近的步骤"
+    # 每条工具结果也各自受限
+    big = cards.unified_panel(tools=["y" * 5000])
+    assert "已省略" in big["elements"][0]["content"]
+    # 上限可调（配置进来就是这个口子）
+    assert cards.unified_panel(reasoning="z" * 50, max_reasoning_chars=10) is not None
+    assert cards.unified_panel() is None
+
+
+# --------------------------------------------------------------------------- #
+# 指标采集层：钩子喂数据 → 快照 → 别名
+# --------------------------------------------------------------------------- #
+def test_context_store_snapshot_and_aliases() -> None:
+    context.reset()
+    context.set_context_override(None)
+    context.set_aliases({"claude-sonnet-4-6": "Sonnet 4.6"}, spec="c=d, e=f")
+    assert context.known_aliases() == {"claude-sonnet-4-6": "Sonnet 4.6", "c": "d", "e": "f"}
+    assert context.display_model("claude-sonnet-4-6") == "Sonnet 4.6"
+    # 没有别名时做保守瘦身：去 vendor 前缀 / 去 :free 之类后缀
+    assert context.display_model("openrouter/anthropic/claude-x:free") == "claude-x"
+    assert context.display_model("") == ""
+
+    context.record_api_call(
+        model="claude-sonnet-4-6", provider="anthropic", platform="feishu",
+        session_id="s1", api_call_count=3,
+        usage={"input_tokens": 45200, "output_tokens": 900},
+    )
+    context.set_context_override(200000)
+    snap = context.snapshot()
+    assert snap["input_tokens"] == 45200
+    assert snap["output_tokens"] == 900
+    assert snap["context_max"] == 200000
+    assert snap["model_display"] == "Sonnet 4.6"
+    assert abs(snap["context_pct"] - 22.6) < 0.05
+
+    # 钩子里出现空 payload 时，不得把上一帧的好数据冲掉
+    context.record_api_call(usage=None, model="")
+    assert context.snapshot()["input_tokens"] == 45200
+
+    # 真实钩子的 usage 是 Hermes CanonicalUsage 的 asdict：prompt_tokens 把缓存命中
+    # 也算进来了，必须优先用它 —— 否则开提示缓存的会话会把上下文占用严重低报。
+    context.record_api_call(
+        model="m", usage={"input_tokens": 800, "prompt_tokens": 45000,
+                          "output_tokens": 120, "cache_read_tokens": 44000},
+    )
+    snap2 = context.snapshot()
+    assert snap2["input_tokens"] == 45000, "必须用 prompt_tokens 而不是裸 input_tokens"
+    assert snap2["prompt_tokens"] == 45000
+    assert snap2["cache_read_tokens"] == 44000
+
+    # 脏 usage 也不该炸（字符串数字会被宽容转换）
+    context.record_api_call(usage={"input_tokens": "123", "output_tokens": None})
+    assert context.snapshot()["input_tokens"] == 123
+
+    context.set_context_override(None)
+    context.reset()
+    context.set_aliases({}, spec="")
+    assert context.snapshot()["input_tokens"] is None
+
+
+def test_adapter_footer_wiring() -> None:
+    """页脚确实由「配置 + 钩子快照」拼出来，且开关立刻生效。"""
+    defaults = dict(adapter._DEFAULTS)
+    try:
+        context.reset()
+        adapter.configure(footer=True, show_model=True, context_style="text",
+                          model_aliases="test-model=Test Model")
+        # 钩子还没触发 → 没有任何一段可显示 → 不渲染脚注
+        assert adapter.LarkDeckMixin._ld_footer() is None
+
+        context.record_api_call(model="test-model",
+                                usage={"input_tokens": 1000, "output_tokens": 5})
+        context.set_context_override(10000)
+        assert adapter.LarkDeckMixin._ld_footer() == "🤖 Test Model · ctx 1k/10k · 10%"
+        with_time = adapter.LarkDeckMixin._ld_footer(time.monotonic() - 12.3)
+        assert with_time.endswith("⏱ 12.3s")
+
+        adapter.configure(context_style="bar")
+        assert "[█░░░░░░░]" in adapter.LarkDeckMixin._ld_footer()
+        adapter.configure(show_model=False)
+        assert not adapter.LarkDeckMixin._ld_footer().startswith("🤖")
+        adapter.configure(footer=False)
+        assert adapter.LarkDeckMixin._ld_footer() is None
+    finally:
+        context.set_context_override(None)
+        context.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
 
 
 # --------------------------------------------------------------------------- #

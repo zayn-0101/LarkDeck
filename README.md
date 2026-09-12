@@ -90,11 +90,11 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 | 流式卡片（同一张卡原位更新） | ✅ |
 | 统一面板（推理 + 工具合并为一个可折叠底部面板） | ✅ |
 | 澄清交互卡（按钮点击直接作答，不再手打选项） | ✅ |
-| 模型别名 | 计划中 |
+| 模型别名（`deepseek-v4-flash` → 你认得出来的名字） | ✅ |
 | 双语 UI（跟随飞书客户端语言） | ✅ 机制已实现，待真机确认 |
-| 脚注（耗时 / 工具次数） | ✅ 语言无关（纯数字符号） |
-| 上下文进度条 | 计划中 |
-| 推理面板上限 / 元素溢出保护 | 计划中 |
+| 页脚：模型名 + 上下文用量 + 耗时 | ✅ 真机渲染已确认 |
+| 上下文用量三样式（纯文字 / 图形条 / 数字+条） | ✅ 真机渲染已确认 |
+| 推理文本 / 工具结果上限 + 元素溢出保护 | ✅ |
 
 **界面文案双语**用的是飞书卡片原生的 `i18n_content`：服务端只发一份卡片，每个文本元素同时带中文和英文，客户端按自己的语言设置挑一份渲染。AI 生成的正文**不翻译**。
 
@@ -137,24 +137,43 @@ plugins:
 ```yaml
 plugins:
   larkdeck:
-    cards: true            # 用卡片渲染回复（关掉则完全退回官方纯文本行为）
-    i18n: true             # 界面文案双语
-    unified_panel: true    # 推理 + 工具合并为一个底部面板
-    clarify_cards: true    # 澄清用按钮卡
+    cards: true              # 用卡片渲染回复（关掉则完全退回官方纯文本行为）
+    i18n: true               # 界面文案双语
+    unified_panel: true      # 推理 + 工具合并为一个底部面板
+    clarify_cards: true      # 澄清用按钮卡
+    footer: true             # 页脚（模型 + 上下文用量 + 耗时）
+    show_model: true         # 页脚里显示模型名
+    context_style: text      # 上下文用量样式：text | bar | both
+    model_aliases: ""        # "真名=显示名, 真名2=显示名2"
+    max_reasoning_chars: 1200   # 推理文本上限，超出折叠成一行
+    max_tool_result_chars: 600  # 单条工具结果上限
+    max_panel_steps: 30         # 面板最多保留多少步，更早的收成一行计数
+    context_max_override: 0     # 非 0 时钉住上下文上限（探测不准时兜底）
 ```
 
-也可以用环境变量临时覆盖，如 `LARKDECK_CARDS=0`。
+也可以用环境变量临时覆盖，如 `LARKDECK_CARDS=0`、`LARKDECK_CONTEXT_STYLE=bar`。
+
+页脚的模型名和上下文数字**来自官方钩子**，不是拦截核心源码 —— 原理、载荷键名和
+两个踩过的坑见 [`docs/metrics-and-hooks.md`](docs/metrics-and-hooks.md)。
 
 ---
 
 ## 测试
 
 ```bash
-python3 tests/test_units.py            # 纯单测，零网络零 Hermes 依赖
-python3 tests/check_override.py        # 对真实 Hermes 安装验证平台覆盖是否生效
-python3 tests/check_clarify_e2e.py     # 澄清卡端到端：发送 → 点击 → 网关解除阻塞
-python3 tests/probe_render.py         # 真发卡片到自己的飞书 DM，验飞书接不接受（要凭据）
+PY=/Users/Zayn/.hermes/hermes-agent/venv/bin/python3   # 用 Hermes 自带解释器；系统 python3 太老会 ImportError
+
+$PY tests/test_units.py            # 纯单测，零网络零 Hermes 依赖
+$PY tests/check_override.py        # 对真实 Hermes 安装验证平台覆盖是否生效
+$PY tests/check_hooks.py           # 对真实钩子派发器验证指标采集是否接通
+$PY tests/check_clarify_e2e.py     # 澄清卡端到端：发送 → 点击 → 网关解除阻塞
+$PY tests/probe_render.py          # 真发卡片到自己的飞书 DM，验飞书接不接受（要凭据）
 ```
+
+`check_hooks.py` 走的是核心真正使用的派发器（`hermes_cli.lifecycle.invoke_hook`），
+载荷用 Hermes 自己的 `CanonicalUsage` 生成，并带一组**对照组**（不启用插件时钩子必须为空）。
+它专门盯住一个不报错的坑：插件加载器装在 `hermes_plugins.larkdeck.*` 命名空间下，
+测试里若用 `import larkdeck.context` 会拿到**第二个模块对象**，读写状态对不上。
 
 `check_clarify_e2e.py` 用的是从平台注册表里取出来的**真内置适配器类**，只把最底层
 `_feishu_send_with_retry` 换成捕获器，**不连飞书、不发网络请求**。它能抓到桩类抓不到
@@ -175,6 +194,7 @@ LarkDeck 接管后才生效）。
   兜底仍然安全：客户端不认时回落到 `content`，不会让卡片发不出去。
   **注意 AI 生成的正文不翻译**，双语只覆盖界面文案。
 - 与 hermes-feishu-streaming-card（HFC）**不能共存**：两边都要接管 `feishu` 平台，且 HFC 还改了源码。切换步骤见 `docs/`。
+- **页脚数据是进程内全局的**：钩子记录的是「最近一次 API 请求」，多会话并发时所有卡片共享同一份快照。单用户单会话无影响；真要按会话隔离，得从钩子载荷里的 `session_id` 分桶，目前没做。
 
 ---
 

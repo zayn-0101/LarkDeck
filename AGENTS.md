@@ -31,7 +31,9 @@ adapter.py         覆盖层：LarkDeckMixin + build_adapter() + register() + �
 cards.py           飞书卡片 JSON 构造（纯函数、无 I/O）—— 两种方言的边界在这里
 i18n.py            双语文案（飞书原生 i18n_content）
 compat.py          版本 / 能力探测 —— Hermes 私有名的唯一存放处
-tests/             单测 + 真机覆盖验证 + 澄清卡端到端
+context.py         运行时指标（钩子写入 → 页脚读取的共享快照）
+hooks.py           官方钩子订阅：只订阅、不改写
+tests/             单测 + 真机覆盖验证 + 钩子派发验证 + 澄清卡端到端 + 渲染探针
 ```
 
 ## 键盘约定

@@ -81,6 +81,21 @@ def load_cards():
     return importlib.import_module("_larkdeck_probe.cards")
 
 
+def load_adapter_parts():
+    """同样绕开 ``__init__.py`` 加载 adapter / context（``__init__`` 会拉 Hermes 依赖）。
+
+    挂在 ``_larkdeck_probe`` 这个合成包下，包内相对导入才会指向同一份模块 ——
+    否则 ``cards`` 会出现两个模块对象，页脚和卡片用的就不是同一份状态了。
+    """
+    pkg = sys.modules.get("_larkdeck_probe")
+    if pkg is None:
+        pkg = types.ModuleType("_larkdeck_probe")
+        pkg.__path__ = [str(REPO)]
+        sys.modules["_larkdeck_probe"] = pkg
+    return (importlib.import_module("_larkdeck_probe.adapter"),
+            importlib.import_module("_larkdeck_probe.context"))
+
+
 def _load_sent_ids() -> list:
     try:
         ids = json.loads(STATE_FILE.read_text())
@@ -157,6 +172,39 @@ def send(client, chat: str, card: dict) -> tuple:
     return resp.code, resp.msg, (resp.data.message_id if resp.data else None)
 
 
+def build_footer_cases(cards) -> list:
+    """页脚三样式对照卡 —— 走**真适配器**的页脚代码，不是手写字符串。
+
+    页脚数据来自官方钩子（context.py），探针里没有真回合，所以喂一份仿真快照：
+    模型名 + 45.2k/200k 上下文 + 12.3s 耗时。渲染路径与真机一致，只有数字是造的。
+    """
+    import time as _time
+
+    _adapter, _context = load_adapter_parts()
+
+    _context.reset()
+    _context.set_context_override(200000)
+    _context.record_api_call(
+        model="deepseek-v4-flash", provider="opencode-go",
+        usage={"prompt_tokens": 45200, "output_tokens": 320},
+        api_call_count=3, session_id="probe", platform="feishu",
+    )
+
+    mark = f"{PROBE_MARK} · 页脚样式对照 · 只验渲染"
+    started = _time.monotonic() - 12.3
+    labels = (("text", "⑤ 页脚【纯文字】当前默认"),
+              ("bar", "⑥ 页脚【图形条】"),
+              ("both", "⑦ 页脚【数字+条】"))
+    cases = []
+    for style, label in labels:
+        _adapter._CONFIG["context_style"] = style
+        footer = _adapter.LarkDeckMixin._ld_footer(started)
+        body = f"页脚样式 **{style}**。下面这行是真适配器算出来的：\n`{footer}`"
+        cases.append((label, cards.reply_card(body, streaming=True,
+                                              footer=f"{footer} · {mark}")))
+    return cases
+
+
 def build_cases(cards) -> list:
     mark = f"{PROBE_MARK} · larkdeck 渲染探针 · 只验渲染，不处理点击"
     panel_reasoning = ("用户问的是卡片渲染。核验三点：\n"
@@ -213,7 +261,7 @@ def main(argv: list) -> int:
     if clean_only:
         return 0
 
-    cases = build_cases(cards)
+    cases = build_cases(cards) + build_footer_cases(cards)
     ok = True
     for label, card in cases:
         code, msg, mid = send(client, chat, card)
@@ -230,7 +278,7 @@ def main(argv: list) -> int:
             _save_sent_ids(_load_sent_ids() + [mid])
 
     print()
-    print("全部被飞书接收 ✅ —— 去飞书 DM 看四张卡长什么样（③ 记得点一下三角箭头）" if ok
+    print("全部被飞书接收 ✅ —— 去飞书 DM 看七张卡（③ 记得点一下三角箭头；⑤⑥⑦ 是页脚三样式对照）" if ok
           else "有卡片被拒 ❌ —— 按上面飞书给的 msg 改")
     print("注意：按钮点击不会被处理（点击路由目前还在 HFC 手里），本探针只验渲染。")
     return 0 if ok else 1

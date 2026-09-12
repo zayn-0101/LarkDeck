@@ -48,6 +48,18 @@ DEFAULT_TITLE = "Hermes"
 #: 2.0 卡片在通知栏 / 会话列表里显示的一句话摘要上限，超长会被截断。
 SUMMARY_MAX = 120
 
+#: 推理文本 / 单条工具结果的字数上限 —— 超出的部分折叠成一行说明。
+#: 默认值对齐 HFC 在真机上跑出来的经验值（推理 1200 / 工具结果 600），
+#: 它那个量级是「能看清一步在干什么，又不至于把卡片撑成论文」。
+MAX_REASONING_CHARS = 1200
+MAX_TOOL_RESULT_CHARS = 600
+
+#: 统一面板最多保留多少条步骤；更早的收成一行计数。
+MAX_PANEL_STEPS = 30
+
+#: 上下文进度条的格子数（8 格是 fry-cards 实测过的宽度，手机上不换行）。
+CONTEXT_BAR_WIDTH = 8
+
 
 # --------------------------------------------------------------------------- #
 # 通用元素（两种方言都认）
@@ -125,6 +137,110 @@ def collapsible(title_node: Dict[str, Any], elements: Sequence[Dict[str, Any]], 
 
 
 # --------------------------------------------------------------------------- #
+# 指标渲染：上下文用量 / 页脚（纯函数，可在单测里钉死每个边界）
+# --------------------------------------------------------------------------- #
+#: 进度条密度：空 → 半空 → 半实 → 实。用渐变而不是二值块，低占用时也能一眼看出趋势。
+_BAR_DENSITY = ("░", "▒", "▓", "█")
+
+
+def compact_tokens(value: Any) -> str:
+    """``45200 -> "45.2k"``，``200000 -> "200k"``，``1000000 -> "1.0m"``。
+
+    整数化后再压缩，避免 ``200.0k`` 这种别扭写法。非数字返回空串。
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return ""
+    n = int(value)
+    if n < 0:
+        return ""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}m".replace(".0m", "m")
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k".replace(".0k", "k")
+    return str(n)
+
+
+def progress_cells(pct: float, width: int = CONTEXT_BAR_WIDTH) -> str:
+    """把百分比画成 ``width`` 格渐变条，如 ``██▓▒░░░░``。
+
+    每格取它自身的填充比例（0..1）映射到四档密度，所以边界格是半实心而不是
+    突然从满格跳到空格 —— 8 格也能看出 12% 和 25% 的差别。
+    """
+    width = max(1, int(width))
+    filled = max(0.0, min(100.0, float(pct))) / 100.0 * width
+    cells = []
+    for index in range(width):
+        frac = min(max(filled - index, 0.0), 1.0)
+        cells.append(_BAR_DENSITY[min(3, int(frac * 4 + 1e-9))])
+    return "".join(cells)
+
+
+def context_indicator(used: Any, maximum: Any, *, style: str = "text") -> str:
+    """页脚里的上下文用量片段；数据不全返回空串（调用方据此不渲染）。
+
+    * ``text``（默认）—— ``ctx 45.2k/200k · 23%``
+    * ``bar``         —— ``ctx [███▓▒░░░] 23%``
+    * ``both``        —— ``ctx 45.2k/200k [███▓▒░░░] 23%``
+    """
+    if isinstance(used, bool) or not isinstance(used, int) or used <= 0:
+        return ""
+    if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum <= 0:
+        return ""
+    pct = min(100.0, used / maximum * 100.0)
+    amount = f"{compact_tokens(used)}/{compact_tokens(maximum)}"
+    if style == "bar":
+        return f"ctx [{progress_cells(pct)}] {pct:.0f}%"
+    if style == "both":
+        return f"ctx {amount} [{progress_cells(pct)}] {pct:.0f}%"
+    return f"ctx {amount} · {pct:.0f}%"
+
+
+def format_elapsed(seconds: float) -> str:
+    """``12.3s``；超过一分钟换成 ``2m05s``，避免出现 ``125.7s`` 这种要心算的读数。"""
+    seconds = max(0.0, float(seconds))
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    return f"{int(seconds // 60)}m{int(seconds % 60):02d}s"
+
+
+def footer_line(*, duration: Optional[float] = None, model: str = "",
+                tools: Optional[int] = None, context: str = "") -> Optional[str]:
+    """页脚一行 —— 全部用「符号 + 数字 + 英文缩写」，天然无需翻译（不依赖 i18n）。
+
+    各段之间用 ``·`` 分隔；一段都没有时返回 ``None``，调用方就不渲染脚注元素。
+    """
+    parts: List[str] = []
+    if model:
+        parts.append(f"🤖 {model}")
+    if isinstance(tools, int) and tools > 0:
+        parts.append(f"🔧 {tools}")
+    if context:
+        parts.append(context)
+    if isinstance(duration, (int, float)) and duration > 0:
+        parts.append(f"⏱ {format_elapsed(float(duration))}")
+    return " · ".join(parts) or None
+
+
+# --------------------------------------------------------------------------- #
+# 溢出保护：任何一段用户不可控的长文本，进卡片前都必须过这一关
+# --------------------------------------------------------------------------- #
+def truncate(text: str, limit: int, *, key: str = "panel.overflow") -> str:
+    """超长文本截断并补一行「已省略 N 字符」，而不是静默切掉。
+
+    静默截断会让用户以为模型就说了这么多；补一行说明才知道下面还有内容。
+    截断点回退到最近一个空白，避免把一个词劈成两半。
+    """
+    text = text or ""
+    if limit <= 0 or len(text) <= limit:
+        return text
+    hidden = len(text) - limit
+    head = text[:limit]
+    if " " in head[-80:]:
+        head = head[: head.rfind(" ")]
+    return f"{head.rstrip()}\n> {_i18n.t(key, n=hidden)}"
+
+
+# --------------------------------------------------------------------------- #
 # 2.0：回复卡（流式 + 统一面板）
 # --------------------------------------------------------------------------- #
 def _summary_of(text: str) -> Dict[str, Any]:
@@ -172,17 +288,30 @@ def reply_card(answer: str, *, streaming: bool = False, panel: Optional[Dict[str
 
 
 def unified_panel(*, reasoning: str = "", tools: Sequence[str] = (),
-                  expanded: bool = False) -> Optional[Dict[str, Any]]:
+                  expanded: bool = False,
+                  max_reasoning_chars: int = MAX_REASONING_CHARS,
+                  max_tool_chars: int = MAX_TOOL_RESULT_CHARS,
+                  max_steps: int = MAX_PANEL_STEPS,
+                  ) -> Optional[Dict[str, Any]]:
     """统一面板：把推理过程和工具调用合并进一个可折叠块。
 
     这是「统一面板」功能的本体 —— 正文区保持干净，过程信息全部收进底部一个面板，
     而不是推理一个面板、工具另一个面板。没有内容时返回 None（调用方据此不渲染）。
+
+    所有进来的长文本都过 :func:`truncate`：面板是「收纳」不是「倾倒」，
+    真跑一个长任务，原始推理和工具输出能把卡片撑到几十屏。
     """
     inner: List[Dict[str, Any]] = []
     if reasoning:
-        inner.append(md(reasoning))
-    for item in tools:
-        inner.append(md(item))
+        inner.append(md(truncate(reasoning, max_reasoning_chars)))
+    steps = [str(item) for item in tools]
+    if max_steps > 0 and len(steps) > max_steps:
+        # 保留最近几步：排查问题基本只看尾部，早期的步骤价值随时间递减。
+        dropped = len(steps) - max_steps
+        inner.append(md(_i18n.t("panel.trimmed", n=dropped)))
+        steps = steps[-max_steps:]
+    for item in steps:
+        inner.append(md(truncate(item, max_tool_chars)))
     if not inner:
         return None
     # 标题必须是 plain_text，且带上工具计数 —— 收起状态下这是用户唯一看得到的信息
