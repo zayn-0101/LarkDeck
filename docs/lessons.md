@@ -12,7 +12,7 @@
 | 发送 / 更新 / 流式帧 | `core/adapter.py` 顶部 docstring | 四个门禁（见 `AGENTS.md`「验证」） |
 | 钩子 / 指标 / 面板 | `docs/metrics-and-hooks.md` | `tests/check_hooks.py` |
 | Hermes 私有接口名 | `core/compat.py`（唯一存放处） | `tests/check_override.py` |
-| 配置项 | `_DEFAULTS` 与 `plugin.yaml` 的 `config_schema`（两处必须同步） | `tests/check_override.py` 的配置桥接断言 |
+| 配置项 | `_DEFAULTS` 与 `plugin.yaml` 的 `config_schema`（两处必须同步） | `test_units.py::test_config_schema_matches_defaults_exactly`（**逐键逐默认值**比对 yaml；`check_override.py` 只验桥接、验不了 yaml） |
 | 装到新机器 | `docs/switch-from-hfc.md` | 启动日志里的 `[larkdeck]` 自检行 |
 
 ## 二、这个项目的头号失败模式是「静默」
@@ -80,6 +80,13 @@
 `_parse_multi_select_response`）对 JSON 与逗号串**都能解码**。审计报告里「JSON 一律被拒」
 是 A 路的结论，差点让我把 B 路改坏。凡「某格式不被接受」的结论，都要问一句
 **在哪条路径上、谁在解析**。
+
+**推论 6：断言要看**判别力**，不是「有没有断言」。** 2026-09-13 连续两轮审计各戳穿一条：
+① 「父类不许被调用两次」那条断言里的假父类**永不抛异常**，而「双跑」只在父类**内部**抛时发生
+—— 这条断言结构上不可能失败；② 「over-budget 档也要带打字机」我第一版用**默认值**去测，
+而变异是「忘了把自定义参数传下去」⇒ 默认值恰好等于期望值，照样绿。
+**做法：补完断言先问一句「我要防的那个改动，是这一行能看见的吗」**，
+再用变异实测一遍；看不见就换观测量（传自定义值 / 让假实现真的抛）。
 
 **推论 5：跨会话的状态写入必须在「归属」这一层就被挡住，而不是靠渲染时兜。**
 `/stop` 的中止状态曾被打到**另一个会话**上：因为 `mark_stopped` 复用了「渲染用」的归属判据，

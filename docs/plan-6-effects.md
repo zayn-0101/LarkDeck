@@ -452,7 +452,7 @@
 
 | 测什么 | 怎么测 | 结果 |
 |---|---|---|
-| 卡片字节上限 | `probe_render.py --bytes`（20KB→80KB 阶梯 + 同尺寸 PATCH） | **80KB 仍 `code=0`**（create 与 patch 都是）⇒ 40000 的预算有 2 倍余量；第三方流传的「28000 / 30KB」不成立 |
+| 卡片字节上限 | `probe_render.py --bytes`（40KB→200KB 阶梯 + 同尺寸 PATCH） | **128000 字节仍 `code=0`**（create 与 patch 都是）；**160000 被拒**：`230025 The length of the message content reaches its limit` ⇒ 这才是**飞书的硬上限**；我们 40000 的 `CARD_BYTE_BUDGET` 是**质量取舍**（降载面板），不是硬限制 |
 | 卡片元素数上限 | `probe_render.py --elements`（递归计数阶梯） | 198 收下、**202 拒收**（`230099 / ErrCode 11310 element exceeds the limit`）⇒ 官方 200 成立，且**必须递归数含 `tag` 的对象** |
 | 推送节奏 | `probe_render.py --rate-limit`（16 次连打） | 往返 **≈0.5s/帧**、**零拒绝** ⇒ `_STREAM_MIN_INTERVAL` 不是瓶颈，打字机只能靠客户端动画 |
 
@@ -466,7 +466,7 @@
 |---|---|---|---|---|
 | 1a | 即时响应（首帧早于首个 token） | native seed 帧（核心契约，`stream_frame("")` 建卡） | 开 | **A**（单测覆盖 seed 帧生命周期） |
 | 1b | 打字机 | `cards.streaming_config()` + 配置 `streaming_print_ms`（15） | 开 | **B**（飞书接受字段，create/patch 都是 `code=0`）+ **C 待定**（动画本身；`--typing` 探针已做成 12 秒可看的对照） |
-| 1c | 无输入提示 | 覆盖 `_reactions_enabled()`（配置 `reactions`，默认保持 Hermes 行为） | 保持 | **A**（覆盖逻辑与回退都有断言） |
+| 1c | 无输入提示 | 覆盖 `_reactions_enabled()`（配置 `reactions`，默认保持 Hermes 行为） | 保持 | **A**（覆盖逻辑 + **尊重父类** + 私有名已登记进 `compat.REACTION_ADAPTER_ATTRS` 并在启动自检里上报；此前「父类缺失」那条路无门禁，第六路审计指出后已补） |
 | 2 | 完成态绿色面板 | `on_session_end` → `panel.record_turn_end` → `cards.border_for_status` | 开 | **A** + **B**（三种状态色的探针卡都被飞书接受） |
 | 3 | 中止黄边 / 报错红边 | 同上 + 覆盖 `interrupt_session_activity` 自己重绘 | 开 | **A**（含「空回合也要画出黄边」「必须落在绑定会话」）+ **B** |
 | 4 | 展开面板 + 每轮相对耗时 | `cards.unified_panel`（`第 N 轮 · 6.2s`）+ `panel_expanded` | 收起 | **A** + **B** + **C 待定**（展开/收起的观感） |
@@ -500,3 +500,16 @@
 **门禁覆盖面的结论**：这批新增不变量**几乎全由 `test_units.py` 一条腿守着**
 （34 条变异里另外三个门禁只在 3 条上独立变红）。所以本轮把 2.0 澄清卡的**散文输入**
 也补进了 `check_clarify_e2e.py`（真 gateway + 真工具解码器）——那正是 P2 能存活的原因。
+
+### 第六路审计（打字机/开关/探针那批）：3 条该处理，全部已处理
+
+| 级别 | 问题 | 修法 |
+|---|---|---|
+| 中 | **`_MAX_TRACKED_TEXT` 的「空集」论证被实测证伪**：`fit_reply_card` 的 `over-budget` 档**照常返回整张卡**（超**我们的**预算 ≠ 发不出去），所以「13300~20000 汉字」这一区间里卡片是存在且发得出去的，却存不下正文 ⇒ 中止时要么无色、要么把正文抹掉 | 上限改成贴着**飞书硬上限**（实测 128000 字节）的 120000 ⇒ **「发得出去的卡都存得下正文」成立**；内存改由 `_MAX_TEXT_ENTRIES=16` 收（≈1.9MB 上界） |
+| 高 | **新代码门禁覆盖率 9/24 变异全绿**，缺口正好在三处关键接线：`over-budget` 分支丢打字机参数、`_reactions_enabled` 忽略父类、`plugin.yaml` 与 `_DEFAULTS` 不同步 | 补了 5 条断言：配置 schema 与 `_DEFAULTS` **逐键逐默认值**相等、不变量 2 的**异常**分支（此前只测了「返回失败」）、`over-budget` 档保住打字机（**且要传自定义值才探得出来**）、坏值绝不抛、覆盖要**尊重父类** |
+| 高 | **`_reactions_enabled` 是未登记的 Hermes 私有名**（违反不变量 3），上游改名后开关静默失效、自检不报警 | 新增 `compat.REACTION_ADAPTER_ATTRS` + `probe_report()["missing_reactions"]` + 启动自检里的两行 WARNING（信号型与处理生命周期各一条） |
+| 低 | 探针会把「没测到」说成「没问题」（零帧 / 只测到几次）、`streaming_print_ms` 无上限、`null` 关不掉 | 探针加前置守卫（零帧/样本不足直接返回失败）；间隔**夹到 [1, 2000]ms**、越界退默认 |
+
+**「不变量 2 的异常分支」这条值得单独记**：把 `send()` / `edit_message()` 里的 `except` 整条删掉改成 `raise`，
+四个门禁**原本全绿** —— 也就是说本仓库最重的那条性质（宁可纯文本也绝不丢消息）此前**没有门禁**。
+现在两条异常路径都有断言（`_ld_build_card` 抛 / patch 抛 ⇒ 必须回落到 `super()` 且不抛给核心）。

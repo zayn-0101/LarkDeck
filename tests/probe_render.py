@@ -455,6 +455,10 @@ def probe_typewriter(client, chat: str, cards) -> int:
     )
     codes = []
     frames = _typing_frames()
+    if not frames:
+        # 「没测到」不能说成「没问题」—— 探针必须自己挡住这种假结论
+        print("⚠️ 没有任何帧可推，A/B 对照不成立（探针自身有问题，不是打字机的结论）")
+        return 1
     print()
     print("=" * 64)
     print(f"👀 现在盯住飞书 DM —— 接下来约 {len(frames) * _TYPING_CHAR_MS / 1000:.0f} 秒里，")
@@ -501,7 +505,7 @@ def probe_typewriter(client, chat: str, cards) -> int:
 #: 而本项目的 ``CARD_BYTE_BUDGET`` 是个**没有权威依据的保守猜测（40000）**。
 #: 上限高估的后果不是「卡片太大被拒」这么简单：一帧失败会被内核判成「本回合 native
 #: 不可用」，之后输出退化成多条纯文本。所以这件事必须真机量出来。
-_BYTE_LADDER = (40000, 48000, 56000, 64000, 80000)
+_BYTE_LADDER = (80000, 96000, 112000, 128000, 160000, 200000)
 
 #: 元素阶梯：同类项目（hermes-feishu-streaming-card）用 ``FEISHU_MAX_ELEMENTS = 200``，
 #: 但那是它的常量、不是官方数字。计数口径是「**整卡里所有带 tag 的对象**」（含嵌套），
@@ -548,8 +552,11 @@ def probe_byte_limit(client, chat: str, cards) -> int:
             print(f"     ↑ 被拒的那张卡带在飞书侧，msg 是唯一线索：{msg}")
     if accepted:
         print(f"\n📏 实测被接受的**最大**卡片 = {max(accepted)} 字节")
-        print("   → CARD_BYTE_BUDGET 必须小于它（建议留 15%~30% 余量），"
-              "并把这个数字写回 core/cards.py 的注释里")
+        print("   → 这是飞书的**硬上限**（不是我们的降载预算）：CARD_BYTE_BUDGET 是质量取舍，"
+              "_MAX_TRACKED_TEXT 则要贴着硬上限才能保证「发得出去的卡都存得下正文」")
+    else:
+        print("\n⚠️ 一档都没被接受 —— 这不是「上限很低」，可能是凭据/权限/网络问题，"
+              "先看上面每档的 msg")
     return 0
 
 
@@ -620,6 +627,10 @@ def probe_rate_limit(client, chat: str, cards) -> int:
         if pcode != 0:
             print(f"  ⛔ 第 {i + 1} 次被拒：code={pcode} msg={pmsg}（前一次耗时 {dt_ms:.0f}ms）")
             break
+    if len(results) < _RATE_BURST:
+        print(f"  ⚠️ 只测到 {len(results)}/{_RATE_BURST} 次就中断了，"
+              f"下面的结论**不成立**（先看上面那条错误码）")
+        return 1
     ok_n = sum(1 for _, c, _, _ in results if c == 0)
     print(f"  连打 {len(results)} 次，成功 {ok_n} 次；单次耗时 "
           f"{[r[2] for r in results]}")

@@ -71,14 +71,26 @@ ACTION_CLARIFY = "clarify"
 #: 追踪中的卡片上限，防止长跑会话无限增长。
 _MAX_TRACKED = 512
 
-#: 为「中止重绘」保留正文的上限，**按 utf-8 字节**（= 卡片自己那份字节预算的口径）。
+#: 为「中止重绘」保留正文的上限，**按 utf-8 字节**。
 #:
-#: ⚠️ 这里原本写的是 **20000 字符**，并且超限时**静默**把正文清空 —— 2026-09-13 审计
-#: 实测出一个真缺陷：一张 20500 字符的**英文**正文（≈20.5KB，远在 40000 字节预算之内、
-#: 卡片渲染得好好的）在非 native 路径上 `/stop` 时 **patch 调用数 = 0**：卡片不变色、
-#: 内存里 status 已经是 stopped、而且**一行日志都没有**。这正是本项目最怕的静默形态。
-#: 修正：口径与卡片预算对齐（能上卡的正文就存得下），超限时**必须留日志**。
-#: 内存上界 = 「每个 chat 只留最近一张卡」× 40000 字节（见 :meth:`_ld_track`）。
+#: ⚠️ 这里换过两次口径，每次都是被实测纠正的，记下来免得再想当然：
+#:   1. 最初是「20000 **字符**、超了静默清空」⇒ 20500 个英文（20.5KB，卡片渲染正常）
+#:      在 `/stop` 时**一次 patch 都不发**、零日志（第四路审计的阻断项）。
+#:   2. 改成按字节、并写了句「超过卡片预算的正文本来就没卡了，所以是空集」——
+#:      **这句是错的**（第六路审计用 `fit_reply_card` 实测证伪）：超 `CARD_BYTE_BUDGET`
+#:      只是**我们自己**降载掉面板/页脚，**不是发不出去**；13300~20000 汉字（40~60KB）
+#:      的卡照样发得出去（`--bytes` 实测：**128000 字节仍 `code=0`**，
+#:      160000 才被拒：`230025 The length of the message content reaches its limit`）。
+#:      也就是说「卡在、却存不下正文」的区间是**真实存在**的 —— 那种情况下中止时
+#:      要么没有颜色、要么把正文抹掉，两者都不可接受。
+#: 所以现在的口径是：**上限贴着飞书的硬上限**（128000 实测），留一点余量 ⇒
+#: 「只要这张卡发得出去，它的正文就存得下」成立。内存靠 :data:`_MAX_TEXT_ENTRIES` 收。
+_MAX_TRACKED_TEXT = 120000
+
+#: 最多让几个 chat 保留「中止重绘」用的正文（每个 ≤ 120KB）⇒ 内存上界 ≈ 1.9MB。
+#: 超出就清掉最久没用的那份（`last` 最小的）。
+_MAX_TEXT_ENTRIES = 16
+
 _MAX_TRACKED_TEXT = _cards.CARD_BYTE_BUDGET
 
 #: native 流式：并发回合上限 + 帧节流窗口（秒）。帧率过高会触发飞书限流，
@@ -366,12 +378,20 @@ class LarkDeckMixin:
         """
         body = str(text or "")
         if len(body.encode("utf-8", "ignore")) > _MAX_TRACKED_TEXT:
+            # 只有在**连飞书都发不出去**的量级上才会走到这里（见 _MAX_TRACKED_TEXT 注释）
             _log_note_text_skipped(len(body))
             body = ""
         with self._ld_lock:
             entry = self._ld_state.get(message_id)
             if isinstance(entry, dict):
                 entry["last_text"] = body
+            if body:
+                # 内存上界：最多 _MAX_TEXT_ENTRIES 份正文，超出清掉最久没用过的
+                holders = sorted((mid for mid, value in self._ld_state.items()
+                                  if value.get("last_text")),
+                                 key=lambda mid: self._ld_state[mid].get("last", 0.0))
+                for stale_id in holders[:-_MAX_TEXT_ENTRIES]:
+                    self._ld_state[stale_id]["last_text"] = ""
 
     def _ld_known(self, message_id: str) -> Optional[Dict[str, Any]]:
         """查这张卡是不是我们自己发的（并顺带刷新「最近活动」，供淘汰用）。
@@ -1294,12 +1314,21 @@ def _log_probe_report(report: Dict[str, Any]) -> None:
     """
     missing_callback = list(report.get("missing_callback") or [])
     missing_optional = list(report.get("missing_optional") or [])
+    missing_signal = list(report.get("missing_signal") or [])
+    missing_reactions = list(report.get("missing_reactions") or [])
     detail = (f"{report.get('adapter_class')} · "
               f"缺可选 {missing_optional or '无'} · 缺点击回调 {missing_callback or '无'}")
     if missing_callback:
         logger.warning("[larkdeck] 能力探测：%s —— 澄清按钮会静默失灵（点下去没反应）", detail)
     else:
         logger.info("[larkdeck] 能力探测：%s", detail)
+    # 这两组的缺失都只会「静默失灵」，所以必须在启动时说出来（别等用户来报「怎么没变色」）
+    if missing_signal:
+        logger.warning("[larkdeck] 能力探测：内置适配器缺少 %s —— "
+                       "`/stop` 之后卡片不会变成中止色（而且不会有别的提示）", missing_signal)
+    if missing_reactions:
+        logger.warning("[larkdeck] 能力探测：内置适配器缺少 %s —— "
+                       "`reactions: false` 会静默失效（「处理中」表情照旧）", missing_reactions)
 
 
 def merged_class(base_cls: type) -> type:

@@ -2623,6 +2623,150 @@ def test_stream_leak_threshold_stays_hour_scale():
         f"阈值太小会把活跃回合当成泄漏：{adapter._STREAM_LEAK_SECONDS}"
 
 
+def test_config_schema_matches_defaults_exactly():
+    """`plugin.yaml` 的 `config_schema` 必须与 `_DEFAULTS` **逐键、逐默认值**一致。
+
+    这是「三处同步」里**唯一能机械核对**的一处（README 那份是文档，靠人读）。
+    2026-09-13 审计实测：把 yaml 里 `streaming_print_ms` 的默认值改成 9999、`reactions`
+    改成 false、甚至**整个键删掉**，四个门禁**全部照绿** —— 因为门禁只读过桥接
+    （`check_override.py` 验的是 `ctx.get_config` 能不能生效），从来没读过 yaml 与代码是否一致。
+    """
+    import re
+    from pathlib import Path
+
+    yaml_text = Path(__file__, ).resolve().parent.parent.joinpath("plugin.yaml").read_text(
+        encoding="utf-8")
+    schema = yaml_text.split("config_schema:", 1)[1]
+    declared: Dict[str, Any] = {}
+    current = None
+    for line in schema.splitlines():
+        if re.match(r"^  [a-z_]+:$", line):
+            current = line.strip().rstrip(":")
+            declared[current] = None
+        elif current and line.startswith("    default:"):
+            raw = line.split("default:", 1)[1].strip()
+            if raw in ("true", "false"):
+                declared[current] = raw == "true"
+            elif raw.startswith(("\"", "'")):
+                declared[current] = raw.strip("\"'")
+            else:
+                try:
+                    declared[current] = int(raw)
+                except ValueError:
+                    declared[current] = raw
+    assert set(declared) == set(adapter._DEFAULTS), (
+        f"plugin.yaml 与 _DEFAULTS 的键不一致："
+        f"只在一处有 {sorted(set(declared) ^ set(adapter._DEFAULTS))}")
+    for key, expected in adapter._DEFAULTS.items():
+        # 字符串型默认值在 yaml 里可能带引号；数值/布尔必须严格相等
+        got = declared[key]
+        assert got == expected or str(got) == str(expected), (
+            f"{key} 的默认值不一致：yaml={got!r} 代码={expected!r}")
+
+
+def test_invariant_2_fallbacks_survive_exceptions_not_just_failures():
+    """不变量 2 的**异常**分支：卡片层抛异常时也必须回落官方实现。
+
+    审计实测：把 `send()` 里那个 `except` 整条删掉改成 `raise`、`edit_message` 同理，
+    **四个门禁全绿** —— 现有测试只覆盖了「卡片返回失败」这条分支，没覆盖「抛异常」。
+    而 AGENTS.md 里最重的一条性质就是它：宁可退回纯文本，也绝不因为卡片报错而丢消息。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    try:
+        # ① send：面板渲染抛异常 → 必须回落 super()，且不把异常抛给核心
+        raw = _make()
+        raw._ld_build_card = classmethod(lambda cls, *a, **k: (_ for _ in ()).throw(
+            RuntimeError("卡片层炸了")))
+        result = _run(raw.send("oc_1", "你好"))     # 不许抛
+        assert result.message_id == "om_text_1", result
+        assert any(c[0] == "SUPER.send" for c in raw.calls), raw.calls
+
+        # ② edit_message：卡片更新抛异常 → 必须回落 super()
+        raw2 = _make()
+        raw2._client.im.v1.message.patch = lambda request: (_ for _ in ()).throw(
+            RuntimeError("patch 炸了"))
+        result2 = _run(raw2.edit_message("oc_1", "om_card_1", "答案", finalize=True))
+        assert ("SUPER.edit", "答案", True) in raw2.calls, raw2.calls
+        assert result2.message_id == "om_card_1"
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_over_budget_tier_keeps_the_typewriter_and_never_truncates_body():
+    """三种降载档位都要保住打字机配置，且正文永不被截断。
+
+    审计的 M7：把 `fit_reply_card` 里 `over-budget` 分支的 `print_frequency_ms` 参数丢掉，
+    四条门禁全绿 —— 于是「正文大到只能裸卡」时打字机静默消失。
+    """
+    body = "答" * 20000                      # 远超我们的字节预算，但飞书收得下
+    # ⚠️ 必须传**自定义**值：`reply_card` 的默认参数就是 15，用默认值测的话
+    # 「over-budget 分支忘了把参数传下去」这个变异照样绿（实测过）。
+    node, tier = cards.fit_reply_card(body, streaming=True, print_frequency_ms=40)
+    assert tier == "over-budget", tier
+    assert body in json.dumps(node, ensure_ascii=False), "正文被截断了 —— 绝不允许"
+    assert node["config"].get("streaming_config") == {
+        "print_frequency_ms": {"default": 40}, "print_step": {"default": 1},
+        "print_strategy": "fast"}, "裸卡也应当带打字机配置，且自定义值要传下去"
+
+    # 中间两档同样要带（面板被摘掉、页脚被摘掉，但流式帧还是流式帧）
+    panel = cards.unified_panel(reasoning="推理")
+    for kwargs in ({"panel": panel}, {"footer": "ctx 1k/2k"}):
+        n2, t2 = cards.fit_reply_card("正文", streaming=True, **kwargs)
+        assert t2 == "ok" and n2["config"].get("streaming_config"), (t2, kwargs)
+    n3, t3 = cards.fit_reply_card(body, streaming=True, footer="ctx", budget=10 ** 9,
+                                  element_limit=1)
+    assert t3 != "ok" and n3["config"].get("streaming_config"), t3
+
+
+def test_print_frequency_is_clamped_and_never_raises():
+    """打字机间隔的坏值必须被夹住，且**绝不抛**（抛出去整张卡就回落到纯文本了）。
+
+    审计的 M22：把 `_positive` 里 nan/inf 那半段保护删掉，四条门禁全绿。
+    实测 `int(float("inf"))` 抛的是 `OverflowError` —— 与本项目此前那个
+    「一个环境变量就能静默打死插件」的缺陷同型。
+    """
+    for bad in (float("nan"), float("inf"), float("-inf"), None, "abc", [], {},
+                "1e999", 0, -5, 10 ** 9, 5000):
+        node = cards.reply_card("正文", streaming=True, print_frequency_ms=bad)
+        cfg = node["config"].get("streaming_config")
+        if cfg is None:
+            continue  # 0 / 负数 / 坏值 = 不带这个字段，也是允许的结果
+        value = cfg["print_frequency_ms"]["default"]
+        assert 1 <= value <= cards._PRINT_FREQUENCY_MAX_MS, (bad, value)
+
+
+def test_reactions_override_respects_the_parent_and_is_registered():
+    """`_reactions_enabled` 的覆盖必须**尊重父类语义**，并且已在 `compat.py` 登记。
+
+    审计的两条：M10（让覆盖忽略父类、直接 `return True`）四门禁全绿；更重要的是
+    P3 —— 这个私有名此前**没进 compat**，上游改名后启动自检不报警、开关静默失效。
+    """
+    assert "_reactions_enabled" in compat.REACTION_ADAPTER_ATTRS, "私有名没登记进 compat"
+    defaults = dict(adapter._DEFAULTS)
+
+    class _Base:
+        def __init__(self, answer):
+            self._answer = answer
+
+        def _reactions_enabled(self):
+            return self._answer
+
+    try:
+        merged = type("M", (adapter.LarkDeckMixin, _Base), {})
+        adapter.configure(reactions=True)
+        assert merged(True)._reactions_enabled() is True
+        # 父类说「关」时，我们开着配置也必须跟着父类（尊重内置语义 / 宿主环境变量）
+        assert merged(False)._reactions_enabled() is False, "覆盖忽略了父类的判断"
+        adapter.configure(reactions=False)
+        assert merged(True)._reactions_enabled() is False, "显式关掉时应当关"
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
 def test_panel_concurrent_writes_are_safe():
     panel.reset()
     errors: list = []

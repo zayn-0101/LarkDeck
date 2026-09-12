@@ -60,6 +60,14 @@ SIGNAL_ADAPTER_ATTRS: Tuple[str, ...] = (
     "interrupt_session_activity",
 )
 
+#: **处理生命周期**用到的适配器私有方法。缺了不致命（`reactions` 开关会静默失灵），
+#: 但必须探测上报 —— 2026-09-13 审计指出的问题：我们覆盖了它却**没登记**，
+#: 上游哪天改名，启动自检不会报警、用户设的 `reactions: false` 也就静默失效
+#: （违反不变量 3「私有名只允许出现在 compat.py」与不变量 4「不假设版本」）。
+REACTION_ADAPTER_ATTRS: Tuple[str, ...] = (
+    "_reactions_enabled",
+)
+
 #: 本插件订阅的**观察型**钩子清单（与 ``core/hooks.py`` 一一对应）。
 #: 这个元组存在的意义是让「订阅了几个」有单一事实来源：文档、门禁、自检都读它。
 OBSERVED_HOOKS: Tuple[str, ...] = (
@@ -145,6 +153,8 @@ def probe_report(cls: Optional[type]) -> Dict[str, Any]:
     report["missing_callback"] = [n for n in CALLBACK_ADAPTER_ATTRS if not _has(cls, n)]
     # 信号型契约：缺了只是「中止后卡片不变色」，但那是**静默**失灵，所以要上报
     report["missing_signal"] = [n for n in SIGNAL_ADAPTER_ATTRS if not _has(cls, n)]
+    # 处理生命周期：缺了也只是「reactions 开关静默失灵」，同样要上报（不能只靠名字不变）
+    report["missing_reactions"] = [n for n in REACTION_ADAPTER_ATTRS if not _has(cls, n)]
     # 会话归属是「卡片能否确定属于哪个会话」的前提，缺了只是退回旧行为（不阻断卡片）
     report["session_attribution_ok"] = session_attribution_available()
     return report
