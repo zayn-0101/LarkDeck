@@ -2056,6 +2056,9 @@ def test_clarify_free_text_only_commits_when_the_core_accepts_it():
     """
     defaults = dict(adapter._DEFAULTS)
     original = compat.clarify_attempt_text
+    # 这两处是**类属性/模块属性**的替换，必须在 finally 里还原 —— 忘了还原会让
+    # 后面的测试拿着假实现跑（自证循环的一种，且症状与「测试顺序」耦合）。
+    original_builder = adapter.LarkDeckMixin._ld_build_resolved_card
     try:
         panel.reset()
         adapter.configure(clarify_cards=True, clarify_dialect="2.0")
@@ -2095,6 +2098,7 @@ def test_clarify_free_text_only_commits_when_the_core_accepts_it():
             assert result2 is not None, "至少要有「无卡片变更」的响应"
         finally:
             compat.clarify_attempt_text = original
+            adapter.LarkDeckMixin._ld_build_resolved_card = original_builder
     finally:
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)
