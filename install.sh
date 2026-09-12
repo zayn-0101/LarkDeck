@@ -48,7 +48,10 @@ mkdir -p "$PLUGINS_DIR"
 
 if [ -L "$TARGET" ]; then
   current="$(readlink "$TARGET")"
-  if [ "$current" = "$REPO_DIR" ]; then
+  # 比 inode（``-ef``），不比字符串也不比 realpath：macOS 默认大小写不敏感，软链里记的
+  # 可能是 ~/code 而 pwd 给的是 ~/Code —— 同一个目录，字符串比较会误判成「指向别处」，
+  # 而 ``pwd -P`` 保留输入时的大小写、也救不了。``-ef`` 比的是设备 + inode，两者通吃。
+  if [ -e "$current" ] && [ "$REPO_DIR" -ef "$current" ]; then
     echo "已经装好了：$TARGET -> $REPO_DIR"
     exit 0
   fi
