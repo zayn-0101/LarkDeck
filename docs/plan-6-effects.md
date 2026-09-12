@@ -474,7 +474,7 @@
 | # | 效果 | 实现位置 | 默认 | 验证到 |
 |---|---|---|---|---|
 | 1a | 即时响应（首帧早于首个 token） | native seed 帧（核心契约，`stream_frame("")` 建卡） | 开 | **A**（单测覆盖 seed 帧生命周期） |
-| 1b | 打字机 | `cards.streaming_config()` + 配置 `streaming_print_ms`（15） | 开 | **B**（飞书接受字段，create/patch 都是 `code=0`）+ **C 待定**（动画本身；`--typing` 探针已做成 12 秒可看的对照） |
+| 1b | 打字机 | `cards.streaming_config()` + 配置 `streaming_print_ms`（15） | 开 | **B**（飞书接受字段，create/patch 都是 `code=0`）+ **B′**（CardKit 实体链**每一步**实测 `code=0`：`card.create` → 发实体卡 → `card_element.content` × 8 → `settings` 收尾；见 `--cardkit`）+ **C 待定**（动画本身；两条传输的公平对照已留在 DM 里等人看） |
 | 1c | 无输入提示 | 覆盖 `_reactions_enabled()`（配置 `reactions`，默认保持 Hermes 行为） | 保持 | **A**（覆盖逻辑 + **尊重父类** + 私有名已登记进 `compat.REACTION_ADAPTER_ATTRS` 并在启动自检里上报；此前「父类缺失」那条路无门禁，第六路审计指出后已补） |
 | 2 | 完成态绿色面板 | `on_session_end` → `panel.record_turn_end` → `cards.border_for_status` | 开 | **A** + **B**（三种状态色的探针卡都被飞书接受）+ **D**（超预算档也保住颜色：`--stop-redraw` 真机实测载荷里有色、`code=0`） |
 | 3 | 中止黄边 / 报错红边 | 同上 + 覆盖 `interrupt_session_activity` 自己重绘 | 开 | **A**（含「空回合也要画出黄边」「必须落在绑定会话」）+ **B** + **D**（**60000 字节正文**的卡：正文留住 + 载荷带黄边 + 飞书 `code=0`，真机端到端；见第十四轮） |

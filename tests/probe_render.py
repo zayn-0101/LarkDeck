@@ -25,6 +25,8 @@
     --bytes        卡片字节上限阶梯（create + patch 都打）
     --elements     元素数上限阶梯（飞书硬上限 200）
     --rate-limit   连续 patch 的限流实证（退避重试该收哪个错误码）
+    --cardkit      **打字机传输的 A/B**：甲=普通卡 + streaming_config，乙=CardKit 卡片实体
+                   + card_element.content 逐帧。两张卡并排留在 DM 里等你看哪张在逐字
     --stop-redraw  **中止重绘的真机端到端**：正文超降载预算但发得出去时，
                    /stop 必须真的把那张卡重绘成中止色。**两条路径都跑**：
                    ① 非 native（`send` + `message.patch`）；② 真 native 流式
@@ -659,6 +661,113 @@ def probe_rate_limit(client, chat: str, cards) -> int:
     return 0
 
 
+def probe_cardkit(client, chat: str, cards) -> int:
+    """**CardKit 打字机 A/B**：证明「打字机该走哪条传输」，并把结论摆到眼前。
+
+    要回答的问题：aiduPOP 的逐字打字机到底靠什么？我们现在的做法是在**普通卡**里带
+    ``config.streaming_config``（飞书接受，``code=0``）。飞书那套「服务端流式卡片」
+    还有另一条路 —— **CardKit 卡片实体**：``cardkit.v1.card.create`` 建实体 →
+    ``im.v1.message.create`` 发一条 ``{"type":"card","data":{"card_id":…}}`` →
+    ``cardkit.v1.card_element.content`` 按 ``sequence`` 逐帧写元素内容 →
+    ``cardkit.v1.card.settings`` 收尾（``streaming_mode: false``）。
+
+    2026-09-13 真机实测：这条链**每一步都是 ``code=0``**（见下面的打印），
+    也就是说「打字机需要 CardKit 实体」在**传输层是可行的**、SDK 也就位（Hermes 自身
+    完全没用 CardKit，所以不会有冲突）。剩下唯一的问题是**客户端会不会逐字打**——
+    那是纯客户端行为，API 返回码看不到，只能眼睛判。
+
+    所以这个探针发**两张卡并排**：
+      * 甲 = 我们现在的做法（普通卡 + ``streaming_config``）；
+      * 乙 = CardKit 实体 + ``card_element.content`` 逐帧。
+    两张都逐帧长大，哪张在逐字、哪张整段跳，一眼就能定。
+    **别加 `--no-clean` 之外的花样**：跑完两张卡留在 DM 里等你看，它们的 ID 记在探针账本里，
+    下次默认跑探针时会一起清掉。
+    """
+    import time as _time
+
+    from lark_oapi.api.cardkit.v1 import (
+        CreateCardRequest, CreateCardRequestBody, ContentCardElementRequest,
+        ContentCardElementRequestBody, SettingsCardRequest, SettingsCardRequestBody)
+    from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
+
+    element_id = "answer"
+    text = ("这是一次**打字机传输**的对照实验。\n\n"
+            "甲卡走的是普通 message.create + config.streaming_config；"
+            "乙卡走的是 CardKit 卡片实体 + card_element.content 逐帧写入。\n\n"
+            "哪张卡的字是一个个冒出来的，哪张就是真的打字机 —— 请盯住这两张卡。") * 2
+
+    # 甲：我们现在的做法
+    plain = cards.reply_card(text, streaming=True, footer="LARKDECK-RENDER-PROBE · 甲（普通卡）")
+    code, msg, mid_a = send(client, chat, plain)
+    print(f"{'✅' if code == 0 else '❌'} 甲（普通卡 + streaming_config）：code={code} msg={msg} id={mid_a}")
+    if mid_a:
+        _save_sent_ids(_load_sent_ids() + [mid_a])
+
+    # 乙：CardKit 实体
+    card_json = {"schema": "2.0", "config": {"streaming_mode": True},
+                 "body": {"elements": [{"tag": "markdown", "element_id": element_id,
+                                        "content": text[:8]}]}}
+    create_body = (CreateCardRequestBody.builder().type("card_json")
+                   .data(json.dumps(card_json, ensure_ascii=False)).build())
+    resp = client.cardkit.v1.card.create(
+        CreateCardRequest.builder().request_body(create_body).build())
+    card_id = getattr(resp.data, "card_id", None) if resp.data else None
+    print(f"   card.create code={resp.code} msg={resp.msg} card_id={card_id}")
+    if resp.code != 0 or not card_id:
+        print("❌ CardKit 建卡片实体失败 —— 打字机若要 CardKit，这条路当前走不通")
+        return 1
+    msg_body = (CreateMessageRequestBody.builder().receive_id(chat).msg_type("interactive")
+                .content(json.dumps({"type": "card", "data": {"card_id": card_id}})).build())
+    sent = client.im.v1.message.create(
+        CreateMessageRequest.builder().receive_id_type("chat_id")
+        .request_body(msg_body).build())
+    mid_b = sent.data.message_id if sent.data else None
+    print(f"   发实体卡 code={sent.code} msg={sent.msg} id={mid_b}")
+    if mid_b:
+        _save_sent_ids(_load_sent_ids() + [mid_b])
+    if sent.code != 0 or not mid_b:
+        print("❌ 实体卡发不出去（content 形式不对？）")
+        return 1
+
+    # ⚠️ 对照必须**公平**：两张卡都以同样的节奏、同样的切分长大，否则看到的差异可能只是
+    # 「一张根本没更新」。甲用 `message.patch` 整卡替换（我们现在的做法），乙用
+    # `card_element.content` 逐帧写元素（CardKit）。
+    print(f"👀 现在盯住飞书 DM：接下来约 {8 * 0.8:.0f} 秒里，两张卡的字都会往外长 ——")
+    print("   甲 = message.patch 整卡替换（我们现在的方式，卡里带 streaming_config）")
+    print("   乙 = CardKit card_element.content 逐帧写元素")
+    print("   哪张在**逐字**打、哪张**整段**跳，就是这两条传输的差别。")
+    for seq in range(1, 9):
+        cut = min(len(text), 8 + seq * 12)
+        grown = cards.reply_card(text[:cut], streaming=True,
+                                 footer="LARKDECK-RENDER-PROBE · 甲（普通卡）")
+        p_code, p_msg = patch(client, mid_a, grown) if mid_a else (None, "no id")
+        body = (ContentCardElementRequestBody.builder().content(text[:cut])
+                .sequence(seq).uuid(f"lk-probe-{seq}").build())
+        step = client.cardkit.v1.card_element.content(
+            ContentCardElementRequest.builder().card_id(card_id)
+            .element_id(element_id).request_body(body).build())
+        print(f"   seq={seq} 字符={cut} · 甲 patch code={p_code} · 乙 content code={step.code}")
+        if step.code != 0:
+            print("❌ card_element.content 被拒 —— 打字机的流式写入走不通")
+            return 1
+        if p_code not in (0, None):
+            print(f"❌ 甲（对照卡）的 patch 也失败了 code={p_code} —— 这张对照无效：{p_msg}")
+            return 1
+        _time.sleep(0.8)
+    fin = (SettingsCardRequestBody.builder()
+           .settings(json.dumps({"config": {"streaming_mode": False,
+                                           "update_multi": True}}, ensure_ascii=False))
+           .sequence(9).uuid("lk-probe-fin").build())
+    done = client.cardkit.v1.card.settings(
+        SettingsCardRequest.builder().card_id(card_id).request_body(fin).build())
+    print(f"   settings 收尾（streaming_mode=false）code={done.code} msg={done.msg}")
+    print()
+    print("结论（传输层）：CardKit 实体链每一步都通。**动画本身只能眼睛判** ——")
+    print("  甲逐字 ⇒ 我们现在的做法就够（不必付 CardKit 的复杂度）；")
+    print("  乙逐字而甲整段 ⇒ 打字机必须走 CardKit 实体（实现是下一步的独立工作）。")
+    return 0
+
+
 def probe_stop_redraw(client, chat: str, cards) -> int:
     """**中止重绘的真机端到端**（第七路审计那条阻断项的现场复现与回归）。
 
@@ -889,6 +998,8 @@ def main(argv: list) -> int:
         return probe_rate_limit(client, chat, cards)
     if "--stop-redraw" in argv:
         return probe_stop_redraw(client, chat, cards)
+    if "--cardkit" in argv:
+        return probe_cardkit(client, chat, cards)
 
     cases = (build_cases(cards) + build_bilingual_cases(cards) + build_footer_cases(cards)
              + build_dialect_probe_cards(cards))

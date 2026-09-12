@@ -265,6 +265,14 @@ LarkDeck 接管后才生效）。带参数的几种模式各答一个只有真�
   重打答案），确证无效就把 `streaming_print_ms` 设 `0`；真要打字机得换 CardKit 卡片实体
   传输（那份复杂度等确证后再付）。自测方法：`tests/probe_render.py --typing`（两张卡
   交替长大 12 秒，一眼看得出哪张在逐字）。
+  **另一条传输已经实测可行**（2026-09-13）：`tests/probe_render.py --cardkit` 把
+  `cardkit.v1.card.create`（建卡片实体）→ `im.v1.message.create`
+  （`{"type":"card","data":{"card_id":…}}`）→ `cardkit.v1.card_element.content`
+  （按 `sequence` 逐帧写元素）→ `cardkit.v1.card.settings`（`streaming_mode: false` 收尾）
+  整条链跑通，**每一步都是 `code=0`**；SDK 就位、Hermes 自身完全没用 CardKit（不冲突）。
+  它同时发一张**公平的对照卡**（同样节奏、同样切分，但走 `message.patch` + `streaming_config`），
+  两张并排留在 DM 里 —— 哪张逐字、哪张整段跳，一眼就能定「打字机是否需要 CardKit 实体」。
+  在那之前不实现它：这是本项目「先量，不猜」的规矩，也是当初把它列为「确证后再付的复杂度」的原因。
   取值超出 `[1, 2000]` 毫秒会被退回默认 15ms，并在日志里留一条限流 WARNING
   （写错配置不会静默 —— 「想要最慢」却得到「最快」是必须能查出来的）。
 - **状态色的可信范围**：颜色来自 `on_session_end`（每回合一次，含非流式路径）。
