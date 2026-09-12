@@ -1170,7 +1170,7 @@ def test_adapter_footer_wiring() -> None:
         assert adapter.LarkDeckMixin._ld_footer() == "ctx 1k/10k · 10%"
         # 同一屏里不重复：模型名与耗时只在面板标题行出现
         assert "🤖" not in adapter.LarkDeckMixin._ld_footer()
-        assert "⏱" not in adapter.LarkDeckMixin._ld_footer(time.monotonic() - 12.3)
+        assert "⏱" not in adapter.LarkDeckMixin._ld_footer()
 
         adapter.configure(context_style="bar")
         assert "[█░░░░░░░]" in adapter.LarkDeckMixin._ld_footer()
@@ -1774,9 +1774,17 @@ def test_interrupt_redraws_the_stream_card_in_stopped_color():
                                           chat_id="oc_1", turn_id="t1")) is True
         assert len(updates) == 1
 
+        # 另开一个有内容的会话并让它成为「最近活跃」：适配器若把 chat_id 丢了，
+        # 中止状态就会打到它身上（审计的 B1 变异，原来这条没有任何断言守着）
+        panel.record_reasoning("s_other", "t_other", "别的会话的推理")
+
         _run(raw.interrupt_session_activity("sk1", "oc_1", metadata={"k": "v"}))
         assert ("SUPER.interrupt", "sk1", "oc_1", {"k": "v"}) in raw.calls, \
             "中止必须原样交给核心（那是这个方法的本质职责，不能被卡片挡住）"
+        # 状态必须落在**这个 chat 绑定的会话**上，不能落到别的会话
+        assert panel._STATE["s1"]["status"] == panel.STATUS_STOPPED, \
+            "中止状态没写到绑定的会话上"
+        assert not panel._STATE["s_other"].get("status"), "中止状态串到别的会话了"
         assert len(updates) == 2, "中止后必须自己重绘那张卡"
         body = json.loads(updates[1]["content"])
         assert _find_collapsible(body)["border"]["color"] == "yellow", \
@@ -2024,27 +2032,47 @@ def test_clarify_answer_extraction_covers_all_three_shapes():
 
     class _Action:
         def __init__(self, **kw):
-            self.tag = kw.get("tag")
-            self.option = kw.get("option")
-            self.input_value = kw.get("input_value")
-            self.value = kw.get("value")
+            for key in ("tag", "option", "options", "input_value", "value", "form_value"):
+                setattr(self, key, kw.get(key))
 
     # 1.0：答案在我们自己的 value 里
     assert cls._ld_clarify_answer(_Action(value={"answer": "A"}), {"answer": "A"}) == ("A", "choice")
     # 2.0 单选下拉
     assert cls._ld_clarify_answer(_Action(tag="select_static", option="B"), {}) == ("B", "choice")
-    # 2.0 多选下拉 → JSON 数组字符串（网关的规范形式）
+    # 2.0 多选下拉：值在 action.options（**复数**），答案是 **JSON 数组字符串**
+    # （核心 `_coerce_multi_select_text` 的规范形式；下游 `_parse_multi_select_response`
+    #  对它走 json.loads，所以选项文本里含逗号也不会被打散）
     answer, mode = cls._ld_clarify_answer(
-        _Action(tag="multi_select_static", option=["A", "C"]), {})
-    assert mode == "multi" and json.loads(answer) == ["A", "C"], (answer, mode)
+        _Action(tag="multi_select_static", options=["A 方案", "C 方案"]), {})
+    assert mode == "multi" and json.loads(answer) == ["A 方案", "C 方案"], (answer, mode)
+    # 线格式给的是逗号串时等价处理
+    answer2, mode2 = cls._ld_clarify_answer(
+        _Action(tag="multi_select_static", options="A 方案, C 方案"), {})
+    assert mode2 == "multi" and json.loads(answer2) == ["A 方案", "C 方案"], (answer2, mode2)
+    # ⚠️ 反面：**不能再只认 `option` 是列表** —— 官方形状用的是 `options`，
+    # 只读 `option` 会让用户「选完没反应」（2026-09-13 审计实测）。
+    assert cls._ld_clarify_answer(
+        _Action(tag="multi_select_static", option=["A"]), {})[1] == "none", \
+        "`option` 是列表不是官方形状，不该被当成多选答案"
     # 2.0 输入框
     assert cls._ld_clarify_answer(
         _Action(tag="input", input_value="  自己写的  "), {}) == ("自己写的", "text")
     # 什么都没有 → none（调用方保持安静，不提交空答案）
     assert cls._ld_clarify_answer(_Action(), {}) == (None, "none")
     assert cls._ld_clarify_answer(_Action(input_value="   "), {}) == (None, "none")
-    # option 为空列表（用户没选）也算没有答案
-    assert cls._ld_clarify_answer(_Action(option=[]), {}) == (None, "none")
+    assert cls._ld_clarify_answer(_Action(options=[]), {}) == (None, "none")
+
+    # `action.value` 是 JSON 字符串（同类项目实测见过的形态）也要能读出来 ——
+    # 不归一的话 `.get()` 会抛，被外层吞掉后点击就是「没反应」。
+    assert cls._ld_normalize_value(
+        _Action(value='{"larkdeck_action": "clarify", "clarify_id": "c1"}')) == {
+            "larkdeck_action": "clarify", "clarify_id": "c1"}
+    # 表单提交按钮：value 为空、数据在 form_value 里
+    assert cls._ld_normalize_value(
+        _Action(value={}, form_value={"larkdeck_action": "clarify", "clarify_id": "c9"})) == {
+            "larkdeck_action": "clarify", "clarify_id": "c9"}
+    # 坏 JSON 不能让点击炸掉（交回内置实现）
+    assert cls._ld_normalize_value(_Action(value="{not json")) == {}
 
 
 def test_clarify_free_text_only_commits_when_the_core_accepts_it():
@@ -2055,7 +2083,7 @@ def test_clarify_free_text_only_commits_when_the_core_accepts_it():
     重试机会（这条纪律 1.0 路径上已经有，2.0 的输入框走的是另一条判据）。
     """
     defaults = dict(adapter._DEFAULTS)
-    original = compat.clarify_attempt_text
+    original = compat.clarify_text_answer
     # 这两处是**类属性/模块属性**的替换，必须在 finally 里还原 —— 忘了还原会让
     # 后面的测试拿着假实现跑（自证循环的一种，且症状与「测试顺序」耦合）。
     original_builder = adapter.LarkDeckMixin._ld_build_resolved_card
@@ -2065,12 +2093,12 @@ def test_clarify_free_text_only_commits_when_the_core_accepts_it():
         raw = _make()
         calls: list = []
 
-        def fake_attempt(session_key, text):
-            calls.append((session_key, text))
+        def fake_attempt(clarify_id, text):
+            calls.append((clarify_id, text))
             return outcome[0]
 
         outcome = ["resolved"]
-        compat.clarify_attempt_text = fake_attempt
+        compat.clarify_text_answer = fake_attempt
         try:
             event = types.SimpleNamespace(
                 operator=types.SimpleNamespace(open_id="ou_ok"),
@@ -2085,7 +2113,8 @@ def test_clarify_free_text_only_commits_when_the_core_accepts_it():
                 lambda *, question, answer, user_name: filled.append((question, answer, user_name))
                 or {"filled": True})
             result = raw._on_card_action_trigger(types.SimpleNamespace(event=event))
-            assert calls == [("sk-1", "1,3")], calls
+            # 必须带上**这张卡自己的** clarify_id —— 不带就会答错问题（见 A2）
+            assert calls == [("c1", "1,3")], calls
             assert filled == [("选哪个？", "1,3", "汪老师")], filled
             assert result is not None, "解析成功时应当回填卡片"
 
@@ -2097,7 +2126,7 @@ def test_clarify_free_text_only_commits_when_the_core_accepts_it():
             assert filled == [], f"被拒绝的输入不该回填卡片：{filled!r}"
             assert result2 is not None, "至少要有「无卡片变更」的响应"
         finally:
-            compat.clarify_attempt_text = original
+            compat.clarify_text_answer = original
             adapter.LarkDeckMixin._ld_build_resolved_card = original_builder
     finally:
         adapter._CONFIG.clear()
@@ -2143,6 +2172,198 @@ def test_element_limit_is_enforced_recursively():
     _small, tier2 = cards.fit_reply_card("答案" * 100, streaming=True, panel=fat,
                                          footer="脚注", budget=100)
     assert tier2 == "over-budget", tier2
+
+
+def test_stop_marks_the_bound_session_even_when_its_bucket_is_empty():
+    """**阻断项回归**：`/stop` 的中止状态不许落到别的会话上。
+
+    2026-09-13 审计实测的原缺陷：`mark_stopped` 复用了「渲染用」的归属判据，而那条判据
+    要求「绑定的会话桶有内容或有状态」才认它 —— 于是回合刚被 `on_stream_start` 清空
+    （或 30 分钟 TTL 淘汰）时，它会跳到「最近活跃会话」，把 `stopped` 写到**另一个会话**
+    上：那个 chat 的下一张卡变成黄色「⛔ 已中止」（它其实正常完成了），而本次的卡片
+    背景里显示的是别人的推理。
+    """
+    panel.reset()
+    try:
+        panel.bind_chat_session("oc_A", "s_A")
+        # s_A 是一个**空桶**（换回合会清空过程数据），另一个会话有内容且是最近活跃
+        panel.record_reasoning("s_B", "t_B", "别的会话的推理")
+        assert panel.snapshot("oc_A") is None, "（前提）空桶的绑定会话不该渲染面板"
+
+        sid = panel.mark_stopped("oc_A")
+        assert sid == "s_A", f"中止状态打到了别的会话上：{sid!r}"
+        state_A = panel._STATE["s_A"]
+        assert state_A["status"] == panel.STATUS_STOPPED
+        assert not panel._STATE["s_B"].get("status"), "别的会话被一起改色了"
+
+        # 没有绑定时才退回「最近活跃」（旧的保底行为不能被弄丢）
+        assert panel.mark_stopped("oc_unknown") == "s_B"
+    finally:
+        panel.reset()
+
+
+def test_stop_redraw_paints_an_empty_turn_yellow():
+    """回合里还没有任何过程数据时 `/stop`，卡片也必须能画上黄边。
+
+    这是上面那条的另一半：状态改对了、但**渲染侧**拿不到面板 ⇒ 「状态改了、卡片没变、
+    还不报错」。触发条件在默认配置下很常见 —— `stream_reasoning_deltas` 官方默认是关的，
+    所以「模型还在思考、还没调工具」的回合整回合都没有过程数据。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    try:
+        panel.reset()
+        panel.bind_chat_session("oc_1", "s1")
+        raw = _make()
+        updates = _wire_patch(raw)
+        # 建卡（seed 帧）后**不写任何面板数据** —— 这就是「还没思考出东西」的回合
+        assert _run(raw.send_stream_frame("", finalize=False, chat_id="oc_1",
+                                          turn_id="t1")) is True
+        assert _run(raw.send_stream_frame("半个答案", finalize=False, chat_id="oc_1",
+                                          turn_id="t1")) is True
+        assert len(updates) == 1
+
+        _run(raw.interrupt_session_activity("sk1", "oc_1"))
+        assert len(updates) == 2, "中止后必须重绘"
+        panel_node = _find_collapsible(json.loads(updates[1]["content"]))
+        assert panel_node is not None, "重绘出来的卡上没有面板 —— 状态色无处安放"
+        assert panel_node["border"]["color"] == "yellow", panel_node["border"]
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_stop_redraw_cleans_up_and_reaches_non_native_cards():
+    """两个实测过的边界：重绘后要清流状态；非 native 路径也要能重绘。"""
+    defaults = dict(adapter._DEFAULTS)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    try:
+        # ① 重绘成功后必须清 `_ld_streams`，否则每次 /stop 会把该 chat 的
+        #    **全部历史中止卡**重画一遍（串行 patch，且都在 super() 之前 → /stop 变慢）
+        panel.reset()
+        raw = _make()
+        _wire_patch(raw)
+        _run(raw.send_stream_frame("", finalize=False, chat_id="oc_1", turn_id="c1"))
+        _run(raw.send_stream_frame("a", finalize=False, chat_id="oc_1", turn_id="c1"))
+        _run(raw.interrupt_session_activity("sk", "oc_1"))
+        assert not [k for k, v in raw._ld_streams.items() if v.get("chat_id") == "oc_1"], \
+            "中止重绘后流状态没清 —— 下次 /stop 会把历史卡全部重画一遍"
+
+        # ② 非 native 路径（edit）：没有存活流，但那张卡在 `_ld_state` 里有 message_id
+        #    与最后渲染过的正文 → 同样要能原地重绘成中止态
+        panel.reset()
+        raw2 = _make()
+        updates2 = _wire_patch(raw2)
+        _run(raw2.send("oc_9", "答案正文"))
+        assert raw2._ld_state, "（前提）send 过的卡应当被追踪"
+        _run(raw2.interrupt_session_activity("sk9", "oc_9"))
+        assert updates2, "非 native 路径的中止完全没变色（静默失效）"
+        joined = json.dumps(json.loads(updates2[-1]["content"]), ensure_ascii=False)
+        assert "答案正文" in joined, "重绘把正文弄丢了"
+        assert "yellow" in joined, "非 native 路径的中止色没画上"
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_stop_forwards_to_core_before_redrawing():
+    """中止必须**先转发给内核**再重绘卡片 —— 重绘抛异常也不能挡住内核的中止。
+
+    审计实测：原来 super() 在重绘之后，而重绘里有 await（可能多次串行 patch、
+    `_run_blocking` 又没有超时），一旦这段被取消或挂住，`except Exception` 接不住
+    `CancelledError`（BaseException），内核的「置停止事件 + 停打字」就不会发生。
+    另外父类方法内部抛 `TypeError` 时，旧写法会把**父类调用两次**。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    try:
+        panel.reset()
+        raw = _make()
+        order: list = []
+
+        async def boom(chat_id):
+            order.append("redraw")
+            raise RuntimeError("网络炸了")
+
+        original_forward = raw.interrupt_session_activity
+
+        def spy_super(self, session_key, chat_id, metadata=None):
+            order.append("super")
+            return original_forward.__get__(self, type(self))
+
+        raw._ld_redraw_stopped = boom
+        super_method = StubAdapter.interrupt_session_activity
+        calls: list = []
+
+        async def fake_super(self, session_key, chat_id, metadata=None):
+            order.append("super")
+            calls.append((session_key, chat_id, metadata))
+
+        StubAdapter.interrupt_session_activity = fake_super
+        try:
+            _run(raw.interrupt_session_activity("sk", "oc_1", metadata={"k": 1}))
+        finally:
+            StubAdapter.interrupt_session_activity = super_method
+
+        assert calls == [("sk", "oc_1", {"k": 1})], f"内核的中止没被正确转发：{calls!r}"
+        assert order and order[0] == "super", f"转发必须排在重绘之前：{order!r}"
+        assert "redraw" in order, "重绘没被尝试"
+        assert len(calls) == 1, f"父类被调用了两次：{calls!r}"
+    finally:
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_turn_end_ignores_stale_turn_and_note_turn_clears_status():
+    """两条实测过的门禁盲区：`record_turn_end` 要认 turn_id；`note_turn` 要清旧状态。"""
+    panel.reset()
+    try:
+        panel.bind_chat_session("oc_1", "s1")   # 真机路径一定带 chat_id（有绑定）
+        panel.record_reasoning("s1", "t2", "第二回合的推理")
+
+        # ① 属于**另一个回合**的收尾（迟到 / 无关）必须整条丢弃：既不写状态，
+        #    更不能把当前回合的面板清空、把 turn_id 倒回去（加这条测试时实测到的真 bug）
+        panel.record_turn_end("s1", "t1", completed=True)
+        snap = panel.snapshot("oc_1")
+        assert snap is not None and snap["turn_id"] == "t2", "旧回合的收尾把 turn_id 倒回去了"
+        assert "第二回合的推理" in snap["reasoning"], "旧回合的收尾清空了当前回合的面板"
+        assert snap["status"] is None, "旧回合的收尾改掉了当前回合的颜色"
+
+        # ② 本回合的收尾正常落状态
+        panel.record_turn_end("s1", "t2", completed=True)
+        assert panel.snapshot("oc_1")["status"] == panel.STATUS_OK
+
+        # ③ note_turn（post_api_request）要在新回合把旧状态清掉 —— 非流式模式下
+        #    `on_stream_start` 完全不触发，这是唯一的新回合信号
+        panel.note_turn("s1", "t3")
+        snap = panel.snapshot("oc_1")
+        assert snap is None or snap.get("status") is None, \
+            f"新回合没有清掉上一回合的颜色（note_turn 失效）：{snap!r}"
+
+        # ④ 同一回合内重复调用是幂等的，不能把状态清掉
+        panel.record_turn_end("s1", "t3", completed=True)
+        panel.note_turn("s1", "t3")
+        assert panel.snapshot("oc_1")["status"] == panel.STATUS_OK, \
+            "同回合的 note_turn 不该清状态"
+
+        # ⑤ 遗留路径（**没有绑定**时退回「最近活跃」）**不认**只有状态的桶：
+        #    那条路没有归属信息可依，选中「另一个会话刚结束」的桶就会把别人的颜色
+        #    画到这张卡上 —— 宁可这张卡暂时没有颜色（有绑定就一定有色，见 ②）。
+        fresh = panel._STATE["s1"]
+        assert not fresh.get("rounds") and not fresh.get("tools")  # 前提：只剩状态
+        assert panel.snapshot("oc_unknown") is None, \
+            "无绑定的回退把「只有状态」的桶当成了本卡的面板（跨会话错色）"
+    finally:
+        panel.reset()
 
 
 def test_panel_concurrent_writes_are_safe():
@@ -2324,11 +2545,18 @@ def test_panel_attribution_is_deterministic_by_chat_id():
     assert "会话一的推理" in panel.snapshot("oc_one")["reasoning"]
     assert panel.snapshot("oc_two")["session_id"] == "s2"
 
-    # 未知 chat → 退回旧行为；**绝不能因为归属失败就不渲染面板**
+    # 未知 chat（**没有绑定**）→ 退回旧行为；**绝不能因为归属失败就不渲染面板**
     assert panel.snapshot("oc_unknown")["session_id"] == "s2"
-    # 绑定指向一个没有内容的会话 → 同样退回
+    # ⚠️ 但**有绑定、只是那个会话暂时没内容**时，必须表现为「这张卡没有面板」，
+    # **不能**换成别的会话 —— 那正是跨会话错色 / 中止状态写错会话的根因
+    # （2026-09-13 审计判为阻断项的那条，原来这里断言的是「退回 s2」）。
     panel.bind_chat_session("oc_empty", "s-nonexistent")
-    assert panel.snapshot("oc_empty")["session_id"] == "s2"
+    assert panel.snapshot("oc_empty") is None, \
+        "绑定的会话没内容 ≠ 可以拿别人的面板来画"
+    # 绑定的会话桶空着、但另一个会话有内容时，同样不许串台
+    panel.bind_chat_session("oc_fresh", "s-fresh")
+    panel.begin_turn("s-fresh", "t-fresh")  # 建一个空桶（换回合会清空过程数据）
+    assert panel.snapshot("oc_fresh") is None, "空桶的绑定会话把别人的面板带出来了"
 
     # 空值不入表
     panel.bind_chat_session("", "s1")

@@ -213,24 +213,46 @@ def clarify_resolve_gateway_clarify(clarify_id: str, answer: str) -> bool:
 #: 澄清「文字回答」的判定结果（对应核心 ``tools.clarify_gateway`` 的 TEXT_* 常量）。
 CLARIFY_TEXT_RESOLVED = "resolved"
 CLARIFY_TEXT_NO_PENDING = "no_pending"
+CLARIFY_TEXT_REJECTED_SELECTION = "rejected_selection"
+CLARIFY_TEXT_REJECTED_PROSE = "rejected_prose"
 
 
-def clarify_attempt_text(session_key: str, text: str) -> str:
-    """把一段用户文字按**核心自己的规则**变成澄清答案；返回结果串。
+def clarify_text_answer(clarify_id: str, text: str) -> str:
+    """把**这一张卡自己的**澄清上的自由文本变成答案（用核心自己的解析规则）。
 
-    为什么不让调用方自己拼接答案：核心那套规则不简单 —— 多选要解析
-    ``"1,3"`` / ``"staging, prod"`` 并**返回 JSON 数组字符串**、单选要支持编号与
-    标签匹配、还要区分「无效选择」（保持待答，让用户重试）与「散文」（可能是另一种
-    意图）。2.0 澄清卡的输入框拿到的是**自由文本**，只有走核心这条判据才不会把
-    「1,3」当成一个叫「1,3」的选项。
+    为什么不让调用方退回到 ``attempt_text_response_for_session``（核心给「用户直接
+    打字回复」用的那个入口）：它取的是该 session **最旧的**待答澄清，**完全不看卡片上的
+    ``clarify_id``**。2026-09-13 审计实测：同一个 session 有两条待答时，在**新**卡的
+    输入框里输入会被解到**旧**问题上，而回填卡显示的是新问题 —— 错误答案 + 假确认，
+    两个方向都不报错。
 
-    返回 ``CLARIFY_TEXT_RESOLVED`` / ``CLARIFY_TEXT_NO_PENDING`` 或核心的
-    ``rejected_*``（原样透传，调用方据此决定是否提示用户重试）。
+    这里只针对 ``clarify_id`` 那一条：拿它的 entry 走核心的
+    ``_coerce_text_response_detailed``（编号 / 标签匹配 / 多选解析 / 无效选择 vs 散文），
+    **解析成功才提交**。核心没有这个内部函数（老版本）时返回 ``no_pending`` ——
+    不猜、不提交（宁可让用户重试，也不要把答案写到别的问题上）。
+
+    返回值与核心的 ``TEXT_*`` 同名，调用方据此决定是否回填卡片。
     """
+    cid = str(clarify_id or "")
+    body = str(text or "").strip()
+    if not cid or not body:
+        return CLARIFY_TEXT_NO_PENDING
     try:
-        from tools.clarify_gateway import attempt_text_response_for_session
+        from tools import clarify_gateway as _cg
 
-        return str(attempt_text_response_for_session(str(session_key), str(text)))
+        with _cg._lock:
+            entry = _cg._entries.get(cid)
+            if entry is None or entry.event.is_set():
+                return CLARIFY_TEXT_NO_PENDING
+        coerce = getattr(_cg, "_coerce_text_response_detailed", None)
+        if not callable(coerce):
+            return CLARIFY_TEXT_NO_PENDING
+        value, reason = coerce(entry, body)
+        if value is None:
+            return (CLARIFY_TEXT_REJECTED_SELECTION
+                    if reason == "invalid_selection" else CLARIFY_TEXT_REJECTED_PROSE)
+        return (CLARIFY_TEXT_RESOLVED
+                if _cg.resolve_gateway_clarify(cid, value) else CLARIFY_TEXT_NO_PENDING)
     except Exception:
         return CLARIFY_TEXT_NO_PENDING
 
@@ -289,17 +311,44 @@ def session_key_for_source(source: Any, store: Any) -> str:
 
     ``SessionStore`` 内部是 ``build_session_key(source, group_sessions_per_user=...,
     thread_sessions_per_user=..., profile=...)``；这里读同样的**公开**配置属性再算一遍。
-    默认配置下两者结果一致；算不出或算不中时返回空串，调用方据此放弃归属。
+
+    ⚠️ **``profile`` 必须一起传**（2026-09-13 审计发现）：开了 ``multiplex_profiles``
+    时 store 会用 ``_resolve_profile_for_key`` 给键加 profile 段，我们少传一个参数就会
+    **永远算不中** ⇒ 绑定写不进去 ⇒ 面板整体静默退回「最近活跃」（不报错）。
+    本机没开这个开关，所以是潜在坑而非现症。
+
+    算不出或算不中时返回空串，调用方据此放弃归属。
     """
     try:
         from gateway.session import build_session_key
 
         config = getattr(store, "config", None)
-        return str(build_session_key(
-            source,
-            group_sessions_per_user=bool(getattr(config, "group_sessions_per_user", True)),
-            thread_sessions_per_user=bool(getattr(config, "thread_sessions_per_user", False)),
-        ) or "")
+        kwargs: Dict[str, Any] = {
+            "group_sessions_per_user": bool(getattr(config, "group_sessions_per_user", True)),
+            "thread_sessions_per_user": bool(getattr(config, "thread_sessions_per_user", False)),
+        }
+        profile = profile_for_source(store, source)
+        if profile:
+            kwargs["profile"] = profile
+        return str(build_session_key(source, **kwargs) or "")
+    except Exception:
+        return ""
+
+
+def profile_for_source(store: Any, source: Any) -> str:
+    """多 profile（``multiplex_profiles``）时该 source 落在哪个 profile；否则空串。
+
+    镜像核心 ``gateway/session_recovery.py`` 的 ``_resolve_profile_for_key``：读同样的
+    公开配置属性自己算，不调用私有函数。任何异常都当作「没有 profile」。
+    """
+    try:
+        config = getattr(store, "config", None)
+        if not bool(getattr(config, "multiplex_profiles", False)):
+            return ""
+        resolver = getattr(store, "_resolve_profile_for_key", None)
+        if callable(resolver):
+            return str(resolver(source) or "")
+        return ""
     except Exception:
         return ""
 

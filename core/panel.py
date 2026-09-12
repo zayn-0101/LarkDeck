@@ -126,6 +126,17 @@ def _purge_locked(now: float) -> None:
         _LAST_ACTIVE = ""
 
 
+def _new_state_locked(sid: str, now: float) -> Dict[str, Any]:
+    """建一个空的会话桶（锁内调用）。"""
+    state: Dict[str, Any] = {
+        "turn_id": "", "rounds": [], "current_round": None, "reasoning_len": 0,
+        "tools": [], "started": now, "updated": now, "status": None,
+        "closed": deque(maxlen=_MAX_CLOSED_TURNS),
+    }
+    _STATE[sid] = state
+    return state
+
+
 def _touch_locked(session_id: str, turn_id: str, now: float) -> Optional[Dict[str, Any]]:
     """取（或新建）会话状态；``turn_id`` 变化视为新回合，清空过程数据。
 
@@ -151,10 +162,7 @@ def _touch_locked(session_id: str, turn_id: str, now: float) -> Optional[Dict[st
         return None
     state = _STATE.get(sid)
     if state is None:
-        state = {"turn_id": "", "rounds": [], "current_round": None, "reasoning_len": 0,
-                 "tools": [], "started": now, "updated": now, "status": None,
-                 "closed": deque(maxlen=_MAX_CLOSED_TURNS)}
-        _STATE[sid] = state
+        state = _new_state_locked(sid, now)
     closed = state.get("closed")
     if not isinstance(closed, deque):
         closed = state["closed"] = deque(maxlen=_MAX_CLOSED_TURNS)
@@ -413,11 +421,29 @@ def record_turn_end(session_id: str, turn_id: str, *, completed: bool = False,
     if not sid:
         return
     now = _now()
+    tid = str(turn_id or "")
     with _LOCK:
-        state = _touch_locked(sid, str(turn_id or ""), now)
-        if state is None:
-            return  # 已作废回合的收尾：丢弃（它属于被替换掉的那一回合）
-        state["status"] = status
+        state = _STATE.get(sid)
+        if state is not None:
+            current = str(state.get("turn_id") or "")
+            if current and tid and tid != current:
+                # 这次收尾属于**另一个回合**（更早的迟到收尾，或与我们无关的回合）。
+                # ⚠️ **绝不能走 ``_touch_locked``**：它会把 tid 当成「新回合」，于是
+                # 清空当前回合的面板数据并把 turn_id 倒回去 —— 一个迟到的旧收尾就能
+                # 把正在跑的回合打空（2026-09-13 加测试时实测到这条）。
+                # 丢弃时**不写任何状态**（``updated`` / ``_LAST_ACTIVE`` 都不碰）。
+                logger.debug("larkdeck: 丢弃属于另一个回合的收尾（当前 %s / 载荷 %s）",
+                             current[:16], tid[:16])
+                return
+            state["status"] = status
+            state["updated"] = now
+        else:
+            # 还没有这个会话的桶（非流式 / 纯文本回合：面板里没有任何过程数据）——
+            # 建一个，这样卡片上仍能带上状态色。
+            state = _new_state_locked(sid, now)
+            state["turn_id"] = tid
+            state["status"] = status
+        _LAST_ACTIVE = sid
         _purge_locked(now)
 
 
@@ -431,8 +457,22 @@ def mark_stopped(chat_id: str = "") -> str:
     而且不报任何错。归属用 :func:`_select_locked`，与渲染完全同一套。
     """
     now = _now()
+    chat = str(chat_id or "").strip()
     with _LOCK:
-        sid, state = _select_locked(chat_id, now)
+        sid = ""
+        if chat:
+            bound = _CHAT_SESSION.get(chat)
+            if bound and now - bound[1] <= _CHAT_SESSION_TTL:
+                sid = str(bound[0])
+        if sid:
+            # ⚠️ 这里**不能**调 ``bound_session_id()``：它用的是同一把非重入
+            # ``threading.Lock``，锁内调用直接死锁（审计实测 120s 超时）。
+            # 绑定的会话桶还没建就**建一个** —— 中止必须落在正确的会话上，
+            # 不能因为「这个会话暂时没数据」就把状态写到别的会话（那是错色）。
+            state = _STATE.get(sid) or _new_state_locked(sid, now)
+        else:
+            # 没有绑定（新会话首回合等）→ 退回旧的「最近活跃」行为，与渲染同一套判据
+            sid, state = _select_locked("", now)
         if state is None:
             return ""
         state["status"] = STATUS_STOPPED
@@ -678,18 +718,23 @@ def _select_locked(chat_id: str, now: float) -> "tuple[str, Optional[Dict[str, A
     挑会话，就会出现「状态改在了 A 会话、重绘的是 B 那条卡」这种静默错位。
     """
     # ① 优先用**确定性归属**：这个 chat_id 已知属于哪个会话（由 pre_gateway_dispatch
-    #    观察得到）。有绑定且那个会话真有内容（或已有结局）就用它 —— 这就消掉了多会话串台。
+    #    观察得到）。**只要有绑定就认账**（哪怕那个桶暂时是空的）——
+    #    这条 2026-09-13 被审计判为阻断项：原来要求「桶里有内容或有状态」才认，
+    #    于是「绑定会话刚被换回合清空」时会跳到②/③，把**别的会话**的面板/颜色画到这张卡上，
+    #    并把中止状态写到那个别的会话上。「这个会话暂时没东西」必须表现为
+    #    「这张卡没有面板」，**不能**表现成「换一个会话」。
     if chat_id:
         bound = _CHAT_SESSION.get(str(chat_id).strip())
         if bound and now - bound[1] <= _CHAT_SESSION_TTL:
-            candidate = _STATE.get(bound[0])
-            if candidate is not None and (_has_content(candidate) or candidate.get("status")):
-                return str(bound[0]), candidate
+            # 绑定即认账：桶还没建（``None``）也认 —— 调用方据此**不渲染面板**。
+            return str(bound[0]), _STATE.get(bound[0])
     # ② 没有绑定（新会话第一回合 / 老版本 Hermes / 查找失败）→ 退回旧行为：
     #    取「最近活跃会话」。**必须保住这条退路**，不能因为归属失败就不渲染面板。
+    #    注意②③**只认有内容的桶**：这里没有归属信息可依，只有状态（没有过程数据）
+    #    的桶是「另一个会话刚结束」的痕迹，选中它就会把别人的颜色画到这张卡上。
     sid = _LAST_ACTIVE
     state = _STATE.get(sid) if sid else None
-    if state is not None and (_has_content(state) or state.get("status")):
+    if state is not None and _has_content(state):
         return sid, state
     # ③ 回退：找「最近更新且真的有内容」的会话
     candidates = [(key, st) for key, st in _STATE.items() if _has_content(st)]
@@ -722,7 +767,9 @@ def reset() -> None:
         _LAST_ACTIVE = ""
 
 
-__all__ = [
+__all__ = [  # noqa: RUF022 - 按功能分组列出，便于对照文档
+    "STATUS_OK", "STATUS_ERROR", "STATUS_STOPPED",
+    "record_turn_end", "note_turn", "mark_stopped",
     "begin_turn",
     "bind_chat_session",
     "bound_session_id",

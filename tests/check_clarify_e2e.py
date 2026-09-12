@@ -170,6 +170,95 @@ async def scenario():
           "点『其他』后转为等待用户输入文字")
     check(not entry2.event.is_set(), "点『其他』不会提交答案、不会解除阻塞")
 
+    # ---------------- 场景 2b：**2.0 方言**（下拉 / 多选 / 输入框）走真实网关 ----------------
+    # 2026-09-13 审计的结论很硬：这三条路径原先**没有任何门禁经过真实的
+    # clarify_gateway 判据** —— 把答案改成根本不可能被接受的形态（如 "\x01" 连接）
+    # 门禁照样全绿，于是「本地全绿、真机全废」的多选缺陷可以长期存活。
+    # 所以这里必须走**真 gateway + 真工具侧解析**，而不是核字面形状。
+    ld_mod = sys.modules.get("hermes_plugins.larkdeck.core.adapter") or sys.modules["larkdeck.core.adapter"]
+    ld_mod._CONFIG["clarify_dialect"] = "2.0"
+    try:
+        sent.clear()
+        cid3, skey3 = "cid-e2e-3", "sk-3"
+        cg.register(cid3, skey3, "单选还是多选？", ["A 方案", "B 方案", "C 方案"])
+        await adapter.send_clarify("oc_test", "单选还是多选？",
+                                   ["A 方案", "B 方案", "C 方案"], cid3, skey3)
+        card3 = sent[-1][1]
+        check(card3.get("schema") == "2.0", "2.0 方言确实生效（clarify_dialect=2.0）")
+        tags3 = json.dumps(card3, ensure_ascii=False)
+        # **逐个**交互组件检查 behaviors —— 只核「卡里出现过 behaviors 字样」会被
+        # 「一个组件漏了」的变异骗过去（实测：只删掉下拉的 behaviors 时旧断言照样绿）
+        interactive = [el for el in card3.get("body", {}).get("elements", [])
+                       if el.get("tag") in ("select_static", "multi_select_static",
+                                            "input", "button")]
+        missing = [el.get("tag") for el in interactive if not el.get("behaviors")]
+        check(interactive and not missing,
+              f"2.0 卡的每个交互组件都必须带组件级 behaviors（缺：{missing}）")
+        check('"note"' not in tags3 and '"tag": "action"' not in tags3,
+              "2.0 卡里不能混 1.0 的 note / action 行（飞书会拒收）")
+
+        # —— 单选下拉：官方形状是 action.option（字符串）——
+        opt_value = {"larkdeck_action": "clarify", "clarify_id": cid3,
+                     "session_key": skey3, "question": "单选还是多选？"}
+        click = NS(event=NS(action=NS(value=opt_value, option="B 方案", options=None,
+                                      input_value=None),
+                            operator=NS(open_id="ou_zayn"),
+                            context=NS(open_message_id="om_e2e_3", chat_id="oc_test")))
+        adapter._on_card_action_trigger(click)
+        await asyncio.sleep(0.3)
+        check(cg.wait_for_response(cid3, 2.0) == "B 方案",
+              "2.0 单选的 action.option 能真正解除网关阻塞（走真判据）")
+
+        # —— 多选：官方形状是 action.options（**string[]**），答案要逗号串 ——
+        cid4, skey4 = "cid-e2e-4", "sk-4"
+        cg.register(cid4, skey4, "选哪些？", ["A 方案", "B 方案", "C 方案"],
+                    multi_select=True)
+        await adapter.send_clarify("oc_test", "选哪些？", ["A 方案", "B 方案", "C 方案"],
+                                   cid4, skey4)
+        multi_value = {"larkdeck_action": "clarify", "clarify_id": cid4,
+                       "session_key": skey4, "question": "选哪些？"}
+        click4 = NS(event=NS(action=NS(value=multi_value, option=None,
+                                       options=["A 方案", "C 方案"], input_value=None),
+                             operator=NS(open_id="ou_zayn"),
+                             context=NS(open_message_id="om_e2e_4", chat_id="oc_test")))
+        adapter._on_card_action_trigger(click4)
+        await asyncio.sleep(0.3)
+        got4 = cg.wait_for_response(cid4, 2.0)
+        check(got4 is not None, f"2.0 多选没能解除阻塞（实得 {got4!r}）")
+        # 用**工具侧自己的解码器**验证答案 —— 这才是下游真正消费的形态，
+        # 而不是「字符串里恰好含这几个字」。两种合法形态（JSON / 逗号串）都算通过，
+        # 但解码结果必须正好是用户勾选的那两项。
+        sys.path.insert(0, str(INSTALL))
+        from tools.clarify_tool import _clean_answer as _decode_multi
+        check(_decode_multi(got4, True) == ["A 方案", "C 方案"],
+              f"2.0 多选答案在下游解码后不对：{_decode_multi(got4, True)!r}")
+
+        # —— 输入框：自由文本，必须只解**这张卡自己的**澄清 ——
+        # 同 session 再挂一条待答（更旧），然后在**新**卡的输入框里作答：
+        # 走「最旧待答」的实现会把答案解到旧问题上去（审计 A2 实测过的错配）。
+        cid_old, cid_new = "cid-e2e-old", "cid-e2e-new"
+        cg.register(cid_old, "sk-5", "旧问题：目标环境？", ["staging", "prod"])
+        cg.register(cid_new, "sk-5", "新问题：回滚策略？", ["立即回滚", "灰度"])
+        await adapter.send_clarify("oc_test", "新问题：回滚策略？", ["立即回滚", "灰度"],
+                                   cid_new, "sk-5")
+        text_value = {"larkdeck_action": "clarify", "clarify_id": cid_new,
+                      "session_key": "sk-5", "question": "新问题：回滚策略？",
+                      "free_text": True}
+        click5 = NS(event=NS(action=NS(value=text_value, option=None, options=None,
+                                       input_value="1"),
+                             operator=NS(open_id="ou_zayn"),
+                             context=NS(open_message_id="om_e2e_5", chat_id="oc_test")))
+        adapter._on_card_action_trigger(click5)
+        await asyncio.sleep(0.3)
+        check(cg._entries[cid_old].event.is_set() is False,
+              "输入框的答案被解到了**另一个**澄清上（假确认 + 错答案）")
+        check(cg._entries[cid_new].event.is_set() is True,
+              "输入框的答案没有落在它自己那个澄清上")
+        check(cg._entries[cid_new].response == "立即回滚",
+              f"输入框答案解析不对：{cg._entries[cid_new].response!r}")
+    finally:
+        ld_mod._CONFIG["clarify_dialect"] = "1.0"
+
     # ---------------- 场景 3：非本插件的点击必须回落内置实现 ----------------
     check(callable(getattr(adapter, "_card_response", None)), "_card_response 可用")
     check(adapter._card_response({"ping": 1}) is not None,

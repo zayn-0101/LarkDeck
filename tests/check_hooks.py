@@ -278,6 +278,27 @@ else:
             f"中止没被记成 stopped（优先级必须是 interrupted > failed > completed）："
             f"{st.get('status') if st else None!r}")
 
+    # note_turn 链路：`post_api_request` 必须带 session_id/turn_id 才能真正清掉上一回合的
+    # 状态（非流式模式下 `on_stream_start` 完全不触发，这是唯一的新回合信号）。
+    # 上面那次派发的载荷**没有** session_id/turn_id，会在回调里直接早退 —— 那正是
+    # 「这条链路零覆盖」的原因（2026-09-13 审计的 B5）。
+    invoke_hook(
+        "post_api_request",
+        task_id="t1", turn_id="turn-p9", api_request_id="req9",
+        session_id="sess-panelcheck", platform="feishu",
+        model="deepseek-v4-flash", provider="deepseek", base_url="https://api.example/v1",
+        api_mode="chat_completions", api_call_count=1, api_duration=0.5,
+        started_at=0.0, ended_at=0.5, first_chunk_at=None, finish_reason="stop",
+        message_count=1, response_model="deepseek-v4-flash",
+        response={}, usage=usage, assistant_message=None,
+        assistant_content_chars=0, assistant_tool_call_count=0, moa_references=None,
+    )
+    st = _panel.snapshot()
+    if st is not None and st.get("status"):
+        problems.append(f"新回合的 post_api_request 没有清掉上一回合的结局状态：{st.get('status')!r}")
+    if st is not None:
+        problems.append(f"新回合的 post_api_request 没有清空上一回合的面板：{st!r}")
+
     # 新回合边界：on_stream_start 一到，上一回合的推理 / 工具必须先清掉 ——
     # 否则新回合首帧（可能早于本回合第一个事件）会带着旧面板出门。
     enqueue_plugin_stream_hook(

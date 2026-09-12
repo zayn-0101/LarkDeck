@@ -71,6 +71,10 @@ ACTION_CLARIFY = "clarify"
 #: 追踪中的卡片上限，防止长跑会话无限增长。
 _MAX_TRACKED = 512
 
+#: 为「中止重绘」保留的正文长度上限（字符）。只用于非 native 路径把卡片重绘成中止态；
+#: 超长就不保留（那条路的中止色会缺失，但不值得为此长期驻留几十 KB 正文）。
+_MAX_TRACKED_TEXT = 20000
+
 #: native 流式：并发回合上限 + 帧节流窗口（秒）。帧率过高会触发飞书限流，
 #: 窗口内的中间帧直接跳过（返回 True 但不下发；下个 tick 文本变了会重试）。
 #:
@@ -91,12 +95,20 @@ _STREAM_MIN_INTERVAL = 0.25
 #: 内核的 flood 启发式（错误被格式化成 ``[code] msg``，flood 只匹配
 #: ``flood`` / ``retry after`` / ``rate``）⇒ 走硬失败分支、连自适应退避都不启动。
 #: 所以退避得由我们自己在这一层做。
-#:   * ``99991400`` —— 触发限频
-#:   * ``300309``   —— streaming 已关闭（本帧晚到）
-#:   * ``300317``   —— sequence 冲突（同卡并发更新）
-_TRANSIENT_CODES = frozenset({99991400, 300309, 300317})
+#: 码表（2026-09-13 审计更正，**以官方接口文档为准**）：
+#:   * ``230020``   —— **`im.v1.message.patch` 官方错误码表里明写的频率限制**
+#:     （"This operation triggers the frequency limit"）。这才是本路径最该兜住的那一个。
+#:   * ``99991400`` —— 服务端**通用**错误码（不在 patch 的接口码表里）。飞书限频有时走
+#:     网关层返回它，所以一并保留 —— 多一个码只会多一次幂等重试，代价可接受。
+#:   * ``300309`` / ``300317`` —— **未验证**：它们是 CardKit sequence 语境的码，
+#:     本插件的 patch 路径不碰 CardKit，理论上不该出现；保留纯属防御。
+_TRANSIENT_CODES = frozenset({230020, 99991400, 300309, 300317})
 
-#: 瞬态失败的退避间隔（秒）；总代价上限 ≈ 1.0s，远小于内核的帧循环容忍度。
+#: 瞬态失败的退避间隔（秒）。**实测总代价约 1.0s**（0.101 + 0.302 + 0.602，四次调用）——
+#: 核心的帧 pump 是串行 await，所以最坏情况就是「用户看到首字晚 1 秒」；`/stop` 路径上的
+#: 重绘也走这个函数，同样最坏被挡 1s。审计判定这个代价可接受（不重试就是整回合掉 native，
+#: 那比慢 1 秒糟得多），但**别再说「远小于内核容忍度」**：它就是 1 秒。
+#: 取消语义实测正确：`asyncio.sleep` 期间 `task.cancel()` 会让 `CancelledError` 正常向外传播。
 _TRANSIENT_BACKOFF = (0.1, 0.3, 0.6)
 
 #: 流状态被判为「泄漏」的静默时长（秒）。必须取**小时级**：`last_at` 只在有正文帧时
@@ -307,7 +319,27 @@ class LarkDeckMixin:
                 for key, _ in oldest[: _MAX_TRACKED // 2]:
                     self._ld_state.pop(key, None)
             now = time.monotonic()
-            self._ld_state[message_id] = {"chat_id": chat_id, "t0": now, "last": now}
+            # last_text 只用于「中止时原地重绘」，见 _ld_redraw_stopped。
+            # 单个 chat 只留最近一张卡的正文（旧的清掉），所以内存量级 = 卡数 × 该卡正文，
+            # 而不是「追踪过的全部卡 × 全部正文」。
+            for other in self._ld_state.values():
+                if other.get("chat_id") == chat_id:
+                    other["last_text"] = ""  # 只留最近一张卡的正文
+            self._ld_state[message_id] = {"chat_id": chat_id, "t0": now, "last": now,
+                                          "last_text": ""}
+
+    def _ld_note_text(self, message_id: str, text: str) -> None:
+        """记下这张卡最后渲染过的正文（供非 native 路径的「中止重绘」用）。
+
+        有上限：超长正文直接不存（宁可中止时不变色，也不要把几十 KB 的正文长期驻留内存）。
+        """
+        body = str(text or "")
+        if len(body) > _MAX_TRACKED_TEXT:
+            body = ""
+        with self._ld_lock:
+            entry = self._ld_state.get(message_id)
+            if isinstance(entry, dict):
+                entry["last_text"] = body
 
     def _ld_known(self, message_id: str) -> Optional[Dict[str, Any]]:
         """查这张卡是不是我们自己发的（并顺带刷新「最近活动」，供淘汰用）。
@@ -356,7 +388,7 @@ class LarkDeckMixin:
         )
 
     @classmethod
-    def _ld_footer(cls, started: Optional[float] = None) -> Optional[str]:
+    def _ld_footer(cls) -> Optional[str]:
         """页脚一行：只放**上下文用量**（``ctx 45.2k/200k · 23%``）。
 
         模型名与耗时已经搬进面板标题行（决策 D2：卡片级 header 去掉了，信息压进面板头），
@@ -530,7 +562,9 @@ class LarkDeckMixin:
                                        footer=self._ld_footer())
             result = await self._ld_send_card(chat_id, card, reply_to=reply_to, metadata=metadata)
             if result is not None and getattr(result, "success", False):
-                self._ld_track(getattr(result, "message_id", "") or "", chat_id)
+                message_id = getattr(result, "message_id", "") or ""
+                self._ld_track(message_id, chat_id)
+                self._ld_note_text(message_id, content)
                 return result
             logger.warning("[larkdeck] 卡片发送未成功（%s），回落纯文本",
                            getattr(result, "error", "unknown"))
@@ -549,10 +583,11 @@ class LarkDeckMixin:
             card = self._ld_build_card(
                 content, streaming=not finalize,
                 panel=self._ld_panel(chat_id, state.get("t0")),
-                footer=self._ld_footer(state.get("t0")),
+                footer=self._ld_footer(),
             )
             result = await self._ld_update_card(chat_id, message_id, card)
             if result is not None and getattr(result, "success", False):
+                self._ld_note_text(message_id, content)
                 if finalize:
                     self._ld_forget(message_id)
                 return result
@@ -588,9 +623,12 @@ class LarkDeckMixin:
                 text, finalize=finalize, chat_id=chat_id, reply_to=reply_to,
                 turn_id=str(kwargs.get("turn_id") or ""),
             )
-        except Exception:
+        except Exception as exc:
+            # 不能只打异常日志就 return False：核心同样会因为 False 停用本回合的 native，
+            # 而「native 被停用 → 输出回落 send/edit（可能变成多条纯文本）」这条最强诊断
+            # 会缺失。走 _ld_stream_fail 让「为什么掉 native」始终留痕（限流 30s 一条）。
             logger.warning("[larkdeck] native 流式帧异常，交由核心回落", exc_info=True)
-            return False
+            return self._ld_stream_fail(f"帧处理异常：{exc}")
 
     async def _ld_stream_frame(self, text: str, *, finalize: bool, chat_id: Optional[str],
                                reply_to: Optional[str], turn_id: str) -> bool:
@@ -611,7 +649,7 @@ class LarkDeckMixin:
                 return False
             card = self._ld_build_card(display, streaming=True,
                                        panel=self._ld_panel(chat, now),
-                                       footer=self._ld_footer(now))
+                                       footer=self._ld_footer())
             result = await self._ld_send_card(chat, card, reply_to=reply_to)
             if result is None or not getattr(result, "success", False):
                 return self._ld_stream_fail(
@@ -628,7 +666,7 @@ class LarkDeckMixin:
         if finalize:
             card = self._ld_build_card(display or " ", streaming=False,
                                        panel=self._ld_panel(chat, state.get("t0")),
-                                       footer=self._ld_footer(state.get("t0")))
+                                       footer=self._ld_footer())
             result = await self._ld_update_card(chat, message_id, card)
             if result is None or not getattr(result, "success", False):
                 return self._ld_stream_fail(
@@ -652,7 +690,7 @@ class LarkDeckMixin:
             return True
         card = self._ld_build_card(display, streaming=True,
                                    panel=self._ld_panel(chat, state.get("t0")),
-                                   footer=self._ld_footer(state.get("t0")))
+                                   footer=self._ld_footer())
         result = await self._ld_update_card(chat, message_id, card)
         if result is None or not getattr(result, "success", False):
             return self._ld_stream_fail(
@@ -741,27 +779,38 @@ class LarkDeckMixin:
           * 重绘用**现有的卡与现有的正文**（:attr:`_ld_streams` 里存着最后一帧的累积全文），
             不新增消息、不改内容，只换状态色。
         """
+        # 状态先写内存（廉价、不会失败），这样无论后面哪一步出问题，本回合的颜色都是对的。
         try:
             self._ld_mark_stopped(chat_id)
-            await self._ld_redraw_stopped(chat_id)
-        except Exception as exc:  # pragma: no cover - 防御性
-            logger.warning("[larkdeck] 中止态卡片重绘失败（中止本身继续）: %s", exc, exc_info=True)
-        # 转发给内置实现：签名按父类能力决定（``agent/interrupt_compat._accepts_keyword``
-        # 是核心用的同一套判据）。
-        # ⚠️ 必须拿**父类方法本身**去探 —— 曾经写成 ``getattr(type(parent), ...)``，
-        # 而 ``parent`` 是 ``super()`` 对象、``type(parent)`` 恒为 ``super``，
-        # 于是探针永远说「不支持 metadata」→ metadata 被静默丢掉。
+        except Exception:  # pragma: no cover - 防御性
+            logger.debug("[larkdeck] 中止状态写入失败", exc_info=True)
+
+        # ⚠️ **先转发给内核，再重绘卡片** —— 顺序在 2026-09-13 被审计更正。
+        # 原来把 super() 放在重绘之后，而重绘里有 await（可能多次串行 patch、
+        # ``_run_blocking`` 又没有超时）：一旦这段被取消（网关关闭 / 上层 wait_for 超时）
+        # 或长时间挂住，``except Exception`` 接不住 ``CancelledError``（它是 BaseException），
+        # 内核那两件本职（``_active_sessions[session_key].set()`` + 停打字）就不会发生。
+        # 中止是内核的职责、卡片只是装饰 —— 所以停止优先，重绘放最后。
         parent = super(LarkDeckMixin, self)
         method = getattr(parent, "interrupt_session_activity", None)
-        if not callable(method):
-            return  # 父类没有这个能力（老版本）：没得转发，但卡片状态已经改好了
-        if _compat.accepts_keyword(method, "metadata"):
-            try:
-                return await method(session_key, chat_id, metadata=metadata)
-            except TypeError:  # pragma: no cover - 签名探测失准时退回两参数形式
-                logger.debug("[larkdeck] 中止转发带 metadata 失败，退回两参数形式",
-                             exc_info=True)
-        return await method(session_key, chat_id)
+        if callable(method):
+            # 签名按父类能力决定（``agent/interrupt_compat._accepts_keyword`` 是核心用的
+            # 同一套判据）。⚠️ 必须拿**父类方法本身**去探 —— 曾经写成
+            # ``getattr(type(parent), ...)``，而 ``parent`` 是 ``super()`` 对象、
+            # ``type(parent)`` 恒为 ``super``，探针永远说「不支持 metadata」。
+            # **不再**用运行时 ``except TypeError`` 兜底：那会把父类**调用两次**
+            # （审计实测：父类内部抛 TypeError 时被跑了两遍，重复置停止事件 / 停打字）。
+            if _compat.accepts_keyword(method, "metadata"):
+                await method(session_key, chat_id, metadata=metadata)
+            else:
+                await method(session_key, chat_id)
+        else:
+            logger.debug("[larkdeck] 父类没有 interrupt_session_activity，只做卡片重绘")
+
+        try:
+            await self._ld_redraw_stopped(chat_id)
+        except Exception as exc:  # pragma: no cover - 防御性
+            logger.warning("[larkdeck] 中止态卡片重绘失败（中止已完成）: %s", exc, exc_info=True)
 
     def _ld_mark_stopped(self, chat_id: str) -> str:
         """把该 chat 对应会话标成中止（返回命中的 session_id，仅用于日志）。"""
@@ -773,11 +822,16 @@ class LarkDeckMixin:
         return sid
 
     async def _ld_redraw_stopped(self, chat_id: str) -> bool:
-        """把该 chat 自己发出的那张流式卡原地重绘成**中止态**。
+        """把该 chat 自己发出的那张卡原地重绘成**中止态**。
 
-        数据来源是 :attr:`_ld_streams`（``chat:turn_id`` → 最后一帧的累积全文）——
-        就是「用户中止时屏幕上已经打出来的那段」。找不到活跃流时**什么都不做**：
-        非流式模式下本来就没有卡在流，凭空发一张新卡会多出一条消息。
+        数据来源有两条（都在本实例里，不额外查网络）：
+          1. :attr:`_ld_streams` —— ``chat:turn_id`` → 最后一帧的**累积全文**，
+             native 路径下就是「用户中止时屏幕上已经打出来的那段」；
+          2. :attr:`_ld_state` —— 非 native（edit / 降级）路径下没有活跃流，
+             但那张卡是我们发的、``message_id`` 与最后渲染过的正文都记着。
+
+        两条都找不到时**什么都不做**：凭空发一张新卡会多出一条消息（卡片是增强，
+        不该因为中止而多出一条空消息）。
         """
         chat = str(chat_id or "").strip()
         if not chat or not getattr(self, "_client", None):
@@ -785,7 +839,22 @@ class LarkDeckMixin:
         with self._ld_lock:
             keys = [key for key, state in self._ld_streams.items()
                     if state.get("chat_id") == chat]
-        return await self._ld_redraw_stopped_keys(chat, keys)
+            fallback = None
+            if not keys:
+                # 非 native 路径：取这个 chat 最近更新过、且记着正文的那张卡
+                candidates = [(value.get("last", 0.0), mid, value)
+                              for mid, value in self._ld_state.items()
+                              if value.get("chat_id") == chat and value.get("last_text")]
+                if candidates:
+                    fallback = max(candidates, key=lambda item: item[0])
+        if keys:
+            return await self._ld_redraw_stopped_keys(chat, keys)
+        if fallback is None:
+            logger.debug("[larkdeck] 中止：这个 chat 没有可重绘的卡（可能还没建卡）")
+            return False
+        _at, message_id, entry = fallback
+        return await self._ld_redraw_one_stopped(chat, message_id, str(entry.get("last_text") or ""),
+                                                 entry.get("t0"))
 
     async def _ld_redraw_stopped_keys(self, chat: str, keys: List[str]) -> bool:
         redrawn = False
@@ -796,25 +865,43 @@ class LarkDeckMixin:
             message_id = str(state.get("message_id") or "")
             if not message_id:
                 continue
-            text = str(state.get("last") or "")
-            try:
-                # 面板是状态色**唯一**的载体。这里能直接复用 _ld_panel：上面已经把该会话
-                # 标成 stopped，而「只有状态、没有过程数据」的会话现在也会出一份快照
-                # （见 panel.snapshot 的收尾判断），所以中止色一定画得出来。
-                card = self._ld_build_card(text or " ", streaming=False,
-                                           panel=self._ld_panel(chat, state.get("t0")),
-                                           footer=self._ld_footer(state.get("t0")))
-                result = await self._ld_update_card(chat, message_id, card)
-                if result is None or not getattr(result, "success", False):
-                    logger.warning("[larkdeck] 中止态卡片更新未成功（%s）",
-                                   getattr(result, "error", "unknown"))
-                    continue
+            if await self._ld_redraw_one_stopped(chat, message_id,
+                                                str(state.get("last") or ""),
+                                                state.get("t0")):
                 redrawn = True
-            except Exception as exc:  # pragma: no cover - 防御性
-                logger.warning("[larkdeck] 中止态卡片更新异常: %s", exc, exc_info=True)
+                # ⚠️ **重绘成功后必须清掉这个流状态**（2026-09-13 审计）：
+                # 不清的话，每个被中止的回合都会在 ``_ld_streams`` 里留一条（key 是
+                # consumer 的 uuid、永不复用），于是**之后每次 /stop 都会把该 chat 的
+                # 全部历史中止卡重画一遍** —— 串行网络往返全发生在 super() 之前，
+                # /stop 延迟随中止次数线性增长，还会把 _MAX_STREAMS 的泄漏预算吃光。
+                # 清掉后若内核奇迹般再送 finalize 帧，send_stream_frame 会返回 False，
+                # 内核按 fail-open 回落 edit（消息不会丢）。
+                self._ld_stream_pop(key)
         if redrawn:
-            logger.info("[larkdeck] 已把中止态重绘到卡片（session_key 归属的 chat=%s）", chat)
+            logger.info("[larkdeck] 已把中止态重绘到卡片（chat=%s）", chat)
         return redrawn
+
+    async def _ld_redraw_one_stopped(self, chat: str, message_id: str, text: str,
+                                     started: Any) -> bool:
+        """把**一张**卡重绘成中止态。返回是否成功。"""
+        try:
+            # 面板是状态色**唯一**的载体，所以这里**强制**给一个 stopped 面板：
+            # 只靠 `_ld_panel` 会踩到一个实测过的坑 —— 该回合还没有任何过程数据时
+            # （模型还在思考、还没调工具），快照里什么都没有 ⇒ 面板为 None ⇒
+            # 「状态改了、卡片没变、还不报错」。这正是本项目最怕的形态。
+            panel = self._ld_panel(chat, started) or _cards.unified_panel(
+                status=_panel.STATUS_STOPPED)
+            card = self._ld_build_card(text or " ", streaming=False,
+                                       panel=panel, footer=self._ld_footer())
+            result = await self._ld_update_card(chat, message_id, card)
+            if result is None or not getattr(result, "success", False):
+                logger.warning("[larkdeck] 中止态卡片更新未成功（%s）",
+                               getattr(result, "error", "unknown"))
+                return False
+            return True
+        except Exception as exc:  # pragma: no cover - 防御性
+            logger.warning("[larkdeck] 中止态卡片更新异常: %s", exc, exc_info=True)
+            return False
 
     # ----------------------------------------------------------- send_clarify
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list],
@@ -863,7 +950,7 @@ class LarkDeckMixin:
         try:
             event = getattr(data, "event", None)
             action = getattr(event, "action", None)
-            value = getattr(action, "value", {}) or {}
+            value = self._ld_normalize_value(action)
             if isinstance(value, dict) and value.get(ACTION_KEY) == ACTION_CLARIFY:
                 return self._ld_handle_clarify_click(event=event, action=action, value=value)
             if isinstance(value, dict) and value.get(_cards.PROBE_VALUE_KEY):
@@ -871,6 +958,38 @@ class LarkDeckMixin:
         except Exception as exc:
             logger.warning("[larkdeck] 处理卡片点击时异常: %s", exc, exc_info=True)
         return self._ld_passthrough_click(data)
+
+    @staticmethod
+    def _ld_normalize_value(action: Any) -> Dict[str, Any]:
+        """把点击载荷的 ``action.value`` 归一成 dict（含两个**实战踩过**的形态）。
+
+        * ``value`` 可能不是 dict 而是 **JSON 字符串** —— 同类项目
+          （hermes-feishu-streaming-card 的取值器）专门为此写了 ``json.loads`` 兜底。
+          我们不兜的话，`.get(ACTION_KEY)` 会抛 AttributeError，被外层 except 接住后
+          **静默交回内置实现** —— 用户的点击就是「点了没反应」（本项目最怕的失败形态）。
+        * 表单提交按钮（``form_action_type=submit``）的回调 **``value`` 是空的**，
+          数据在 ``action.form_value`` 里（HFC 的注释记了这件事）。我们现在不发表单卡，
+          但一旦发（比如 2.0 澄清卡要组合多个输入），没有这一层就是点了没反应。
+          只从 ``form_value`` 里取**我们自己的键**，绝不整体合并（免得污染判断）。
+        """
+        raw = getattr(action, "value", None)
+        value: Dict[str, Any] = {}
+        if isinstance(raw, dict):
+            value = dict(raw)
+        elif isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                value = parsed
+        if ACTION_KEY not in value:
+            form_value = getattr(action, "form_value", None)
+            if isinstance(form_value, dict):
+                for key in (ACTION_KEY, "clarify_id", "session_key", "question", "answer"):
+                    if key not in value and form_value.get(key) is not None:
+                        value[key] = form_value[key]
+        return value
 
     def _ld_log_probe_click(self, *, event: Any, action: Any) -> Any:
         """**方言探针**：把一次探针点击的原始载荷按 INFO 打进日志，别的什么都不做。
@@ -955,19 +1074,37 @@ class LarkDeckMixin:
         """从点击载荷里取出答案 —— 返回 ``(answer, mode)``，``mode`` ∈
         ``{"choice", "multi", "text", "none"}``。
 
-        三种方言/组件各把答案放在不同字段（官方文档）：
+        三种方言/组件各把答案放在不同字段（**官方回调文档 + SDK 模型**）：
           * 1.0 按钮：``action.value`` 里我们自己的 ``answer``（**choice**）；
-          * 2.0 `select_static`：``action.option``（单个字符串，**choice**）；
-          * 2.0 `multi_select_static`：``action.option`` 是**列表** → 按网关那条
-            「文字回答多选」的规范拼成 **JSON 数组字符串**（**multi**）；
-          * 2.0 `input`：``action.input_value`` 是自由文本（**text**），必须交给核心
-            自己的判据去解析（编号 / 标签 / 多选 / 无效选择），不能自己猜。
+          * 2.0 `select_static`（单选）：``action.option``（**字符串**）（**choice**）；
+          * 2.0 `multi_select_static`（多选）：``action.options``（**string[]**，
+            官方文档第 48 行；SDK 模型 ``p2_card_action_trigger.py`` 里
+            ``options: List[str]`` 而 ``option: str``）→ 拼成 **JSON 数组字符串**（**multi**，
+            与核心 ``_coerce_multi_select_text`` 的规范形式一致）；
+          * 2.0 `input`：``action.input_value`` 是自由文本（**text**）。
+
+        ⚠️ **2026-09-13 审计更正了字段名，并顺带纠正了一个更重要的判断**：
+          1. 多选的值在 ``action.options``（**复数**），不是 ``option`` —— 这条是硬 bug：
+             只读 ``option`` 时官方形状的载荷直接落到 ``mode="none"``，用户「选完没反应」。
+          2. 答案形态：工具侧（``clarify_tool._clean_answer`` →
+             ``_parse_multi_select_response``）**两种都能解**——JSON 数组字符串走
+             ``json.loads``、逗号串走 ``split(",")``（本机实测两者输出相同）。
+             取 **JSON 数组**：它是核心 ``_coerce_multi_select_text`` 的规范形式，
+             而且**选项文本里含逗号时不会被打散**。
+             （审计原报告说「JSON 一律被拒」，那是**文字回答**那条路径
+             （``clarify_gateway._coerce_text_response_detailed``）的行为；我们多选点击
+             走的是 ``resolve_gateway_clarify``，两者不是一回事 —— 别把一条路径的
+             结论当成另一条的。）
 
         ``mode == "none"`` 表示载荷里什么都没有 —— 调用方保持安静、不要提交空答案。
         """
+        options = getattr(action, "options", None)
+        if isinstance(options, str) and options.strip():
+            # 线格式可能是 "A,B"（视客户端/版本），与 list 等价处理
+            options = [part.strip() for part in options.split(",") if part.strip()]
+        if isinstance(options, (list, tuple)) and options:
+            return json.dumps([str(item) for item in options], ensure_ascii=False), "multi"
         option = getattr(action, "option", None)
-        if isinstance(option, list) and option:
-            return json.dumps([str(item) for item in option], ensure_ascii=False), "multi"
         if isinstance(option, str) and option.strip():
             return option, "choice"
         typed = getattr(action, "input_value", None)
@@ -1011,9 +1148,11 @@ class LarkDeckMixin:
         session_key = str(value.get("session_key") or "")
 
         if mode == "text":
-            # 输入框的自由文本：用**核心自己的判据**解析（编号 / 标签 / 多选 / 无效选择）。
-            # 自己拼答案会把「1,3」当成一个叫「1,3」的选项，多选直接废掉。
-            outcome = _compat.clarify_attempt_text(session_key, str(answer))
+            # 输入框的自由文本：用**核心自己的判据**解析（编号 / 标签 / 多选 / 无效选择），
+            # 但**必须限定在这一张卡的 clarify_id 上** —— 核心给「用户直接打字回复」用的
+            # 入口取的是该 session 最旧的待答澄清，同 session 两条待答时会答错问题
+            # （2026-09-13 审计实测）。自己拼答案则会把「1,3」当成一个叫「1,3」的选项。
+            outcome = _compat.clarify_text_answer(clarify_id, str(answer))
             if outcome != _compat.CLARIFY_TEXT_RESOLVED:
                 logger.warning("[larkdeck] 澄清输入框的内容没有被接受（%s · session=%s）"
                                "—— 卡片保持原样，用户可重试", outcome, session_key[:8])
