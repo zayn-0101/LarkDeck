@@ -311,13 +311,23 @@ class LarkDeckMixin:
         return self._finalize_send_result(response, "larkdeck card send failed")
 
     async def _ld_update_card(self, chat_id: str, message_id: str, card: Dict[str, Any]) -> Any:
-        """复用内置适配器的编辑原语，把 ``interactive`` 卡片整卡替换。"""
-        body = self._build_update_message_body(
-            msg_type="interactive", content=json.dumps(card, ensure_ascii=False),
+        """把 ``interactive`` 卡片整卡替换。
+
+        必须走 **patch** 接口：``message.update`` 只收文本/帖子，卡片会被飞书拒
+        （``[230001] invalid msg_type``，三种卡片方言真机实测均如此）。
+        """
+        request = self._ld_build_patch_request(
+            message_id=message_id, content=json.dumps(card, ensure_ascii=False),
         )
-        request = self._build_update_message_request(message_id=message_id, request_body=body)
-        response = await self._run_blocking(self._client.im.v1.message.update, request)
-        return self._finalize_send_result(response, "larkdeck card update failed")
+        response = await self._run_blocking(self._client.im.v1.message.patch, request)
+        return self._finalize_send_result(response, "larkdeck card patch failed")
+
+    def _ld_build_patch_request(self, *, message_id: str, content: str) -> Any:
+        """构造 patch 请求对象（SDK 懒加载；测试替身可在实例上覆写本方法）。"""
+        from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
+
+        body = PatchMessageRequestBody.builder().content(content).build()
+        return PatchMessageRequest.builder().message_id(message_id).request_body(body).build()
 
     # -------------------------------------------------------------------- send
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,

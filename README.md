@@ -203,7 +203,7 @@ LarkDeck 接管后才生效）。
 ## 已知限制
 
 - **必须和官方适配器同一进程**：官方 `feishu` 平台被禁用时，LarkDeck 无处附着。
-- **依赖官方适配器的内部方法**：发送/编辑路径 5 个必需（`_feishu_send_with_retry` 等，启动自检校验），点击回调路径 5 个（`_submit_on_loop`、`_card_response` 等）+ 澄清网关内部结构（`_lock` / `_entries` / `mark_awaiting_text`）。全部集中登记在 `compat.py`，并用 `probe_adapter_class()` / `probe_report()` 在运行时探测 —— 官方哪天改了名字，自检会直接报出来，而不是静默失效。
+- **依赖官方适配器的内部方法**：发送/编辑路径 3 个必需（`_feishu_send_with_retry` 等，启动自检校验），点击回调路径 5 个（`_submit_on_loop`、`_card_response` 等）+ 澄清网关内部结构（`_lock` / `_entries` / `mark_awaiting_text`）。全部集中登记在 `compat.py`，并用 `probe_adapter_class()` / `probe_report()` 在运行时探测 —— 官方哪天改了名字，自检会直接报出来，而不是静默失效。
 - ~~**`i18n_content` 的元素级支持需真机确认**~~ → **已实测确认**（2026-09-12）：
   文本元素同时带 `content` 与 `i18n_content`，1.0 与 2.0 卡均被飞书接受；
   1.0 的 header title 与按钮 text 也接受且生效。**互换实验**（把 `zh_cn` 分支里放英文）

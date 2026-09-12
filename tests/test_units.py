@@ -85,14 +85,6 @@ class StubAdapter:
             return _StubResult(True, mid)
         return _StubResult(False, "", (response or {}).get("msg", default_message))
 
-    @staticmethod
-    def _build_update_message_body(*, msg_type, content):
-        return {"msg_type": msg_type, "content": content}
-
-    @staticmethod
-    def _build_update_message_request(message_id, request_body):
-        return {"message_id": message_id, "body": request_body}
-
     async def _run_blocking(self, func, *args):
         return func(*args)
 
@@ -137,6 +129,17 @@ def _run(coro):
 def _make(**cfg: Any):
     """按与真实路径完全相同的方式造一个「内置适配器 + 卡片层」实例。"""
     return adapter.build_adapter(StubAdapter, _StubConfig(**cfg))
+
+
+def _wire_patch(raw):
+    """把卡片更新的 SDK 边界换成记录器（跳过真实 lark_oapi），返回请求列表。"""
+    requests = []
+    raw._ld_build_patch_request = lambda *, message_id, content: {
+        "message_id": message_id, "content": content}
+    raw._client.im.v1.message.patch = lambda request: (
+        requests.append(request)
+        or {"code": 0, "data": {"message_id": request["message_id"]}})
+    return requests
 
 
 # --------------------------------------------------------------------------- #
@@ -421,6 +424,7 @@ def test_edit_message_updates_tracked_card_and_finalizes():
     raw = _make()
     _run(raw.send("oc_1", "流式中"))
     raw.calls.clear()
+    _wire_patch(raw)
     _run(raw.edit_message("oc_1", "om_card_1", "答案", finalize=True))
     assert raw.calls == [], "已追踪的卡片应走卡片更新，不碰内置编辑"
     assert "om_card_1" not in raw._ld_state, "finalize 后应停止追踪"
@@ -430,7 +434,8 @@ def test_edit_message_falls_back_when_card_update_fails():
     raw = _make()
     _run(raw.send("oc_1", "流式中"))
     raw.calls.clear()
-    raw._client.im.v1.message.update = lambda request: {"code": 99999, "msg": "update rejected"}
+    _wire_patch(raw)
+    raw._client.im.v1.message.patch = lambda request: {"code": 99999, "msg": "patch rejected"}
     result = _run(raw.edit_message("oc_1", "om_card_1", "答案", finalize=True))
     assert ("SUPER.edit", "答案", True) in raw.calls, "卡片更新失败必须回落内置编辑"
     assert result.message_id == "om_card_1"
@@ -449,13 +454,10 @@ def test_send_and_edit_include_panel():
         assert "collapsible_panel" in _all_tags(payload), "首帧就该带上面板"
 
         raw.calls.clear()
-        captured = []
-        raw._client.im.v1.message.update = lambda request: (
-            captured.append(request) or {"code": 0, "data": {"message_id": request["message_id"]}}
-        )
+        captured = _wire_patch(raw)
         panel.record_tool_started("s1", "t1", "bash", {"cmd": "ls"}, "c9")
         _run(raw.edit_message("oc_1", "om_card_1", "更新", finalize=False))
-        body = json.loads(captured[0]["body"]["content"])
+        body = json.loads(captured[0]["content"])
         assert "collapsible_panel" in _all_tags(body)
         joined = json.dumps(body, ensure_ascii=False)
         assert "推理中……" in joined and "bash" in joined
@@ -537,17 +539,13 @@ def test_native_streaming_frame_lifecycle():
         panel.reset()
         panel.record_reasoning("s1", "t1", "先想一下")
         raw = _make()
-        updates = []
-        raw._client.im.v1.message.update = lambda request: (
-            updates.append(request)
-            or {"code": 0, "data": {"message_id": request["message_id"]}}
-        )
+        updates = _wire_patch(raw)
         assert _run(raw.send_stream_frame("", finalize=False, chat_id="oc_1",
                                           turn_id="t1")) is True
         assert _run(raw.send_stream_frame("你好", finalize=False, chat_id="oc_1",
                                           turn_id="t1")) is True
         assert len(updates) == 1, "普通帧应更新同一张卡"
-        body = json.loads(updates[0]["body"]["content"])
+        body = json.loads(updates[0]["content"])
         assert body["config"].get("streaming_mode") is True
         joined = json.dumps(body, ensure_ascii=False)
         assert "你好" in joined and "先想一下" in joined, "面板推理应随帧更新"
@@ -559,7 +557,7 @@ def test_native_streaming_frame_lifecycle():
         assert _run(raw.send_stream_frame("最终答案", finalize=True, chat_id="oc_1",
                                           turn_id="t1")) is True
         assert len(updates) == 2, "finalize 要落到同一张卡"
-        final = json.loads(updates[1]["body"]["content"])
+        final = json.loads(updates[1]["content"])
         assert not final["config"].get("streaming_mode"), "finalize 后不再是流式态"
         assert "oc_1:t1" not in raw._ld_streams, "finalize 后回合状态必须清掉"
         assert raw._ld_known("om_card_1") is None, "finalize 后卡片停止追踪"
@@ -587,13 +585,14 @@ def test_native_streaming_failures_fall_back():
         raw = _make()
         assert _run(raw.send_stream_frame("", finalize=False, chat_id="oc_2",
                                           turn_id="t2")) is True
-        raw._client.im.v1.message.update = lambda request: {"code": 99999, "msg": "update rejected"}
+        _wire_patch(raw)
+        raw._client.im.v1.message.patch = lambda request: {"code": 99999, "msg": "patch rejected"}
         assert _run(raw.send_stream_frame("收尾", finalize=True, chat_id="oc_2",
                                           turn_id="t2")) is False
         assert "oc_2:t2" in raw._ld_streams, "finalize 失败要保住状态，让回落路径再试"
 
         # 模拟核心回落：edit_message(finalize=True) 成功 → _ld_forget 应把流状态一并清掉
-        raw._client.im.v1.message.update = lambda request: (
+        raw._client.im.v1.message.patch = lambda request: (
             {"code": 0, "data": {"message_id": request["message_id"]}})
         result = _run(raw.edit_message("oc_2", "om_card_1", "收尾", finalize=True))
         assert getattr(result, "success", False) is True
@@ -616,11 +615,7 @@ def test_native_streaming_throttle_skips_midframes_but_not_first():
     try:
         panel.reset()
         raw = _make()
-        updates = []
-        raw._client.im.v1.message.update = lambda request: (
-            updates.append(request)
-            or {"code": 0, "data": {"message_id": request["message_id"]}}
-        )
+        updates = _wire_patch(raw)
         assert _run(raw.send_stream_frame("", finalize=False, chat_id="oc_t",
                                           turn_id="tt")) is True
         adapter._STREAM_MIN_INTERVAL = 10.0

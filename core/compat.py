@@ -22,8 +22,6 @@ logger = logging.getLogger("larkdeck.compat")
 REQUIRED_ADAPTER_ATTRS: Tuple[str, ...] = (
     "_feishu_send_with_retry",       # 发送原语（带重试 / 限流处理）
     "_finalize_send_result",         # response -> SendResult
-    "_build_update_message_body",    # 编辑请求体构造
-    "_build_update_message_request", # 编辑请求对象构造
     "_run_blocking",                 # 把阻塞 SDK 调用丢到适配器线程池
 )
 
