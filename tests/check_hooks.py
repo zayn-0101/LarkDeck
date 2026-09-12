@@ -40,6 +40,7 @@ REPO = Path(__file__).resolve().parent.parent
 DEFAULT_INSTALL = Path.home() / ".hermes" / "hermes-agent"
 
 _INNER = r'''
+import json
 import sys
 import time
 from pathlib import Path
@@ -261,6 +262,48 @@ else:
     print(f"status after completed=True → {st.get('status') if st else None!r}")
     if not st or st.get("status") != "ok":
         problems.append(f"正常完成没被记成 ok：{st.get('status') if st else None!r}")
+
+    # **纵向切片**：钩子 → 数据层 → 卡片 JSON 一次走通。
+    # 前面只验到「数据层里状态对不对」，而用户看到的是**卡片**；中间还隔着适配器的
+    # 渲染层（`_ld_panel` → `unified_panel` → `border_for_status`）。分段测过不等于
+    # 连起来对 —— 这条断言盯的就是「绿色到底有没有画到卡的边框上」。
+    try:
+        _adapter_mod = (sys.modules.get("hermes_plugins.larkdeck.core.adapter")
+                        or sys.modules["larkdeck.core.adapter"])
+        card = _adapter_mod.LarkDeckMixin._ld_build_card(
+            "答案正文", streaming=False, panel=_adapter_mod.LarkDeckMixin._ld_panel("", None),
+            footer=None)
+        blob = json.dumps(card, ensure_ascii=False)
+        panel_node = None  # noqa: F841 - 下面重新找，这里只是占位
+
+        def _find(node):
+            if isinstance(node, dict):
+                if node.get("tag") == "collapsible_panel":
+                    return node
+                for value in node.values():
+                    got = _find(value)
+                    if got is not None:
+                        return got
+            elif isinstance(node, list):
+                for item in node:
+                    got = _find(item)
+                    if got is not None:
+                        return got
+            return None
+
+        panel_node = _find(card)
+        if panel_node is None:
+            problems.append("完成的回合：卡片上没有面板（状态色无处可画）")
+        elif panel_node.get("border", {}).get("color") != "green":
+            problems.append(f"完成的回合：边框不是绿色，而是 {panel_node.get('border')!r}")
+        # 注意判的是**卡片级**的 `header` 键（决策 D2 去掉了它）——
+        # 不能拿字符串 `"header"` 去搜整份 JSON：折叠面板自己也有一个 `header`（标题区）。
+        if "header" in card:
+            problems.append("回复卡不该有卡片级 header（决策 D2）")
+        print(f"完成态卡片：border={panel_node.get('border') if panel_node else None} "
+              f"字节={len(blob.encode('utf-8'))}")
+    except Exception as exc:  # pragma: no cover - 防御性
+        problems.append(f"纵向切片（钩子→卡片）失败：{exc!r}")
 
     invoke_hook("on_session_end", session_id="sess-panelcheck", task_id="t1",
                 turn_id="turn-p1", completed=True, failed=True, interrupted=False,
