@@ -105,6 +105,12 @@ _MAX_TRACKED_TEXT = _FEISHU_CARD_BYTE_LIMIT - _CARD_BYTES_OVERHEAD
 #: （口径按 utf-8 字节算；Python 的 str 每字符 2 字节，纯中文正文的实际堆占用比这个更大。）
 _MAX_TEXT_ENTRIES = 16
 
+#: 「明显没戏」的上界：超过它的正文连构造都不用试（一张卡绝不可能在 128000 字节内装下
+#: 512KB 的正文）。**真正的判据是** :func:`_stop_redraw_would_paint` ——
+#: `_MAX_TRACKED_TEXT` 只是它的**必要条件**，用它当充分条件会留下 86 字节宽的
+#: 「留下了正文却画不上色」的带（第十路审计实测）。
+_HOPELESS_BYTES = 512 * 1024
+
 #: native 流式：并发回合上限 + 帧节流窗口（秒）。帧率过高会触发飞书限流，
 #: 窗口内的中间帧直接跳过（返回 True 但不下发；下个 tick 文本变了会重试）。
 #:
@@ -359,6 +365,48 @@ def _card_body_bytes(body: str) -> int:
         return len(str(body or "").encode("utf-8", "ignore"))
 
 
+def _stop_redraw_would_paint(body: str) -> bool:
+    """**真正的判据**：留下这段正文之后，`/stop` 那张卡能不能既发得出去、又带上中止色。
+
+    为什么不能只看「正文 JSON 字节 ≤ 阈值」（第十路审计实测出来的两条缝）：
+    真实卡片的固定开销**随正文形状变化**（`config.summary` 会把正文 flatten 再截到 120 字），
+    所以任何单一常量都只在一个方向上安全：
+
+      * 阈值取得太保守 ⇒ 正文被判「存不下」丢掉，而那张卡其实**发得出去也画得上色**
+        ⇒ `/stop` 一次 patch 都不发（这是 2026-09-13 我自己引入的一条窄回归：
+        反斜杠 / `\t` 形状、~127KB 正文、窗口 50~284 字节）；
+      * 阈值取得太宽 ⇒ 正文留下了、但那句话「装得下」是假的 ⇒ patch 发了、`code=0`、
+        **载荷里没有颜色**（第九路 F1 的原始症状，纯 CJK 形状下有 67 字节的带）。
+
+    与其调常量，不如**直接问真正的问题**：按 `_ld_redraw_one_stopped` 的同一条构造路径造出
+    带状态小面板的卡，要求「字节数 ≤ 飞书实测硬上限」**且**「卡里真的有那个面板」。
+    只在超出近似阈值这条**罕见**分支上调用，代价可以忽略。
+
+    判不出来时（异常）返回 ``True``：**丢正文的代价比多留一份大**（丢 = 中止时不变色）。
+    """
+    try:
+        shell = _cards.status_shell(_cards.unified_panel(status=_panel.STATUS_STOPPED))
+        if shell is None:                     # 连状态色都造不出来 ⇒ 没有「保色」这回事
+            return True
+        node = _cards.fit_reply_card(body, panel=shell)
+        if _cards.card_bytes(node) > _cards.FEISHU_CARD_BYTE_LIMIT:
+            return False
+        return '"collapsible_panel"' in json.dumps(node, ensure_ascii=False)
+    except Exception:
+        logger.debug("[larkdeck] 中止重绘可行性判定异常，保守保留正文", exc_info=True)
+        return True
+
+
+def _log_no_colour_once() -> None:
+    """「中止重绘这次没能带上状态色」的限流告警（60 秒一条）——绝不静默。"""
+    now = time.monotonic()
+    if now - getattr(_log_no_colour_once, "_at", 0.0) < 60.0:
+        return
+    _log_no_colour_once._at = now  # type: ignore[attr-defined]
+    logger.warning("[larkdeck] 中止重绘**没有带上状态色**：正文大到让状态小面板装不下了"
+                   "（那张卡贴着飞书卡片字节硬上限）—— 卡片内容仍会更新，只是边框不变色")
+
+
 def _log_note_text_skipped(size: int, raw_size: int) -> None:
     """正文太大、无法为「中止重绘」保留 —— 限流告警（60 秒一条），绝不静默。
 
@@ -477,8 +525,12 @@ class LarkDeckMixin:
         """
         body = str(text or "")
         size = _card_body_bytes(body)
-        if size > _MAX_TRACKED_TEXT:
-            # 只有在**连飞书都发不出去**的量级上才会走到这里（见 _MAX_TRACKED_TEXT 注释）
+        # 判据只有**一个**：留下它之后，`/stop` 那张卡能不能既发得出去、又画上色。
+        # ⚠️ `_MAX_TRACKED_TEXT` **不能**当充分条件（第十路审计实测）：纯 CJK 在
+        # JSON 126890 字节就已经画不上色 —— 比阈值 126976 **低 86 字节**，于是那 86 字节的
+        # 带里会「留下了正文、却发出一次没有颜色的 patch」。所以这里只在**明显没戏**时
+        # 用阈值省掉一次构造，其余一律问真判据（:func:`_stop_redraw_would_paint`）。
+        if size > _HOPELESS_BYTES or not _stop_redraw_would_paint(body):
             _log_note_text_skipped(size, len(body.encode("utf-8", "ignore")))
             body = ""
         with self._ld_lock:
@@ -1077,6 +1129,12 @@ class LarkDeckMixin:
                 status=_panel.STATUS_STOPPED)
             card = self._ld_build_card(text or " ", streaming=False,
                                        panel=panel, footer=self._ld_footer())
+            blob = json.dumps(card, ensure_ascii=False)
+            if '"collapsible_panel"' not in blob:
+                # 第十路审计：正文贴着飞书硬上限时，降载阶梯会把承载状态色的面板摘掉 ⇒
+                # patch 发了、`code=0`、**载荷里没有颜色**，而日志还说「已把中止态重绘到卡片」。
+                # 这条限流告警说明白「这次重绘没有颜色」——本条路径唯一诚实的线索。
+                _log_no_colour_once()
             result = await self._ld_update_card(chat, message_id, card)
             if result is None or not getattr(result, "success", False):
                 logger.warning("[larkdeck] 中止态卡片更新未成功（%s）",

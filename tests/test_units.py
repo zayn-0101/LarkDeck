@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import pathlib as _pathlib
 import os
 import sys
 import threading
@@ -1992,6 +1993,20 @@ class _LogCapture:
                           for r in self.records)
 
 
+def test_transient_error_table_keeps_the_documented_code_only():
+    """瞬态码表要有门禁：官方写明的限流码必须在，**确定性拒收**的码不许在。
+
+    第十路审计实测两条全绿变异：删掉 `230020`（`im.v1.message.patch` 官方错误码表里明写的
+    频率限制）⇒ 限流时不再退避、一帧失败就掉 native；加入 `230099`（内容创建失败的**确定性**
+    错误）⇒ 每次必然失败还白等 ~1.0s 退避。
+    """
+    assert 230020 in adapter._TRANSIENT_CODES, "官方 patch 限流码必须在（否则一帧失败就掉 native）"
+    assert 99991400 in adapter._TRANSIENT_CODES
+    for deterministic in (230099, 230025, 300305, 300314):
+        assert deterministic not in adapter._TRANSIENT_CODES, (
+            f"{deterministic} 是确定性拒收：重试必然同样失败，只会白等 1 秒")
+
+
 def test_transient_feishu_errors_are_retried_not_fatal():
     """瞬态错误码要退避重试；非瞬态错误立刻返回（让内核按 fail-open 链回落）。
 
@@ -2781,6 +2796,65 @@ def test_tracked_body_always_fits_the_status_shell_end_to_end():
     adapter._STREAM_MIN_INTERVAL = 0.0
     limit = adapter._MAX_TRACKED_TEXT
     try:
+        # ⓪ 第**十**路审计的两条边（近似阈值只在两个方向各自安全，所以判据要两级）：
+        #   * A1-a **我引入过的窄回归**：判「存不下」而那卡其实画得上色 ⇒ 正文白丢、
+        #     `/stop` 一次 patch 都不发。反斜杠 / `\t` 形状最明显（JSON 转义把它们变成
+        #     2 字节，正文的 JSON 口径远大于原始口径）。窗口 50~284 字节。
+        #   * A1-b 反向：判「存得下」而那卡其实装不下状态小面板 ⇒ patch 发了、`code=0`、
+        #     **载荷里没有颜色**（纯 CJK 形状下有 67 字节的带）。
+        # 判据现在是「近似阈值 → 再问一次真判据」，所以这里**在边界两侧**各断言一次，
+        # 而且形状覆盖「转义密集」与「纯 CJK」两类。
+        def _boundary(unit: str) -> "tuple[str, str]":
+            """粗扫 + 二分出「真判据说画得上色」的最大正文，以及再加一个字的那一份。
+
+            粗扫步长先取 64，再在最后 64 个字里二分 —— 这条测试会构造十几张 ~127KB 的卡，
+            原来的「从 1 开始倍增再二分」在满负载下太贵（实测会让整个变异矩阵跑崩一次）。
+            """
+            lo, hi = 1, 1
+            while adapter._stop_redraw_would_paint(unit * hi) and hi < 200000:
+                lo, hi = hi, hi * 2
+            while lo + 1 < hi:
+                mid = (lo + hi) // 2
+                if adapter._stop_redraw_would_paint(unit * mid):
+                    lo = mid
+                else:
+                    hi = mid
+            return unit * lo, unit * hi
+
+        for unit, label in (("汉", "纯 CJK"), ("\\", "反斜杠")):
+            good, bad = _boundary(unit)
+            assert adapter._stop_redraw_would_paint(good), (label, len(good))
+            assert not adapter._stop_redraw_would_paint(bad), (label, len(bad))
+            print(f"   边界（{label}）：画得上色的最大正文 = {len(good)} 字"
+                  f"（JSON {adapter._card_body_bytes(good)} 字节）")
+
+            panel.reset()
+            raw_reg = _make()
+            updates_reg = _wire_patch(raw_reg)
+            _run(raw_reg.send("oc_reg", good))
+            kept_reg = (raw_reg._ld_state.get("om_card_1") or {}).get("last_text") or ""
+            assert kept_reg == good, (
+                f"{label}：真判据说画得上色的正文（{len(good)} 字）被丢了 —— "
+                "这正是白丢正文的那条回归（A1-a）")
+            _run(raw_reg.interrupt_session_activity("sk", "oc_reg"))
+            assert updates_reg, f"{label}：被保留的正文必须能重绘"
+            payload_reg = updates_reg[-1]["content"]
+            assert "yellow" in payload_reg, (
+                f"{label}：/stop 载荷里没有颜色 —— 留下了一个画不上色的正文（A1-b 的那一侧）")
+            assert len(payload_reg.encode("utf-8")) <= cards.FEISHU_CARD_BYTE_LIMIT
+
+            # 反方向：真判据说画不上色的那一份必须**不留**，而且留一条告警（绝不静默）
+            panel.reset()
+            raw_bad = _make()
+            updates_bad = _wire_patch(raw_bad)
+            adapter._log_note_text_skipped._at = 0.0
+            with _LogCapture("larkdeck") as records:
+                _run(raw_bad.send("oc_bad", bad))
+            assert (raw_bad._ld_state.get("om_card_1") or {}).get("last_text") == "", (
+                f"{label}：真判据说画不上色的正文（{len(bad)} 字）被留下了 —— "
+                "那条 patch 会发出去但载荷没有颜色，用户看不到任何变化")
+            assert "未为「中止重绘」保留副本" in _log_text(records), _log_text(records)
+
         for per_line in (40, 80):
             line = "汉" * per_line + "\n"
             # 顶到**真正的边界**：JSON 引号只算一次，所以「unit 整除」只能当保守起点
@@ -3105,6 +3179,21 @@ def test_invariant_2_fallbacks_survive_exceptions_not_just_failures():
         adapter._apply_metrics_config()
 
 
+def test_card_body_bytes_measure_is_the_json_escaping_one():
+    """判据口径必须是 **JSON 转义后**的字节数 —— 用原始 utf-8 会静默砍掉一半容量。
+
+    第十路审计实测：把 `_card_body_bytes` 里的 `ensure_ascii=False` 去掉，四门禁**全绿**；
+    但那样每个汉字算 6 字节（`\u6c49`）而不是 3 字节 ⇒ 能被追踪的 CJK 正文上限从
+    42324 字掉到 **21162 字**（窗口 4018 字节），全是「/stop 该有色而无色」那一类。
+    这里把口径直接钉成数字：一个汉字 = 两个引号 + 3 字节 = 5。
+    """
+    assert adapter._card_body_bytes("汉") == 5, adapter._card_body_bytes("汉")
+    assert adapter._card_body_bytes("a") == 3
+    assert adapter._card_body_bytes("\n") == 4          # 换行转义成 \n（2 字节）+ 引号
+    assert adapter._card_body_bytes("\\") == 4          # 反斜杠转义成 \\（2 字节）+ 引号
+    assert adapter._card_body_bytes("汉" * 100) == 302
+
+
 def test_cross_module_constants_are_derived_not_copied():
     """跨模块常量必须是**算出来的**，不能抄字面量（第九路审计 F9 的防漂移闸门）。
 
@@ -3141,8 +3230,27 @@ def test_cross_module_constants_are_derived_not_copied():
             (r"absent\s*=\s*\[\"", "缺键/契约清单不许手写字符串列表（要从 compat 派生）")):
         assert not _re.search(pattern, adapter_src), f"{why}（第九路审计 F9）"
 
+    # ⚠️ 再补一条**全包**扫描（第十路审计指出原版只扫 adapter/cards 两个模块、且是纯字符串
+    #   搜索 ⇒ 别的模块抄多少份数字都看不见；同时对 `getattr(...)` 这类等价重构会假红）。
+    #   新判据只认「**赋值形态**的数字」：注释/docstring 里引用实测数字是允许的（那是出处），
+    #   其它模块里出现 128000/126976 的赋值就是漂移。
+    #   ⚠️ 判据是「**全包只能有一处**」，不是「别的文件里没有」—— 后者看不见
+    #   `cards.py` 自己内部再复制一份这种写法（第十路审计实测的假绿之一）。
+    core_dir = _pathlib.Path(adapter.__file__).resolve().parent
+    hits = []
+    for path in sorted(core_dir.glob("*.py")):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue                      # 注释里引用实测数字是允许的（那是出处）
+            if _re.search(r"=\s*(128000|126976)\b", stripped):
+                hits.append(f"{path.name}:{lineno} {stripped}")
+    assert len(hits) == 1 and hits[0].startswith("cards.py:"), (
+        "卡片字节的硬数字（128000 / 126976）在全 `core/` 里只允许**定义一次**，"
+        f"且必须在 cards.py：{hits}")
 
 
+def test_card_byte_constants_are_pinned_to_the_measured_envelope():
     """卡片字节那三个常量**自身**必须有门禁，不能只锁它们之间的关系。
 
     第八路审计实测（43 条变异矩阵）：新加的形状断言只盯着「阈值 + 开销 ≤ 硬上限」这条
@@ -3264,6 +3372,20 @@ def test_degrade_log_names_the_wall_and_the_numbers():
             adapter._log_degrade_once("no-panel", 7, 1234)
         text2 = _log_text(records)
         assert "no-panel" in text2 and "元素 7/200" in text2 and "字节 1234/40000" in text2, text2
+
+        # ③ **调用点**传的数必须是真的（第十路审计 A15/A16：调用点传 (0,0)、或档位写死
+        #    "ok"，四门禁全绿 —— 而这条日志是「卡片为什么少了个面板」的唯一线索）
+        huge = "汉" * 20000
+        adapter._log_degrade_once._at = 0.0
+        with _LogCapture("larkdeck") as records:
+            made = adapter.LarkDeckMixin._ld_build_card(huge, streaming=False,
+                                                        panel=None, footer=None)
+        text3 = _log_text(records)
+        tier3 = cards.fit_reply_card(huge, panel=None, footer=None)[1]
+        assert tier3 in text3, (tier3, text3)
+        assert f"元素 {cards.count_elements(made)}/200" in text3, text3
+        assert f"字节 {cards.card_bytes(made)}/40000" in text3, text3
+        assert "字节 0/" not in text3 and "元素 0/" not in text3, text3
     finally:
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)

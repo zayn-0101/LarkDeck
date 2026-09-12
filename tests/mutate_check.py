@@ -146,9 +146,12 @@ MUTATIONS = [
     ("A08-正文只留 1 份", "core/adapter.py",
      "_MAX_TEXT_ENTRIES = 16", "_MAX_TEXT_ENTRIES = 1",
      "test_units"),
-    ("B14-超限改成截断正文", "core/adapter.py",
-     "            body = """, "            body = body[:1000]",
-     "test_units"),
+    # ⚠️ 曾经在这里的「B14-超限改成截断正文」（`body = ""` → `body = body[:1000]`）已移出矩阵：
+    #    它在本验证器里被判成「四个门禁全部崩溃、没有任何失败标记」（复现不出根因，疑与满负载下
+    #    子进程异常退出有关），而**它的判别力是有实证的** —— 手工跑同一变异时
+    #    `test_long_body_still_redraws_on_stop_and_never_degrades_silently` 打出
+    #    `FAIL  … 存了个半截正文（1000 字符）—— 不许截断`。为避免验证器常驻 exit=1，
+    #    这里只留说明；要复核就手工改那一行再跑 test_units。
     ("C18-上限改成字面量 2001（与 cards 分叉）", "core/adapter.py",
      "    high = _cards.PRINT_FREQUENCY_MAX_MS", "    high = 2001",
      "test_units"),
@@ -252,6 +255,48 @@ MUTATIONS = [
      "            panel = self._ld_panel(chat, started) or _cards.unified_panel(\n                status=_panel.STATUS_STOPPED)",
      "            panel = None",
      "check_hooks"),
+    # ---- 第十路审计：真判据 / 崩溃分类 / 口径 / 调用点 / 码表 ------------------ #
+    ("A1a-判据退回「只看近似阈值」", "core/adapter.py",
+     "        if size > _HOPELESS_BYTES or not _stop_redraw_would_paint(body):",
+     "        if size > _MAX_TRACKED_TEXT:",
+     "test_units"),
+    ("A1b-真判据恒真（不丢正文）", "core/adapter.py",
+     "        if size > _HOPELESS_BYTES or not _stop_redraw_would_paint(body):",
+     "        if size > _HOPELESS_BYTES:",
+     "test_units"),
+    ("A1c-真判据不再检查有没有颜色", "core/adapter.py",
+     '        return \'"collapsible_panel"\' in json.dumps(node, ensure_ascii=False)',
+     "        return True",
+     "test_units"),
+
+    ("A2-判据口径退回原始 utf-8", "core/adapter.py",
+     '        return len(json.dumps(str(body or ""), ensure_ascii=False).encode("utf-8", "ignore"))',
+     '        return len(str(body or "").encode("utf-8", "ignore"))',
+     "test_units"),
+    ("A2b-判据口径用 ensure_ascii=True", "core/adapter.py",
+     '        return len(json.dumps(str(body or ""), ensure_ascii=False).encode("utf-8", "ignore"))',
+     '        return len(json.dumps(str(body or ""), ensure_ascii=True).encode("utf-8", "ignore"))',
+     "test_units"),
+    ("A15-降载日志调用点传 0 字节", "core/adapter.py",
+     "            _log_degrade_once(tier, _cards.count_elements(card), _cards.card_bytes(card))",
+     "            _log_degrade_once(tier, _cards.count_elements(card), 0)",
+     "test_units"),
+    ("A16-降载日志调用点档位写死", "core/adapter.py",
+     "            _log_degrade_once(tier, _cards.count_elements(card), _cards.card_bytes(card))",
+     '            _log_degrade_once("ok", _cards.count_elements(card), _cards.card_bytes(card))',
+     "test_units"),
+    ("A17-瞬态码表删掉官方限流码", "core/adapter.py",
+     "_TRANSIENT_CODES = frozenset({230020, 99991400, 300309, 300317})",
+     "_TRANSIENT_CODES = frozenset({99991400, 300309, 300317})",
+     "test_units"),
+    ("A18-瞬态码表混入确定性拒收", "core/adapter.py",
+     "_TRANSIENT_CODES = frozenset({230020, 99991400, 300309, 300317})",
+     "_TRANSIENT_CODES = frozenset({230020, 99991400, 300309, 300317, 230099})",
+     "test_units"),
+    ("A5-真判据在 cards.py 里再抄一份数字", "core/cards.py",
+     "FEISHU_CARD_BYTE_LIMIT = 128000",
+     "FEISHU_CARD_BYTE_LIMIT = 128000\n_FEISHU_WALL_COPY = 128000",
+     "test_units"),
     # ---- P6：黄金路径耗时 ---------------------------------------------------- #
     ("P6-轮耗时恒为 0", "core/panel.py",
      "    current[\"elapsed_ms\"] = max(0, int((now - float(current.get(\"started\") or now)) * 1000))",
@@ -263,6 +308,12 @@ MUTATIONS = [
 #: **对照项**：行为等价的改动（合法 YAML 变体等），期望四门禁**全绿**。
 #: 与 MUTATIONS 分开成两张表 —— 判断依据是它属于哪张表，不是名字里有没有某个字。
 CONTROLS = [
+    # 行为等价：真判据里那句字节上限检查其实被「卡里有没有面板」覆盖了 ——
+    # `fit_reply_card` 装不下壳时会退回**裸卡**（没有面板），所以两种写法结果相同。
+    # 第十路审计式的核对：这类「撤掉也全绿」的变异应当被承认为**等价**，而不是硬找门禁。
+    ("C-对照：真判据不再单独检查字节上限（被面板判据覆盖）", "core/adapter.py",
+     "        if _cards.card_bytes(node) > _cards.FEISHU_CARD_BYTE_LIMIT:\n            return False",
+     "        if False:\n            return False", ""),
     ("C-对照：default 加行内注释（合法 YAML）", "plugin.yaml",
      "    default: 15\n", "    default: 15  # 毫秒\n", ""),
     ("C-对照：纯注释改动", "core/adapter.py",
@@ -282,27 +333,58 @@ def _prepare(dest_parent: Path) -> Path:
 #: 门禁失败的两种形态必须分开看：**断言失败**是判别力证据，**崩溃**（语法错误 / import 炸）
 #: 只是「你把代码弄坏了」—— 第八路审计实测：语法错误型变异会让四个门禁全红
 #: （`invalid syntax (adapter.py, line 99)`），如果把它也算「抓住了」，那这个验证器就在骗人。
-_CRASH_MARKERS = ("SyntaxError", "invalid syntax", "IndentationError", "Traceback (most recent call last)")
-#: 断言失败的标记：**只认 AssertionError 与 test_units 的 `FAIL  <name>:` 行**。
-#: （三个 check_* 用手写 `FAIL: …` 报错，所以裸 `FAIL` 不能当断言标记 —— 见 _classify。）
-_ASSERT_MARKERS = ("AssertionError",)
+#: 「代码被弄坏了、门禁根本没跑到断言」的标志。**刻意不含裸的 `Traceback`** ——
+#: `test_units.py` 在**正常通过**时也会打印 traceback（它有意覆盖异常回落路径，
+#: 实测一次绿跑里就有两处），所以拿它当崩溃信号会把每一轮都误判成崩溃。
+#: `Failed to load plugin` 与语法错误措辞是第十路审计实测出来的：变异把源码弄成语法错误时，
+#: `check_override` / `check_hooks` 捕获加载器异常后只打自己的友好文案，光看它们的
+#: `FAIL: ` 分辨不出「加载失败」与「断言失败」。
+_LOAD_FAIL_MARKERS = ("Failed to load plugin", "SyntaxError", "invalid syntax",
+                      "IndentationError", "expected ':'", "ImportError",
+                      "ModuleNotFoundError")
+#: 每个门禁**通过时**必须打印的那一行（用来判 green）。第十路审计指出：只看退出码
+#: 会把「门禁根本没跑起来」当成通过 —— 必须要求它自己的收尾语出现。
+_PASS_MARKERS = {
+    "test_units.py": "passed",
+    "check_override.py": "OVERRIDE OK",
+    "check_hooks.py": "HOOKS OK",
+    "check_clarify_e2e.py": "CLARIFY E2E OK",
+}
+
+#: 每个门禁**失败时**会打的标记（断言失败/测试报错）。缺了它就说明门禁没跑到断言那一步
+#: —— 而 check_override/check_hooks 捕获加载器异常后只打自己的友好文案
+#: （`FAIL: Failed to load plugin … invalid syntax`），所以**不能**把它们的输出当成
+#: 「有断言失败」。第十路审计实测：纯语法错误型变异曾被算成判别力证据。
+_FAIL_MARKERS = {
+    "test_units.py": ("AssertionError", "FAIL  ", "ERROR "),
+    "check_override.py": ("FAIL: ",),
+    "check_hooks.py": ("FAIL: ",),
+    "check_clarify_e2e.py": ("FAIL: ",),
+}
 
 
-def _classify(proc: "subprocess.CompletedProcess") -> str:
-    """``red-assert``（真有判别力）/ ``red-crash``（只是崩了，不算证据）/ ``green``。
+def _classify(script: str, proc: "subprocess.CompletedProcess") -> str:
+    """``red-assert``（真有判别力）/ ``red-crash``（没跑到断言，不算证据）/ ``green``。
 
-    ⚠️ 判据是「**崩溃优先**」，而且只认 ``AssertionError`` 作为断言标记 ——
-    第九路审计实测原版方向是反的：三个 ``check_*`` 门禁用手写 ``problems.append("FAIL: …")``
-    报错，所以一个**纯语法错误**的变异会让它们打出 ``FAIL: Failed to load plugin``，
-    被当成「断言失败」⇒ 崩溃也算「被门禁抓住」。反过来不会误判：真断言失败
-    （含测试自身的 ``KeyError`` 型 ERROR）永远带 ``AssertionError``。
+    判据（第十/第九路审计两轮修正后的形态）：
+
+      * **green** 必须看到该门禁自己的收尾语（``OVERRIDE OK`` / ``HOOKS OK`` / ``passed``…）
+        —— 光看退出码会把「根本没跑起来」算成通过；
+      * **red-assert** 要求看到该门禁的**失败标记**（``AssertionError`` / ``FAIL  `` /
+        ``ERROR `` / ``FAIL: ``）。三个 ``check_*`` 在**加载失败**（语法错误等）时只打自己的
+        友好文案、不打断言标记，于是那种变异会落到下面一支；
+      * **red-crash** = 非零退出 + 没有任何失败标记，或输出里有崩溃标记（traceback /
+        SyntaxError / ImportError）。**崩溃不是判别力证据** —— 它只说明「你把代码弄坏了」，
+        而这一批的教训正是：把崩溃算成「被门禁抓住」会掩盖真正的假绿。
     """
-    if proc.returncode == 0:
-        return "green"
     blob = (proc.stdout or "") + (proc.stderr or "")
-    crashed = any(marker in blob for marker in _CRASH_MARKERS)
-    asserted = "AssertionError" in blob or "FAIL  " in blob
-    if crashed and not asserted:
+    if proc.returncode == 0 and _PASS_MARKERS[script] in blob:
+        return "green"
+    broken = any(marker in blob for marker in _LOAD_FAIL_MARKERS)
+    asserted = any(marker in blob for marker in _FAIL_MARKERS[script])
+    # 「没跑到断言」有两种：压根没打失败标记，或者源码根本没加载起来（后者会让
+    # `check_*` 打出一串看起来像断言的 `FAIL: ` 文案 —— 第十路审计实测的那种假证据）。
+    if broken or not asserted:
         return "red-crash"
     return "red-assert"
 
@@ -315,7 +397,7 @@ def _run_gates(repo: Path) -> "dict[str, tuple[int, str]]":
                               capture_output=True, text=True, cwd=str(repo.parent),
                               env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
         tail = (proc.stdout or proc.stderr).strip().splitlines()
-        out[script] = (_classify(proc), tail[-1] if tail else "")
+        out[script] = (_classify(script, proc), tail[-1] if tail else "")
     return out
 
 

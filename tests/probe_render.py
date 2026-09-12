@@ -909,9 +909,13 @@ def probe_stop_redraw(client, chat: str, cards) -> int:
 
         ld_module = sys.modules.get(type(adapter).__module__)
         limit = getattr(ld_module, "_MAX_TRACKED_TEXT", None)
+        measure = getattr(ld_module, "_card_body_bytes", None)
         kept = (adapter._ld_state.get(mid) or {}).get("last_text") or ""
-        print(f"   追踪到的正文 = {len(kept.encode('utf-8'))} 字节"
-              f"（阈值 {limit} 字节；必须等于正文，否则 /stop 会无色）")
+        # ⚠️ 两个口径都要打（第十路审计 §7-2）：`limit` 是**近似阈值**，判据其实是
+        # 「那张带色的卡发不发得出去」；混着说会让读日志的人误判。
+        print(f"   追踪到的正文 = {len(kept.encode('utf-8'))} 原始字节 / "
+              f"{measure(kept) if measure else '?'} 判据字节"
+              f"（近似阈值 {limit}；真判据是「带状态小面板的卡发不发得出去」）")
         if len(kept.encode("utf-8")) != body_bytes:
             print("❌ 正文没有被保留 —— 这就是阻断项的症状（/stop 一次 patch 都不会发）")
             return 1
