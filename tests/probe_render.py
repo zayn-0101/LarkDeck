@@ -9,7 +9,9 @@
 它做什么
 --------
 1. 从 ``~/.hermes/.env`` 读飞书凭据（只读，不回显）
-2. **先删掉自己上次发的探针卡**（靠内容里的 ``__PROBE__`` 标记识别），保持 DM 干净
+2. **先删掉自己上次发的探针卡**——按记录的消息 ID 删，再用内容里的 ``__PROBE__``
+   标记补扫。**2.0 流式卡在飞书里是 cardkit 实体，读回来只剩一句「请升级至最新
+   版本客户端，以查看内容」**，标记根本读不到，所以消息 ID 才是唯一靠得住的凭据
 3. 用 ``lark_oapi`` 以 ``im/v1/messages`` 发出**三类**卡片
 4. 打印每张卡的 API 返回码 —— **code != 0 就是卡片被拒，msg 是飞书给的原因**
 
@@ -38,6 +40,8 @@ import types
 HERMES_ENV = pathlib.Path.home() / ".hermes" / ".env"
 REPO = pathlib.Path(__file__).resolve().parent.parent
 PROBE_MARK = "__LARKDECK_RENDER_PROBE__"
+#: 记下自己发过的消息 ID。**只能靠它清理 2.0 流式卡**，见 clean_previous。
+STATE_FILE = REPO / ".probe_state.json"
 
 #: 清理时用来认出「这是探针发的卡」。多写几个，好把加标记之前留下的旧卡也一并清掉。
 PROBE_MARKERS = (
@@ -75,9 +79,42 @@ def load_cards():
     return importlib.import_module("_larkdeck_probe.cards")
 
 
+def _load_sent_ids() -> list:
+    try:
+        ids = json.loads(STATE_FILE.read_text())
+        return ids if isinstance(ids, list) else []
+    except Exception:
+        return []
+
+
+def _save_sent_ids(ids) -> None:
+    STATE_FILE.write_text(json.dumps(sorted({str(i) for i in ids}), indent=0) + "\n")
+
+
 def clean_previous(client, chat: str) -> int:
-    """删掉本机器人此前发的、带 PROBE_MARK 的消息。返回删除条数。"""
+    """删掉本机器人此前发的探针消息，返回删除条数。
+
+    **两条路并用**：先按「自己记下的消息 ID」删，再按内容标记补扫。
+
+    为什么不能只靠标记：2.0 流式卡在飞书里存成 cardkit 实体，之后用 API 读回来
+    只剩一句「请升级至最新版本客户端，以查看内容」——``__PROBE__`` 标记根本读不到，
+    于是这批卡永远清不掉，在 DM 里越积越多。ID 是唯一记得住它们的凭据。
+    """
     from lark_oapi.api.im.v1 import (ListMessageRequest, DeleteMessageRequest)
+
+    removed = 0
+    leftover = []
+    for mid in _load_sent_ids():
+        d = client.im.v1.message.delete(
+            DeleteMessageRequest.builder().message_id(mid).build())
+        if d.code == 0:
+            removed += 1
+        else:
+            leftover.append(mid)
+    if leftover:
+        print(f"  ⚠️  {len(leftover)} 条按 ID 删除失败（多为已过期），放弃记账")
+    _save_sent_ids([])
+
     start = str(int(time.time()) - 7 * 24 * 3600)
     req = (ListMessageRequest.builder()
            .container_id_type("chat")
@@ -88,9 +125,8 @@ def clean_previous(client, chat: str) -> int:
            .build())
     resp = client.im.v1.message.list(req)
     if resp.code != 0:
-        print(f"  ⚠️  列出历史消息失败 code={resp.code} msg={resp.msg}（跳过清理）")
-        return 0
-    removed = 0
+        print(f"  ⚠️  列出历史消息失败 code={resp.code} msg={resp.msg}（跳过补扫）")
+        return removed
     for item in (resp.data.items or []):
         content = (item.body.content if item.body else "") or ""
         if not any(m in content for m in PROBE_MARKERS):
@@ -100,7 +136,7 @@ def clean_previous(client, chat: str) -> int:
         if d.code == 0:
             removed += 1
         else:
-            print(f"  ⚠️  删除 {item.message_id} 失败 code={d.code} msg={d.msg}")
+            print(f"  ⚠️  补扫删除 {item.message_id} 失败 code={d.code} msg={d.msg}")
     return removed
 
 
@@ -184,6 +220,8 @@ def main(argv: list) -> int:
         if code != 0:
             one_line = json.dumps(card, ensure_ascii=False)
             print(f"     被拒卡片({len(one_line)} 字符): {one_line[:900]}")
+        else:
+            _save_sent_ids(_load_sent_ids() + [mid])
 
     print()
     print("全部被飞书接收 ✅ —— 去飞书 DM 看三张卡长什么样" if ok
