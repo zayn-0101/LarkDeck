@@ -159,6 +159,15 @@
 **做法：凡是「判 X 存不下」与「判 Y 装得下」出现在两处，先确认两者量的是同一个东西；
 再补一条**端到端**断言把「判据成立 ⇒ 用户可见的结果成立」整个含在里面。**
 
+**推论 14：「运行时发现」不是洁癖，是升级期的保险 —— 而且它已经被真实兑现过一次。**
+Hermes 把内置飞书适配器改成了**插件加载**（模块名从 `plugins.platforms.feishu.adapter`
+变成 `hermes_plugins.feishu_platform.adapter`）。我们没改一行、没重装，接管照旧成立，
+因为基类是从平台注册表**运行时取**的（`_discover_base_class()`），不是 `import` 写死的。
+如果当初抄的是 `from plugins.platforms.feishu.adapter import FeishuAdapter`，
+这次上游改动就是一次**静默退回纯文本**（插件加载失败，用户只看到「卡片怎么没了」）。
+配套做法：`tests/check_override.py` 用**真加载器**跑一遍并问注册表「现在 feishu 解析到谁」——
+这类「上游挪了文件」的改动只有它能第一时间发现。
+
 ## 三、两个验证盲区
 
 - **`install.sh --copy` 的 `FILES` 数组是手写的。** 新增模块漏同步会装出一个「少了指标采集

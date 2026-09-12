@@ -240,6 +240,22 @@ LarkDeck 接管后才生效）。带参数的几种模式各答一个只有真�
 
 ---
 
+### 升级安全性：实测过一次真实的上游改动
+
+Hermes **已经改过一次**内置飞书适配器的加载方式：它现在把内置适配器当**插件**加载
+（`FeishuAdapter` 的模块名从 `plugins.platforms.feishu.adapter` 变成
+`hermes_plugins.feishu_platform.adapter`）。我们**没有改一行代码、也没有重装**，
+接管照旧成立 —— 因为基类是从平台注册表**运行时取**的，不是硬编码导入：
+
+```
+LarkDeckFeishuAdapter → LarkDeckMixin → FeishuAdapter → BasePlatformAdapter
+   （我们）              （我们）        hermes_plugins.feishu_platform.adapter（上游）
+启动自检通过：Hermes 0.21.1 · feishu 平台已由 larkdeck 接管
+```
+
+这条性质由 `tests/check_override.py` 守着（它用**真插件加载器**跑一遍再问注册表
+「现在 feishu 解析到谁」）—— 上游再怎么挪文件，它都会在启动那一刻告诉我们有没有接上。
+
 ## 已知限制
 
 - **必须和官方适配器同一进程**：官方 `feishu` 平台被禁用时，LarkDeck 无处附着。
