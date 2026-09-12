@@ -93,14 +93,25 @@ def action_row(buttons: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def collapsible(title_node: Dict[str, Any], elements: Sequence[Dict[str, Any]], *,
-                expanded: bool = False) -> Dict[str, Any]:
-    """可折叠面板（**2.0 专属**元素）。用于把推理过程 / 工具调用收进底部。"""
-    return {
+                expanded: bool = False, element_id: str = "auxiliary_timeline",
+                ) -> Dict[str, Any]:
+    """可折叠面板（**2.0 专属**元素）。用于把推理过程 / 工具调用收进底部。
+
+    ⚠️ ``header.title`` **必须**是 ``plain_text`` 节点。塞 ``lark_md`` / ``markdown``
+    飞书不会报错，只会**悄悄把面板降级成普通行**——标题文字照常显示，但三角箭头
+    没了、内容全部铺开，面板等于白做。这个坑静态检查抓不到，只有真机探针能抓。
+    """
+    panel: Dict[str, Any] = {
         "tag": "collapsible_panel",
         "expanded": bool(expanded),
-        "header": {"title": title_node},
+        "header": {"title": title_node, "vertical_align": "center"},
+        "border": {"color": "grey", "corner_radius": "8px"},
+        "padding": "8px 8px 8px 8px",
         "elements": list(elements),
     }
+    if element_id:
+        panel["element_id"] = element_id
+    return panel
 
 
 # --------------------------------------------------------------------------- #
@@ -164,7 +175,10 @@ def unified_panel(*, reasoning: str = "", tools: Sequence[str] = (),
         inner.append(md(item))
     if not inner:
         return None
-    return collapsible(_i18n.md_i18n_text("panel.title"), inner, expanded=expanded)
+    # 标题必须是 plain_text，且带上工具计数 —— 收起状态下这是用户唯一看得到的信息
+    title = (_i18n.i18n_text("panel.title_tools", n=len(tools)) if tools
+             else _i18n.i18n_text("panel.title"))
+    return collapsible(title, inner, expanded=expanded)
 
 
 # --------------------------------------------------------------------------- #

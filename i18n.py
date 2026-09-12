@@ -21,6 +21,7 @@ DEFAULT_LOCALES = (ZH, EN)
 _STRINGS: Dict[str, Dict[str, str]] = {
     # 统一面板
     "panel.title":        {ZH: "执行详情", EN: "Run details"},
+    "panel.title_tools":  {ZH: "思考与工具 · {n} 次工具调用", EN: "Thinking & tools · {n} tool calls"},
     "panel.reasoning":    {ZH: "推理过程", EN: "Reasoning"},
     "panel.tools":        {ZH: "工具调用", EN: "Tool calls"},
     "panel.collapsed":    {ZH: "已折叠 {n} 步", EN: "Collapsed · {n} steps"},

@@ -39,15 +39,17 @@ import types
 
 HERMES_ENV = pathlib.Path.home() / ".hermes" / ".env"
 REPO = pathlib.Path(__file__).resolve().parent.parent
-PROBE_MARK = "__LARKDECK_RENDER_PROBE__"
+#: 2.0 卡的脚注走 markdown，``__x__`` 会被当成加粗吃掉，所以标记不用下划线。
+PROBE_MARK = "LARKDECK-RENDER-PROBE"
 #: 记下自己发过的消息 ID。**只能靠它清理 2.0 流式卡**，见 clean_previous。
 STATE_FILE = REPO / ".probe_state.json"
 
 #: 清理时用来认出「这是探针发的卡」。多写几个，好把加标记之前留下的旧卡也一并清掉。
 PROBE_MARKERS = (
     PROBE_MARK,
+    "__LARKDECK_RENDER_PROBE__",  # 改标记之前发的旧卡
     "larkdeck 渲染探针",
-    "这张卡渲染正常吗？",  # 早期版本没打标记，靠题面认
+    "这张卡渲染正常吗？",  # 更早期没打标记的版本，靠题面认
 )
 
 
@@ -157,14 +159,15 @@ def send(client, chat: str, card: dict) -> tuple:
 
 def build_cases(cards) -> list:
     mark = f"{PROBE_MARK} · larkdeck 渲染探针 · 只验渲染，不处理点击"
-    panel = cards.unified_panel(
-        reasoning="用户问的是卡片渲染。核验三点：\n"
-                  "1. 1.0 方言只带顶层 elements\n"
-                  "2. 按钮必须在 action 容器里\n"
-                  "3. 2.0 卡必须有 config.summary",
-        tools=["read_file(cards.py)", "grep(render.py)", "terminal(probe_render.py)"],
-        expanded=True,
-    )
+    panel_reasoning = ("用户问的是卡片渲染。核验三点：\n"
+                       "1. 1.0 方言只带顶层 elements\n"
+                       "2. 按钮必须在 action 容器里\n"
+                       "3. 2.0 卡必须有 config.summary")
+    panel_tools = ["read_file(cards.py)", "grep(render.py)", "terminal(probe_render.py)"]
+    panel = cards.unified_panel(reasoning=panel_reasoning, tools=panel_tools,
+                                expanded=False)
+    panel_open = cards.unified_panel(reasoning=panel_reasoning, tools=panel_tools,
+                                     expanded=True)
 
     def tag_legacy(card: dict) -> dict:
         """给 1.0 卡也打上清理标记，否则下次清理漏掉它们。"""
@@ -180,9 +183,12 @@ def build_cases(cards) -> list:
          tag_legacy(cards.clarify_resolved_card(
              question="这张卡渲染正常吗？按钮能看见吗？",
              answer="一切正常", user_name="汪老师"))),
-        ("③ 回复卡 + 统一面板（schema 2.0，可折叠）",
-         cards.reply_card("这是流式回复卡的静态版本，用来验证 2.0 方言能否渲染。",
+        ("③ 回复卡 + 面板【收起】← 点标题行右边的三角箭头应能展开",
+         cards.reply_card("这张卡的面板是收起态。标题行右边应该有个三角箭头，点一下能展开。",
                           streaming=True, panel=panel, footer=mark)),
+        ("④ 回复卡 + 面板【展开】（对照组，只应比 ③ 多展开状态）",
+         cards.reply_card("这张卡的面板是展开态，用来和 ③ 对照。",
+                          streaming=True, panel=panel_open, footer=mark)),
     ]
 
 
@@ -224,7 +230,7 @@ def main(argv: list) -> int:
             _save_sent_ids(_load_sent_ids() + [mid])
 
     print()
-    print("全部被飞书接收 ✅ —— 去飞书 DM 看三张卡长什么样" if ok
+    print("全部被飞书接收 ✅ —— 去飞书 DM 看四张卡长什么样（③ 记得点一下三角箭头）" if ok
           else "有卡片被拒 ❌ —— 按上面飞书给的 msg 改")
     print("注意：按钮点击不会被处理（点击路由目前还在 HFC 手里），本探针只验渲染。")
     return 0 if ok else 1

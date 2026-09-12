@@ -222,6 +222,26 @@ def test_unified_panel_empty_is_none():
     assert panel["expanded"] is False, "默认收起，正文区保持干净"
 
 
+def test_panel_header_title_must_be_plain_text():
+    """面板头的 title 只能是 ``plain_text``。
+
+    塞 ``lark_md`` / ``markdown`` 飞书**不报错**，只在客户端把面板降级成普通行：
+    标题文字还在，三角箭头没了、内容全部铺开。真机实测（2026-09-12）才抓到，
+    静态校验看不见，所以在这里钉死。
+    """
+    panel = cards.unified_panel(reasoning="想一下", tools=["read_file(a.py)"])
+    header = panel["header"]
+    assert header["title"]["tag"] == "plain_text", header
+    assert header["vertical_align"] == "center", header
+    assert panel["border"]["color"] == "grey", panel
+    assert panel["element_id"], "面板要给 element_id，方便后续定位与更新"
+    # 收起态下面板标题是用户唯一看得到的信息，必须带工具计数
+    assert "1" in header["title"]["content"], header
+    # 折叠面板是 2.0 专属，不许混进 1.0 卡
+    legacy = cards.clarify_card("Q?", ["A"], clarify_id="c", session_key="s")
+    assert "collapsible_panel" not in _all_tags(legacy)
+
+
 def test_clarify_card_buttons_and_i18n():
     card = cards.clarify_card("选哪个？", ["A 方案", "B 方案"],
                               clarify_id="cid-1", session_key="sk-1")
