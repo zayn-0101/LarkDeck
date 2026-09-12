@@ -107,6 +107,45 @@ else:
         if got_cards is not True:
             problems.append(f"未配置的键没有保持默认：cards={got_cards!r}（期望 True）")
 
+# 中断信号（``/stop``、``/new``）的派发约定必须与核心一致 —— 这是用**核心自己的判据**
+# 核对的，不是我们自己猜的：核心在 gateway/run_agent_cache.py 里
+# ``getattr(type(adapter), "interrupt_session_activity", None)`` 取方法，再用
+# ``agent.interrupt_compat._accepts_keyword(fn, "metadata")`` 决定带不带 metadata 调。
+import inspect as _inspect                                  # noqa: E402
+
+from agent.interrupt_compat import _accepts_keyword as _core_accepts_keyword  # noqa: E402
+
+_own = getattr(ld_mixin, "interrupt_session_activity", None)
+if _own is None:
+    problems.append("LarkDeckMixin 没有覆盖 interrupt_session_activity，中止后卡片不会变色")
+else:
+    _resolved = getattr(cls, "interrupt_session_activity", None)
+    if _resolved is not _own:
+        problems.append(
+            f"核心按 type(adapter) 取到的是 {getattr(_resolved, '__qualname__', _resolved)!r}，"
+            "不是 larkdeck 的实现 —— 中止重绘永远不会被调用")
+    if _inspect.iscoroutinefunction(_own) is False:
+        problems.append("interrupt_session_activity 必须是 async（核心是 await 调用的）")
+    _meta = _core_accepts_keyword(_own, "metadata")
+    print(f"interrupt dispatch: ours={_resolved is _own} "
+          f"async={_inspect.iscoroutinefunction(_own)} core_accepts_metadata={_meta}")
+    if not _meta:
+        problems.append("核心的 _accepts_keyword 认为我们的方法不接受 metadata（签名不对称）")
+
+# 订阅钩子清单的单一事实来源：compat.OBSERVED_HOOKS 必须与 hooks.SUBSCRIPTIONS 一一对应，
+# 否则「文档说订阅了 N 个」与「真订阅了哪几个」会各说各话。
+_hooks_mod = sys.modules.get("hermes_plugins.larkdeck.core.hooks") or sys.modules.get("larkdeck.core.hooks")
+_compat_mod = sys.modules.get("hermes_plugins.larkdeck.core.compat") or sys.modules.get("larkdeck.core.compat")
+if _hooks_mod is None or _compat_mod is None:
+    problems.append("拿不到 hooks/compat 模块，无法核对钩子清单")
+else:
+    _subscribed = tuple(name for name, _ in _hooks_mod.SUBSCRIPTIONS)
+    _declared = tuple(_compat_mod.OBSERVED_HOOKS)
+    print(f"hooks: subscribed={list(_subscribed)}")
+    if _subscribed != _declared:
+        problems.append(f"hooks.SUBSCRIPTIONS 与 compat.OBSERVED_HOOKS 不一致："
+                        f"{_subscribed!r} vs {_declared!r}")
+
 if problems:
     for p in problems:
         print("FAIL:", p)
