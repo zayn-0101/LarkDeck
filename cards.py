@@ -104,7 +104,17 @@ def collapsible(title_node: Dict[str, Any], elements: Sequence[Dict[str, Any]], 
     panel: Dict[str, Any] = {
         "tag": "collapsible_panel",
         "expanded": bool(expanded),
-        "header": {"title": title_node, "vertical_align": "center"},
+        "header": {
+            "title": title_node,
+            "vertical_align": "center",
+            # ⚠️ 箭头是**选配**的：不给 ``icon``，飞书面板就没有任何展开/收起控件 ——
+            # 不报错、不提示，只是点不动，等于一个"永远打不开的抽屉"。
+            # 官方示例 JSON 里是显式给 icon + icon_position + icon_expanded_angle 的。
+            "icon": {"tag": "standard_icon", "token": "down-small-ccm_outlined",
+                     "size": "16px 16px"},
+            "icon_position": "right",
+            "icon_expanded_angle": -180,
+        },
         "border": {"color": "grey", "corner_radius": "8px"},
         "padding": "8px 8px 8px 8px",
         "elements": list(elements),

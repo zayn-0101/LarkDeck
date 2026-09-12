@@ -233,6 +233,10 @@ def test_panel_header_title_must_be_plain_text():
     header = panel["header"]
     assert header["title"]["tag"] == "plain_text", header
     assert header["vertical_align"] == "center", header
+    # 箭头必须显式给 icon —— 不给就没有任何展开/收起控件（点不动，且不报错）
+    assert header["icon"]["token"] == "down-small-ccm_outlined", header
+    assert header["icon_position"] == "right", header
+    assert header["icon_expanded_angle"] == -180, header
     assert panel["border"]["color"] == "grey", panel
     assert panel["element_id"], "面板要给 element_id，方便后续定位与更新"
     # 收起态下面板标题是用户唯一看得到的信息，必须带工具计数
