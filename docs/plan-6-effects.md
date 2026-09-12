@@ -300,18 +300,40 @@
 - **前置确认**：本地 `native_streaming` 配置是否开启。**若为关**，实际走 edit 路径，
   本章结论**反过来** → 阶段 3 第一步必须先确认这件事。
 
-### 7.4 跨阶段阻断项：钩子事件 → 具体卡片的归属设计（**必须补**）
+### 7.4 归属设计（**已解，2026-09-12**）：用 `pre_gateway_dispatch` 建 `chat_id → session_id` 映射
 
-`turn_id` 两套命名空间的问题**没有被修、方案也没处理**，而阶段 1（给这张卡上色）、
-阶段 2（面板内容）、阶段 3（帧节奏）**都要求把钩子事件归属到某一张卡**：
+`turn_id` 两套命名空间的问题**不能被修**（那是核心内部的实现事实），但**可以绕开**：
+我们要的从来不是 `turn_id`，而是「这张卡属于哪个会话」。而这一层有干净的公开契约可用。
 
-- 钩子载荷的 `turn_id` = `agent._current_turn_id`（`agent/stream_delivery.py`、`agent/inline_tool_executors.py`）
-- `send_stream_frame()` 收到的 `turn_id` = consumer 自造裸 uuid（`gateway/stream_consumer.py`）
+**桥梁（全部是公开 API，且只读）：**
 
-两者**永远匹配不上**（`core/panel.py::snapshot` 的警告块记着这次事故）。现在靠「渲染时取最近活跃会话」，
-单会话正确、**多会话串台** —— 阶段 1 的颜色会**跨会话串**，与上次那个 bug 是同一类。
-**⇒ 阶段 1 开工前必须先设计归属方案。** 已知可行方向：`interrupt_session_activity` 自带 `chat_id`；
-`gateway/mirror.py` 的 `(platform, chat_id) -> session_id` 反查（代价是一次 DB 查询 + 新私有依赖）。
+1. **`pre_gateway_dispatch`** —— 在 `VALID_HOOKS` 里，**每条入站消息**触发，且**在 auth 之前**
+   （`gateway/run_inbound.py` 的 `_hm_pre_gateway_dispatch_hook`）。载荷是
+   `event`（`MessageEvent`）、`gateway`、**`session_store`**。
+2. `event.source` 是 **`SessionSource`**（`gateway/platforms/event.py` / `gateway/session.py`），
+   带 `platform` 与 **`chat_id`** —— 正是适配器那侧有的东西。
+3. `gateway/session.py` 有**公开**（无下划线）的
+   `build_session_key(source, ...) -> str` 与
+   `SessionStore.lookup_by_session_key(session_key) / lookup_by_session_id(session_id) -> SessionEntry`，
+   而 `SessionEntry` 同时带 `session_key` 与 **`session_id`**（钩子那侧用的就是它）。
+
+**⇒ 回调里算 `build_session_key(event.source)`，再 `lookup_by_session_key(...)`，就拿到 `session_id`，
+把它和 `event.source.chat_id` 一起记进 `panel`。适配器渲染时按自己的 `chat_id` 取对应会话 —— 确定性的，
+不再靠「最近活跃」猜。**
+
+**三条必须遵守的纪律：**
+
+- **只读**：用 `lookup_by_session_key`，**不要**用 `get_or_create_session` —— 后者会在 auth **之前**
+  给未授权发送者创建会话，那是改变核心行为（违反不变量 1 的精神）。代价是**新会话的第一回合**
+  还没有映射（那一刻 session 尚未落库）→ 该回合退回「最近活跃」，**从第二回合起确定性**。
+- **永不返回 directive**：这是个能干预分发的钩子（`{"action": "skip"}` / `"rewrite"`），
+  我们只观察，**必须恒返回 None**。
+- **回调必须快**：它在每条入站消息的分发路径上。只做「查一次 + 写一次内存」，不做 I/O。
+- 这些名字（`pre_gateway_dispatch`、`build_session_key`、`lookup_by_session_key`、`SessionSource.chat_id`）
+  按不变量 3 **登记进 `compat.py`**（新增一组「会话归属契约」），并用 `probe_report` 上报缺失。
+
+**保底**：映射拿不到时（新会话首回合、老版本 Hermes、查找失败）**必须保持现有行为**
+（退回「最近活跃」），不能因为归属失败而不渲染面板。
 
 ### 7.5 另外三条事实纠正
 
