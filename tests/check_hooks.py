@@ -484,6 +484,174 @@ else:
         except Exception as exc:  # pragma: no cover - 防御性
             problems.append(f"黄金路径：渲染异常 {exc!r}")
 
+    # ------------------------------------------------------------------ #
+    # 一个完整回合的**可见帧序列**：seed → 帧 → 收尾，断言用户看到的那条线
+    # ------------------------------------------------------------------ #
+    # 为什么单开一节：前面每一节都在验「某一层对不对」（钩子写没写、面板有没有数据、
+    # 单张卡渲染成什么样），而**没有任何一条门禁**把「一个回合里用户依次看到的那几张卡」
+    # 串起来断言过。而那正是 6 项效果的落点：
+    #   * 效果 1a：首帧就该有内容（等待期占位），不能是一张近乎空白的卡；
+    #   * 效果 4：面板要**逐帧长大**（轮次/工具/耗时都在面板头里）；
+    #   * 效果 2：收尾帧必须把边框画成绿色、并且**不能再带等待期占位**；
+    #   * 效果 3：回合中途 `/stop`，那张卡必须被重绘成中止色（黄）。
+    # 这一节用**真适配器类**（经插件加载器拿到的那个，MRO/覆盖都在）配一个"录音"客户端，
+    # 走生产路径 `send_stream_frame` / `interrupt_session_activity`，把每次 API 的载荷抄下来。
+    try:
+        import asyncio
+        from types import SimpleNamespace
+
+        class _Resp:
+            """够真的假响应：官方适配器用 `response.success()` 判成败（不是 `code`）。"""
+
+            def __init__(self, code, message_id=""):
+                self.code = code
+                self.msg = "success" if code == 0 else "boom"
+                self.data = SimpleNamespace(message_id=message_id)
+
+            def success(self):
+                return self.code == 0
+
+        sent = []          # [(kind, payload_dict)]
+        counter = {"n": 0}
+
+        def _payload(request):
+            body = getattr(request, "request_body", None) or getattr(request, "body", None)
+            return json.loads(getattr(body, "content", "{}") or "{}")
+
+        class _Message:
+            def create(self, request):
+                counter["n"] += 1
+                sent.append(("create", _payload(request)))
+                return _Resp(0, f"om_seq_{counter['n']}")
+
+            def patch(self, request):
+                sent.append(("patch", _payload(request)))
+                return _Resp(0)
+
+        fake_client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_Message())))
+
+        _adm = (sys.modules.get("hermes_plugins.larkdeck.core.adapter")
+                or sys.modules["larkdeck.core.adapter"])
+        from gateway.config import PlatformConfig
+        from gateway.platform_registry import platform_registry
+        # SDK 的请求构造类是**懒绑定**在 connect 时机的；这里不 connect（不碰真网络），
+        # 所以显式触发一次绑定，否则构造出的是 SimpleNamespace、载荷读不出来。
+        _base_mod = sys.modules.get(type(_adm).__mro__[0].__module__) or sys.modules.get(
+            "hermes_plugins.feishu_platform.adapter")
+        _loader = getattr(_base_mod, "_load_lark_oapi", None)
+        if _loader is not None:
+            _loader()
+        adapter_obj = platform_registry.get("feishu").adapter_factory(
+            PlatformConfig(enabled=True, extra={}))
+        adapter_obj._client = fake_client
+
+        _panel.reset()
+        turn_key = "seq-turn-1"
+        chat_id = "oc_seq"
+
+        def _frame(text, *, finalize=False):
+            return asyncio.run(adapter_obj.send_stream_frame(
+                text, finalize=finalize, chat_id=chat_id, turn_id=turn_key))
+
+        # ① 首帧（seed）：等待期占位 + 流式标记 + 不是空卡
+        assert _frame(""), "黄金序列：seed 帧没建起卡"
+        assert sent and sent[0][0] == "create", sent[:1]
+        first = sent[0][1]
+        first_body = json.dumps(first, ensure_ascii=False)
+        pending = _adm._i18n.t("stream.pending") if hasattr(_adm, "_i18n") else "⏳"
+        print(f"黄金序列 ①：seed 帧卡片 {len(first_body)} 字节，含占位 = {pending in first_body}")
+        if pending not in first_body:
+            problems.append("黄金序列：seed 帧没有等待期占位（用户会看到一张近乎空白的卡）")
+        if first.get("config", {}).get("streaming_mode") is not True:
+            problems.append(f"黄金序列：seed 帧没有 streaming_mode=true：{first.get('config')!r}")
+
+        def _wait_for(pred, what, timeout=3.0):
+            """等异步 worker 把钩子数据落进面板 —— 不等就会读到「旧快照」。
+
+            推理增量走的是 Hermes 的**异步**队列（每个回调一个守护 worker），
+            所以「写完钩子立刻读」是竞态。黄金路径那节也用了同样的等待法。
+            """
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                snap = _panel.snapshot()
+                if snap and pred(snap):
+                    return True
+                time.sleep(0.02)
+            problems.append(f"黄金序列：等不到「{what}」（面板快照={_panel.snapshot()!r}）")
+            return False
+
+        # ② 第一个**正文**帧：推理已经落进面板 ⇒ 面板必须出现，且占位必须消失
+        # ⚠️ 两点必须与核心的真实行为对齐，否则这条门禁会在验一个不存在的场景：
+        #   * 核心自己就跳过「文本没变」的中间帧（`gateway/stream_consumer_transport.py`
+        #     的 `if not finalize and text == self._last_sent_text: return True`）——
+        #     所以**纯推理期间（正文还是空）根本不会有帧**，面板只能在正文开始长之后才更新。
+        #     这是核心的行为，不是我们的（README 的已知限制里写了）。
+        #   * `_STREAM_MIN_INTERVAL = 0.25s` 的节流窗口也要等过，否则中间帧被跳过不下发。
+        _stream("reasoning", "先想一下")
+        _wait_for(lambda s: (s.get("rounds") or []), "推理轮落进面板")
+        time.sleep(0.3)
+        assert _frame("半"), "黄金序列：第一个正文帧失败"
+        mid_body = json.dumps(sent[-1][1], ensure_ascii=False)
+        print(f"黄金序列 ②：正文帧含面板 = {'collapsible_panel' in mid_body}，"
+              f"含占位 = {pending in mid_body}")
+        if "collapsible_panel" not in mid_body:
+            problems.append("黄金序列：正文开始了但面板没出现（效果 4 的实时性丢了）"
+                            f"（快照={_panel.snapshot()!r}）")
+        if pending in mid_body:
+            problems.append("黄金序列：正文到了还留着等待期占位")
+
+        # ③ 正文长起来（帧内容确实变了）⇒ 面板里的推理文本要跟着长
+        time.sleep(0.3)
+        _stream("reasoning", "，再看工具")
+        _wait_for(lambda s: len(str(s.get("reasoning") or "")) > 4, "推理文本变长")
+        time.sleep(0.3)
+        assert _frame("这是答案"), "黄金序列：正文帧失败"
+        body_frame = json.dumps(sent[-1][1], ensure_ascii=False)
+        print(f"黄金序列 ③：正文帧含真答案 = {'这是答案' in body_frame}，"
+              f"含占位 = {pending in body_frame}")
+        if "这是答案" not in body_frame:
+            problems.append("黄金序列：正文帧里没有答案")
+        if pending in body_frame:
+            problems.append("黄金序列：正文到了还留着等待期占位")
+
+        # ④ 收尾帧：绿边 + 不再带占位 + streaming_mode 关闭
+        invoke_hook("on_session_end", session_id=_SESSION, task_id="t1", turn_id=_TURN,
+                    completed=True, failed=False, interrupted=False,
+                    turn_exit_reason="text_response(stop)", model="deepseek-v4-flash",
+                    platform="feishu")
+        _wait_for(lambda s: s.get("status") == "ok", "回合结局状态落进面板")
+        assert _frame("这是答案", finalize=True), "黄金序列：收尾帧失败"
+        last_kind, last = sent[-1]
+        last_body = json.dumps(last, ensure_ascii=False)
+        print(f"黄金序列 ④：收尾用 {last_kind}，绿边 = {'green' in last_body}，"
+              f"占位 = {pending in last_body}")
+        if last.get("config", {}).get("streaming_mode") is not False:
+            problems.append(f"黄金序列：收尾帧没关 streaming_mode：{last.get('config')!r}")
+        if "green" not in last_body:
+            problems.append("黄金序列：收尾帧没有绿色状态色（效果 2 丢了）")
+        if pending in last_body:
+            problems.append("黄金序列：收尾帧带着等待期占位（空答案的回合会永远停在「正在生成…」）")
+
+        # ⑤ `/stop`：同一张卡被重绘成中止色（效果 3）
+        _panel.reset()
+        sent.clear()
+        counter["n"] = 0
+        assert _frame(""), "黄金序列：/stop 场景 seed 帧失败"
+        time.sleep(0.3)
+        assert _frame("半截答案"), "黄金序列：/stop 场景正文帧失败"
+        sent.clear()
+        asyncio.run(adapter_obj.interrupt_session_activity("seq-turn-2", chat_id))
+        painted = [(k, json.dumps(p, ensure_ascii=False)) for k, p in sent]
+        print(f"黄金序列 ⑤：/stop 之后 {len(painted)} 次写入，"
+              f"含黄边 = {any('yellow' in b for _, b in painted)}")
+        if not painted:
+            problems.append("黄金序列：/stop 之后一次写入都没有（那张卡不会变色）")
+        elif not any("yellow" in b for _, b in painted):
+            problems.append("黄金序列：/stop 的重绘载荷里没有中止色")
+    except Exception as exc:  # pragma: no cover - 防御性
+        problems.append(f"黄金序列：异常 {exc!r}")
+
 if problems:
     for p in problems:
         print("FAIL:", p)

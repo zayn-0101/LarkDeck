@@ -293,6 +293,11 @@ LarkDeckFeishuAdapter → LarkDeckMixin → FeishuAdapter → BasePlatformAdapte
   （只换 native 流式帧的传输、任何一步失败都 fail-open 回落、默认仍走 patch）。
   取值超出 `[1, 2000]` 毫秒会被退回默认 15ms，并在日志里留一条限流 WARNING
   （写错配置不会静默 —— 「想要最慢」却得到「最快」是必须能查出来的）。
+- **面板的更新时机由核心决定**：Hermes 自己就跳过「文本没变」的中间帧
+  （`gateway/stream_consumer_transport.py`：`if not finalize and text == self._last_sent_text`），
+  所以**纯推理阶段（正文还是空的）根本不会有帧**，面板只能在正文开始增长之后才更新。
+  长回答前的长时间思考期间，卡片会停在「⏳ 正在生成…」+ 首帧那一刻的面板状态 ——
+  这是核心的帧策略，不是插件的取舍（我们无法凭空让核心多发帧）。
 - **状态色的可信范围**：颜色来自 `on_session_end`（每回合一次，含非流式路径）。
   `/stop` 那一帧由插件自己重绘（核心不会再有收尾帧）。若某回合连一次流式帧都没有
   （没建卡），自然也没有卡可上色 —— 那时看到的仍是官方纯文本。
