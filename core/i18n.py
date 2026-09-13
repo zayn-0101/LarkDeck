@@ -49,12 +49,43 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "stream.continued":   {ZH: "（续下一条）", EN: "(continues in the next card)"},
     # 澄清点击的**瞬时提示**（toast）：失败态与「其他」提示态都**不动卡片** ——
     # 动卡会让一次迟到的重复点击把「已确认」回退成「待答」，那是不可逆的用户可见错误。
-    "clarify.toast_failed": {ZH: "提交未生效：可能已被处理或过期，请重试",
-                             EN: "Could not submit: already handled or expired — please retry"},
-    "clarify.toast_rejected": {ZH: "这个答案没有被接受，请重试",
-                               EN: "That answer was not accepted — please retry"},
+    #
+    # ⚠️ **文案里绝不能出现「请重试」**（R8 审计中-1/低-2）：`resolve_gateway_clarify` 返回
+    # False 的条件**只有两条**（Hermes `tools/clarify_gateway.py:90-98`：entry 不存在，
+    # 或 `entry.event` 已经 set）⇒ 走到这条提示时，这条澄清**已经**被处理掉或根本不存在，
+    # 再点一次**永远不可能成功**（clarify_id 是每张卡现生成的，不会被重新登记）。
+    # 而这句话最常见的触发者是「一次迟到的重复点击」—— 那一瞬间卡片**已经**被前一次点击
+    # 换成了「已确认」，于是用户同时看到「卡片=已确认」+「toast=请重试」两条互相矛盾的信息，
+    # 合理的反应是再点一次（再吃一条同样的错话），或者把答案**用文字再发一遍** ——
+    # 后者会变成一条新的用户消息进会话，而 agent 那边其实早就收到答案了。
+    "clarify.toast_failed": {ZH: "这条澄清已被处理或已过期，无需重复点击",
+                             EN: "Already handled or expired — no need to tap again"},
+    # 「没被接受」**不能**与上面那条合并成一句（低-2）：这里只有 `REJECTED_*` 是
+    # 「换个说法/换个选项还能救回来」的中间态，所以「重试」在这里才是真话。
+    # **`NO_PENDING` 不许用这条** —— 那种情况重试永远不会成功，走 toast_no_pending。
+    "clarify.toast_rejected": {ZH: "这个答案没有被接受，请换个说法或换个选项",
+                               EN: "That answer was not accepted — try different wording or options"},
+    # NO_PENDING（澄清已消失 / 核心那侧没有解析函数）：与 toast_failed 同一个事实，
+    # 但入口不同（用户是在输入框里提交的），所以各留一条、都**不许**提「重试」。
+    "clarify.toast_no_pending": {ZH: "这条澄清已被处理或已过期，无需重复提交",
+                                 EN: "Already handled or expired — no need to submit again"},
+    # 空提交（中-2）：2.0 卡的 `input` 组件 value 里**刻意没有** `answer` 键，
+    # 于是「空着回车 / 只输空白 / 多选全取消」都落进 mode=="none" —— 以前这条分支
+    # **无 toast、无换卡**，正是本项目头号失败模式（静默）。提示必须说清「应该做什么」。
+    "clarify.toast_empty": {ZH: "没收到内容：请先选一个选项，或在输入框里输入答案",
+                            EN: "Nothing received — pick an option or type an answer first"},
+    # 老签名核心（`_card_response()` 不收卡片实参）上的**成功**那一击：不改卡，
+    # 但点击**真的生效了**，必须有反馈 —— 否则用户「点了没反应」→ 再点一次
+    # → 第二次必然 not committed → 吃一条误报。toast 不可能覆盖卡片状态，
+    # 与「失败态绝不换卡」的纪律不冲突。
+    "clarify.toast_submitted": {ZH: "已提交，卡片不会更新（当前版本不支持原地换卡）",
+                                EN: "Submitted — the card won't update (inline swap unsupported here)"},
+    # 「其他（我直接输入）」：2.0 卡上真有输入框，1.0 卡上**没有**（低-3）。
+    # 在 1.0 卡上说「请在输入框里输入」是错话，所以按方言分两条。
     "clarify.toast_typing": {ZH: "请在输入框里输入答案（或直接回复文字）",
                              EN: "Type your answer in the box (or just reply with text)"},
+    "clarify.toast_typing_text": {ZH: "请直接回复文字把你的答案告诉我",
+                                  EN: "Just reply with text to give me your answer"},
     # /larkdeck 自检卡（R9）。三条状态行由 context.status_lines() 组装；没记录写「无记录」，
     # **绝不写「正常」** —— 一个永远说「正常」的自检与一个坏掉的自检，用户分辨不出来。
     "cmd.description":    {ZH: "larkdeck 状态：版本 / 生效传输 / 钩子 / 心跳",

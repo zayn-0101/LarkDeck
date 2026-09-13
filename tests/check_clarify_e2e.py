@@ -218,10 +218,62 @@ async def scenario():
                                       input_value=None),
                             operator=NS(open_id="ou_zayn"),
                             context=NS(open_message_id="om_e2e_3", chat_id="oc_test")))
-        adapter._on_card_action_trigger(click)
+        resp_2 = adapter._on_card_action_trigger(click)
         await asyncio.sleep(0.3)
         check(cg.wait_for_response(cid3, 2.0) == "B 方案",
               "2.0 单选的 action.option 能真正解除网关阻塞（走真判据）")
+
+        # —— 判据落在 **真 SDK 类** 上（收口清单 #10）——
+        # 为什么比单测里的哑类强：`test_units.py` 用的是自造的
+        # `_fake_toast_classes()` —— 它只是两个空对象，`response.card = 卡` 这种赋值
+        # **永远成功**，所以「字段名写错」在那里看不见；而这里用的是
+        # `lark_oapi.event.callback.model.p2_card_action_trigger` 里的**真类**，
+        # 真类带 `_types` 声明，且 `digest()` 走的是 WS 客户端
+        # （`lark_oapi/ws/client.py` 的 `JSON.marshal(result)`）那条线上序列化的同一批字段
+        # —— 断言的东西与**真机上会发出去的响应体**同源（`docs/lessons.md` 推论 19
+        # 第三形态：别把「断言我自己的替身」当成「断言生产代码」）。
+        from lark_oapi.event.callback.model.p2_card_action_trigger import (
+            P2CardActionTriggerResponse as _REAL_RESP)
+        check(isinstance(resp_2, _REAL_RESP),
+              f"响应必须是真 SDK 类的实例（实得 {type(resp_2).__name__}）")
+        if isinstance(resp_2, _REAL_RESP):
+            dump_ok = digest(resp_2)
+            check(resp_2.card is not None and resp_2.toast is None,
+                  "成功那一击：响应里只有卡、没有 toast")
+            check("B 方案" in dump_ok and '"elements"' in dump_ok,
+                  f"成功响应里真的装着换上去的卡：{dump_ok[:200]}")
+            # ⚠️ 判据只能用**属性**（`resp.card is not None`），不能拿 `'"toast"' not in dump`
+            # —— 真 SDK 类会把没设过的字段一起序列化成 `"card": null` / `"toast": null`
+            # （实测：成功那一击的 dump 里既有 `"card"` 也有 `"toast"`）。这正是「真类」比
+            # 哑类强的另一面：它连**字段存在性**都如实反映，所以判据必须落在值上。
+            check('"toast": null' in dump_ok,
+                  f"成功响应里 toast 必须是**空的**（允许出现 null 键，值必须为空）：{dump_ok[:200]}")
+
+        # —— 失败态：同一个 clarify_id 再点一次 ⇒ 网关返回 False ⇒ 只有 toast、没有卡 ——
+        dup = NS(event=NS(action=NS(value=dict(opt_value), option="B 方案", options=None,
+                                    input_value=None),
+                          operator=NS(open_id="ou_zayn"),
+                          context=NS(open_message_id="om_e2e_3", chat_id="oc_test")))
+        resp_dup = adapter._on_card_action_trigger(dup)
+        check(isinstance(resp_dup, _REAL_RESP),
+              f"失败态响应也必须是真 SDK 类的实例（实得 {type(resp_dup).__name__}）")
+        if isinstance(resp_dup, _REAL_RESP):
+            dump_dup = digest(resp_dup)
+            check(resp_dup.card is None and resp_dup.toast is not None,
+                  "重复点击：响应里只有 toast、**没有卡**（有卡就是把已确认退回待答）")
+            check(getattr(resp_dup.toast, "type", None) == "error",
+                  f"失败提示应当是 error：{getattr(resp_dup.toast, 'type', None)!r}")
+            # ⚠️ 语义判据（审计中-1）：走到这条 toast 时该澄清**已经**被处理掉，
+            # 再点一次**永远不可能成功**（Hermes `clarify_gateway.py:90-98`）——
+            # 所以线上载荷里**不许**出现邀请重试的话。判据落在**序列化后的载荷**上，
+            # 与真机发出去的那一坨同源。
+            check("重试" not in dump_dup and "retry" not in dump_dup.lower(),
+                  f"线上载荷里不许邀请用户重试（这次重试永远不可能成功）：{dump_dup[:200]}")
+            check("无需重复" in dump_dup,
+                  f"线上载荷必须说明「无需重复点击」：{dump_dup[:200]}")
+            # 同一条纪律：判据落在**值**上（真类会把不设的字段序列化成 null）
+            check('"card": null' in dump_dup,
+                  f"失败响应的卡必须是**空的**（带卡就等于把已确认退回待答）：{dump_dup[:200]}")
 
         # —— 多选：官方形状是 action.options（**string[]**），答案要逗号串 ——
         cid4, skey4 = "cid-e2e-4", "sk-4"

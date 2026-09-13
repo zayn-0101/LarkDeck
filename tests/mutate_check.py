@@ -904,6 +904,52 @@ MUTATIONS = [
      '                card = self._ld_build_card(visible, streaming=True,',
      '                card = self._ld_build_card(display, streaming=True,',
      "test_units"),
+    # ---- R8 对抗审计（第十二路）收口新增：每条都对应一条**曾经零判别力**的声明 --- #
+    # 为什么这八条值得单列：审计自造变异实测它们**撤掉后四门禁全绿** —— 也就是说
+    # 代码里那几行「声明了纪律」的语句，当时一条门禁都没看着（`docs/lessons.md` 推论 6）。
+    ("R8-7-撤掉未授权用户的拦截（群里任何人都能替你答澄清）", "core/adapter.py",
+     '        if not self._is_interactive_operator_authorized(open_id):',
+     '        if False:',
+     "test_units"),
+    ("R8-8-空提交（mode=none）重回完全静默（本项目头号失败模式）", "core/adapter.py",
+     '            return self._ld_toast_or_noop(kind="error", text_key="clarify.toast_empty")',
+     '            return self._ld_card_response_safe()',
+     "test_units"),
+    ("R8-9-失败提示不再优先于「其他」提示（失效的澄清也叫用户去打字）", "core/adapter.py",
+     '        if not committed:\n            logger.warning("[larkdeck] 澄清提交未生效',
+     '        if not committed and not is_other:\n            logger.warning("[larkdeck] 澄清提交未生效',
+     "test_units"),
+    ("R8-10-撤掉内联换卡调用点的异常兜底（异常穿透 ⇒ 交回内置 ⇒ 载荷被打进会话）",
+     "core/adapter.py",
+     '                    return build(card_data)\n                except Exception as exc:',
+     '                    return build(card_data)\n                except ():',
+     "test_units"),
+    ("R8-11-NO_PENDING 与 REJECTED_* 不再分流（对已消失的澄清说「请重试」）",
+     "core/adapter.py",
+     '                    text_key="clarify.toast_no_pending"\n'
+     '                    if outcome == _compat.CLARIFY_TEXT_NO_PENDING\n'
+     '                    else "clarify.toast_rejected")',
+     '                    text_key="clarify.toast_rejected")',
+     "test_units"),
+    ("R8-12-「其他」提示退回硬编码的 2.0 文案（1.0 卡上提一个不存在的输入框）",
+     "core/adapter.py",
+     '            return self._ld_toast_or_noop(kind="info", text_key=self._ld_typing_text_key())',
+     '            return self._ld_toast_or_noop(kind="info", text_key="clarify.toast_typing")',
+     "test_units"),
+    ("R8-13-退化路径（无法内联换卡）重回完全静默（用户点了没反应 ⇒ 再点吃误报）",
+     "core/adapter.py",
+     '        response = self._ld_toast_response(kind="success", text_key="clarify.toast_submitted")\n'
+     '        if response is not None:\n'
+     '            return response\n',
+     '        response = None\n',
+     "test_units"),
+    ("R8-14-失败 toast 又变成「请重试」（再点一次永远不可能成功，与卡片现状自相矛盾）",
+     "core/i18n.py",
+     '    "clarify.toast_failed": {ZH: "这条澄清已被处理或已过期，无需重复点击",\n'
+     '                             EN: "Already handled or expired — no need to tap again"},',
+     '    "clarify.toast_failed": {ZH: "提交未生效：可能已被处理或过期，请重试",\n'
+     '                             EN: "Could not submit: already handled or expired — please retry"},',
+     "test_units"),
 ]
 
 
@@ -985,7 +1031,17 @@ _FAIL_MARKERS = {
     "test_units.py": ("AssertionError", "FAIL  ", "ERROR "),
     "check_override.py": ("FAIL: ",),
     "check_hooks.py": ("FAIL: ",),
-    "check_clarify_e2e.py": ("FAIL: ",),
+    # ⚠️ 这个门禁**不打** `FAIL: `（带冒号）：它 `check()` 里的逐条失败是 `FAIL  `（两个空格，
+    # `check_clarify_e2e.py` 的 check 函数）加上收尾的 `FAILED: N 项 -> …`。
+    # 第十二路审计（R8）实测：原来这里配的是 `("FAIL: ",)` ⇒ **永远匹配不上** ⇒
+    # 这个门禁的**任何断言失败都被 `_classify` 算成 `red-crash`**。三个后果：
+    # ① 不会造成假绿（green 要求看到 `CLARIFY E2E OK` 且退出码 0）；
+    # ② 报告里的「断言红」列对这条门禁**恒为空**，按这一列做归因会一直错；
+    # ③ 当某个变异**只有这个门禁抓得住**时，`main()` 走 `elif not evidence:` ⇒ 退出码 1，
+    #    人会去找一个不存在的问题。
+    # 实测复现（变异 `R8-1`，它只被这个门禁抓住）：改标记之前那一行是
+    # `💥 只有崩溃 …算判别力证据`，改之后是 `🔴 断言失败 … 断言红=['check_clarify_e2e.py']`。
+    "check_clarify_e2e.py": ("FAIL  ", "FAILED:"),
 }
 
 

@@ -2529,10 +2529,48 @@ class LarkDeckMixin:
                 except Exception as exc:
                     # 兜一层：签名探测说是「能收」，实际却抛了（装饰器 / 内部 TypeError）。
                     # 不把这次点击变成错误，退回「不改卡」的无参响应。
+                    #
+                    # ⚠️ **这一层不许删**（R8 审计中-5：撤掉它四门禁全绿）。异常穿透的代价
+                    # **不是**「什么都没发生」：它会一路冒到 `_on_card_action_trigger` 的外层
+                    # `except`，于是走 `_ld_passthrough_click` → **内置实现**；而内置对不认识的
+                    # value 的做法是把它当成一条合成命令 `"/card button {…载荷…}"`
+                    # **发进会话**（Hermes `plugins/platforms/feishu/adapter.py:2083` /
+                    # `2340-2355`），卡片还不换 —— 用户会在聊天里看到自己的点击载荷原文，
+                    # 而看到的内容与「不改卡但点击生效」是两件完全不同的事。
+                    # `test_clarify_inline_swap_fallback_never_returns_to_builtin` 钉这条。
                     logger.warning("[larkdeck] 内联换卡失败，退回无卡片变更: %s", exc)
-                    return self._ld_card_response_safe()
+                    return self._ld_response_without_card(build)
             logger.warning("[larkdeck] 内置 _card_response 不接受卡片实参 ⇒ 本次点击不换卡"
                            "（点击本身已生效，只是卡片没重绘）")
+            return self._ld_response_without_card(build)
+        try:
+            return build()
+        except Exception as exc:
+            logger.debug("[larkdeck] _card_response 失败: %s", exc, exc_info=True)
+            return None
+
+    def _ld_response_without_card(self, build: Any) -> Any:
+        """**无法内联换卡**时的响应：不改卡，但补一条「已提交」toast。
+
+        走到这里的两种情况（都在**提交已经成功**之后）：
+          * 核心那侧的 ``_card_response`` 不收卡片实参（老签名，审计低-1 实测的形态）；
+          * 探测说「能收」、真调用却抛了（装饰器 / 内部错误，审计中-5 那层兜底）。
+
+        两种情况下用户的处境一样：**答案已经送达 agent**，但卡片不会重绘。而以前这条路上
+        是「卡片不动 + 无 toast + 只有一行 WARNING」—— 用户看到的是**点了没反应**，
+        于是他会再点一次，而第二次必然 ``not committed`` ⇒ 吃一条**误报**的失败提示
+        （答案早就交上去了）。
+
+        为什么可以「不换卡却说话」：toast **不可能**覆盖卡片状态，所以它与
+        「失败态绝不换卡」那条纪律不冲突（那条防的是「换卡把已确认退回待答」）。
+        拿不到 toast 类（老 SDK）时退回不带卡的原响应 —— 与改前行为一致，**绝不抛**。
+
+        `build` 由调用方传入（就是 ``self._card_response`` 本身），本函数**不再自己探测签名**，
+        免得两条判据分叉。
+        """
+        response = self._ld_toast_response(kind="success", text_key="clarify.toast_submitted")
+        if response is not None:
+            return response
         try:
             return build()
         except Exception as exc:
@@ -2623,6 +2661,21 @@ class LarkDeckMixin:
                                             user_name=user_name)
 
     @staticmethod
+    def _ld_typing_text_key() -> str:
+        """「其他（我直接输入）」的提示文案按**当前方言**选（审计低-3）。
+
+        1.0 澄清卡（``cards._clarify_elements``）只有按钮 + 一个「其他（我直接输入）」按钮，
+        **根本没有输入框** —— 在那里说「请在输入框里输入答案」是错话（用户会去找一个不存在的东西）。
+        2.0 卡有 ``input`` 组件，那条文案才成立。
+
+        判据与 `_ld_build_clarify_card` / `_ld_build_resolved_card` 同源（都读
+        ``clarify_dialect``，认不出的值按 1.0 处理）—— 三处各写一份字面量就会分叉，
+        所以这里也照抄那条规则，并有单测同时钉两种方言。
+        """
+        dialect = str(_cfg_raw("clarify_dialect") or "1.0").strip()
+        return "clarify.toast_typing" if dialect == "2.0" else "clarify.toast_typing_text"
+
+    @staticmethod
     def _ld_clarify_answer(action: Any, value: Dict[str, Any]) -> "tuple[Any, str]":
         """从点击载荷里取出答案 —— 返回 ``(answer, mode)``，``mode`` ∈
         ``{"choice", "multi", "text", "none"}``。
@@ -2682,8 +2735,23 @@ class LarkDeckMixin:
             return self._ld_card_response_safe()
         answer, mode = self._ld_clarify_answer(action, value)
         if mode == "none":
-            logger.warning("[larkdeck] 澄清点击里既没有 answer 也没有 option/input_value，忽略")
-            return self._ld_card_response_safe()
+            # ⚠️ **以前这里是完全静默的**（R8 审计中-2，本项目头号失败模式）。
+            #
+            # 这条分支在**默认方言（2.0）**上就有三条入口 —— 2.0 的 `input` 组件
+            # `behaviors.value` 里**刻意没有** `answer` 键（模式由载荷推导，
+            # 见 `cards.clarify_card_2`），所以：
+            #   ① 输入框空着回车（`input_value=''`）；② 只输了空白（`'   '`）；
+            #   ③ 多选把勾选**全部取消**再提交（`options=[]`；
+            #      而 `options=["A"]` 走 multi、`options=[]` 落这里 —— 代码可判，无需真机）。
+            # 三种情况下用户屏幕上一个像素都不动，而本项目为另外三条路径都加了提示。
+            logger.warning("[larkdeck] 澄清点击里既没有 answer 也没有 option/input_value"
+                           "（空提交）—— 回一条提示，不再静默")
+            # ⚠️ **留白（R8 审计明确留下的）**：「空输入框按回车、客户端到底发不发
+            # `card.action.trigger`」这半边**只有真机能答** —— 飞书可能根本不发回调
+            # （那这条就是死代码，属低而非中），也可能发一个 `input_value=''` 的回调。
+            # **我没有验证过**，这里也**不假装**验证过；写下来的理由是「收到一个解析不出来的
+            # 空点击 ⇒ 回一条提示」在任何一种可能下都不会比静默更糟。
+            return self._ld_toast_or_noop(kind="error", text_key="clarify.toast_empty")
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
@@ -2717,11 +2785,22 @@ class LarkDeckMixin:
             outcome = _compat.clarify_text_answer(clarify_id, str(answer))
             if outcome != _compat.CLARIFY_TEXT_RESOLVED:
                 logger.warning("[larkdeck] 澄清输入框的内容没有被接受（%s · session=%s）"
-                               "—— 卡片保持原样，用户可重试", outcome, session_key[:8])
+                               "—— 卡片保持原样（%s）", outcome, session_key[:8],
+                               "该澄清已消失" if outcome == _compat.CLARIFY_TEXT_NO_PENDING
+                               else "用户可换个说法重试")
                 # 卡片**保持原样**（用户还要在上面改答案重试），只弹一条提示让他知道
                 # 「东西收到了但没生效」—— 静默不动会让人以为点了没反应。
-                return self._ld_toast_or_noop(kind="error",
-                                              text_key="clarify.toast_rejected")
+                #
+                # ⚠️ **按判定分流，不能塌缩成一句**（审计低-2）：四种判定里只有
+                # `REJECTED_*` 是「换个说法/换个选项就能救回来」的；`NO_PENDING` 表示这条
+                # 澄清**已经没了**（`compat.py` 的 entry is None / event 已 set），
+                # 对它说「请重试」是**错话** —— 重试永远不会成功。判据本身在 compat 里
+                # 有唯一来源（`CLARIFY_TEXT_NO_PENDING`），这里只做二选一，不猜。
+                return self._ld_toast_or_noop(
+                    kind="error",
+                    text_key="clarify.toast_no_pending"
+                    if outcome == _compat.CLARIFY_TEXT_NO_PENDING
+                    else "clarify.toast_rejected")
             user_name = self._get_cached_sender_name(open_id) or open_id or "?"
             return self._ld_card_response_safe(
                 self._ld_build_resolved_card(question=question, answer=answer,
@@ -2744,18 +2823,26 @@ class LarkDeckMixin:
             committed = False
 
         if not committed:
-            logger.warning("[larkdeck] 澄清提交未生效（clarify=%s）—— 该澄清可能已被处理或过期；"
-                           "卡片保持原样，用户仍可重试", clarify_id)
+            logger.warning("[larkdeck] 澄清提交未生效（clarify=%s）—— 该澄清已被处理或已过期；"
+                           "卡片保持原样，无需重复点击", clarify_id)
             # ⚠️ **只能弹 toast、绝不能换卡**：这一条最常见的触发者是「一次迟到的重复点击」
             # （用户点了两下 / 网络重放）。那一瞬间卡片可能已经被前一次点击换成了「已确认」，
             # 若这里回一张「待答 + 失败提示」，用户就会看到自己确认过的卡被退回待答 ——
             # 而答案其实早已送达 agent。toast 既能告知失败，又不可能覆盖卡片状态。
+            #
+            # ⚠️⚠️ **这一支必须排在下面的 `if is_other:` 之前**（R8 审计中-3：把条件改成
+            # `if not committed and not is_other:` 四门禁全绿）。反过来之后，组合是
+            # **「提示说错话」**：点「其他」而这澄清已失效 ⇒ 用户被告知「去输入框打字」，
+            # 于是他打字 —— 而网关注册表里已经没有这条澄清，`clarify_text_answer` 会返回
+            # `NO_PENDING`，他的文字会变成一条**普通聊天消息**（更坏的是：他以为自己答上了）。
+            # 判据是「用户被告知的是**失败**还是**去打字**」，由
+            # `test_clarify_failed_priority_beats_other_hint` 钉住（载荷：is_other 且 commit=False）。
             return self._ld_toast_or_noop(kind="error", text_key="clarify.toast_failed")
 
         if is_other:
             # 「其他」不提交答案，只把该澄清切成等待文字输入 —— 卡片保持不变（用户要在
-            # 卡片上继续输入），用 toast 告诉他下一步做什么。
-            return self._ld_toast_or_noop(kind="info", text_key="clarify.toast_typing")
+            # 卡片上继续输入），用 toast 告诉他下一步做什么。文案按方言选（1.0 卡没有输入框）。
+            return self._ld_toast_or_noop(kind="info", text_key=self._ld_typing_text_key())
 
         user_name = self._get_cached_sender_name(open_id) or open_id or "?"
         # 回填卡必须与待答卡同方言，否则飞书会**静默丢弃**这一帧（HFC 踩过）

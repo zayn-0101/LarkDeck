@@ -72,7 +72,10 @@ class StubAdapter:
         self._client = _FakeClient()
         self._fail_cards = bool(getattr(config, "fail_cards", fail_cards))
         self.calls: list = []
-        self.submitted: list = []
+        # ⚠️ 这里**有意不再预置**一个 `submitted` 列表：它原来只被初始化、没有任何写入点，
+        # 于是「未授权用户的点击不得触发澄清解析」那条断言**恒真**（R8 审计中-4 实测：
+        # 把鉴权拦截删掉四门禁全绿）。观测点现在由 `_fake_clarify_gateway(..., record=[...])`
+        # 在**提交真的被发起**时写入 —— 恒真的空列表不算证据（`docs/lessons.md` 推论 8）。
         self.card_updates: list = []
         self._loop = object()
 
@@ -128,24 +131,37 @@ class StubAdapter:
         return {"card": card} if card else {"toast": "ok"}
 
 
-def _fake_clarify_gateway(resolved: list, *, commit: bool = True):
+def _fake_clarify_gateway(resolved: list, *, commit: bool = True,
+                          record: Any = None):
     """装一个假的 ``tools.clarify_gateway``。
 
     ``commit=False`` 模拟网关**拒绝**这次提交（重复点击 / 该澄清已被超时或文字回答
     消费掉）—— 真实实现就是返回 bool 的这个语义，见 Hermes
     ``tools/clarify_gateway.py`` 的 ``resolve_gateway_clarify``。
+
+    ``record``（可选）是一个 list：**每一次「提交被发起」都往里记一条**。
+    ⚠️ 这个参数是 R8 审计中-4 的直接产物：原来「未授权用户的点击不得触发澄清解析」
+    那条断言盯的是 ``StubAdapter.submitted``，而全仓**只有初始化、没有任何写入点**
+    ⇒ 那条断言**恒真**，把鉴权拦截删掉四门禁全绿（`docs/lessons.md` 推论 8 的
+    「空集 = 一切正常」型）。现在观测点真的会记录，断言才有判别力。
     """
     fake_tools = types.ModuleType("tools")
     fake_cg = types.ModuleType("tools.clarify_gateway")
     fake_cg._lock = threading.Lock()
     fake_cg._entries = {}
 
+    def _note(cid, what):
+        if isinstance(record, list):
+            record.append((cid, what))
+
     def _resolve(cid, resp):
         resolved.append((cid, resp))
+        _note(cid, resp)
         return commit
 
     def _awaiting(cid):
         resolved.append((cid, "__await_text__"))
+        _note(cid, "__await_text__")
         return commit
 
     fake_cg.resolve_gateway_clarify = _resolve
@@ -2667,15 +2683,37 @@ def test_clarify_click_that_did_not_commit_must_not_refill_card():
 
 
 def test_clarify_click_from_unauthorized_user_is_ignored():
+    """未授权用户的点击**不得**走到澄清解析（这是「群里谁能替你答」的唯一一道门）。
+
+    判别力（R8 审计中-4）：这条原来是 `assert raw.submitted == []`，而
+    `StubAdapter.submitted` 全仓**只有初始化、没有任何写入点** ⇒ 断言恒真、把鉴权拦截
+    那四行删掉四门禁全绿。现在两处都补成**真的会记录**的观测点：
+      * `_fake_clarify_gateway(..., record=submitted)` —— 网关只要被**发起过**提交就记一条；
+      * `raw.card_updates` / `raw.calls` —— 换卡与「交回内置」的痕迹。
+    为什么这道门值钱：默认配置下官方的 `_is_interactive_operator_authorized` 在
+    `_admins | _allowed_group_users` **为空时恒返回 True**（Hermes
+    `plugins/platforms/feishu/adapter.py:2103-2111`）⇒ 没有白名单时「谁能点澄清卡」
+    **全靠这一句**；一旦被重构挪走，群里任何人都能替用户把澄清答掉。
+    """
     raw = _make()
-    data = types.SimpleNamespace(
-        event=types.SimpleNamespace(
-            action=types.SimpleNamespace(value={
-                "larkdeck_action": "clarify", "clarify_id": "cid-4", "answer": "A"}),
-            operator=types.SimpleNamespace(open_id="ou_intruder")),
-    )
-    raw._on_card_action_trigger(data)
-    assert raw.submitted == [], "未授权用户的点击不得触发澄清解析"
+    resolved: list = []
+    submitted: list = []
+    _fake_clarify_gateway(resolved, record=submitted)
+    try:
+        data = types.SimpleNamespace(
+            event=types.SimpleNamespace(
+                action=types.SimpleNamespace(value={
+                    "larkdeck_action": "clarify", "clarify_id": "cid-4", "answer": "A"}),
+                operator=types.SimpleNamespace(open_id="ou_intruder")),
+        )
+        raw._on_card_action_trigger(data)
+    finally:
+        _drop_fake_clarify_gateway()
+    assert submitted == [], f"未授权用户的点击不得触发澄清解析：{submitted!r}"
+    assert resolved == [], f"网关上不许有任何提交痕迹：{resolved!r}"
+    assert all(card is None for card in raw.card_updates), \
+        f"未授权的点击不许换卡：{raw.card_updates!r}"
+    assert raw.calls == [], f"更不许交回内置实现：{raw.calls!r}"
 
 
 # --------------------------------------------------------------------------- #
@@ -5931,7 +5969,13 @@ def test_clarify_other_toasts_and_keeps_the_card():
 
 
 def test_clarify_rejected_text_toasts_and_keeps_the_card():
-    """输入框里的内容没被接受（NO_PENDING 等）⇒ 卡片保持原样 + 一条 error toast。"""
+    """输入框里的内容没被接受 ⇒ 卡片保持原样 + 一条 error toast。
+
+    ⚠️ 这里钉的是 **`NO_PENDING`** 那条判定（下面的假网关注册表是空的 ⇒ 解析必返
+    `NO_PENDING`），所以文案必须是「已处理或已过期」那条 —— **不许是「请重试」**
+    （R8 审计低-2：这条澄清已经没了，重试永远不会成功）。
+    `REJECTED_*` 那条判定由图底部的 `test_clarify_rejected_selection_asks_for_a_retry` 钉。
+    """
     raw = _make()
     box: list = []
     _inject_toast_classes(raw, box)
@@ -5944,8 +5988,206 @@ def test_clarify_rejected_text_toasts_and_keeps_the_card():
         assert all(card is None for card in raw.card_updates), "没被接受就不能回填「已答复」卡"
         assert box and box[-1].toast is not None, "要给出提示"
         assert box[-1].toast.type == "error", box[-1].toast.type
-        assert box[-1].toast.content == i18n.t("clarify.toast_rejected"), box[-1].toast.content
+        assert box[-1].toast.content == i18n.t("clarify.toast_no_pending"), box[-1].toast.content
+        # 判据落在**语义**上，不只落在「等于某个字符串」上（中-1 的同一课）：
+        # NO_PENDING 的正确说法里不许出现「重试」这种不可能的邀请。
+        assert "重试" not in box[-1].toast.content, \
+            f"这条澄清已经没了，重试永远不会成功，不许邀请用户重试：{box[-1].toast.content!r}"
+        assert "无需重复" in box[-1].toast.content, box[-1].toast.content
     finally:
+        _drop_fake_clarify_gateway()
+
+
+def test_clarify_rejected_selection_asks_for_a_retry():
+    """`REJECTED_SELECTION`（选项题收到一个对不上的答案）⇒ 这才是**可以重试**的那一种。
+
+    与上面那条成对：低-2 要求的正是「4 种判定不许塌缩成一句」——
+    `REJECTED_*` 换个说法/选项就能救回来，`NO_PENDING` 不能。
+    """
+    raw = _make()
+    box: list = []
+    _inject_toast_classes(raw, box)
+    # 真网关的 `resolve_gateway_clarify`，但**不带**解析函数 ⇒ clarify_text_answer 先
+    # 返回 NO_PENDING。要拿到 REJECTED_SELECTION，得让核心的解析器说「无效选择」。
+    fake_tools, fake_cg = _fake_clarify_gateway([])
+    fake_cg._entries = {"cid-r8": types.SimpleNamespace(event=threading.Event())}
+
+    def _coerce(entry, body):
+        return None, "invalid_selection"
+
+    fake_cg._coerce_text_response_detailed = _coerce
+    try:
+        data = _clarify_click_data()
+        data.event.action.tag = "input"
+        data.event.action.input_value = "Z 方案"
+        raw._on_card_action_trigger(data)
+        assert box and box[-1].toast is not None, "要给出提示"
+        assert box[-1].toast.type == "error", box[-1].toast.type
+        assert box[-1].toast.content == i18n.t("clarify.toast_rejected"), box[-1].toast.content
+        assert "重试" in box[-1].toast.content or "换" in box[-1].toast.content, \
+            f"这一种是能救回来的，应当让用户换个说法/选项：{box[-1].toast.content!r}"
+        assert box[-1].toast.content != i18n.t("clarify.toast_no_pending"), \
+            "两种判定不许塌缩成一句（低-2）"
+    finally:
+        _drop_fake_clarify_gateway()
+
+
+def test_clarify_failed_toast_never_invites_an_impossible_retry():
+    """失败 toast 的**语义**判据：它不许邀请用户做一件不可能成功的事（R8 审计中-1）。
+
+    事实（Hermes ``tools/clarify_gateway.py:90-98``）：``resolve_gateway_clarify`` 返回
+    ``False`` 的条件**只有两条** —— entry 不存在，或 ``entry.event.is_set()`` 已经解开。
+    也就是说走到这条提示时，这条澄清**已经**被处理掉或根本不存在，**再点一次永远不可能成功**
+    （clarify_id 是每张卡现生成的，不会被重新登记）。
+
+    而这句话最常见的触发者是「一次迟到的重复点击」：那一瞬间卡片**已经**被前一次点击换成
+    「已确认」，于是用户同时看到「卡片 = 已确认」+「toast = 请重试」两条互相矛盾的信息，
+    合理的反应是再点一次（再吃一条同样的错话），或者把答案**用文字再发一遍** ——
+    后者会变成一条新的用户消息进会话，而 agent 那边其实早就收到答案了。
+
+    ⚠️ **为什么断言不写成 `== i18n.t("clarify.toast_failed")`**：那种写法对**文案内容**
+    一句话都不说 —— 把文案改回「请重试」它照样绿（那正是这条发现的成因）。
+    所以这里的判据是**语义的**：① 不许出现「重试」；② 必须说「无需重复」；
+    ③ 英文同理（两种语言都要过，因为客户端按语言挑一份）。
+    """
+    raw = _make()
+    box: list = []
+    _inject_toast_classes(raw, box)
+    _fake_clarify_gateway([], commit=False)
+    try:
+        raw._on_card_action_trigger(_clarify_click_data())
+        assert box and box[-1].toast is not None, "失败必须留下提示"
+        toast = box[-1].toast
+        zh = toast.i18n.get("zh_cn") or ""
+        en = toast.i18n.get("en_us") or ""
+        assert "重试" not in zh, f"再点一次永远不可能成功，不许邀请重试：{zh!r}"
+        assert "retry" not in en.lower(), f"英文同理不许邀请重试：{en!r}"
+        assert "无需重复" in zh, f"必须明确告诉用户不必重复点击：{zh!r}"
+        assert "no need to" in en.lower(), f"英文同理：{en!r}"
+        # 中英两段都必须与 content 一致（客户端可能只认其中一份）
+        assert toast.content in (zh, en), toast.content
+    finally:
+        _drop_fake_clarify_gateway()
+
+
+def test_clarify_failed_priority_beats_other_hint():
+    """「提交未生效」必须**优先于**「其他（我直接输入）」提示（R8 审计中-3）。
+
+    载荷刻意构造成「`is_other` **且** `committed=False`」—— 把
+    ``if not committed:`` 与 ``if is_other:`` 的先后换过来（例如
+    ``if not committed and not is_other:``）四门禁曾经全绿。
+
+    代价是**提示说错话**：点「其他」而这条澄清已失效 ⇒ 用户被告知「去输入框打字」，
+    于是他打字 —— 而网关注册表里已经没有这条澄清，``clarify_text_answer`` 会返回
+    ``NO_PENDING``，他打的字会变成一条**普通聊天消息**（更坏的是：他以为自己答上了）。
+    所以判据是「用户被告知的是**失败**，而不是**去打字**」。
+    """
+    raw = _make()
+    box: list = []
+    _inject_toast_classes(raw, box)
+    _fake_clarify_gateway([], commit=False)
+    try:
+        raw._on_card_action_trigger(_clarify_click_data(answer=cards.OTHER_VALUE))
+        assert box and box[-1].toast is not None, "要给出提示"
+        toast = box[-1].toast
+        assert toast.type == "error", f"这是失败态，不该是 {toast.type!r}"
+        assert toast.content == i18n.t("clarify.toast_failed"), \
+            f"失效的澄清上点「其他」是在提交（不是等待打字），必须报失败：{toast.content!r}"
+        assert toast.content != i18n.t("clarify.toast_typing"), "不许让用户去打字（打了也白打）"
+        assert "输入框" not in toast.content, \
+            f"骗用户去打字等于把他的答案变成一条普通聊天消息：{toast.content!r}"
+        assert all(card is None for card in raw.card_updates), "失败态不许换卡"
+    finally:
+        _drop_fake_clarify_gateway()
+
+
+def test_clarify_empty_submit_no_longer_silent():
+    """空提交（``mode == "none"``）**不许静默**（R8 审计中-2）。
+
+    2.0 卡的 ``input`` 组件 ``behaviors.value`` 里**刻意没有** ``answer`` 键（模式由载荷
+    推导，见 ``cards.clarify_card_2``），所以三条入口都落进 ``mode == "none"``：
+      ① 输入框空着回车（``input_value=''``）；② 只输空白（``'   '``）；
+      ③ 多选把勾选**全部取消**再提交（``options=[]`` —— 而 ``options=['A']`` 走 multi，
+         所以「空/非空」这个判据**代码可判**，不需要真机）。
+    以前这一支是 ``_ld_card_response_safe()``：**无 toast、无换卡**，用户屏幕上一个像素
+    都不动 —— 本项目头号失败模式（静默），而且落在**默认方言（2.0）**上。
+
+    ⚠️ **留白（审计明确留下的，我没能核实）**：「空输入框按回车，飞书客户端到底发不发
+    ``card.action.trigger``」这半边**只有真机能答**。若客户端**不发**回调，这条分支就是
+    死代码（属低而非中）；若发一个 ``input_value=''`` 的回调，它就是真缺口。本用例证明的
+    只是「**收到**一个解析不出来的空点击时我们不再静默」，**不证明**它在真机上会被触达。
+    """
+    raw = _make()
+    box: list = []
+    _inject_toast_classes(raw, box)
+    resolved: list = []
+    _fake_clarify_gateway(resolved)
+    try:
+        # ① 输入框空着回车 / ② 只输空白：三种取值字段全空，value 里也没有 answer
+        for label, action in (
+            ("input 空着回车", types.SimpleNamespace(
+                value={"larkdeck_action": "clarify", "clarify_id": "cid-r8",
+                       "session_key": "sk-1", "question": "选哪个？"},
+                option=None, options=None, input_value="")),
+            ("input 只有空白", types.SimpleNamespace(
+                value={"larkdeck_action": "clarify", "clarify_id": "cid-r8",
+                       "session_key": "sk-1", "question": "选哪个？"},
+                option=None, options=None, input_value="   ")),
+            # ③ 多选把勾选全部取消：官方形状是 action.options（复数），空列表
+            ("多选全取消 options=[]", types.SimpleNamespace(
+                value={"larkdeck_action": "clarify", "clarify_id": "cid-r8",
+                       "session_key": "sk-1", "question": "选哪些？"},
+                option=None, options=[], input_value=None)),
+        ):
+            before = len(box)
+            out = raw._on_card_action_trigger(types.SimpleNamespace(
+                event=types.SimpleNamespace(
+                    action=action, operator=types.SimpleNamespace(open_id="ou_ok"))))
+            assert len(box) > before, f"{label}：必须留下提示，不许静默"
+            assert box[-1].toast is not None, f"{label}：要弹 toast"
+            assert box[-1].toast.type == "error", f"{label}：{box[-1].toast.type!r}"
+            assert box[-1].toast.content == i18n.t("clarify.toast_empty"), \
+                f"{label}：{box[-1].toast.content!r}"
+            assert out is not None and out != "SUPER_RESULT", \
+                f"{label}：必须是我们自己的响应（交回内置会把载荷打进会话）"
+        assert resolved == [], f"空答案**绝不提交**（提交空串会污染澄清）：{resolved!r}"
+        assert all(card is None for card in raw.card_updates), "空提交不许换卡"
+    finally:
+        _drop_fake_clarify_gateway()
+
+
+def test_clarify_other_hint_matches_the_dialect():
+    """「其他」提示按方言选文案：1.0 卡上**没有输入框**，不许提「输入框」（R8 审计低-3）。
+
+    1.0 澄清卡（``cards._clarify_elements``）只有按钮 + 一个「其他（我直接输入）」按钮；
+    2.0 卡才有 ``input`` 组件。在 1.0 卡上说「请在输入框里输入答案」是错的 ——
+    用户会去屏幕上找一个不存在的东西。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    raw = _make()
+    box: list = []
+    _inject_toast_classes(raw, box)
+    _fake_clarify_gateway([])
+    try:
+        for dialect, must_have, must_not in (
+            ("2.0", "输入框", None),
+            ("1.0", "回复文字", "输入框"),
+        ):
+            adapter._CONFIG["clarify_dialect"] = dialect
+            before = len(box)
+            raw._on_card_action_trigger(_clarify_click_data(answer=cards.OTHER_VALUE))
+            assert len(box) > before, f"{dialect}：要给出提示"
+            text = box[-1].toast.content
+            assert must_have in text, f"{dialect} 方言的提示文案不对：{text!r}"
+            if must_not:
+                assert must_not not in text, \
+                    f"{dialect} 卡上根本没有输入框，不许提它：{text!r}"
+        # 两种方言的文案必须真的不同，否则「按方言选」等于没做
+        assert len({b.toast.content for b in box}) == 2, \
+            f"两种方言给出了同一句话（等于没分流）：{[b.toast.content for b in box]!r}"
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
         _drop_fake_clarify_gateway()
 
 
@@ -5976,8 +6218,16 @@ def test_inline_swap_degrades_when_core_cannot_take_a_card():
     在**行为上等价**（都退回无参调用），差别在**是谁做的决定** —— 靠 TypeError 分诊会把
     「卡片构造里冒出来的 TypeError」误读成「核心不认识这个实参」，于是诊断信息撒谎。
     所以这里钉的是**走了哪条机制**，不是返回了什么。
+
+    ⚠️ **而且这条路上必须留下用户可见的反馈**（R8 审计低-1）：退化本身是对的，但用户看到的是
+    「点了没反应」→ 他会再点一次 → 第二次必然 `not committed` → 吃一条**误报**的失败提示
+    （答案早就交上去了）。所以退化时补一条 success toast；这里把 toast 类**注入成哑类**，
+    好让判据与「这台机器上有没有 `lark_oapi`」无关（本仓库门禁跑在 Hermes venv 里、有 SDK，
+    而系统解释器上没有 —— 依赖它的断言会在两种环境下给出不同结论）。
     """
     raw = _make()
+    box: list = []
+    _inject_toast_classes(raw, box)
     raw._card_response = lambda: {"toast": "ok"}      # 模拟另一个版本的核心签名
     resolved: list = []
     _fake_clarify_gateway(resolved)
@@ -5985,9 +6235,85 @@ def test_inline_swap_degrades_when_core_cannot_take_a_card():
         with _LogCapture("larkdeck") as records:
             out = raw._on_card_action_trigger(_clarify_click_data())
         assert resolved == [("cid-r8", "B 方案")], "答案照样要提交（不能因为不换卡就不解析）"
-        assert out == {"toast": "ok"}, f"必须退回无参调用：{out!r}"
+        assert out is not None and out != "SUPER_RESULT", \
+            f"必须是我们自己的响应（不许交回内置）：{out!r}"
         text = "\n".join(r.getMessage() for r in records)
-        assert "不接受卡片实参" in text,             f"必须先探测签名、再决定带不带卡调用（不许靠 TypeError 分诊）：{text!r}"
+        assert "不接受卡片实参" in text, \
+            f"必须先探测签名、再决定带不带卡调用（不许靠 TypeError 分诊）：{text!r}"
+        # 用户可见的反馈：成功也必须说话，否则「点了没反应」
+        assert box and box[-1].toast is not None, \
+            "退化路径上的**成功**点击也要有反馈（不然用户会再点一次并吃一条误报）"
+        assert box[-1].toast.type == "success", box[-1].toast.type
+        assert box[-1].toast.content == i18n.t("clarify.toast_submitted"), box[-1].toast.content
+        assert all(card is None for card in raw.card_updates), \
+            f"退化时不许换卡：{raw.card_updates!r}"
+    finally:
+        _drop_fake_clarify_gateway()
+
+
+def test_inline_swap_degrade_still_answers_without_toast_class():
+    """退化路径 + **拿不到 toast 类**（系统解释器没有 ``lark_oapi``）⇒ 仍退回无参调用。
+
+    这条是 `R8-5` 的对偶：`_ld_toast_or_noop` 有能力缺了就退，退化路径也必须一样 ——
+    而且**绝不能**因为「想弹 toast 弹不出来」就把这次点击交回内置（那会变成一条合成命令）。
+    """
+    raw = _make()
+    raw._ld_toast_classes = lambda: (None, None)
+    raw._card_response = lambda: {"toast": "ok"}
+    resolved: list = []
+    _fake_clarify_gateway(resolved)
+    try:
+        out = raw._on_card_action_trigger(_clarify_click_data())
+        assert resolved == [("cid-r8", "B 方案")], "答案照样要提交"
+        assert out is not None and out != "SUPER_RESULT", f"必须是我们自己的响应：{out!r}"
+        assert out == {"toast": "ok"}, f"没有 toast 类时退回无参调用：{out!r}"
+        assert raw.calls == [], f"不许交回内置：{raw.calls!r}"
+    finally:
+        _drop_fake_clarify_gateway()
+
+
+def test_clarify_inline_swap_fallback_never_returns_to_builtin():
+    """探测说「能收」但真调用抛了 ⇒ 兜住、退回无参调用，**绝不交回内置实现**。
+
+    判别力：变异 `R8-10`（把 `_ld_card_response_safe` 里那次带卡调用改成不带 try/except）
+    ⇒ 抛出去 ⇒ 红。
+
+    ⚠️ **为什么要专门钉「绝不交回内置」**（R8 审计中-5：这条兜底撤掉时四门禁全绿）：
+    异常穿透的真实代价**不是**「什么都没发生」—— 它会冒到 `_on_card_action_trigger` 的
+    外层 `except`，于是走 `_ld_passthrough_click` → **内置实现**；内置对不认识的 value 的
+    做法是把它当成一条合成命令 ``"/card button {…载荷…}"`` **发进会话**
+    （Hermes ``plugins/platforms/feishu/adapter.py:2083`` / ``2340-2355``），**卡片还不换**。
+    也就是说用户会在聊天里看到自己的点击载荷原文 —— 这与「不改卡但点击生效」是两个
+    完全不同的结果，而只断言「没抛」区分不了它们。
+    """
+    raw = _make()
+    box: list = []
+    _inject_toast_classes(raw, box)
+    calls = {"n": 0}
+
+    def _picky_card_response(card=None):
+        """签名看着能收一张卡（探索探测会判 True），真调用却抛。"""
+        calls["n"] += 1
+        raise TypeError("意外：核心内部对这张卡不满意")
+
+    raw._card_response = _picky_card_response
+    resolved: list = []
+    _fake_clarify_gateway(resolved)
+    try:
+        out = raw._on_card_action_trigger(_clarify_click_data())
+        assert calls["n"] >= 1, "带卡调用必须真的发生（否则这条用例没测到兜底那层）"
+        assert resolved == [("cid-r8", "B 方案")], "答案照样要提交（不能因为不换卡就不解析）"
+        assert raw.calls == [], \
+            f"绝不交回内置（内置会把载荷做成一条合成命令发进会话）：{raw.calls!r}"
+        assert all(card is None for card in raw.card_updates), \
+            f"兜底之后不许换卡：{raw.card_updates!r}"
+        # 兜底之后**仍然要说话**（审计低-1）：走到这一支时提交是**成功**的
+        # （答案已送达 agent），用户只需知道「点了有用、只是卡没重绘」。
+        assert box and box[-1].toast is not None, "兜底之后不许静默（用户会以为没点上）"
+        assert box[-1].toast.type == "success", box[-1].toast.type
+        assert box[-1].toast.content == i18n.t("clarify.toast_submitted"), box[-1].toast.content
+        assert out is not None, "必须给回调一个响应"
+        assert out != "SUPER_RESULT", f"必须是我们自己的响应：{out!r}"
     finally:
         _drop_fake_clarify_gateway()
 
