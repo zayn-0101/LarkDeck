@@ -298,16 +298,16 @@ MUTATIONS = [
      "FEISHU_CARD_BYTE_LIMIT = 128000\n_FEISHU_WALL_COPY = 128000",
      "test_units"),
     # ---- 阶段 9：CardKit 传输（撤掉任何一条保证都必须变红）------------------- #
-    ("CK2-写元素失败被吞（不回落）", "core/adapter.py",
-     "            if not await self._ld_ck_write(card_id, op.element_id, op.content, seq):\n"
-     "                return False, seq, op",
-     "            await self._ld_ck_write(card_id, op.element_id, op.content, seq)",
+    ("CK2-正文写失败被吞（不回落）", "core/adapter.py",
+     "            if not await self._ld_ck_write(card_id, answer.element_id, answer.content, seq):\n"
+     "                return False, seq, answer",
+     "            await self._ld_ck_write(card_id, answer.element_id, answer.content, seq)",
      "test_units"),
     ("CK3-序号不递增（成功路径不推进计数器）", "core/adapter.py",
-     '                self._ld_stream_put(key, {**state, "last": text, "last_at": now,\n'
+     '                                          "last": text, "last_at": now,\n'
      '                                          "ck_seq": seq_after,',
-     '                self._ld_stream_put(key, {**state, "last": text, "last_at": now,\n'
-     '                                          "ck_seq": int(state.get("ck_seq") or 0),',
+     '                                          "last": text, "last_at": now,\n'
+     '                                          "ck_seq": _ck_seq(state),',
      "test_units"),
     ("CK4-不写面板元素（面板永不更新）", "core/adapter.py",
      '    if _cards.CARDKIT_PANEL_BODY_ID in elems:\n'
@@ -316,8 +316,8 @@ MUTATIONS = [
      "test_units"),
     # ---- 第十一路审计续：`unified_panel: false` 在 cardkit 下也必须真的没有面板 ---------- #
     ("CK7-建实体时面板开关写死成 True（无视统一面板配置）", "core/adapter.py",
-     '                                         panel=bool(_cfg("unified_panel")))',
-     '                                         panel=True)',
+     '                                         panel=bool(_cfg("unified_panel")),',
+     '                                         panel=True,',
      "test_units"),
     ("CK8-面板关掉后仍然去写面板元素（真机 300313 ⇒ 整回合打回纯文本）", "core/adapter.py",
      '    if _cards.CARDKIT_PANEL_BODY_ID in elems:',
@@ -348,9 +348,17 @@ MUTATIONS = [
      '                                       f"ld-{card_id}-{element_id}-{sequence}"),',
      '                                       f"ld-{card_id}-{element_id}"),',
      "test_units"),
-    ("CK26-元素写入顺序被颠倒（golden trace 必须抓到）", "core/adapter.py",
-     '        for op in ops:',
-     '        for op in reversed(ops):',
+    ("CK26-装饰与正文的发送顺序被颠倒（附录 B：提交点必须在最后）", "core/adapter.py",
+     '        if answer is not None:\n'
+     '            seq += 1\n'
+     '            if not await self._ld_ck_write(card_id, answer.element_id, answer.content, seq):',
+     '        if decor:\n'
+     '            seq += 1\n'
+     '            if not await self._ld_ck_batch(card_id, decor, seq):\n'
+     '                pass\n'
+     '        if answer is not None:\n'
+     '            seq += 1\n'
+     '            if not await self._ld_ck_write(card_id, answer.element_id, answer.content, seq):',
      "test_units"),
     ("CK24-平台 entry 透传退回手写清单（丢掉 standalone_sender_fn 等）", "core/adapter.py",
      '        if field.name in _IDENTITY_ENTRY_FIELDS:',
@@ -389,14 +397,65 @@ MUTATIONS = [
             self._client.cardkit.v1.card.create,
             reqs.create_card(json.dumps(card, ensure_ascii=False)))''',
      "test_units"),
+    # ---- R2：每帧写入预算 + 页脚元素开关 + 装饰失败的 DEAD 语义 ---------------------- #
+    ("R2-1-装饰不走 batch（改走 content，而且只写第一个元素）", "core/adapter.py",
+     '            if not await self._ld_ck_batch(card_id, fresh, seq):',
+     '            if not await self._ld_ck_write(card_id, fresh[0].element_id, fresh[0].content, seq):',
+     "test_units"),
+    ("R2-2-页脚元素不看 `footer` 配置（关掉了还在卡里留个空壳）", "core/adapter.py",
+     '                                         footer_text=("" if _cfg("footer") else None))\n',
+     '                                         footer_text="")\n',
+     "test_units"),
+    ("R2-3-装饰失败升级成整帧失败（买下「DM 两张卡」那条链）", "core/adapter.py",
+     '                self._ld_ck_mark_dead(state_ref, fresh)',
+     '                return False, seq, fresh[0]',
+     "test_units"),
+    ("R2-4-装饰失败不标死（后续每帧继续白试同一个元素）", "core/adapter.py",
+     '        dead.update(op.element_id for op in ops)',
+     '        pass',
+     "test_units"),
+    ("R2-5-标死的元素仍然每帧重试（把 ck_dead 过滤去掉）", "core/adapter.py",
+     '            live_elems = [e for e in elems if e not in dead]',
+     '            live_elems = list(elems)',
+     "test_units"),
+    ("R2-6-页脚内容不进 ops（页脚元素永远是空壳）", "core/adapter.py",
+     '        ops.append(_CkOp(_cards.CARDKIT_FOOTER_ID, footer_text or " ", _CK_ROLE_DECOR))',
+     '        pass',
+     "test_units"),
+    # ---- R2：装饰的「未变化不重写」+ 记账规则 + 写入预算的两个数字 ------------------- #
+    ("R2-7-装饰每帧无条件重写（未变化不重写失效 ⇒ 稳态下写入翻倍）", "core/adapter.py",
+     '        fresh = [op for op in decor if sent.get(op.element_id) != op.content]',
+     '        fresh = list(decor)',
+     "test_units"),
+    ("R2-8-去重只看元素 id、不比内容（装饰改了却永远不再写 ⇒ 静默冻结）", "core/adapter.py",
+     '        fresh = [op for op in decor if sent.get(op.element_id) != op.content]',
+     '        fresh = [op for op in decor if op.element_id not in sent]',
+     "test_units"),
+    ("R2-9-记账不留历史（本帧只写面板 ⇒ 页脚的记录被抹掉，下一帧白写一次）", "core/adapter.py",
+     '                state_ref["ck_decor"] = {**sent,\n'
+     '                                         **{op.element_id: op.content for op in fresh}}',
+     '                state_ref["ck_decor"] = {op.element_id: op.content for op in fresh}',
+     "test_units"),
+    ("R2-10-把卡级写入上限的口径悄悄调大（预算跟着变松）", "core/adapter.py",
+     '_CK_WRITES_PER_SECOND = 10',
+     '_CK_WRITES_PER_SECOND = 40',
+     "test_units"),
+    ("R2-11-建实体不再守元素墙（真机 300305 ⇒ 整卡被拒、这一帧什么都没有）", "core/adapter.py",
+     '    if _cards.count_elements(card) > _cards.FEISHU_ELEMENT_LIMIT:',
+     '    if False:',
+     "test_units"),
+    ("R2-12-元素墙只数顶层元素（面板里塞满子元素就溜过去了）", "core/adapter.py",
+     '    if _cards.count_elements(card) > _cards.FEISHU_ELEMENT_LIMIT:',
+     '    if len(card.get("body", {}).get("elements") or []) > _cards.FEISHU_ELEMENT_LIMIT:',
+     "test_units"),
     # R1 审计（U1/U2/U4/W5/W6）实测「四门禁全绿」的五种改法，逐条钉住。
-    ("U1-空元素表被当作成功（卡片静默冻死、无日志、不回落）", "core/adapter.py",
-     '        if not ops:',
+    ("U1-空元素表/一个 op 都写不出去被当作成功（卡片静默冻死、无日志、不回落）", "core/adapter.py",
+     '        if answer is None and not fresh:',
      '        if False:',
      "test_units"),
     ("U2-序号读取退回裸 int()（坏值会抛 ⇒ 整回合掉 native）", "core/adapter.py",
-     '            ok, seq_after, failed = await self._ld_ck_apply(card_id, ops, _ck_seq(state))',
-     '            ok, seq_after, failed = await self._ld_ck_apply(card_id, ops, int(state.get("ck_seq") or 0))',
+     '            ok, seq_after, failed = await self._ld_ck_apply(card_id, ops, _ck_seq(state),',
+     '            ok, seq_after, failed = await self._ld_ck_apply(card_id, ops, int(state.get("ck_seq") or 0),',
      "test_units"),
     ("U4-角色判据放宽（正文失败被误诊成面板失败）", "core/adapter.py",
      '            if failed is not None and failed.role == _CK_ROLE_PANEL:',
@@ -408,8 +467,10 @@ MUTATIONS = [
      '        return "CardKit 写元素失败"',
      "test_units"),
     ("W5-失败帧把序号写死成 1（下一帧撞号 ⇒ 300317 ⇒ 掉 native）", "core/adapter.py",
-     '            self._ld_stream_put(key, {**state, "ck_seq": seq_after})',
-     '            self._ld_stream_put(key, {**state, "ck_seq": 1})',
+     '                                      "ck_decor": live_state.get("ck_decor") or {},\n'
+     '                                      "ck_seq": seq_after})',
+     '                                      "ck_decor": live_state.get("ck_decor") or {},\n'
+     '                                      "ck_seq": 1})',
      "test_units"),
     ("W6-面板内容被写成常量（内容整条丢失）", "core/adapter.py",
      '        ops.append(_CkOp(_cards.CARDKIT_PANEL_BODY_ID, panel_text or " ", _CK_ROLE_PANEL))',
@@ -436,9 +497,9 @@ MUTATIONS = [
      '    return number',
      "test_units"),
     # ---- 第十二路审计的三条门禁缺口（每条都实测过「撤掉修复四门禁全绿」）----------------- #
-    ("CK15-建实体不再守硬上限（144KB 的卡真的发出去）", "core/adapter.py",
-     '        if size > _cards.FEISHU_CARD_BYTE_LIMIT:',
-     '        if False:',
+    ("CK15-建实体不再守字节硬上限（144KB 的卡真的发出去）", "core/adapter.py",
+     '    if _cards.card_bytes(card) > _cards.FEISHU_CARD_BYTE_LIMIT:',
+     '    if False:',
      "test_units"),
     # ⚠️ 锚点必须带上 `_cards.panel_markdown(` 那一行：这四行在 `adapter.py` 里出现**两次**
     # （`_ld_panel` 与 `_ld_panel_markdown` 各一次），短锚点会改到另一处去 ——
@@ -479,8 +540,8 @@ MUTATIONS = [
      '            if body_bytes > _cards.FEISHU_CARD_BYTE_LIMIT:\n'
      '                _log_ck_over_budget_once(body_bytes)\n'
      '                return self._ld_stream_fail("CardKit 正文超过硬上限")\n'
-     '            ops = _ck_plan',
-     '            ops = _ck_plan',
+     '            elems = self._ld_ck_elems(state)',
+     '            elems = self._ld_ck_elems(state)',
      "test_units"),
     ("CK18-超预算告警不再限流", "core/adapter.py",
      '    if now - getattr(_log_ck_over_budget_once, "_at", 0.0) < 60.0:\n        return',
@@ -497,16 +558,17 @@ MUTATIONS = [
      "test_units"),
     # R1 重构后，「失败被吞」的唯一入口变成 `_ld_ck_apply` 的返回值。
     ("CK27-失败那一帧不回写序号（下一帧撞同一个 uuid ⇒ 静默半更新）", "core/adapter.py",
-     '            self._ld_stream_put(key, {**state, "ck_seq": seq_after})',
-     '            self._ld_stream_put(key, {**state})',
+     '                                      "ck_decor": live_state.get("ck_decor") or {},\n'
+     '                                      "ck_seq": seq_after})',
+     '                                      "ck_decor": live_state.get("ck_decor") or {}})',
      "test_units"),
-    ("M07-写元素失败被吞（当作成功继续，不回落）", "core/adapter.py",
-     '                return False, seq, op',
+    ("M07-正文写失败被吞（当作成功继续，不回落）", "core/adapter.py",
+     '                return False, seq, answer',
      '                return True, seq, None',
      "test_units"),
-    ("M07b-面板写失败不再留痕（半更新态没了唯一线索）", "core/adapter.py",
-     '            if failed is not None and failed.role == _CK_ROLE_PANEL:',
-     '            if False:',
+    ("M07b-装饰写失败不再留痕（「正文在长、装饰冻结」没了唯一线索）", "core/adapter.py",
+     '                _log_ck_decor_write_failed_once(fresh)',
+     '                pass',
      "test_units"),
     # ---- P6：黄金路径耗时 ---------------------------------------------------- #
     ("P6-轮耗时恒为 0", "core/panel.py",

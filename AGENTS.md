@@ -108,8 +108,11 @@ tests/        见「验证」
   （key = `chat:turn_id`），帧间有节流（`_STREAM_MIN_INTERVAL`）。
 - **native 帧有两条传输**（配置 `native_transport`，默认 `patch`）：
   * `patch`：普通卡 + `message.patch` 整卡替换。字是**几个几个跳**（用户实测语）。
-  * `cardkit`：CardKit 实体（`card.create` + 发实体卡）+ 每帧 `card_element.content`
-    写**两个元素**（正文 + 面板内的 markdown 子元素）⇒ **真逐字打字机**（用户实测语）。
+  * `cardkit`：CardKit 实体（`card.create` + 发实体卡）+ 每帧 **至多一次 `card.batch_update`
+    写装饰（面板 + 页脚）+ 一次 `card_element.content` 写正文** ⇒ **真逐字打字机**（用户实测语）。
+    每帧写入预算 2 次（卡级上限 10 次/秒 × 帧窗口 0.25s，常量是 `_CK_WRITES_PER_FRAME`）；
+    **装饰内容没变就不发那次 batch**（稳态下每帧 1 次）；**正文最后写**（提交点在后）；
+    装饰失败只标死 + 留痕（不 fail-open），正文失败才 fail-open（详见 `docs/plan-v1.md` 附录 A）。
     硬约束（全部真机实测）：**我们的实现**把结构在建实体时定死，因为**整卡替换**
     （`message.patch` / `card.update`）会**关闭流式会话**（之后写元素得 `300309`）。
     ⚠️ 2026-09-13 更正：**不是「任何结构性写入」都会关** —— CardKit 自己的元素级/批量接口

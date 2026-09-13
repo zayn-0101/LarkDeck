@@ -815,7 +815,9 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
     真正生效的那条路**（2026-09-13 起默认就是 cardkit；哪天有人把默认翻回去，这里会如实
     打印出 `patch`，并因为「建实体 0 次」当场失败）。断言：
       * seed 帧建起实体卡（`card.create` + 发实体卡都 `code=0`）；
-      * 后续帧写的是**两个元素**（正文 + 面板），序号单调递增；
+      * 每帧正文走一次 `card_element.content`，装饰只在**内容变了**时走一次
+        `card.batch_update`（首帧带面板+页脚，面板变化那一帧**只带 panel_body**）；
+      * 序号单调递增（`code=0` 是唯一判据）；
       * 收尾帧走 `message.patch`（那一刻流式本来就结束，patch 关掉会话正好）；
       * 全程没有掉 native（掉 native = 卡会变成一条条纯文本）。
     """
@@ -823,8 +825,9 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
     _load, adapter, _panel = _load_adapter_for_probe(chat)
     if adapter is None:
         return 1
-    calls = {"content": [], "patch": 0, "create": 0, "send": 0}
+    calls = {"content": [], "patch": 0, "create": 0, "send": 0, "batch": []}
     original_write = adapter._ld_ck_write
+    original_batch = adapter._ld_ck_batch
     original_update = adapter._ld_update_card
     # ⚠️ **turn_id 必须全程复用**：`_ld_stream_frame` 不把 turn_id 存进 state，
     # 所以「第一帧用 ckt-xxx、后续帧用 state 里读出来的空串」会让 key 从 `chat:ckt-xxx`
@@ -850,11 +853,17 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
         calls["content"].append((element_id, sequence, ok, content))
         return ok
 
+    async def _spy_batch(card_id, ops, sequence):
+        ok = await original_batch(card_id, ops, sequence)
+        calls["batch"].append(([op.element_id for op in ops], sequence, ok))
+        return ok
+
     async def _spy_update(chat_id, message_id, card):
         calls["patch"] += 1
         return await original_update(chat_id, message_id, card)
 
     adapter._ld_ck_write = _spy_write
+    adapter._ld_ck_batch = _spy_batch
     adapter._ld_update_card = _spy_update
     # ② 给面板**灌真实数据**（推理轮 + 工具步骤）—— 只验「正文元素」不够：
     #    卡片的第二个元素是面板内容，必须证明它真的收到过有内容的 markdown。
@@ -900,6 +909,7 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
                   + ("（有环境变量覆盖，是显式的，不是缺陷）" if env_val else
                      "（没人显式覆盖过 ⇒ 默认值或配置把它翻回去了，得查）"))
             adapter._ld_ck_write = original_write
+            adapter._ld_ck_batch = original_batch
             adapter._ld_update_card = original_update
             adapter._client.cardkit.v1.card.create = _orig_card_create
             adapter._client.im.v1.message.create = _orig_msg_create
@@ -919,6 +929,21 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
                     text[:cut], chat_id=chat, turn_id=tid))     # ← 同一个 tid
                 print(f"   正文帧 {cut} 字 = {ok}")
                 time.sleep(0.4)
+            # ★ R2 的「**未变化不重写**」真机验证：把面板内容改掉再发一帧，那一帧**只该写面板**。
+            #   为什么必须在真机上验这一条：去重的判据在本地（`ck_decor`），所以它不会因为
+            #   飞书拒绝而变红 —— 真机要证明的是「只带一个 action 的 batch 照样 `code=0`」
+            #   （多元素 batch 已经验过，单元素那条路是新的）。页脚在探针里是空的（这个进程
+            #   没有真实回合的指标），所以它**没变** ⇒ 那一帧的 batch 只该有 panel_body。
+            panel_before = adapter._ld_panel_markdown(chat, None)
+            _panel_mod.record_reasoning(_sid, _tid, "再补一段推理，让面板内容变一次。") \
+                if _panel_mod is not None else None
+            panel_after = adapter._ld_panel_markdown(chat, None)
+            print(f"   面板内容变了 = {panel_after != panel_before}"
+                  f"（{len(panel_before)} → {len(panel_after)} 字符）")
+            ok_tail = loop.run_until_complete(adapter.send_stream_frame(
+                text + "。", chat_id=chat, turn_id=tid))
+            print(f"   面板变化帧 = {ok_tail}")
+            time.sleep(0.4)
             ok_fin = loop.run_until_complete(adapter.send_stream_frame(
                 text, finalize=True, chat_id=chat, turn_id=tid))
             print(f"   收尾帧 = {ok_fin}")
@@ -926,23 +951,32 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
             loop.close()
     finally:
         adapter._ld_ck_write = original_write
+        adapter._ld_ck_batch = original_batch
         adapter._ld_update_card = original_update
         adapter._client.cardkit.v1.card.create = _orig_card_create
         adapter._client.im.v1.message.create = _orig_msg_create
 
     writes = [c for c in calls["content"]]
-    print(f"   元素写入 {len(writes)} 次：{[(w[0], w[1], w[2]) for w in writes]}")
-    panels = [w for w in writes if w[0] == "panel_body" and w[2]]
-    print(f"   面板元素成功写入 {len(panels)} 次（必须 ≥1，否则面板内容根本没上卡）")
-    if panels:
-        print(f"   面板最后一次内容预览：{panels[-1][3][:70]!r}")
+    batches = [b for b in calls["batch"]]
+    print(f"   正文元素写入 {len(writes)} 次：{[(w[0], w[1], w[2]) for w in writes]}")
+    print(f"   装饰 batch {len(batches)} 次：{[(b[0], b[1], b[2]) for b in batches]}")
+    panel_hits = [b for b in batches if "panel_body" in b[0] and b[2]]
+    print(f"   面板内容成功写入 {len(panel_hits)} 次（必须 ≥1，否则面板内容根本没上卡）")
     print(f"   收尾 patch {calls['patch']} 次")
-    # 断言必须能抓到「多建了一张卡」：建实体 1 次、发消息 1 次、每个正文帧写 2 个元素
+    # ⚠️ R2 起的写入形态：**每帧最多 1 次装饰 batch + 1 次正文 content**（卡级写入上限按官方
+    #    口径 10 次/秒 × 0.25s 帧窗口 = 2），而装饰**内容没变就不发那个 batch** ⇒ 这里应当
+    #    只有**两次** batch：第一帧（面板+页脚都第一次有内容）与面板变化那一帧（只带 panel_body）。
+    #    「旧断言（每帧各 2 次）不改就会在正确的实现上红」这件事上一轮已经发生过一次。
     print(f"   card.create {calls['create']} 次（必须 ==1）· message.create {calls['send']} 次"
-          f"（必须 ==1）· 元素写入 {len(writes)} 次（必须 == 正文帧数×2 = 6）")
+          f"（必须 ==1）· 正文写入 {len(writes)} 次（必须 == 正文帧数 4）"
+          f"· 装饰 batch {len(batches)} 次（必须 ==2：首帧 + 面板变化帧）")
+    batch_shapes = [tuple(b[0]) for b in batches]
     ok = (bool(state) and card_id and writes and calls["patch"] == 1
-          and all(w[2] for w in writes) and bool(panels)
-          and calls["create"] == 1 and calls["send"] == 1 and len(writes) == 6)
+          and all(w[2] for w in writes) and bool(panel_hits)
+          and calls["create"] == 1 and calls["send"] == 1
+          and len(writes) == 4
+          and batch_shapes == [("panel_body", "footer"), ("panel_body",)]
+          and all(b[2] for b in batches))
     if ok:
         print("✅ 生产路径的 CardKit 传输真机通过（建实体 + 元素写入 + patch 收尾）")
         print("   ⚠️ 这些卡的 id 没进账本（收尾后 stream state 已清）—— 看够了就叫我删。")

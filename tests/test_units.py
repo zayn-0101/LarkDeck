@@ -814,7 +814,7 @@ def _golden_trace() -> dict:
     记录四类事实：建实体卡的 JSON、每次元素写入的 (元素, 内容, 序号, uuid)、
     收尾整卡 patch 的 JSON、每一帧的返回值。
     """
-    calls = {"content": [], "patch": [], "entity": []}
+    calls = {"content": [], "patch": [], "entity": [], "batch": []}
 
     class _Resp:
         def __init__(self, code=0, **data):
@@ -829,6 +829,11 @@ def _golden_trace() -> dict:
         def create(self, request):
             calls["entity"].append(request.request_body["card_json"])
             return _Resp(0, card_id="ck_golden")
+
+        def batch_update(self, request):
+            calls["batch"].append([json.loads(request.request_body.actions),
+                                   request.request_body.sequence])
+            return _Resp(0)
 
     class _Elem:
         def content(self, request):
@@ -867,6 +872,10 @@ def _golden_trace() -> dict:
             write_element=lambda cid, eid, content, seq, uuid_value: types.SimpleNamespace(
                 card_id=cid, element_id=eid,
                 request_body=types.SimpleNamespace(content=content, sequence=seq, uuid=uuid_value)),
+            batch_update=lambda cid, actions, seq, uuid_value: types.SimpleNamespace(
+                card_id=cid,
+                request_body=types.SimpleNamespace(actions=json.dumps(actions, ensure_ascii=False),
+                                                   sequence=seq, uuid=uuid_value)),
         )
 
     raw = _make()
@@ -918,6 +927,7 @@ def _golden_trace() -> dict:
         adapter._CONFIG.update(saved_config)
         panel.reset()
     return {"entity_card": calls["entity"], "element_writes": calls["content"],
+            "decor_batches": calls["batch"],
             "final_patch": [c for _, _, c in finalized], "returns": returns}
 
 
@@ -1001,6 +1011,56 @@ def test_ck_plan_content_and_role_failures_are_pinned():
     assert "answer" in reasons[adapter._CK_ROLE_ANSWER]
     assert "panel_body" in reasons[adapter._CK_ROLE_PANEL]
     assert "footer" in reasons[adapter._CK_ROLE_DECOR]
+    # 写入预算（`docs/plan-v1.md` 附录 B）：数字**写死**在这里，因为它们是「照着官方口径
+    # 留余量」的**显式决定**，不是从别的常量顺手推出来的。算式那条断言单独也留着 ——
+    # 它保证「改了帧窗口却没同步预算」会发生在这里，而不是发生在真机的限流上。
+    assert adapter._CK_WRITES_PER_SECOND == 10, \
+        f"卡级写入上限的官方口径是 10 次/秒：{adapter._CK_WRITES_PER_SECOND}"
+    assert adapter._CK_WRITES_PER_FRAME == 2, \
+        f"0.25s 的帧窗口 ⇒ 每帧最多 2 次写：{adapter._CK_WRITES_PER_FRAME}"
+    assert adapter._CK_WRITES_PER_FRAME == max(
+        1, int(adapter._CK_WRITES_PER_SECOND * adapter._STREAM_MIN_INTERVAL)), \
+        "每帧预算必须等于「卡级上限 × 帧窗口」（改了窗口就要一起改预算）"
+
+
+def test_ck_create_wall_counts_elements_recursively():
+    """建实体前的**两道墙**（R2 补的审计缺口）：字节是硬上限，元素是**递归** 200。
+
+    为什么单独拿纯函数验：这道墙在今天的实体卡上**永远不会响**（结构定死 4 个元素）——
+    而 R3 要把面板改成多子元素、元素数变成动态的，那时它必须已经在位。用**合成的长卡**
+    直接喂它，不依赖「今天会不会响」。
+    ⚠️ 嵌套那一条是**判别力所在**：只数顶层元素的实现（`len(body["elements"])`）在扁平卡上
+    与递归口径一样，只有「1 个面板里塞 210 个子元素」这种形状能把它区分出来 ——
+    而真机实测服务端数的就是递归总数（`300305`）。
+    """
+    limit = cards.FEISHU_ELEMENT_LIMIT
+    assert limit == 200, f"元素硬上限是实测出来的 200：{limit}"
+
+    def _flat(n: int) -> dict:
+        return {"schema": "2.0",
+                "body": {"elements": [{"tag": "markdown", "element_id": f"e{i}", "content": "x"}
+                                      for i in range(n)]}}
+
+    def _nested(children: int) -> dict:
+        return {"schema": "2.0", "body": {"elements": [
+            {"tag": "collapsible_panel", "element_id": "panel",
+             "elements": [{"tag": "markdown", "element_id": f"c{i}", "content": "x"}
+                          for i in range(children)]}]}}
+
+    assert adapter._ck_create_wall(_flat(3)) is None
+    assert adapter._ck_create_wall(_flat(limit)) is None, "正好 200 个必须放行（真机 204 才拒）"
+    assert adapter._ck_create_wall(_flat(limit + 1)) == "元素"
+    assert adapter._ck_create_wall(_nested(3)) is None
+    assert adapter._ck_create_wall(_nested(limit + 10)) == "元素", \
+        "嵌套元素必须计入（只数顶层会让「面板里塞 200 个子元素」从闸门底下溜过去）"
+    # 字节墙（口径 = JSON 转义后的字节，同 `card_bytes`）
+    fat = {"schema": "2.0", "body": {"elements": [
+        {"tag": "markdown", "element_id": "answer",
+         "content": "汉" * (cards.FEISHU_CARD_BYTE_LIMIT // 3 + 100)}]}}
+    assert adapter._ck_create_wall(fat) == "字节"
+    assert adapter._ck_create_wall(
+        {"schema": "2.0", "body": {"elements": [
+            {"tag": "markdown", "element_id": "answer", "content": "小卡"}]}}) is None
 
 
 def test_cardkit_golden_trace_is_frozen():
@@ -1008,9 +1068,12 @@ def test_cardkit_golden_trace_is_frozen():
 
     夹具在 `tests/golden_cardkit_trace.json`；**有意**改行为后用
     `python3 tests/write_golden_trace.py` 重新生成（那份 diff 就是行为变更声明）。
-    夹具的**定义域**：cardkit 传输的成功路径 + 建实体 JSON + 元素写入序列 + 收尾整卡 JSON。
+    夹具的**定义域**：cardkit 传输的成功路径 + 建实体 JSON + 每次写入（装饰 batch + 正文
+    `content`）的 (元素, 内容, 序号, uuid) + 收尾整卡 JSON + 每帧返回值。
+    其中「装饰**只在内容变了时**才写」这条 R2 规则也在域内：夹具里第二帧的装饰没变 ⇒
+    只有一次 batch（序号 1），两帧的正文是 2、3 号。
     **它覆盖不到的**（这些地方「逐字节不变」不成立，别假装成立）：所有失败路径、
-    `patch` 传输的分支、节流/去重跳过、字节闸门、`batch_update`/`settings`（R2 才引入），
+    `patch` 传输的分支、帧节流跳过、字节闸门、`settings`(summary)，
     以及**一切时间派生值**（时钟在采集期间被冻结 ⇒ 耗时/首字延迟这类字段不进夹具）。
     ⚠️ 夹具**故意**是字面量文件而不是「跑一遍再跟自己对」：后者是自证循环，
     它永远绿，也就永远抓不到「重构悄悄改了行为」。
@@ -1043,9 +1106,10 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         def _mk_fake(*, fail_write_after=10 ** 9, create_ok=True, fail_answer_only=False,
                      fail_panel_only=False, create_empty_id=False,
                      create_codes=None, answer_codes=None, fail_first_only=False,
-                     fail_at=None):
+                     fail_at=None, fail_batch=False):
             calls = {"create": 0, "send": 0, "reply": 0, "content": [], "patch": 0,
-                     "entity": [], "send_req": [], "reply_req": []}
+                     "entity": [], "send_req": [], "reply_req": [], "batch": [],
+                     "writes": 0}
 
             class _Resp:
                 def __init__(self, code=0, **data):
@@ -1057,6 +1121,16 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                     return self.code == 0
 
             class _CardRes:
+                def batch_update(self, request):
+                    calls["writes"] += 1
+                    calls["batch"].append((json.loads(request.request_body.actions),
+                                           request.request_body.sequence))
+                    if fail_batch:
+                        return _Resp(300309)
+                    if fail_at is not None and calls["writes"] == fail_at:
+                        return _Resp(300309)
+                    return _Resp(0)
+
                 def create(self, request):
                     calls["create"] += 1
                     calls["entity"].append(request.request_body["card_json"])
@@ -1071,13 +1145,15 @@ def test_cardkit_transport_writes_elements_and_falls_open():
 
             class _ElemRes:
                 def content(self, request):
+                    calls["writes"] += 1
                     calls["content"].append((request.element_id, request.request_body.content,
                                              request.request_body.sequence))
-                    if fail_first_only and len(calls["content"]) == 1:
-                        # 只失败第一次：用来验「失败之后下一帧必须用更大的号」
+                    # ⚠️ 计数必须**跨 batch 与 content 合计**：两者共用同一个序号账本
+                    # （R2 起每帧 = 一次 batch + 一次 content），只看 content 的话
+                    # 「第 3 次写入」永远不会发生（R2 落地时这条前提当场红了）。
+                    if fail_first_only and calls["writes"] == 1:
                         return _Resp(300309)
-                    if fail_at is not None and len(calls["content"]) == fail_at:
-                        # 第 N 次写入失败（N>1 时前面的帧已经成功过，序号早就不是 0/1）
+                    if fail_at is not None and calls["writes"] == fail_at:
                         return _Resp(300309)
                     if answer_codes and request.element_id == cards.CARDKIT_ANSWER_ID:
                         idx = sum(1 for c in calls["content"]
@@ -1123,6 +1199,10 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                     card_id=cid, element_id=eid,
                     request_body=types.SimpleNamespace(content=content, sequence=seq,
                                                        uuid=uuid_value)),
+                batch_update=lambda cid, actions, seq, uuid_value: types.SimpleNamespace(
+                    card_id=cid,
+                    request_body=types.SimpleNamespace(actions=json.dumps(actions, ensure_ascii=False),
+                                                       sequence=seq, uuid=uuid_value)),
                 # ⚠️ 锚点/去重键必须能被断言：替身以前**不记录** `reply_to`，于是
                 # 「cardkit 把回复锚点整个丢掉」（第十二路审计实测）四门禁全绿 ——
                 # 翻默认之后这意味着**每次回答都不再挂在提问下面**。
@@ -1139,7 +1219,8 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                         reply_in_thread=False)),
             )
 
-        # ① 全链路成功：建实体 → 两次帧（各写正文+面板两个元素）→ 收尾走 patch
+        # ① 全链路成功：建实体 → 四帧（装饰**只在变了的那一帧**发一次 batch，正文每帧一次）
+        #    → 收尾走 patch
         calls, client = _mk_fake()
         raw = _make()
         raw._client = client
@@ -1154,8 +1235,33 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         assert calls["create"] == 1 and calls["send"] == 1, calls
         assert _run(raw.send_stream_frame("正文一", chat_id="oc_ck", turn_id="t-ck"))
         assert _run(raw.send_stream_frame("正文一，正文二", chat_id="oc_ck", turn_id="t-ck"))
+        # ── 下面两帧专门验 R2 的「**未变化不重写**」：装饰只在内容真的变了时才发那一次 batch。
+        #    驱动用的是**真的数据层**（页脚走 `context`、面板走 `panel`），不是替身 ——
+        #    这条规则唯一的失败形态是「装饰静默冻结」，只有在真数据层上才验得出来。
+        footer_before = raw._ld_footer() or ""
+        context.record_api_call(model="test-model",
+                                usage={"input_tokens": 4242, "output_tokens": 8})
+        context.set_context_override(10000)
+        footer_after = raw._ld_footer() or ""
+        assert footer_after and footer_after != footer_before, \
+            f"⑱ 前提：这一帧的页脚必须真的变了，否则证不了「变了就重写」：{footer_before!r} → {footer_after!r}"
+        assert _run(raw.send_stream_frame("正文一，正文二，正文三",
+                                          chat_id="oc_ck", turn_id="t-ck"))
+        panel.reset()
+        panel.record_reasoning("oc_ck", "s-ck-1", "面板到这一帧才第一次有内容")
+        assert raw._ld_panel_markdown("oc_ck", None), "⑱ 前提：面板到这一帧必须有内容"
+        assert _run(raw.send_stream_frame("正文一，正文二，正文三，正文四",
+                                          chat_id="oc_ck", turn_id="t-ck"))
         ids = [c[0] for c in calls["content"]]
         seqs = [c[2] for c in calls["content"]]
+        batch_ids = [[a["params"]["element_id"] for a in b[0]] for b in calls["batch"]]
+        batch_seqs = [b[1] for b in calls["batch"]]
+        # 页脚那一路真的把**当前**页脚写进去了吗（只比对 id 的话，「写了一版过期页脚」全绿）
+        footer_written = [[a["params"]["partial_element"]["content"] for a in b[0]
+                           if a["params"]["element_id"] == "footer"] for b in calls["batch"]]
+        panel.reset()
+        context.reset()
+        context.set_context_override(None)
         # ⚠️ 必须写**字面量**：两边都用 `cards.CARDKIT_*` 是**自比较** ——
         # 第十一路审计实测「两个元素 id 都叫 answer」「面板 id 抄错字面量」两种变异四门禁全绿，
         # 而真机 `cardkit.v1.card.create` 对这两种形状都回 `300301`
@@ -1163,8 +1269,23 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         # ⚠️ 顺序是**有意**的：装饰先写、**正文最后写**（提交点在后）—— 上游按「最后一次
         # **成功**发出的帧文本」记账，正文最后落盘才能让「这一帧失败」等价于「正文没更新」，
         # 否则回落补发的尾部会把同一段话再说一遍（R1 审计第③条）。
-        assert ids == ["panel_body", "answer"] * 2, ids
-        assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs), seqs
+        # R2 之后的写入形态：**装饰一次 batch、正文一次 content** = 每帧 ≤2 次写（写入预算），
+        # 而**装饰没变就不写** ⇒ 稳态下每帧 1 次。
+        assert ids == ["answer"] * 4, f"正文只该走 content 通道：{ids}"
+        assert batch_ids == [["panel_body", "footer"], ["footer"], ["panel_body"]], \
+            f"装饰只在**内容变了**的元素上重写（顺序：变化的那一帧才发）：{batch_ids}"
+        assert batch_seqs == [1, 4, 6], f"三次装饰 batch 的序号：{batch_seqs}"
+        assert seqs == [2, 3, 5, 7], f"正文序号（装饰先、正文最后）：{seqs}"
+        assert footer_written[-1] == [], f"最后一帧页脚没变，不该写它：{footer_written}"
+        assert footer_written[1] == [footer_after], \
+            f"页脚变化的那一帧必须写**当前**页脚内容：{footer_written}"
+        assert sorted(batch_seqs + seqs) == [1, 2, 3, 4, 5, 6, 7], \
+            f"每次写入共用同一个严格递增序号（既不跳号也不撞号）：{sorted(batch_seqs + seqs)}"
+        # 写入预算的**观测量**（附录 B 的第二条断言）：预算里的数字是算出来的，而这里是
+        # 「真跑四帧、数一数 API 调用」——只锁算式的话，「每帧多写一次」这种实现照样全绿。
+        assert calls["writes"] == 7, f"四帧一共 7 次写：{calls['writes']}"
+        assert calls["writes"] <= adapter._CK_WRITES_PER_FRAME * 4, \
+            f"每帧写入次数不得超过预算 {adapter._CK_WRITES_PER_FRAME}：{calls['writes']}/4 帧"
         # 收尾帧走的是 `_ld_update_card`（= 普通 patch）—— 这里打桩记录，因为单测环境没有 SDK，
         # 而「收尾必须走 patch」正是 CardKit 设计的一部分（那一刻流式本来就结束）。
         finalized = []
@@ -1197,27 +1318,30 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         assert not any("面板元素写入失败" in r.getMessage() for r in records), \
             "正文失败不该被误诊成面板失败（角色判据被放宽了？）"
 
-        # ②b **正文写成功、面板写失败**：这一帧也必须返回 False（否则卡片停在
-        #    「正文新、面板旧」的半更新态，而核心以为成功、不做回落）—— 第十一路审计
-        #    实测这个形态此前没有任何断言（M07 四门禁全绿）。
-        calls, client = _mk_fake(fail_panel_only=True)
+        # ②b **装饰失败 ⇒ 帧仍然成功**（R2 的失败分档，**有意改掉**旧行为）：
+        #    旧行为是「面板失败 ⇒ 整帧 fail-open」，而 fail-open 的代价是上游会补一帧 finalize
+        #    再落到 `_first_send` ⇒ **DM 里第二张卡**。装饰（面板/页脚）坏了不该买下这条路：
+        #    处置改成 `DEAD`（标死 + 限流 WARNING + 本帧继续），正文照常落盘。
+        calls, client = _mk_fake(fail_batch=True)
         raw2b = _make()
         raw2b._client = client
-        adapter.configure(native_transport="cardkit")
+        adapter.configure(native_transport="cardkit", unified_panel=True)
         assert _run(raw2b.send_stream_frame("", chat_id="oc_ck2b", turn_id="t-2b"))
-        # ⚠️ 「要留痕」这件事此前**没有任何断言**（变异 M07b 全绿）：面板失败 → 正文新、面板旧，
-        # 而这条 WARNING 是排查时唯一的线索。清零限流时间戳再捕获（它 60 秒一条）。
-        adapter._log_ck_panel_write_failed_once._at = 0.0
+        adapter._log_ck_decor_write_failed_once._at = 0.0
         with _LogCapture("larkdeck") as records:
-            assert not _run(raw2b.send_stream_frame("正文", chat_id="oc_ck2b", turn_id="t-2b")), \
-                "面板写失败必须也返回 False（否则卡片半更新且无日志）"
-        assert any("面板元素写入失败" in r.getMessage() for r in records), \
-            "面板写失败必须留下那条 WARNING（半更新态的唯一线索）"
-        # ⚠️ 顺序是「装饰先、正文最后」⇒ 面板写失败时**正文一次都没写**。这不是缺陷，
-        # 正是「提交点在后」想要的语义：装饰失败 ⇒ 这一帧的正文不落盘 ⇒ 与上游按
-        # 「最后一次**成功**发出的帧文本」记账同口径（回落补发的尾部不会重复同一段话）。
-        assert not any(c[0] == cards.CARDKIT_ANSWER_ID for c in calls["content"]), \
-            "面板先写失败时，正文不该已经落盘（提交点必须在最后）"
+            assert _run(raw2b.send_stream_frame("正文", chat_id="oc_ck2b", turn_id="t-2b")), \
+                "装饰失败不能让整帧失败（否则买下「DM 两张卡」那条链）"
+        assert any("装饰元素写入失败" in r.getMessage() for r in records), \
+            "装饰失败必须留下那条 WARNING（「正文在长、装饰冻结」的唯一线索）"
+        state2b = raw2b._ld_stream_get("oc_ck2b:t-2b") or {}
+        assert state2b.get("ck_dead") == {"panel_body", "footer"}, \
+            f"失败过的装饰元素必须被标死（后续不再尝试）：{state2b.get('ck_dead')}"
+        # ⚠️ 正文**没有**因为是「装饰先写」而被拖累：这一帧的正文确实落盘了
+        assert [c[0] for c in calls["content"]] == ["answer"], calls["content"]
+        # 下一帧：装饰已标死 ⇒ **不再发 batch**，只写正文（省配额、也不再刷日志）
+        assert _run(raw2b.send_stream_frame("正文二", chat_id="oc_ck2b", turn_id="t-2b"))
+        assert len(calls["batch"]) == 1, f"标死的装饰不该再试：{calls['batch']}"
+        assert [c[0] for c in calls["content"]] == ["answer", "answer"], calls["content"]
 
         # ③ 建实体失败 ⇒ seed 帧就返回 False（整回合回落，消息不会丢）
         calls, client = _mk_fake(create_ok=False)
@@ -1262,16 +1386,44 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             f"实体卡必须开流式会话，否则逐字打字机整个失效：{entity['config']!r}"
         assert entity["config"].get("update_multi") is True, entity["config"]
         elem_ids = [e.get("element_id") for e in entity["body"]["elements"]]
-        assert elem_ids == ["answer"], \
-            f"unified_panel: false 时面板元素不该进卡（README 承诺两条传输下都关得掉）：{elem_ids}"
+        # R2 起：`footer: true`（默认）⇒ 卡里多一个页脚元素（流式期间就能更新它）。
+        # 面板关掉时它也不该出现 —— 判据是**配置**，不是「这一刻有没有数据」。
+        assert elem_ids == ["answer", "footer"], \
+            f"unified_panel: false 时面板元素不该进卡：{elem_ids}"
         assert _run(raw5.send_stream_frame("正文一", chat_id="oc_ck5", turn_id="t-5"))
         assert _run(raw5.send_stream_frame("正文一，正文二", chat_id="oc_ck5", turn_id="t-5"))
         sent_ids = [c[0] for c in calls["content"]]
         assert sent_ids == ["answer", "answer"], sent_ids
+        # 面板关掉后装饰只剩页脚，而页脚内容两帧都没变 ⇒ **只写第一次**（未变化不重写）
+        assert [b[1] for b in calls["batch"]] == [1], calls["batch"]
+
+        # ⑥b **`footer: false` ⇒ 页脚元素同样不进卡**，而且一次都不写它的 id
+        #    （写卡里不存在的元素 ⇒ 真机 300313 ⇒ 每帧失败 ⇒ 整回合打回纯文本）。
+        #    ⚠️ 必须用**自己的一套替身**：第一版复用了 ⑥ 的 `calls`，于是 ⑥ 后面的断言
+        #    看到的是 ⑥b 的请求（顺序与隔离都错了，用例当场红）。
+        calls5b, client5b = _mk_fake()
+        raw5b = _make()
+        raw5b._client = client5b
+        adapter.configure(native_transport="cardkit", unified_panel=False, footer=False)
+        assert _run(raw5b.send_stream_frame("", chat_id="oc_ck5b", turn_id="t-5b"))
+        entity5b = json.loads(calls5b["entity"][0])
+        ids5b = [e.get("element_id") for e in entity5b["body"]["elements"]]
+        assert ids5b == ["answer"], f"footer: false 时页脚不该进卡：{ids5b}"
+        assert _run(raw5b.send_stream_frame("正文一", chat_id="oc_ck5b", turn_id="t-5b"))
+        written = ([c[0] for c in calls5b["content"]]
+                   + [a["params"]["element_id"] for b in calls5b["batch"] for a in b[0]])
+        assert written == ["answer"], f"关掉面板与页脚时只该写正文：{written}"
+        adapter.configure(footer=True)
         sent_seqs = [c[2] for c in calls["content"]]
-        assert sent_seqs == [1, 2], sent_seqs
-        assert all(cards.CARDKIT_PANEL_BODY_ID not in c[0] for c in calls["content"]), \
-            "面板关掉后写 panel_body 会得 300313（元素不存在）⇒ 每帧失败、整回合打回纯文本"
+        # R2 起：装饰（这里只剩页脚）走 batch 占 1 号、且**没变就不重写** ⇒ 正文是 2、3 号
+        assert sent_seqs == [2, 3], sent_seqs
+        # 面板关掉后**任何通道**都不许碰 panel_body（写了不存在的元素 ⇒ 真机 300313
+        # ⇒ 每帧失败 ⇒ 整回合打回纯文本）。注意现在要连 batch 的 action 一起查 ——
+        # 只查 content 那条通道的话，面板改走 batch 之后这条断言会变成**空断言**。
+        touched = ([c[0] for c in calls["content"]]
+                   + [a["params"]["element_id"] for b in calls["batch"] for a in b[0]])
+        assert cards.CARDKIT_PANEL_BODY_ID not in touched, \
+            f"面板关掉后不该出现 panel_body（任何通道）：{touched}"
 
         # ⑫ **回复锚点必须透传** + 发实体卡必须带**确定性 uuid**（第十二路审计实测：
         #    锚点被整个丢掉、且两条 uuid 一个都没填）。
@@ -1309,26 +1461,44 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         #    验的其实是「首帧写 1、2 号」，与失败路径无关（R1 审计 W5 实测两条绕过改法全绿）。
         # ⚠️ 失败点必须落在**序号 > 1** 的地方：第一版让它失败在第 1 号，于是「把序号写死成 1」
         #    这条变异**行为等价**（W5 全绿）。改成第 3 号（前两号已经成功）才逼出判别力。
-        calls, client = _mk_fake(fail_at=3)              # 第 3 次写入失败
+        # 第 4 次写入 = 第二帧的**正文**（第 3 次是装饰 batch；装饰失败在新语义下不让帧失败）
+        calls, client = _mk_fake(fail_at=4)
         raw15 = _make()
         raw15._client = client
         # ⚠️ 必须**显式**写 `unified_panel=True`：这一段跑在前面那些用例之后，而 ⑥ 把
         # `unified_panel` 设成了 False（元素表里就没有面板），不写清楚期望会随执行顺序漂移。
         adapter.configure(native_transport="cardkit", unified_panel=True)
         assert _run(raw15.send_stream_frame("", chat_id="oc_ck16", turn_id="t-16")), "seed 帧"
+        # ⚠️ R2 起「**未变化不重写**」：装饰没变的那一帧只有 1 次写（正文），失败点会整体前移，
+        #    这条用例的前提（第 4 次写 = 第二帧的正文）就不成立了。所以每帧之间要让装饰
+        #    **真的变一次** —— 用真页脚数据层驱动（`context`），不是替身。
+        def _move_footer(tokens: int, why: str) -> str:
+            before = raw15._ld_footer() or ""
+            context.record_api_call(model="test-model",
+                                    usage={"input_tokens": tokens, "output_tokens": 4})
+            context.set_context_override(10000)
+            after = raw15._ld_footer() or ""
+            assert after and after != before, f"{why}：页脚必须真的变了（{before!r} → {after!r}）"
+            return after
+
+        _move_footer(1500, "⑮ 前提")
         assert _run(raw15.send_stream_frame("第一帧", chat_id="oc_ck16", turn_id="t-16")), \
             "前提：第一帧要成功（用掉 1、2 号）"
+        _move_footer(2500, "⑮ 前提")
         assert not _run(raw15.send_stream_frame("第二帧", chat_id="oc_ck16", turn_id="t-16")), \
-            "前提：第二帧的第 3 次写入确实失败了"
+            "前提：第二帧的正文写入确实失败了"
         state_after_fail = raw15._ld_stream_get("oc_ck16:t-16") or {}
-        assert state_after_fail.get("ck_seq") == 3, \
-            f"失败的那一帧也必须把序号推进到 3（写死/回退都会让下一帧撞号）：{state_after_fail}"
-        # 失败帧之后**在同一条流上**继续：必须从 3 号之后接着来
+        assert state_after_fail.get("ck_seq") == 4, \
+            f"失败的那一帧也必须把序号推进到 4（写死/回退都会让下一帧撞号）：{state_after_fail}"
+        # 失败帧之后**在同一条流上**继续：必须从 4 号之后接着来
+        _move_footer(3500, "⑮ 前提")
         assert _run(raw15.send_stream_frame("第三帧", chat_id="oc_ck16", turn_id="t-16")), \
             "失败之后下一帧应当还能正常写"
-        seqs = [c[2] for c in calls["content"]]
-        assert seqs == [1, 2, 3, 4, 5], \
-            f"失败用了 3 号 ⇒ 下一帧必须从 4 号接着来（不回退、不跳号）：实得 {seqs}"
+        ledger = sorted([b[1] for b in calls["batch"]] + [c[2] for c in calls["content"]])
+        assert ledger == [1, 2, 3, 4, 5, 6], \
+            f"装饰与正文共用同一个严格递增序号，失败也不回退：实得 {ledger}"
+        context.reset()
+        context.set_context_override(None)
 
         # ⑯ **空元素表是契约违反**（R1 审计 U1）：元素表为空（或表里全是卡里没有的 id）时，
         #    返回成功会让核心以为一切正常 ⇒ 卡片静默冻死、一行日志都没有、也不回落。
@@ -1360,8 +1530,60 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                 "坏序号应当被归零后继续（绝不能抛 ⇒ 整回合掉 native）"
         assert any("ck_seq" in r.getMessage() for r in records), \
             "坏序号必须留痕（真机上这是「为什么掉成纯文本」的唯一线索）"
-        assert [c[2] for c in calls["content"]] == [1, 2], \
+        # 坏序号按 0 处理 ⇒ 这一帧从 1 号开始（装饰 batch 拿 1、正文拿 2）
+        assert [b[1] for b in calls["batch"]] == [1], calls["batch"]
+        assert [c[2] for c in calls["content"]] == [2], \
             f"坏序号按 0 处理 ⇒ 这一帧从 1 号开始：{[c[2] for c in calls['content']]}"
+
+        # ⑱ **装饰的去重记账必须留历史**（R2）：去重的判据是「这个元素**上一次真的写成功了**
+        #    什么内容」，而一帧里只有**变了的那几个**元素会进 batch ⇒ 如果记账写成「只记本帧
+        #    发出去的那几个」，上一帧没写过的元素记录就被抹掉，下一帧会把它（内容没变）
+        #    白写一遍。**这属于「省配额」的规则，坏了不致命 —— 所以它只有一条断言能抓**：
+        #    逐帧数 batch 里到底带了哪几个元素。真实形态（同一张卡、同一串帧）：
+        #      帧1 面板+页脚都第一次有内容 → 帧2 什么都没变 → 帧3 只有页脚变了
+        #      → 帧4 页脚又变了（**这一帧抓「记账被抹掉」**：抹掉的话面板会被捎上）
+        #      → 帧5 只有面板变了（**这一帧抓「只看 id 不比内容」**：那样面板永远不再写）
+        calls, client = _mk_fake()
+        raw19 = _make()
+        raw19._client = client
+        adapter.configure(native_transport="cardkit", unified_panel=True, footer=True)
+        panel.reset()
+        context.reset()
+        try:
+            assert _run(raw19.send_stream_frame("", chat_id="oc_ck20", turn_id="t-20"))
+
+            def _footer(tokens: int, why: str) -> str:
+                before = raw19._ld_footer() or ""
+                context.record_api_call(model="test-model",
+                                        usage={"input_tokens": tokens, "output_tokens": 4})
+                context.set_context_override(10000)
+                after = raw19._ld_footer() or ""
+                assert after and after != before, f"{why}：页脚必须真的变了（{before!r}→{after!r}）"
+                return after
+
+            _footer(1000, "⑱ 前提")
+            assert _run(raw19.send_stream_frame("正文一", chat_id="oc_ck20", turn_id="t-20"))
+            assert _run(raw19.send_stream_frame("正文二", chat_id="oc_ck20", turn_id="t-20"))
+            _footer(2000, "⑱ 前提")
+            assert _run(raw19.send_stream_frame("正文三", chat_id="oc_ck20", turn_id="t-20"))
+            _footer(3000, "⑱ 前提")
+            assert _run(raw19.send_stream_frame("正文四", chat_id="oc_ck20", turn_id="t-20"))
+            panel.record_reasoning("oc_ck20", "s-ck-20", "面板第二段")
+            assert raw19._ld_panel_markdown("oc_ck20", None), "⑱ 前提：面板到这一帧必须有内容"
+            assert _run(raw19.send_stream_frame("正文五", chat_id="oc_ck20", turn_id="t-20"))
+            got_ids = [[a["params"]["element_id"] for a in b[0]] for b in calls["batch"]]
+            got_batch_seqs = [b[1] for b in calls["batch"]]
+            got_answer_seqs = [c[2] for c in calls["content"]]
+            assert got_ids == [["panel_body", "footer"], ["footer"], ["footer"], ["panel_body"]], \
+                f"每帧只该写**这一帧真的变了**的装饰：{got_ids}"
+            assert got_batch_seqs == [1, 4, 6, 8], got_batch_seqs
+            assert got_answer_seqs == [2, 3, 5, 7, 9], got_answer_seqs
+            assert sorted(got_batch_seqs + got_answer_seqs) == list(range(1, 10)), \
+                f"装饰与正文共用同一个严格递增序号：{sorted(got_batch_seqs + got_answer_seqs)}"
+        finally:
+            panel.reset()
+            context.reset()
+            context.set_context_override(None)
 
         # ⑭ **正文长大之后也要守硬上限**（第十二路审计第 5 条）：建实体那道闸门守的是
         #    **空正文**的 seed 帧（核心传 `""`），真正会长大的是后面每一帧的累积全文。

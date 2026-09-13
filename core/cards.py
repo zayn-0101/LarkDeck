@@ -784,10 +784,17 @@ def _round_title(index: int, elapsed_ms: Any) -> str:
 
 #: CardKit 实体卡的**固定元素 id**（结构在建实体时定死，之后只按 id 写内容）。
 #: 见 docs/plan-6-effects.md「阶段 9」与 2026-09-13 的「重大更正」：**整卡替换**会关闭流式会话
+#: （`card_element.patch/create/update` 与 `card.batch_update` **不受此限** —— 见 plan-v1 的 R2）
 #: （真机实测 `300309`），所以结构不能边流边改。
 CARDKIT_ANSWER_ID = "answer"
 CARDKIT_PANEL_ID = "panel"
 CARDKIT_PANEL_BODY_ID = "panel_body"
+CARDKIT_FOOTER_ID = "footer"
+
+#: 会被**流式写入**的元素 id（建实体时创建、之后按 id 写内容）。
+#: adapter 从建出来的卡 JSON 里按这份清单抽元素表（结构单一来源），
+#: 所以「加一个新的流式元素」= 在这里登记 + 在 `cardkit_entity_card` 里建出来，两处。
+CARDKIT_STREAM_IDS = (CARDKIT_ANSWER_ID, CARDKIT_PANEL_BODY_ID, CARDKIT_FOOTER_ID)
 
 
 def panel_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
@@ -829,7 +836,7 @@ def panel_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = ()
 
 def cardkit_entity_card(answer: str, panel_text: str, *, streaming: bool = True,
                         status: Any = None, expanded: bool = False,
-                        panel: bool = True) -> Dict[str, Any]:
+                        panel: bool = True, footer_text: Optional[str] = None) -> Dict[str, Any]:
     """**CardKit 实体卡**的 JSON（结构固定：一个正文元素 + 一个折叠面板，面板里一个 markdown）。
 
     结构固定是有原因的（真机实测）：`card_element.content` 只能按 id 写内容；而
@@ -842,8 +849,12 @@ def cardkit_entity_card(answer: str, panel_text: str, *, streaming: bool = True,
     ``panel=False``（对应 ``unified_panel: false``）时**整个面板元素不进卡**。判据是配置而不是
     ``panel_text`` 空不空：面板内容为空是**正常中间态**（还没有工具/推理数据），那一刻的元素
     必须留着、等后面的帧往里写；而关掉面板的人不该在流式期间一直看着一个空面板头。
-    ⚠️ 调用方必须记住这个结构（元素 id 不在卡里时写它会得 `300313`），见
-    ``adapter._ld_stream_frame`` 里的 ``ck_panel``。
+
+    ``footer_text is None``（对应 ``footer: false``）时**页脚元素不进卡**。注意与面板同一条纪律：
+    判据是「要不要这个元素」，不是「这一帧有没有内容」—— 页脚在流式早期通常还没数据
+    （钩子还没触发），但元素必须先在卡里，之后才写得进去。
+    ⚠️ 调用方必须记住这个结构（元素 id 不在卡里时写它会得 `300313`）；元素表由
+    ``adapter._ck_elems_from_card()`` **从这张卡里抽**，所以两处不会分叉。
     """
     elements: List[Dict[str, Any]] = [
         {"tag": "markdown", "element_id": CARDKIT_ANSWER_ID,
@@ -862,6 +873,9 @@ def cardkit_entity_card(answer: str, panel_text: str, *, streaming: bool = True,
              "padding": "8px 8px 8px 8px",
              "elements": [{"tag": "markdown", "element_id": CARDKIT_PANEL_BODY_ID,
                            "content": panel_text or " "}]})
+    if footer_text is not None:
+        elements.append({"tag": "markdown", "element_id": CARDKIT_FOOTER_ID,
+                         "content": footer_text or " ", "text_size": "notation"})
     return {
         "schema": SCHEMA,
         "config": {"streaming_mode": bool(streaming), "update_multi": True,

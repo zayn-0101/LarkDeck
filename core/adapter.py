@@ -50,7 +50,7 @@ import os
 import threading
 import time
 from types import SimpleNamespace
-from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
 from . import cards as _cards
 from . import compat as _compat
@@ -128,6 +128,16 @@ _HOPELESS_BYTES = 512 * 1024
 #: 退化成多条纯文本」那条链（现在有 ``_TRANSIENT_BACKOFF`` 兜一层，但兜不等于鼓励）。
 _MAX_STREAMS = 64
 _STREAM_MIN_INTERVAL = 0.25
+
+#: CardKit 的**写入预算**（`docs/plan-v1.md` 附录 B）：卡级上限按官方口径 **10 次/秒**，
+#: 而帧节流窗口是 :data:`_STREAM_MIN_INTERVAL` ⇒ 每帧最多写
+#: ``_CK_WRITES_PER_FRAME`` 次。**真实余量远大于此**（R0 真机实测 50 次/秒连打零失败），
+#: 所以这个数不是「贴着上限走」，而是留了一倍以上的余量 —— 之所以还要这么省：
+#: 一帧被拒（限流）就会让内核停用本回合的 native 流式 ⇒ 用户看到的不再是打字机。
+#: 记账口径：一次 `card.batch_update`（承载面板 + 页脚）**算一次**，一次
+#: `card_element.content`（正文）**算一次**（真机实测 batch 只占 1 个 sequence）。
+_CK_WRITES_PER_SECOND = 10
+_CK_WRITES_PER_FRAME = max(1, int(_CK_WRITES_PER_SECOND * _STREAM_MIN_INTERVAL))   # 0.25s ⇒ 2
 
 #: 飞书的**瞬态**错误码 —— 命中就退避重试，而不是当成定义性失败。
 #: 为什么这件事重要：一帧失败会被内核判成「本回合 native 不可用」
@@ -479,7 +489,7 @@ def _ck_elems_from_card(card: Dict[str, Any]) -> List[str]:
     DM 里第二张卡（R1 审计的 U3）。从卡里抽，这种分叉**在构造上不可能发生**。
     """
     out: List[str] = []
-    for rid in (_cards.CARDKIT_ANSWER_ID, _cards.CARDKIT_PANEL_BODY_ID):
+    for rid in _cards.CARDKIT_STREAM_IDS:
         found = False
         stack: List[Any] = [card]
         while stack:
@@ -517,7 +527,8 @@ class _CkOp(NamedTuple):
         return f"CardKit 写{what}元素失败（{self.element_id}）"
 
 
-def _ck_plan(display: str, panel_text: str, elems: Sequence[str]) -> List[_CkOp]:
+def _ck_plan(display: str, panel_text: str, elems: Sequence[str],
+             footer_text: Optional[str] = None) -> List[_CkOp]:
     """这一帧要写的元素列表（**按发送顺序**）。
 
     结构的唯一事实来源是 ``elems``（建实体时定下来的那份，之后只读）——所以「卡里没有的元素
@@ -531,9 +542,25 @@ def _ck_plan(display: str, panel_text: str, elems: Sequence[str]) -> List[_CkOp]
     # 回落补发的尾部会把同一段话再说一遍（R1 审计的第③条，也是 `docs/plan-v1.md` 的 R1 交付项）。
     if _cards.CARDKIT_PANEL_BODY_ID in elems:
         ops.append(_CkOp(_cards.CARDKIT_PANEL_BODY_ID, panel_text or " ", _CK_ROLE_PANEL))
+    if _cards.CARDKIT_FOOTER_ID in elems:
+        # 页脚是**纯装饰**：钩子还没数据时 `footer_text` 是 None ⇒ 写空格占位
+        # （元素建出来就必须有内容；空串在飞书那边有历史坑）。
+        ops.append(_CkOp(_cards.CARDKIT_FOOTER_ID, footer_text or " ", _CK_ROLE_DECOR))
     if _cards.CARDKIT_ANSWER_ID in elems:
         ops.append(_CkOp(_cards.CARDKIT_ANSWER_ID, display or " ", _CK_ROLE_ANSWER))
     return ops
+
+
+def _ck_split(ops: Sequence["_CkOp"]) -> Tuple[List["_CkOp"], Optional["_CkOp"]]:
+    """把一帧的 ops 拆成「一次 batch 里发的装饰」+「单独发的正文」。
+
+    为什么这么拆（写入预算，R0 实测）：卡级写入上限按官方口径 10 次/秒，而帧节流窗口是
+    0.25s ⇒ **每帧最多 2 次写**。装饰（面板 + 页脚）用**一次 `card.batch_update`** 承载，
+    正文单独发一次 `card_element.content`（打字机只认这个通道的累进写入），正好 2 次。
+    """
+    decor = [op for op in ops if op.role != _CK_ROLE_ANSWER]
+    answer = next((op for op in ops if op.role == _CK_ROLE_ANSWER), None)
+    return decor, answer
 
 
 def _log_ck_panel_write_failed_once() -> None:
@@ -550,6 +577,43 @@ def _log_ck_panel_write_failed_once() -> None:
                    "「正文新、面板旧」的半更新态；本帧按失败处理，交核心回落")
 
 
+def _log_ck_decor_write_failed_once(ops: Sequence["_CkOp"]) -> None:
+    """装饰元素（面板/页脚）写失败的限流告警（60 秒一条）。
+
+    为什么单列一条而不是并进面板那条：装饰失败**不 fail-open**（见 `_ld_ck_apply`），
+    所以卡片会继续逐字长大、只是那一段装饰冻结 —— 这种「看起来正常但其实坏了」的形态
+    必须留痕，否则真机上完全无迹可寻。
+    """
+    now = time.monotonic()
+    if now - getattr(_log_ck_decor_write_failed_once, "_at", 0.0) < 60.0:
+        return
+    _log_ck_decor_write_failed_once._at = now  # type: ignore[attr-defined]
+    ids = "、".join(op.element_id for op in ops)
+    logger.warning("[larkdeck] CardKit 装饰元素写入失败（%s）—— 本帧继续（正文不受影响），"
+                   "这几个元素后续不再尝试；卡片会停在「正文在长、装饰冻结」的状态", ids)
+
+
+def _ck_create_wall(card: Mapping[str, Any]) -> Optional[str]:
+    """建 CardKit 实体**之前**要过的两道墙：返回拒绝原因（``"字节"`` / ``"元素"``）或 ``None``。
+
+    为什么两道都要（R2 补的，审计缺口）：patch 路径超预算会**分级丢装饰**（面板 → 页脚 → 裸卡），
+    而 cardkit 的结构**建实体时定死、之后改不了** ⇒ 超了就是整张卡被飞书拒（`230099`/
+    `300305`），这一帧什么都没有。两道墙的判据都必须是**飞书那侧的口径**：
+      * 字节：``cards.card_bytes``（JSON 转义后的字节，见推论 13 的口径病）；
+      * 元素：``cards.count_elements``（**递归**口径 —— 真机实测服务端就是数递归总数：
+        递归 200 收下、204 拒收，码 `300305`；只数顶层会让「面板里塞了 200 个子元素」这种
+        形状从闸门底下溜过去）。
+    ⚠️ 这道墙**现在永远不会响**：实体卡的元素数是结构定死的 4 个（正文 + 面板 + 面板里的
+    markdown + 页脚）。留着它是**契约**：R3 要往面板里加子元素，那时元素数变成动态的，
+    墙必须已经在位（`tests/test_units.py` 直接拿合成长卡验它，不依赖它今天会响）。
+    """
+    if _cards.card_bytes(card) > _cards.FEISHU_CARD_BYTE_LIMIT:
+        return "字节"
+    if _cards.count_elements(card) > _cards.FEISHU_ELEMENT_LIMIT:
+        return "元素"
+    return None
+
+
 def _log_ck_over_budget_once(size: int) -> None:
     """CardKit 实体卡超过飞书硬上限的限流告警（60 秒一条）。
 
@@ -563,6 +627,21 @@ def _log_ck_over_budget_once(size: int) -> None:
     logger.warning("[larkdeck] CardKit 实体卡 %d 字节超过飞书实测硬上限 %d —— "
                    "不能像 patch 路径那样分级丢装饰（结构已定死），本帧 fail-open 交核心回落",
                    size, _cards.FEISHU_CARD_BYTE_LIMIT)
+
+
+def _log_ck_elements_over_once(count: int) -> None:
+    """CardKit 实体卡元素数超过飞书硬上限的限流告警（60 秒一条）。
+
+    与字节那条**分开**：两者的修法完全不同（字节 ⇒ 少装内容；元素 ⇒ 少建结构），
+    合一条日志会让「到底撞了哪道墙」看不出来。
+    """
+    now = time.monotonic()
+    if now - getattr(_log_ck_elements_over_once, "_at", 0.0) < 60.0:
+        return
+    _log_ck_elements_over_once._at = now  # type: ignore[attr-defined]
+    logger.warning("[larkdeck] CardKit 实体卡 %d 个元素超过飞书实测硬上限 %d（**递归**口径）"
+                   "—— 结构建实体时定死、之后改不了，本帧 fail-open 交核心回落",
+                   count, _cards.FEISHU_ELEMENT_LIMIT)
 
 
 def _log_no_colour_once() -> None:
@@ -1055,7 +1134,9 @@ class LarkDeckMixin:
         try:
             from lark_oapi.api.cardkit.v1 import (CreateCardRequest, CreateCardRequestBody,
                                                   ContentCardElementRequest,
-                                                  ContentCardElementRequestBody)
+                                                  ContentCardElementRequestBody,
+                                                  BatchUpdateCardRequest,
+                                                  BatchUpdateCardRequestBody)
             from lark_oapi.api.im.v1 import (CreateMessageRequest, CreateMessageRequestBody,
                                               ReplyMessageRequest, ReplyMessageRequestBody)
         except Exception:
@@ -1085,6 +1166,11 @@ class LarkDeckMixin:
                 ReplyMessageRequestBody.builder().msg_type("interactive")
                 .reply_in_thread(False).uuid(f"ld-msg-{card_id}")
                 .content(_entity_payload(card_id)).build()).build(),
+            batch_update=lambda card_id, actions, sequence, uuid_value:
+            BatchUpdateCardRequest.builder().card_id(card_id).request_body(
+                BatchUpdateCardRequestBody.builder()
+                .actions(json.dumps(actions, ensure_ascii=False))
+                .sequence(sequence).uuid(uuid_value).build()).build(),
             write_element=lambda card_id, element_id, content, sequence, uuid_value:
             ContentCardElementRequest.builder().card_id(card_id).element_id(element_id)
             .request_body(ContentCardElementRequestBody.builder().content(content)
@@ -1092,7 +1178,8 @@ class LarkDeckMixin:
         )
 
     async def _ld_ck_create(self, chat: str, *, answer: str, panel_text: str,
-                            reply_to: Optional[str] = None) -> Any:
+                            reply_to: Optional[str] = None,
+                            footer_text: Optional[str] = None) -> Any:
         """建 CardKit 实体 + 发实体卡。返回 ``(result, card_id, card_json)`` 或 ``None``。
 
         ⚠️ 第三个返回值是**建出来的那张卡的 JSON**：回合状态的元素表要从它里面抽
@@ -1107,13 +1194,19 @@ class LarkDeckMixin:
             return None                      # 没有 SDK ⇒ fail-open 回落（不猜、不抛）
         card = _cards.cardkit_entity_card(answer, panel_text, streaming=True,
                                          expanded=bool(_cfg("panel_expanded")),
-                                         panel=bool(_cfg("unified_panel")))
-        # ⚠️ **基线预算闸门**：patch 路径超预算会分级丢装饰（面板→页脚→裸卡），而 cardkit 的
-        # 结构**在建实体时定死、之后不能改**，超预算就是「整卡被飞书拒（230099）⇒ 这一帧
-        # 什么都没了」。所以这里至少守住**实测硬上限**，超了就 fail-open 交给核心回落。
-        size = _cards.card_bytes(card)
-        if size > _cards.FEISHU_CARD_BYTE_LIMIT:
-            _log_ck_over_budget_once(size)
+                                         panel=bool(_cfg("unified_panel")),
+                                         # `footer: false` ⇒ 传 None ⇒ 页脚元素**不进卡**；
+                                         # 开着但这一刻还没数据 ⇒ 空串 ⇒ 元素留在卡里等后续帧更新
+                                         footer_text=("" if _cfg("footer") else None))
+        # ⚠️ **基线闸门（两道墙）**：patch 路径超预算会分级丢装饰（面板→页脚→裸卡），而 cardkit
+        # 的结构**在建实体时定死、之后不能改**，超了就是「整卡被飞书拒（230099 / 300305）⇒
+        # 这一帧什么都没了」。所以这里守**实测硬上限**，超了就 fail-open 交给核心回落。
+        wall = _ck_create_wall(card)
+        if wall == "字节":
+            _log_ck_over_budget_once(_cards.card_bytes(card))
+            return None
+        if wall == "元素":
+            _log_ck_elements_over_once(_cards.count_elements(card))
             return None
         made = await self._ld_write_with_retry(
             lambda: reqs.create_card(json.dumps(card, ensure_ascii=False)),
@@ -1170,8 +1263,41 @@ class LarkDeckMixin:
             return [str(e) for e in elems]
         return []
 
-    async def _ld_ck_apply(self, card_id: str, ops: Sequence["_CkOp"],
-                           seq: int) -> Tuple[bool, int, Optional["_CkOp"]]:
+    async def _ld_ck_batch(self, card_id: str, ops: Sequence["_CkOp"], seq: int) -> bool:
+        """一次 `card.batch_update` 写多个装饰元素（每帧最多这一次 + 正文一次）。
+
+        真机实测（R0）：流式期间可用、**不关会话**、只占**一个** sequence。
+        """
+        reqs = self._ld_ck_requests()
+        if reqs is None:
+            return False
+        actions = [{"action": "partial_update_element",
+                    "params": {"element_id": op.element_id,
+                               # ⚠️ `tag`/`text_size` 这类**结构性**字段不能进 partial update
+                               # （飞书只允许改内容），所以只传 content。
+                               "partial_element": {"content": op.content}}}
+                   for op in ops]
+        resp = await self._ld_write_with_retry(
+            lambda: reqs.batch_update(card_id, actions, int(seq), f"ld-{card_id}-b{seq}"),
+            self._client.cardkit.v1.card.batch_update, "装饰元素")
+        return _ld_response_code(resp) == 0
+
+    @staticmethod
+    def _ld_ck_mark_dead(state_ref: Dict[str, Any], ops: Sequence["_CkOp"]) -> None:
+        """把写失败的**装饰**元素标死：后续帧不再写它们（省配额、也不再刷日志）。
+
+        只标装饰：正文失败是整帧失败（fail-open 交核心），没有「下帧再试」这回事。
+        """
+        if not isinstance(state_ref, dict):
+            return
+        dead = state_ref.get("ck_dead")
+        if not isinstance(dead, set):
+            dead = set()
+        dead.update(op.element_id for op in ops)
+        state_ref["ck_dead"] = dead
+
+    async def _ld_ck_apply(self, card_id: str, ops: Sequence["_CkOp"], seq: int,
+                           state_ref: Dict[str, Any]) -> Tuple[bool, int, Optional["_CkOp"]]:
         """按顺序写一批元素；返回 ``(是否全部成功, 用掉之后的序号, 失败的那个 op)``。
 
         ⚠️ **序号只增不减**：调用方必须把返回的序号**无条件写回状态**，哪怕中途失败 ——
@@ -1179,15 +1305,46 @@ class LarkDeckMixin:
         去重键处理（**可能返回 0 但内容没变** = 静默半更新）。这条规矩来自第十二路审计，
         R0 的真机探针也印证了「严格递增」：跳号与撞号都回 `300317`。
         """
-        if not ops:
-            # **空 ops 是契约违反**，不是「没什么可写」：元素表为空（或表里全是卡里没有的 id）
-            # 意味着这张卡永远长不动，而返回成功会让核心以为一切正常 —— 卡片静默冻死、
-            # 一行日志都没有、也不回落（R1 审计的 U1）。所以按失败处理。
-            return False, seq, None
-        for op in ops:
+        decor, answer = _ck_split(ops)
+        # **未变化不重写**（R2 规则）：装饰只在内容**真的变了**时才发那一次 batch。
+        # 收益是写入预算的一半：一帧里真正会变的只有正文，面板/页脚往往好几帧不动
+        # （面板等新工具/新推理数据，页脚等下一次 API 请求），稳态下每帧只写 1 次。
+        # ⚠️ 判据是 state 里的 `ck_decor`（**已确认写成功**过的那份内容），不是「上一帧算出来的
+        # 内容」—— 拿「算出来的」当已写会把「其实没写成功」的装饰永久静默冻结（本项目的头号
+        # 失败模式），所以记账只在 batch 返回成功后发生（见下面那行）。
+        sent = state_ref.get("ck_decor")
+        sent = sent if isinstance(sent, dict) else {}
+        fresh = [op for op in decor if sent.get(op.element_id) != op.content]
+        if fresh:
+            # 装饰**一次 batch 发走**（写入预算：每帧 ≤2 次；R0 实测 batch 只占 1 个 sequence）
             seq += 1
-            if not await self._ld_ck_write(card_id, op.element_id, op.content, seq):
-                return False, seq, op
+            if not await self._ld_ck_batch(card_id, fresh, seq):
+                # 装饰失败**不 fail-open**（处置矩阵：`DEAD` + 限流 WARNING，帧继续）：
+                # 把装饰失败升级成整帧失败，会买下「上游补 finalize + `_first_send` ⇒ DM 两张卡」
+                # 这条链；而静默吞掉又是本项目的头号失败模式 —— 唯一同时满足两边的形态是
+                # 「不 fail-open 但必须留痕」。正文失败仍然 fail-open（没有正文这张卡就没意义）。
+                self._ld_ck_mark_dead(state_ref, fresh)
+                _log_ck_decor_write_failed_once(fresh)
+            else:
+                # 记账 = 「卡上现在是这个内容」。所以 ① 只记**这一次真的发出去的** op
+                # ② **合并**历史：本帧只写面板（页脚没变）时，页脚的记录不能被本帧抹掉，
+                # 否则下一帧会把没变的页脚再写一次（去重记账自己戳出一个洞）。
+                state_ref["ck_decor"] = {**sent,
+                                         **{op.element_id: op.content for op in fresh}}
+        if answer is None and not fresh:
+            # **一帧里一个 op 都写不出去 ⇒ 契约违反**，不是「没什么可写」：元素表为空、表里全是
+            # 卡里没有的 id、或者装饰全被判成「未变化」而计划里又没有正文 —— 这几种都意味着
+            # 这张卡这一帧长不动，而返回成功会让核心以为一切正常：**卡片静默冻死、一行日志都
+            # 没有、也不回落**（R1 审计的 U1）。所以按失败处理。
+            # 这条检查**放在过滤之后**（覆盖上面所有形状），只此一处；`not ops` 与它等价 ——
+            # 两处都写会让「撤掉这条修复」的单点变异打不中（实测：留着旧的那行，U1 变异全绿）。
+            # 正文 op 是**故意不做去重**的：帧只在 `text` 变了时才走到这里，正文内容必然是新的；
+            # 给它也加去重就等于把「这一帧到底写没写」变成猜测。
+            return False, seq, None
+        if answer is not None:
+            seq += 1
+            if not await self._ld_ck_write(card_id, answer.element_id, answer.content, seq):
+                return False, seq, answer
         return True, seq, None
 
     async def _ld_write_with_retry(self, make_request: Any, call: Any, what: str) -> Any:
@@ -1237,7 +1394,8 @@ class LarkDeckMixin:
                 # ---- CardKit 实体卡（真打字机）：结构建实体时定死，之后只按 id 写元素 ----
                 panel_text = self._ld_panel_markdown(chat, now)
                 made = await self._ld_ck_create(chat, answer=display, panel_text=panel_text,
-                                                reply_to=reply_to)
+                                                reply_to=reply_to,
+                                                footer_text=self._ld_footer())
                 if made is None:
                     # 任何一步失败都交给核心回落（这是**契约**：帧失败 ⇒ 本回合改走 edit/send）
                     return self._ld_stream_fail("CardKit 建实体/发实体卡失败")
@@ -1317,17 +1475,32 @@ class LarkDeckMixin:
             if body_bytes > _cards.FEISHU_CARD_BYTE_LIMIT:
                 _log_ck_over_budget_once(body_bytes)
                 return self._ld_stream_fail("CardKit 正文超过硬上限")
+            elems = self._ld_ck_elems(state)
+            dead = state.get("ck_dead")
+            dead = dead if isinstance(dead, set) else set()
+            # 写失败的装饰元素后续不再尝试（省配额、也不再刷日志）
+            live_elems = [e for e in elems if e not in dead]
             ops = _ck_plan(display, self._ld_panel_markdown(chat, state.get("t0")),
-                           self._ld_ck_elems(state))
-            ok, seq_after, failed = await self._ld_ck_apply(card_id, ops, _ck_seq(state))
+                           live_elems, self._ld_footer())
+            live_state = dict(state)
+            ok, seq_after, failed = await self._ld_ck_apply(card_id, ops, _ck_seq(state),
+                                                           live_state)
             if ok:
-                self._ld_stream_put(key, {**state, "last": text, "last_at": now,
+                # `live_state` 里带着装饰失败时标下的 `ck_dead`，所以这里用它的并集
+                self._ld_stream_put(key, {**state, "ck_dead": live_state.get("ck_dead") or set(),
+                                          # 装饰的「已写成功」记账（未变化不重写的判据）
+                                          "ck_decor": live_state.get("ck_decor") or {},
+                                          "last": text, "last_at": now,
                                           "ck_seq": seq_after,
                                           "frames": int(state.get("frames") or 0) + 1})
                 return True
             # 失败：**只把序号推进**（绝不回退，见 `_ld_ck_apply` 的说明），
             # 不动 `last`/`last_at` —— 让下一帧还能把同一段文本重试一次。
-            self._ld_stream_put(key, {**state, "ck_seq": seq_after})
+            self._ld_stream_put(key, {**state, "ck_dead": live_state.get("ck_dead") or set(),
+                                      # 装饰**在正文之前写**，正文失败时装饰可能已经写成功 ⇒
+                                      # 记账要跟着走，否则下一帧会把没变的装饰重写一遍
+                                      "ck_decor": live_state.get("ck_decor") or {},
+                                      "ck_seq": seq_after})
             if failed is not None and failed.role == _CK_ROLE_PANEL:
                 # 这一条必须**单独留痕**：正文已经写成功了，面板失败意味着那张卡
                 # 会停在「正文新、面板旧」的半更新态 —— 而唯一判据就是这次返回码。
