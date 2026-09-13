@@ -480,7 +480,7 @@ seed 占位 → 面板出现 → 占位消失 → 收尾绿边且关 streaming_m
 | 1b | 打字机（**逐字**） | `native_transport: "cardkit"` → CardKit 实体（`card.create` + 发实体卡）+ 每帧 `card_element.content` 写正文与面板两个元素；收尾用 `message.patch` 整卡替换 | **开（`cardkit` 是默认**，2026-09-13 翻的；想回旧路径配 `patch`） | **B**（整链真机 `code=0`）+ **C ✅**（**用户肉眼判定**：甲「几个字几个字地跳」、乙「一个字一个字往外冒」⇒ 逐字必须走 CardKit）+ **D**（`--cardkit-prod` 走**生产代码路径**真机通过：建实体 1 次 + 发实体卡 1 次 + 元素写入 6 次（3 帧 × 正文/面板两个元素）+ patch 收尾 1 次） |
 | 1c | 无输入提示 | 覆盖 `_reactions_enabled()`（配置 `reactions`，默认保持 Hermes 行为） | 保持 | **A**（覆盖逻辑 + **尊重父类** + 私有名已登记进 `compat.REACTION_ADAPTER_ATTRS` 并在启动自检里上报；此前「父类缺失」那条路无门禁，第六路审计指出后已补） |
 | 2 | 完成态绿色面板 | `on_session_end` → `panel.record_turn_end` → `cards.border_for_status` | 开 | **A** + **B**（三种状态色的探针卡都被飞书接受）+ **D**（超预算档也保住颜色：`--stop-redraw` 真机实测载荷里有色、`code=0`）+ **E**（收尾帧必须绿边、必须关 `streaming_mode`、不许带占位） |
-| 3 | 中止黄边 / 报错红边 | 同上 + 覆盖 `interrupt_session_activity` 自己重绘 | 开 | **A**（含「空回合也要画出黄边」「必须落在绑定会话」）+ **B** + **D**（**60000 字节正文**的卡：正文留住 + 载荷带黄边 + 飞书 `code=0`，真机端到端；见第十四轮）+ **E**（`/stop` 之后至少一次写入且载荷含中止色） |
+| 3 | 中止黄边 / 报错红边 | 同上 + 覆盖 `interrupt_session_activity` 自己重绘 | 开 | **A**（含「空回合也要画出黄边」「必须落在绑定会话」）+ **B** + **D**（**60000 字节正文**的卡：正文留住 + 载荷带黄边 + 飞书 `code=0`，真机端到端；见第十四轮）+ **E**（`/stop` 之后至少一次写入且载荷含中止色）+ **D**（**在 CardKit 实体卡上**同样成立：默认翻成 cardkit 后 `--stop-redraw` 的 native 路径实测走的是 cardkit，`/stop` 载荷 61095 字节含 `yellow`、`code=0`） |
 | 4 | 展开面板 + 每轮相对耗时 | `cards.unified_panel`（`第 N 轮 · 6.2s`）+ `panel_expanded` | 收起 | **A** + **B** + **E**（正文一开始面板就得在、标题含 `⏱`）+ **C 待定**（展开/收起的观感） |
 | 5 | Clarify 2.0 选项卡 | `cards.clarify_card_2`（`select_static` / `multi_select_static` / `input` + 组件级 `behaviors`） | **`clarify_dialect: "2.0"`**（2026-09-13 翻的） | **B**（真 2.0 卡飞书接受）+ **C ✅**（真机点击到达：`tag=select_static option='opt_a'`；⑬⑭ 真澄清卡点击解析出 `clarify=probe-c2`）+ 2.0 e2e 全绿 |
 | 6 | Clarify 回填 + 确认徽章 | `clarify_resolved_card` / `_2`（✅ + 答案 + 用户） | 开 | **A**（含「提交未生效不回填」）+ **B**（回填帧的响应形式与官方示例一致） |
@@ -782,3 +782,20 @@ CardKit。用户肉眼判定「甲（patch）几个字几个字跳、乙（cardk
 
 **回滚**：一条配置 `native_transport: "patch"`。失败方向也是安全的 —— 任何一步失败都
 fail-open 回落到 edit/send（那仍然是一张卡，只是没有逐字动画）。
+
+#### 翻默认之后**补跑**的真机门禁（原来那些是在 `patch` 上跑的，不能直接沿用）
+
+默认一翻，几条既有真机路径的**传输就变了** —— 旧的绿不再覆盖现在的形态。所以逐条补跑：
+
+| 真机门禁 | 现在实际跑在哪条传输上 | 结果 |
+|---|---|---|
+| `--stop-redraw`（非 native 路径） | `patch`（这条路走 `send`） | 60000 字节正文留住 · `/stop` 载荷 61095 字节含 `yellow` · `code=0` |
+| `--stop-redraw`（**native 路径**） | **`cardkit`**（探针现在会**当场判定**并打印：状态里有 `card_id` ⇒ 实体卡） | seed 建起实体卡 · 3 帧元素写入（19998/30000/60000 字节）全成功 · `/stop` 载荷 61095 字节含 `yellow` · `code=0` |
+| 默认 17 卡渲染探针 | 结构（`cards.py` 改过面板元素） | 17/17 被飞书接收（`code=0`），最大 2262 字节 |
+| `--cardkit-prod` | 默认（不塞配置） | 建实体 1 · 发实体卡 1 · 元素写入 6 · patch 收尾 1，全 `code=0` |
+
+⚠️ 第二条尤其值得记：**「CardKit 实体卡 + 中止重绘」是翻默认之后才出现的新组合**
+（实体卡是用 `card_element.content` 流式写的，而 `/stop` 那一帧走 `message.patch`）。
+它此前没有任何门禁覆盖 —— 而探针原来只打印「帧成功」，**并不能证明它跑在哪条传输上**
+（patch 路径失败了一样会有日志）。现在探针直接按结构判定（只有 cardkit 的回合状态里才有
+`card_id`），把这句结论钉在证据上。

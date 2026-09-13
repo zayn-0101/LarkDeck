@@ -1152,6 +1152,15 @@ def probe_stop_redraw(client, chat: str, cards) -> int:
         state = adapter._ld_stream_get(f"{chat}:{stream_key}")
         stream_mid = str((state or {}).get("message_id") or "")
         print(f"   流式卡 message_id = {stream_mid}")
+        # ⚠️ 必须**直接判传输**，不能靠推断：默认传输翻了之后，这条路径会在 cardkit 上跑
+        # （实体卡 + 元素写入），而「有没有出现帧失败日志」证明不了它走的是哪条
+        # （patch 路径失败了一样有日志）。判据是结构性的：只有 cardkit 的回合状态里才有
+        # `card_id`（建实体拿到的那个 id），patch 路径没有这个键。
+        _used = "cardkit" if (state or {}).get("card_id") else "patch"
+        print(f"   这条路径实际用的传输 = {_used}"
+              f"（状态里有 card_id「{(state or {}).get('card_id')}」⇒ 实体卡）")
+        if _used == "cardkit":
+            print("   ⇒ 下面「/stop 载荷带黄边」这条结论覆盖的是 **CardKit 实体卡**")
         # 先把**所有认出来的 id** 记账（`_ld_track` 抄到的那份是兜底），再判失败
         if tracked_ids:
             _save_sent_ids(_load_sent_ids() + sorted(set(tracked_ids)))
