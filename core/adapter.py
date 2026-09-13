@@ -1775,6 +1775,11 @@ class LarkDeckMixin:
             return True
         message_id = state["message_id"]
         if finalize:
+            # R6a：**只在收尾帧**做 markdown 卫生（删游离 `**` + H1–H3 降级）。
+            # 为什么不能每帧做：流式帧的文本必须是**前缀链**（上游按「最后一次成功发出的
+            # 帧文本是可见前缀」记账），中间帧改写会让前缀链断掉 ⇒ 回答被重发一遍。
+            # 收尾帧之后不再有帧，所以在这里改写是安全的；而且用户最终看到的就是这一帧。
+            display = _cards.sanitize_markdown(display)
             card = self._ld_build_card(display or " ", streaming=False,
                                        panel=self._ld_panel(chat, state.get("t0")),
                                        footer=self._ld_footer())

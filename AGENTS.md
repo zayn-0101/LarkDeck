@@ -141,6 +141,12 @@ tests/        见「验证」
     再改 `_DEFAULTS` + `plugin.yaml` + README（三处同步有机械门禁：
     `test_config_schema_matches_defaults_exactly` 连 README 的键集一起核对，
     另有 `test_declared_defaults_are_an_explicit_decision` 专门钉默认值）。
+- **markdown 卫生只在收尾帧做**（`cards.sanitize_markdown`，R6a）：核心的契约是
+  「流式帧的 `text` 是**累积全文**」⇒ 任何一帧改写前缀，都会让用户看到文字**跳变**
+  （而且核心自己只在收尾那一帧补未闭合的围栏）。三条纪律：① **幂等**（`f(f(x)) == f(x)`）；
+  ② **代码区内容一个字节不许动**（围栏 / 行内代码里的 `#`、`**` 都是正文）；③ 游离的 `**`
+  **删掉而不是补齐**（补一个 `**` 会把后半段吞进加粗 —— 这是本阶段原型踩过的坑）。
+  另：字节闸门量的是**变换后**要发出去的文本（口径病，见 `docs/lessons.md` 推论 13）。
 - 页脚指标是进程内全局（钩子记「最近一次 API 请求」），多会话并发共享同一快照；
   要按会话隔离得从钩子载荷的 `session_id` 分桶（未做）。
 - 面板数据策略与页脚不同：`panel.py` 按 `session_id` 分桶；归属优先用

@@ -562,6 +562,29 @@ MUTATIONS = [
      '        try:\n'
      '            res = await self._ld_ck_settings(card_id, {"content": text}, seq, retry=False)',
      "test_units"),
+    # ---- R6a：markdown 卫生（只在收尾帧、只删不补、代码区不动）------------------------- #
+    ("R6a-1-流式帧也做卫生（前缀链断掉 ⇒ 回答重发一遍）", "core/adapter.py",
+     '        display = text',
+     '        display = _cards.sanitize_markdown(text)',
+     "test_units"),
+    ("R6a-2-改回「补一个 `**` 收尾」（把尾巴吞进加粗）", "core/cards.py",
+     '    for index in range(len(text) - 2, -1, -1):\n'
+     '        if text.startswith("**", index) and not any(start <= index < end\n'
+     '                                                    for start, end in spans):\n'
+     '            return text[:index] + text[index + 2:]\n'
+     '    return text',
+     '    return text.rstrip("\\n") + "**"',
+     "test_units"),
+    ("R6a-3-卫生不管代码区（把代码块里的 `#`/`**` 也改坏）", "core/cards.py",
+     '    spans = _code_spans(text)\n'
+     '    if _outside_code(text, spans).count("**") % 2 == 0:',
+     '    spans = []\n'
+     '    if text.count("**") % 2 == 0:',
+     "test_units"),
+    ("R6a-4-先降级标题再删游离 `**`（奇偶性被搅乱 ⇒ 删错标记）", "core/cards.py",
+     '    return _demote_headings(_drop_unpaired_bold(text))',
+     '    return _drop_unpaired_bold(_demote_headings(text))',
+     "test_units"),
     ("R7-3-缺数据编成 0（页脚显示「⚡ 0%」这种假读数）", "core/adapter.py",
      '                cache=snap.get("cache_pct") if mode in ("basic", "full") else None,',
      '                cache=(snap.get("cache_pct") or 0) if mode in ("basic", "full") else None,',

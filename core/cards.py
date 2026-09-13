@@ -46,6 +46,8 @@
 
 from __future__ import annotations
 
+import re as _re
+
 import json
 import re
 import unicodedata
@@ -377,6 +379,11 @@ def footer_line(*, duration: Optional[float] = None, model: str = "",
     return " · ".join(parts) or None
 
 
+#: R6a 卫生用到的正则：围栏、行内代码、H1–H3。
+_FENCE_RE = _re.compile(r"```.*?```", _re.S)
+_INLINE_CODE_RE = _re.compile(r"`[^`\n]*`")
+_HEADING_RE = _re.compile(r"^(#{1,3})[ \t]+(.*)$", _re.M)
+
 #: 工具步骤状态符号（符号语言无关，无需 i18n；未知状态用「•」兜底）。
 _TOOL_STATUS_MARKS = {"running": "⏳", "ok": "✅", "error": "❌", "blocked": "⛔"}
 
@@ -551,6 +558,75 @@ def _summary_of(text: str, *, fallback: str = "") -> Dict[str, Any]:
     """
     flat = " ".join(str(text or "").split())
     return {"content": flat[:SUMMARY_MAX] or fallback}
+
+
+def _code_spans(text: str):
+    """所有**代码区**（围栏 + 行内代码）的跨度，按起点排序。
+
+    为什么需要它（R6a）：围栏/行内代码里的 `**` 与 `#` **不是 markdown 语法**，
+    对它们做卫生会把终端输出、代码块内容改坏 —— 那是不可接受的数据损坏。
+    """
+    spans = [(m.start(), m.end()) for m in _FENCE_RE.finditer(text)]
+    for m in _INLINE_CODE_RE.finditer(text):
+        if not any(start <= m.start() < end for start, end in spans):
+            spans.append((m.start(), m.end()))
+    return sorted(spans)
+
+
+def _outside_code(text: str, spans) -> str:
+    """把代码区抠掉后的文本（**只用于判断**，不用于输出）。"""
+    out, pos = [], 0
+    for start, end in spans:
+        out.append(text[pos:start])
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def sanitize_markdown(text: str) -> str:
+    """收尾帧专用的 markdown 卫生（**纯函数 + 幂等**：``f(f(x)) == f(x)``）。
+
+    为什么只在**收尾帧**用：它做的两件事（删游离 `**`、降级 H1–H3）都会**改写文本**，
+    而流式帧的文本必须是**前缀链**（上游按「最后一次成功发出的帧文本是可见前缀」记账，
+    见 `_ld_stream_frame` 的说明）—— 中间帧改写会让前缀链断掉，表现为「回答重发一遍」。
+
+    只做两件事（围栏**上游已经补过了**，别重复补 —— R6a 的审计纠正）：
+      ① **删掉**代码区之外游离的那个 `**`；
+      ② 代码区之外的 **H1–H3** 降级成加粗行。
+
+    ⚠️ 两个坑（原型实测，别重犯）：
+      * **不能「补一个 `**` 收尾」**：补出来的收尾落在整段最后，会把它后面的**全部内容**
+        吞进加粗（实测 `# 标题\n正文：**A、B\n## 建议` ⇒ `**建议****`，既难看又改语义）；
+      * **顺序不能反**：必须先删游离 `**`、再降级标题 —— 降级会给标题行凭空加一对 `**`，
+        把奇偶性搅乱，那时就再也分不出哪个是游离的了。
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    return _demote_headings(_drop_unpaired_bold(text))
+
+
+def _drop_unpaired_bold(text: str) -> str:
+    """删掉代码区之外游离的那个 `**`（不补，理由见 :func:`sanitize_markdown`）。"""
+    spans = _code_spans(text)
+    if _outside_code(text, spans).count("**") % 2 == 0:
+        return text
+    for index in range(len(text) - 2, -1, -1):
+        if text.startswith("**", index) and not any(start <= index < end
+                                                    for start, end in spans):
+            return text[:index] + text[index + 2:]
+    return text
+
+
+def _demote_headings(text: str) -> str:
+    """H1–H3 降级成加粗行 —— 只看**代码区之外**的行。"""
+    spans = _code_spans(text)
+
+    def _sub(match) -> str:
+        if any(start <= match.start() < end for start, end in spans):
+            return match.group(0)
+        body = match.group(2).strip()
+        return f"**{body}**" if body else match.group(0)
+    return _HEADING_RE.sub(_sub, text)
 
 
 def summary_text(text: str) -> str:

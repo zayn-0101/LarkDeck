@@ -2743,6 +2743,77 @@ def test_context_store_snapshot_and_aliases() -> None:
     assert context.snapshot()["input_tokens"] is None
 
 
+def test_markdown_hygiene_applies_to_finalize_only() -> None:
+    """卫生**只允许出现在收尾帧**：流式帧的文本必须原样送出去（前缀链纪律）。
+
+    判据：中间帧写进元素的内容 == 原始 text；收尾那一帧的整卡 patch 载荷里
+    出现**降级后**的文本（`# 标题` ⇒ `**标题**`）。两条一起才说明「该改的改了、不该改的没动」。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    try:
+        raw = _make()
+        updates = _wire_patch(raw)
+        adapter.configure(native_transport="patch")
+        assert _run(raw.send_stream_frame("", chat_id="oc_md", turn_id="t-md"))
+        assert _run(raw.send_stream_frame("# 标题\n正文：**A、B", chat_id="oc_md", turn_id="t-md"))
+        _mid = json.loads(updates[-1]["content"])
+        _mid_text = [e.get("content") for e in _mid["body"]["elements"]
+                     if e.get("tag") == "markdown"]
+        assert any("# 标题" in (t or "") for t in _mid_text), \
+            f"流式帧的文本必须原样（前缀链纪律）：{_mid_text}"
+        assert _run(raw.send_stream_frame("# 标题\n正文：**A、B", finalize=True,
+                                          chat_id="oc_md", turn_id="t-md"))
+        _fin = json.loads(updates[-1]["content"])
+        _fin_joined = json.dumps(_fin, ensure_ascii=False)
+        assert "**标题**" in _fin_joined, f"收尾帧必须做卫生（降级标题）：{_fin_joined[:200]}"
+        assert "# 标题" not in _fin_joined, f"收尾帧不该留 H1：{_fin_joined[:200]}"
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_sanitize_markdown_is_idempotent_and_never_touches_code() -> None:
+    """R6a 的 markdown 卫生：**纯函数 + 幂等**，而且**代码区逐字不动**、**只删不补**。
+
+    为什么这几条是硬要求（原型实测踩过两次）：
+      * **不能「补一个 `**`」** —— 补出来的收尾落在整段最后，会把它后面的全部内容吞进加粗
+        （`# 标题\n正文：**A、B\n## 建议` ⇒ `**建议****`）；所以只允许**删**那个游离标记；
+      * **顺序**必须先删再降级 —— 降级会给标题行凭空加一对 `**`，把奇偶性搅乱；
+      * **代码区不是 markdown** —— 围栏/行内代码里的 `**` 与 `#` 改了就是数据损坏。
+    """
+    cases = [
+        "# 标题\n正文", "## 小标题\n\n正文", "### 三级\n正文", "#### 四级不动\n正文",
+        "正文 **加粗", "正文 **加粗** 正常", "无标记的正文",
+        "**未闭合\n\n# 标题", "", "   ",
+        "```\ncode with ** inside\n```", "正文\n```\ncode ** here\n```",
+        "```\n# not a heading\n**x\n```", "# 标题\n```\n# code\n```",
+        "行内 `**not bold` 与正文 **bold**", "行内 `a**b` 单独一个",
+        "# 磁盘报告\n占用前三：**A、B\n## 建议", "**跨行\n加粗**合法", "**a** 与 **b**",
+    ]
+    for case in cases:
+        once = cards.sanitize_markdown(case)
+        assert cards.sanitize_markdown(once) == once, f"不幂等：{case!r} ⇒ {once!r}"
+        # 代码区逐字不变（最硬的一条：宁可格式少一点，也不能改坏代码块内容）
+        assert ([case[a:b] for a, b in cards._code_spans(case)]
+                == [once[a:b] for a, b in cards._code_spans(once)]), \
+            f"代码区被改了：{case!r} ⇒ {once!r}"
+    # 具体形状（逐条钉住，别只断言性质）
+    assert cards.sanitize_markdown("# 磁盘报告") == "**磁盘报告**"
+    assert cards.sanitize_markdown("正文 **加粗") == "正文 加粗"
+    assert cards.sanitize_markdown("**跨行\n加粗**合法") == "**跨行\n加粗**合法"   # 成对的不许动
+    assert cards.sanitize_markdown("```\n# code\n**x\n```") == "```\n# code\n**x\n```"
+    assert cards.sanitize_markdown("#### 四级不动") == "#### 四级不动"
+    # ⚠️ 这一条是**顺序**的判据（先删游离 `**`、再降级标题）：反过来的话，降级会给标题行凭空
+    #    加一对 `**`，把奇偶性搅成偶数 ⇒ 那个游离标记**不会被删**，结果就长成下面「不许」的样子。
+    assert cards.sanitize_markdown("# 磁盘报告\n占用前三：**A、B\n## 建议") == \
+        "**磁盘报告**\n占用前三：A、B\n**建议**", "顺序反了（必须先删游离 **、再降级标题）"
+    assert cards.sanitize_markdown(None) is None and cards.sanitize_markdown("") == ""
+
+
 def test_footer_metrics_are_opt_in_and_never_fake_zero() -> None:
     """R7 页脚扩展：三段新指标**默认不出现**，开了才出现，而且**缺数据就少一段**。
 
@@ -5416,6 +5487,22 @@ def test_late_begin_turn_must_not_poison_current_turn():
     assert "t2" not in list(panel._STATE["s1"]["closed"]), "当前回合被记进了作废集"
     panel.reset()
 
+
+
+def test_plan_progress_table_keeps_the_pending_row() -> None:
+    """`docs/plan-v1.md` 的进度表里必须留着 `| R3` 那一行（**未完成的下一阶段**）。
+
+    为什么值得一条门禁：那一行是「下一步在等什么」（R3 还在等用户肉眼确认面板子元素的落点）
+    的**唯一记录**。2026-09-14 实测过一次静默丢失 —— 给进度表**追加一行**时替换串漏带了被替换的
+    那一行，于是「已完成的行」上去了、「未完成的行」没了，而四门禁照旧全绿（文档没人守）。
+    这类「补一条记录却抹掉另一条」的错，只有机械门禁能看见。
+    """
+    plan = (_pathlib.Path(_REPO_PARENT) / "larkdeck" / "docs" / "plan-v1.md").read_text(
+        encoding="utf-8")
+    assert "| R3" in plan, "进度表里的 R3（未完成的下一阶段）那一行不见了"
+    # 已完成的阶段行也必须在（防止「整张表被谁重写」）
+    for done in ("| R0 ", "| R1 ", "| R2 ", "| R5 ", "| R7 "):
+        assert done in plan, f"进度表少了已完成阶段的记录：{done!r}"
 
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items())
