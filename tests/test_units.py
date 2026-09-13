@@ -165,7 +165,15 @@ def _run(coro):
 
 
 def _make(**cfg: Any):
-    """按与真实路径完全相同的方式造一个「内置适配器 + 卡片层」实例。"""
+    """按与真实路径完全相同的方式造一个「内置适配器 + 卡片层」实例。
+
+    ⚠️ 这里**显式**把传输钉成 ``patch``：native 帧的行为是**随传输而变**的
+    （``cardkit`` 走实体卡 + 元素写入，``patch`` 走整卡替换），所以涉及帧的测试必须
+    **声明自己在测哪条**，不能隐式继承默认值 —— 否则以后翻默认时，一堆断言会以
+    「突然红了但没人知道为什么」的形式一起爆掉（阶段 9 翻默认时实测过一次）。
+    要测 cardkit：先 `_make()` 再 `adapter.configure(native_transport="cardkit")`。
+    """
+    cfg.setdefault("native_transport", "patch")
     return adapter.build_adapter(StubAdapter, _StubConfig(**cfg))
 
 
@@ -758,6 +766,22 @@ def test_native_streaming_probe_and_seed():
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)
         adapter._apply_metrics_config()
+
+
+def test_declared_defaults_are_an_explicit_decision():
+    """几个「用户看得见」的默认值必须有断言钉着 —— 翻它们必须是**显式决定**。
+
+    教训（阶段 9）：我试着把 `native_transport` 默认翻成 `cardkit`，结果 8 条既有断言
+    一起红 —— 因为那些测试隐式继承了默认值。现在测试自己声明传输（见 `_make`），
+    而「默认到底是什么」由这一条集中声明：改默认就会红这一条，且**只红这一条**。
+    """
+    declared = dict(adapter._DEFAULTS)
+    # `patch` 是当前默认：cardkit 已实现并真机验证，但翻默认要先让单测替身学会那条传输
+    assert declared["native_transport"] == "patch", (
+        "翻这个默认要先确认：cardkit 传输的边界（序号/失败语义/孤儿卡）已过审计")
+    assert declared["clarify_dialect"] == "2.0"       # 真机点击到达 + 2.0 e2e 全绿后才翻的
+    assert declared["cards"] is True
+    assert declared["native_streaming"] is True
 
 
 def test_cardkit_transport_writes_elements_and_falls_open():
