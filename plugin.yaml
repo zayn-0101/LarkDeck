@@ -31,8 +31,8 @@ config_schema:
     description: "澄清提问用交互卡；无线索或其他失败时回落内置文字提问"
   clarify_dialect:
     type: string
-    default: "1.0"
-    description: "澄清卡方言：1.0（按钮，默认，真机已跑通）/ 2.0（下拉+输入框，需真机点击验证后再翻）"
+    default: "2.0"
+    description: "澄清卡方言：2.0（下拉+输入框，默认；真机点击已验证回调到达）/ 1.0（按钮，旧路径，真机也跑得通）"
   unified_panel:
     type: boolean
     default: true

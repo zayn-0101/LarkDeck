@@ -187,7 +187,7 @@ _DEFAULTS: Dict[str, Any] = {
     "clarify_cards": True,    # 澄清使用交互卡
     # 澄清卡方言：1.0（按钮 + 顶层 value，真机已跑通，**默认**）/ 2.0（下拉 + 输入框 +
     # 组件级 behaviors，需真机点击确证后再翻默认；见 AGENTS.md 不变量 5）
-    "clarify_dialect": "1.0",
+    "clarify_dialect": "2.0",
     # 「处理中」表情反应：Hermes 会在用户消息上打一个 Typing 表情、处理完撤掉 ——
     # 在飞书上这就相当于「输入提示」。流式卡片本身已是即时反馈，aiduPOP 把「无输入提示」
     # 列进了即时响应的观感。**默认保持 Hermes 的行为**（true）：它自己也并没有真的关
@@ -1287,10 +1287,15 @@ class LarkDeckMixin:
                                session_key: str, multi: bool) -> Dict[str, Any]:
         """按 ``clarify_dialect`` 选澄清卡方言。
 
-        默认 **1.0**：那是本插件真机跑通的路径（按钮 + 顶层 ``value``）。
-        ``"2.0"`` 是决策门 D1 的路径 A（``select_static`` / ``multi_select_static`` /
-        ``input`` + 组件级 ``behaviors``），在**真机点过一次**之前不翻默认值
-        —— ``AGENTS.md`` 不变量 5 的纪律：卡片方言的结论只能靠真机实验。
+        默认现在是 **2.0**（``select_static`` / ``multi_select_static`` / ``input`` +
+        组件级 ``behaviors``）。翻这个默认值的前提在 :data:`_DEFAULTS` 与 ``AGENTS.md``
+        不变量 5 里写死了两条，**两条都在 2026-09-13 满足并留了证据**：
+          ① 真机点一次 —— 探针 ⑫（2.0 ``select_static``）点下去后网关日志出现
+             ``[larkdeck] 探针点击到达 ✅ tag=select_static option='opt_a'``；
+             探针 ⑬⑭（真 2.0 澄清卡）点下去后出现 ``澄清提交未生效（clarify=probe-c2）``
+             —— 说明点击**到达并正确解析出 clarify id**（探针卡没在网关登记澄清，所以
+             「没东西可解」是预期，不是失灵）；
+          ② ``check_clarify_e2e.py`` 的 2.0 场景全绿。
         取到不认识的值时按 1.0 处理（不猜、不抛）。
         """
         dialect = str(_cfg_raw("clarify_dialect") or "1.0").strip()

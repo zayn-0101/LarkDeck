@@ -48,16 +48,19 @@
    > **认证据的规矩：官方文档 + 真机探针为准，不抄别人注释。**
    > 2.0 澄清卡（`select_static` + `input`）是可行的，见 `docs/plan-6-effects.md` 阶段 4。
 
-   澄清卡现在**默认用 1.0**（按钮 + 顶层 `value`，真机跑通过），不是唯一解 ——
-   `cards.clarify_card_2()` 就是 2.0 版（`select_static` / `multi_select_static` /
-   `input` + 组件级 `behaviors`），由配置 `clarify_dialect` 选择（默认 `"1.0"`）。
-   **翻默认值的前提有两条**：① 真机点一次 —— `tests/probe_render.py` 的 ⑫ 方言探针卡
-   点下去后日志里应出现 `[larkdeck] 探针点击到达 ✅`（点击是经 WebSocket 送进正在跑的
-   网关的，探针脚本接不到，所以由 `adapter._ld_log_probe_click` 如实记录）；
-   ② `check_clarify_e2e.py` 的 2.0 场景全绿（单选 `action.option` / 多选 `action.options` /
-   输入框只解**自己那张卡**的澄清 —— 这三条都有过真机级 bug，见 `docs/plan-6-effects.md` §9）。
-   元素级方言差异见 `README.md` 的表；`tests/test_units.py::test_clarify_card_must_be_legacy_dialect`
-   锁的是**当前默认实现别被误改**，不再代表"2.0 不可行"；真正的红线是**方言不许混用**。
+   澄清卡现在**默认用 2.0**（`select_static` / `multi_select_static` / `input` + 组件级
+   `behaviors`）—— **2026-09-13 翻的，两条前提都满足并留了一手证据**：
+   ① 真机点一次：探针 ⑫（2.0 `select_static`）点下去后网关日志出现
+   `[larkdeck] 探针点击到达 ✅ tag=select_static option='opt_a'`；探针 ⑬⑭（真 2.0 澄清卡）
+   点下去后出现 `澄清提交未生效（clarify=probe-c2）` —— 探针卡没在网关登记澄清，所以
+   「没东西可解」是预期，而它证明**点击到达并正确解析出了 clarify id**；
+   ② `check_clarify_e2e.py` 的 2.0 场景全绿。
+   想回到旧路径就配 `clarify_dialect: "1.0"`（那条路径仍然可用、仍有测试锁它的形状，
+   `check_clarify_e2e.py` 的每条场景现在**自己声明方言**，不再偷偷依赖默认值）。
+   `cards.clarify_card_2()` / `clarify_card()` 就是两个版本，由配置选。
+   多选走 `multi_select_static` 且**不给**自由输入框（与编号/标签解析打架）。
+   元素级方言差异见 `README.md` 的表。真正的红线是**方言不许混用**：
+   1.0 的 `action` 行放进 2.0 卡会被飞书拒（`230099`），2.0 组件不带 `behaviors` 则点击到不了服务端。
 
 ## 目录
 

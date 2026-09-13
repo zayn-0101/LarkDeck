@@ -157,7 +157,7 @@ plugins:
         cards: true              # 用卡片渲染回复（关掉则完全退回官方纯文本行为）
         native_streaming: true   # 一回合一张卡（工具进度合入同卡）；关掉退回逐段新消息
         clarify_cards: true      # 澄清用交互卡
-        clarify_dialect: "1.0"   # 澄清卡方言：1.0 按钮（默认）/ 2.0 下拉+输入框（需真机点击验证）
+        clarify_dialect: "2.0"   # 澄清卡方言：2.0 下拉+输入框（默认，真机点击已验证）/ 1.0 按钮（旧路径，仍然可用）
         unified_panel: true      # 推理 + 工具合并为一个底部面板
         panel_expanded: false    # 面板默认展开（默认收起）
         streaming_print_ms: 15   # 客户端打字机的逐字间隔（毫秒，只对流式帧有效）；0 = 关闭；超出 [1,2000] 退默认并留 WARNING

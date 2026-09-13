@@ -440,12 +440,13 @@ def _buttons_of(card):
 
 
 def test_clarify_card_must_be_legacy_dialect():
-    """**当前默认**的澄清卡是 1.0（按钮 + 顶层 value）。
+    """**1.0 的构造器**输出必须仍然是纯 1.0（顶层 elements + action 行）。
 
-    锁的是「实现别被误改成半 1.0 半 2.0」，**不是**「2.0 不可行」—— 不变量 5 已于
-    2026-09-12 更正：2.0 的组件级 ``behaviors`` 能到服务端，见 ``clarify_card_2``
-    与 ``clarify_dialect`` 配置（默认仍是 1.0，等真机点击确证后再翻）。
-    真正会崩的是**方言混用**：1.0 的 action 行放进 2.0 卡会被飞书拒（230099）。
+    2026-09-13：`clarify_dialect` 的**默认值已翻成 2.0**（真机点击到达 +
+    2.0 e2e 全绿，两条前提都满足并留了证据，见 `_DEFAULTS` 的注释与 AGENTS.md 不变量 5）。
+    但 1.0 这条路径**仍然必须可用且不许被改坏**（用户可能把它配回去），所以这条测试
+    继续锁 1.0 构造器的形状 —— 真正的红线是**方言混用**：1.0 的 action 行放进 2.0 卡
+    会被飞书拒（``230099``）。
     """
     card = cards.clarify_card("选哪个？", ["A", "B"], clarify_id="c", session_key="s")
     assert "schema" not in card, "澄清卡不能带 schema —— 带了她就是 2.0 卡，action 行会被拒"
@@ -2119,7 +2120,13 @@ def test_clarify_dialect_switch_and_no_dialect_mixing():
     defaults = dict(adapter._DEFAULTS)
     try:
         adapter.configure(clarify_cards=True)
-        # 默认（1.0）：顶层 elements + action 行，没有 schema/body
+        # 默认现在是 **2.0**（2026-09-13 翻的，前提见 `_DEFAULTS` 的注释）
+        two = adapter.LarkDeckMixin._ld_build_clarify_card(
+            "选哪个？", ["A", "B"], clarify_id="c1", session_key="sk", multi=False)
+        assert two.get("schema") == "2.0", two
+
+        # 显式配回 1.0：顶层 elements + action 行，没有 schema/body（这条路必须一直可用）
+        adapter.configure(clarify_dialect="1.0")
         one = adapter.LarkDeckMixin._ld_build_clarify_card(
             "选哪个？", ["A", "B"], clarify_id="c1", session_key="sk", multi=False)
         assert "schema" not in one and isinstance(one.get("elements"), list), one

@@ -110,6 +110,20 @@ def digest(obj):
 
 async def scenario():
     adapter._loop = asyncio.get_running_loop()
+    ld_mod = None
+    for _name in ("hermes_plugins.larkdeck.core.adapter", "larkdeck.core.adapter"):
+        if _name in sys.modules:
+            ld_mod = sys.modules[_name]
+            break
+
+    # ⚠️ 方言**必须显式配**，不能依赖默认值：2026-09-13 默认从 "1.0" 翻成了 "2.0"
+    # （真机点击到达 + 2.0 e2e 全绿，两条前提都满足），于是下面这些**按 1.0 形状断言**的
+    # 场景当场就红了 —— 这不是「默认翻错了」，而是这些场景原来偷偷依赖了那个默认值。
+    # 现在每条场景自己声明方言；顺带把「默认是 2.0」也钉成一条断言。
+    if ld_mod is not None:
+        check(ld_mod._DEFAULTS.get("clarify_dialect") == "2.0",
+              "默认方言是 2.0（翻默认值的前提：真机点击到达 + 2.0 e2e 全绿）")
+        ld_mod._CONFIG["clarify_dialect"] = "1.0"      # 下面按 1.0 形状断言
 
     # ---------------- 场景 1：选项按钮点击 → 解除阻塞 ----------------
     question, choices, cid, skey = "选哪个方案？", ["A 方案", "B 方案"], "cid-e2e-1", "sk-1"

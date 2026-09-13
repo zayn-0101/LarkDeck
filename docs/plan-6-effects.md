@@ -482,7 +482,7 @@ seed 占位 → 面板出现 → 占位消失 → 收尾绿边且关 streaming_m
 | 2 | 完成态绿色面板 | `on_session_end` → `panel.record_turn_end` → `cards.border_for_status` | 开 | **A** + **B**（三种状态色的探针卡都被飞书接受）+ **D**（超预算档也保住颜色：`--stop-redraw` 真机实测载荷里有色、`code=0`）+ **E**（收尾帧必须绿边、必须关 `streaming_mode`、不许带占位） |
 | 3 | 中止黄边 / 报错红边 | 同上 + 覆盖 `interrupt_session_activity` 自己重绘 | 开 | **A**（含「空回合也要画出黄边」「必须落在绑定会话」）+ **B** + **D**（**60000 字节正文**的卡：正文留住 + 载荷带黄边 + 飞书 `code=0`，真机端到端；见第十四轮）+ **E**（`/stop` 之后至少一次写入且载荷含中止色） |
 | 4 | 展开面板 + 每轮相对耗时 | `cards.unified_panel`（`第 N 轮 · 6.2s`）+ `panel_expanded` | 收起 | **A** + **B** + **E**（正文一开始面板就得在、标题含 `⏱`）+ **C 待定**（展开/收起的观感） |
-| 5 | Clarify 2.0 选项卡 | `cards.clarify_card_2`（`select_static` / `multi_select_static` / `input` + 组件级 `behaviors`） | `clarify_dialect: "1.0"` | **B**（真 2.0 卡飞书接受）+ **C 待定**（点一次确证回调到服务端后再翻默认） |
+| 5 | Clarify 2.0 选项卡 | `cards.clarify_card_2`（`select_static` / `multi_select_static` / `input` + 组件级 `behaviors`） | **`clarify_dialect: "2.0"`**（2026-09-13 翻的） | **B**（真 2.0 卡飞书接受）+ **C ✅**（真机点击到达：`tag=select_static option='opt_a'`；⑬⑭ 真澄清卡点击解析出 `clarify=probe-c2`）+ 2.0 e2e 全绿 |
 | 6 | Clarify 回填 + 确认徽章 | `clarify_resolved_card` / `_2`（✅ + 答案 + 用户） | 开 | **A**（含「提交未生效不回填」）+ **B**（回填帧的响应形式与官方示例一致） |
 
 **剩下要人看的三处（C 档）**：打字机动画（`--typing`，或 `--cardkit` 的甲/乙对照卡）、
