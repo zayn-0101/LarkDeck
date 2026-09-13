@@ -810,9 +810,10 @@ def probe_cardkit(client, chat: str, cards) -> int:
 def probe_cardkit_transport(client, chat: str, cards) -> int:
     """**生产路径**的 CardKit 传输真机验证（阶段 9）。
 
-    与 `--cardkit`（我自己复刻的一条链）不同：这里把配置切到 `native_transport="cardkit"`，
-    然后对**真适配器**调 `send_stream_frame`（生产契约：text 是累积全文），
-    走的就是 `_ld_stream_frame` 里那段新代码。断言：
+    与 `--cardkit`（我自己复刻的一条链）不同：这里**不配置任何传输**，直接对**真适配器**
+    调 `send_stream_frame`（生产契约：text 是累积全文）—— 所以它验的是**用户不写配置时
+    真正生效的那条路**（2026-09-13 起默认就是 cardkit；哪天有人把默认翻回去，这里会如实
+    打印出 `patch`，并因为「建实体 0 次」当场失败）。断言：
       * seed 帧建起实体卡（`card.create` + 发实体卡都 `code=0`）；
       * 后续帧写的是**两个元素**（正文 + 面板），序号单调递增；
       * 收尾帧走 `message.patch`（那一刻流式本来就结束，patch 关掉会话正好）；
@@ -822,9 +823,27 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
     _load, adapter, _panel = _load_adapter_for_probe(chat)
     if adapter is None:
         return 1
-    calls = {"content": [], "patch": 0}
+    calls = {"content": [], "patch": 0, "create": 0, "send": 0}
     original_write = adapter._ld_ck_write
     original_update = adapter._ld_update_card
+    # ⚠️ **turn_id 必须全程复用**：`_ld_stream_frame` 不把 turn_id 存进 state，
+    # 所以「第一帧用 ckt-xxx、后续帧用 state 里读出来的空串」会让 key 从 `chat:ckt-xxx`
+    # 变成 `chat` ⇒ state 变 None ⇒ 又走 seed **再建一张卡**，而第一张永远收不到写入、
+    # 停在流式态（第十一路审计实测：探针因此**谎报通过**、还在 DM 里留冻结卡）。
+    tid = f"ckt-{int(time.time())}"
+    _orig_card_create = adapter._client.cardkit.v1.card.create
+    _orig_msg_create = adapter._client.im.v1.message.create
+
+    def _count_card_create(request):
+        calls["create"] += 1
+        return _orig_card_create(request)
+
+    def _count_msg_create(request):
+        calls["send"] += 1
+        return _orig_msg_create(request)
+
+    adapter._client.cardkit.v1.card.create = _count_card_create
+    adapter._client.im.v1.message.create = _count_msg_create
 
     async def _spy_write(card_id, element_id, content, sequence):
         ok = await original_write(card_id, element_id, content, sequence)
@@ -863,11 +882,32 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
 
     text = ("这是**生产路径**的 CardKit 传输验证：正文会逐字往外冒。") * 3
     try:
-        _set_probe_config(adapter, native_transport="cardkit")
+        # ⚠️ 故意**不**set 传输：这一条验的就是「用户不写配置时真正跑的那条路」。
+        # 报错必须分得清「默认被翻回去了」与「你在 config.yaml / 环境变量里显式改了」——
+        # 后者不是缺陷，探针不该拿它当失败（但也不能假装在测 cardkit）。
+        resolved = adapter._ld_transport()
+        _mod = sys.modules.get(type(adapter).__module__)
+        # ⚠️ `_DEFAULTS` 在**模块**上（不是类属性）：写成 `adapter._DEFAULTS` 会 AttributeError，
+        # 而且是在真机建卡**之前**炸 —— 探针的「真机门禁」当场变哑巴（这次就是被它绊了一下）。
+        declared = dict(getattr(_mod, "_DEFAULTS", {}) or {}).get("native_transport")
+        configured = dict(getattr(_mod, "_CONFIG", {}) or {}).get("native_transport")
+        env_val = os.environ.get("LARKDECK_NATIVE_TRANSPORT")
+        print(f"   生效的传输 = {resolved!r} · 环境变量 {env_val!r} · `_DEFAULTS` 声明的是 "
+              f"{declared!r} · `_CONFIG` 里是 {configured!r}"
+              f"（注意 `_CONFIG` 也可能来自 plugin.yaml 的 schema 默认，不能当「用户配过」）")
+        if resolved != "cardkit":
+            print(f"❌ 这条探针要验 cardkit 传输，但当前生效的是 {resolved!r} —— 无法继续"
+                  + ("（有环境变量覆盖，是显式的，不是缺陷）" if env_val else
+                     "（没人显式覆盖过 ⇒ 默认值或配置把它翻回去了，得查）"))
+            adapter._ld_ck_write = original_write
+            adapter._ld_update_card = original_update
+            adapter._client.cardkit.v1.card.create = _orig_card_create
+            adapter._client.im.v1.message.create = _orig_msg_create
+            return 1
         loop = asyncio.new_event_loop()
         try:
             ok_seed = loop.run_until_complete(adapter.send_stream_frame(
-                "", chat_id=chat, turn_id=f"ckt-{int(time.time())}"))
+                "", chat_id=chat, turn_id=tid))
             print(f"   seed 帧（建实体） = {ok_seed}")
             state = None
             for item in list(adapter._ld_streams.values()):
@@ -876,18 +916,19 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
             print(f"   实体 card_id = {card_id}（必须有值，否则说明走的是 patch 传输）")
             for cut in (20, 40, len(text)):
                 ok = loop.run_until_complete(adapter.send_stream_frame(
-                    text[:cut], chat_id=chat, turn_id=str((state or {}).get('turn') or "")))
+                    text[:cut], chat_id=chat, turn_id=tid))     # ← 同一个 tid
                 print(f"   正文帧 {cut} 字 = {ok}")
                 time.sleep(0.4)
             ok_fin = loop.run_until_complete(adapter.send_stream_frame(
-                text, finalize=True, chat_id=chat, turn_id=""))
+                text, finalize=True, chat_id=chat, turn_id=tid))
             print(f"   收尾帧 = {ok_fin}")
         finally:
             loop.close()
     finally:
         adapter._ld_ck_write = original_write
         adapter._ld_update_card = original_update
-        _set_probe_config(adapter, native_transport="patch")
+        adapter._client.cardkit.v1.card.create = _orig_card_create
+        adapter._client.im.v1.message.create = _orig_msg_create
 
     writes = [c for c in calls["content"]]
     print(f"   元素写入 {len(writes)} 次：{[(w[0], w[1], w[2]) for w in writes]}")
@@ -896,8 +937,12 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
     if panels:
         print(f"   面板最后一次内容预览：{panels[-1][3][:70]!r}")
     print(f"   收尾 patch {calls['patch']} 次")
+    # 断言必须能抓到「多建了一张卡」：建实体 1 次、发消息 1 次、每个正文帧写 2 个元素
+    print(f"   card.create {calls['create']} 次（必须 ==1）· message.create {calls['send']} 次"
+          f"（必须 ==1）· 元素写入 {len(writes)} 次（必须 == 正文帧数×2 = 6）")
     ok = (bool(state) and card_id and writes and calls["patch"] == 1
-          and all(w[2] for w in writes) and bool(panels))
+          and all(w[2] for w in writes) and bool(panels)
+          and calls["create"] == 1 and calls["send"] == 1 and len(writes) == 6)
     if ok:
         print("✅ 生产路径的 CardKit 传输真机通过（建实体 + 元素写入 + patch 收尾）")
         print("   ⚠️ 这些卡的 id 没进账本（收尾后 stream state 已清）—— 看够了就叫我删。")

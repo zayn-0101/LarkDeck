@@ -186,18 +186,22 @@ _DEFAULTS: Dict[str, Any] = {
     "cards": True,            # 用卡片渲染回复
     "native_streaming": True, # 官方 native streaming：一回合一张卡（工具进度合入同卡）
     "clarify_cards": True,    # 澄清使用交互卡
-    # 澄清卡方言：1.0（按钮 + 顶层 value，真机已跑通，**默认**）/ 2.0（下拉 + 输入框 +
-    # 组件级 behaviors，需真机点击确证后再翻默认；见 AGENTS.md 不变量 5）
+    # 澄清卡方言：1.0（按钮 + 顶层 value，真机已跑通，可作为回退）/ 2.0（下拉 + 输入框 +
+    # 组件级 behaviors）。**默认 2.0，2026-09-13 翻的**，两条前提都留了证据：
+    # ① 真机点击到达并解析出 clarify id（`探针点击到达 ✅ tag=select_static` +
+    # `澄清提交未生效（clarify=probe-c2）`）；② `check_clarify_e2e.py` 的 2.0 场景全绿。
+    # 想回旧路径配 `clarify_dialect: "1.0"`（那条路仍可用、仍有测试锁形状）。见 AGENTS.md 不变量 5。
     "clarify_dialect": "2.0",
-    #: native 流式帧走哪条传输：``"cardkit"``（默认，**真打字机**）/ ``"patch"``（旧路径，稳定）。
+    #: native 流式帧走哪条传输：``"cardkit"``（**默认**，真打字机）/ ``"patch"``（旧路径）。
     #: 2026-09-13 真机实测 + **用户肉眼判定**：普通卡 + `message.patch` 只是「几个字几个字」地跳，
-    #: CardKit 实体 + `card_element.content` 才是一个字一个字往外冒。所以默认翻成 cardkit。
-    #: 任何一步失败（建实体 / 写元素 / 拿不到 SDK）都会 fail-open 返回 False，由核心回落
-    #: edit/send —— 不变量 2 照旧：宁可退回纯文本，也绝不丢消息。
-    #: ⚠️ **默认仍是 "patch"**：翻默认是一次独立改动 —— 单测的哑客户端还没有 cardkit 层，
-    #: 直接翻会让 8 条既有断言变红（它们覆盖的是别的不变量，不能为了翻默认去改弱）。
-    #: 想现在就享受逐字打字机：配 `native_transport: "cardkit"`（生产路径已真机验证过）。
-    "native_transport": "patch",
+    #: CardKit 实体 + `card_element.content` 才是一个字一个字往外冒 ⇒ 默认翻成 cardkit。
+    #: 翻之前两条前提都满足：① 第十一路对抗审计无阻断（序号 / 失败语义 / 孤儿实体都过了一遍，
+    #: 它指出的三条门禁缺口已补齐）；② 真机 `tests/probe_render.py --cardkit-prod` 走**生产路径**
+    #: 全绿（建实体 1 次 + 发实体卡 1 次 + 元素写入 6 次 + patch 收尾 1 次，全 `code=0`）。
+    #: 任何一步失败（建实体 / 写元素 / 拿不到 SDK / 超预算）都 fail-open 返回 False，由核心回落
+    #: edit/send —— 那不变量 2 照旧：宁可有一次「没有动画的卡」，也绝不丢消息。
+    #: 想退回旧路径：配 `native_transport: "patch"`。
+    "native_transport": "cardkit",
     # 「处理中」表情反应：Hermes 会在用户消息上打一个 Typing 表情、处理完撤掉 ——
     # 在飞书上这就相当于「输入提示」。流式卡片本身已是即时反馈，aiduPOP 把「无输入提示」
     # 列进了即时响应的观感。**默认保持 Hermes 的行为**（true）：它自己也并没有真的关
@@ -405,6 +409,35 @@ def _stop_redraw_would_paint(body: str) -> bool:
     except Exception:
         logger.debug("[larkdeck] 中止重绘可行性判定异常，保守保留正文", exc_info=True)
         return True
+
+
+def _log_ck_panel_write_failed_once() -> None:
+    """CardKit 写**面板**元素失败的限流告警（60 秒一条）。
+
+    为什么单列：正文元素先写成功了，这一条失败会让卡片停在「正文新、面板旧」的半更新态，
+    而函数返回值是唯一判据 —— 没有日志的话，这种卡在排查时完全无迹可寻。
+    """
+    now = time.monotonic()
+    if now - getattr(_log_ck_panel_write_failed_once, "_at", 0.0) < 60.0:
+        return
+    _log_ck_panel_write_failed_once._at = now  # type: ignore[attr-defined]
+    logger.warning("[larkdeck] CardKit 面板元素写入失败（正文已写成功）—— 这张卡会停在"
+                   "「正文新、面板旧」的半更新态；本帧按失败处理，交核心回落")
+
+
+def _log_ck_over_budget_once(size: int) -> None:
+    """CardKit 实体卡超过飞书硬上限的限流告警（60 秒一条）。
+
+    cardkit 的结构建实体时定死、之后不能改 ⇒ 超预算就是整卡被拒（而不是像 patch 路径
+    那样「优雅丢掉面板」）。这条日志是排查「这一帧怎么什么都没有」的唯一线索。
+    """
+    now = time.monotonic()
+    if now - getattr(_log_ck_over_budget_once, "_at", 0.0) < 60.0:
+        return
+    _log_ck_over_budget_once._at = now  # type: ignore[attr-defined]
+    logger.warning("[larkdeck] CardKit 实体卡 %d 字节超过飞书实测硬上限 %d —— "
+                   "不能像 patch 路径那样分级丢装饰（结构已定死），本帧 fail-open 交核心回落",
+                   size, _cards.FEISHU_CARD_BYTE_LIMIT)
 
 
 def _log_no_colour_once() -> None:
@@ -652,6 +685,8 @@ class LarkDeckMixin:
         差别只是载体（多个元素 vs 一个 markdown 字符串）。任何异常都退回空串（面板是装饰）。
         """
         try:
+            if not _cfg("unified_panel"):
+                return ""          # 与 `_ld_panel` 同一条门禁（关掉面板的人不该在 cardkit 下还看到面板）
             snap = _panel.snapshot(chat_id) or {}
             steps = [
                 _cards.tool_step(
@@ -925,7 +960,16 @@ class LarkDeckMixin:
         reqs = self._ld_ck_requests()
         if reqs is None:
             return None                      # 没有 SDK ⇒ fail-open 回落（不猜、不抛）
-        card = _cards.cardkit_entity_card(answer, panel_text, streaming=True)
+        card = _cards.cardkit_entity_card(answer, panel_text, streaming=True,
+                                         expanded=bool(_cfg("panel_expanded")),
+                                         panel=bool(_cfg("unified_panel")))
+        # ⚠️ **基线预算闸门**：patch 路径超预算会分级丢装饰（面板→页脚→裸卡），而 cardkit 的
+        # 结构**在建实体时定死、之后不能改**，超预算就是「整卡被飞书拒（230099）⇒ 这一帧
+        # 什么都没了」。所以这里至少守住**实测硬上限**，超了就 fail-open 交给核心回落。
+        size = _cards.card_bytes(card)
+        if size > _cards.FEISHU_CARD_BYTE_LIMIT:
+            _log_ck_over_budget_once(size)
+            return None
         made = await self._run_blocking(
             self._client.cardkit.v1.card.create,
             reqs.create_card(json.dumps(card, ensure_ascii=False)))
@@ -987,7 +1031,10 @@ class LarkDeckMixin:
                 self._ld_stream_put(key, {"message_id": message_id, "chat_id": chat,
                                           "t0": now, "last": text, "last_at": now,
                                           "frames": 0, "skipped": 0,
-                                          "card_id": card_id, "ck_seq": 0})
+                                          "card_id": card_id, "ck_seq": 0,
+                                          # 结构在这一刻定死：面板元素有没有进卡，后续每一帧
+                                          # 都按这个走（写了不在卡里的 id 会得 300313，整帧失败）
+                                          "ck_panel": bool(_cfg("unified_panel"))})
                 return True
             card = self._ld_build_card(display, streaming=True,
                                        panel=self._ld_panel(chat, now),
@@ -1036,9 +1083,19 @@ class LarkDeckMixin:
             seq = int(state.get("ck_seq") or 0)
             if not await self._ld_ck_write(card_id, _cards.CARDKIT_ANSWER_ID, display, seq + 1):
                 return self._ld_stream_fail("CardKit 写正文元素失败")
+            if not state.get("ck_panel"):
+                # 建实体时就没放面板元素（`unified_panel: false`）：**不能**去写它的 id，
+                # 飞书会回 300313（元素不存在）⇒ 每帧都失败 ⇒ 本回合被打回纯文本。
+                self._ld_stream_put(key, {**state, "last": text, "last_at": now,
+                                          "ck_seq": seq + 1,
+                                          "frames": int(state.get("frames") or 0) + 1})
+                return True
             panel_text = self._ld_panel_markdown(chat, state.get("t0"))
             if not await self._ld_ck_write(card_id, _cards.CARDKIT_PANEL_BODY_ID,
                                            panel_text or " ", seq + 2):
+                # 这一条必须**单独留痕**：正文（seq+1）已经写成功了，面板失败意味着那张卡
+                # 会停在「正文新、面板旧」的半更新态 —— 而唯一判据就是这次返回码。
+                _log_ck_panel_write_failed_once()
                 return self._ld_stream_fail("CardKit 写面板元素失败")
             self._ld_stream_put(key, {**state, "last": text, "last_at": now,
                                       "ck_seq": seq + 2,

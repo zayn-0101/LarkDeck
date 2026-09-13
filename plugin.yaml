@@ -31,8 +31,8 @@ config_schema:
     description: "澄清提问用交互卡；无线索或其他失败时回落内置文字提问"
   native_transport:
     type: string
-    default: "patch"
-    description: "native 流式帧的传输：patch（默认，整卡替换；字是几个几个跳）/ cardkit（CardKit 实体 + 元素流式写入 = 真逐字打字机，已真机验证；任何一步失败自动回落）"
+    default: "cardkit"
+    description: "native 流式帧的传输：cardkit（默认，CardKit 实体 + 元素流式写入 = 真逐字打字机；任何一步失败自动回落）/ patch（旧路径，整卡替换；字是几个几个跳）"
   clarify_dialect:
     type: string
     default: "2.0"

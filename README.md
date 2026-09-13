@@ -105,7 +105,7 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 | 页脚：上下文用量（模型/耗时已并入面板标题） | ✅ 真机渲染已确认 |
 | 上下文用量三样式（纯文字 / 图形条 / 数字+条） | ✅ 真机渲染已确认 |
 | 推理文本 / 工具结果上限 + 元素溢出保护 | ✅ |
-| 打字机逐字显示 | ✅ **已实现并可开**：`native_transport: cardkit` —— 真机 + **用户肉眼**双重确认（普通卡 `message.patch` 只是「几个字几个字」地跳，CardKit 的 `card_element.content` 才是一个字一个字往外冒；`--cardkit-prod` 走生产路径实测建实体 + 元素写入 + patch 收尾全 `code=0`）。**默认仍是 `patch`**，因为翻默认要先让单测替身学会这条传输（8 条既有断言会被牵动），那是下一步的独立改动：`streaming_print_ms`（默认 15）把 `streaming_config` 带在流式帧上，飞书 create/patch 都是 `code=0`；但「客户端会不会逐字打」是纯客户端行为，**API 返回码看不到**。证据倾向「`message.patch` 拿不到这个动画」（见「已知限制」里打字机那条），自测用 `tests/probe_render.py --typing` |
+| 打字机逐字显示 | ✅ **已实现，且是默认**：`native_transport: cardkit`（CardKit 实体 + `card_element.content` 逐帧写元素 = **真逐字**）—— 真机 + **用户肉眼**双重确认：普通卡 `message.patch` 只是「几个字几个字」地跳，CardKit 才是一个字一个字往外冒；`--cardkit-prod` 走**生产路径**实测建实体 1 次 + 发实体卡 1 次 + 元素写入 6 次 + patch 收尾 1 次全 `code=0`。翻默认的前置条件是「一轮对抗审计 + 真机生产路径探针」，两者都过了（`docs/plan-6-effects.md` 第十一路审计）。任何一步失败自动 fail-open 回落到 edit/send —— **宁可有一次没有动画的卡，也绝不丢消息**。想回到旧路径（字几个几个跳，但稳定）就配 `native_transport: patch`；自测用 `tests/probe_render.py --cardkit-prod` |
 
 > 每项效果**验证到什么程度**（本地门禁 / 真机 API / 肉眼）见
 > [`docs/plan-6-effects.md`](docs/plan-6-effects.md) 的「6 项效果的实施完成度」表 ——
@@ -158,7 +158,7 @@ plugins:
         native_streaming: true   # 一回合一张卡（工具进度合入同卡）；关掉退回逐段新消息
         clarify_cards: true      # 澄清用交互卡
         clarify_dialect: "2.0"   # 澄清卡方言：2.0 下拉+输入框（默认，真机点击已验证）/ 1.0 按钮（旧路径，仍然可用）
-        native_transport: patch  # 流式帧传输：patch（默认，字是几个几个跳）/ cardkit（**真逐字打字机**，已真机验证，想要就改成 cardkit）
+        native_transport: cardkit # 流式帧传输：cardkit（默认，**真逐字打字机**；买它的代价见「已知限制」）/ patch（旧路径，整卡替换，字是几个几个跳）
         unified_panel: true      # 推理 + 工具合并为一个底部面板
         panel_expanded: false    # 面板默认展开（默认收起）
         streaming_print_ms: 15   # 客户端打字机的逐字间隔（毫秒，只对流式帧有效）；0 = 关闭；超出 [1,2000] 退默认并留 WARNING
@@ -278,11 +278,12 @@ LarkDeckFeishuAdapter → LarkDeckMixin → FeishuAdapter → BasePlatformAdapte
   但「客户端会不会逐字打」是纯客户端行为，**API 返回码看不到**。而且有三条证据倾向于
   「`im.v1.message.patch` 拿不到这个动画」：官方文档没说清是哪种写入 API、**Hermes 上游
   两个 PR 都把这个效果绑在 CardKit 流式接口上**、同类项目 lark-hls-v2 的注释也要求
-  「第一次推送必须用 `card_element.content`」。所以：字段带着**无害**（收尾帧不带，不会
-  重打答案），确证无效就把 `streaming_print_ms` 设 `0`；真要打字机得换 CardKit 卡片实体
-  传输（那份复杂度等确证后再付）。自测方法：`tests/probe_render.py --typing`（两张卡
-  交替长大 12 秒，一眼看得出哪张在逐字）。
-  **另一条传输已经实测可行**（2026-09-13）：`tests/probe_render.py --cardkit` 把
+  「第一次推送必须用 `card_element.content`」。**这件事最后是用户肉眼定的案**（甲几个字几个字
+  跳、乙一个字一个字冒），所以默认传输已经翻成 `cardkit`：`streaming_print_ms` 在 cardkit 下
+  是 no-op（见下一条），而 `patch` 路径上的它只是「无害但没用」。自测方法：
+  `tests/probe_render.py --typing`（两张卡交替长大 12 秒，一眼看得出哪张在逐字）、
+  `--cardkit-prod`（走**生产代码路径**验整链）。
+  **另一条传输的实现依据**（2026-09-13）：`tests/probe_render.py --cardkit` 把
   `cardkit.v1.card.create`（建卡片实体）→ `im.v1.message.create`
   （`{"type":"card","data":{"card_id":…}}`）→ `cardkit.v1.card_element.content`
   （按 `sequence` 逐帧写元素）→ `cardkit.v1.card.settings`（`streaming_mode: false` 收尾）
@@ -290,10 +291,16 @@ LarkDeckFeishuAdapter → LarkDeckMixin → FeishuAdapter → BasePlatformAdapte
   它同时发一张**公平的对照卡**（同样节奏、同样切分，但走 `message.patch` + `streaming_config`），
   两张并排留在 DM 里 —— 哪张逐字、哪张整段跳，一眼就能定「打字机是否需要 CardKit 实体」。
   在那之前不实现它：这是本项目「先量，不猜」的规矩，也是当初把它列为「确证后再付的复杂度」的原因。
-  真要做的话，设计边界已经写在 `docs/plan-6-effects.md` 的「阶段 9（待批准）」里
-  （只换 native 流式帧的传输、任何一步失败都 fail-open 回落、默认仍走 patch）。
+  **现在它已经实现并且是默认传输**：设计边界与真机结果写在
+  `docs/plan-6-effects.md` 的「阶段 9 实施记录」里（只换 native 流式帧的传输、
+  任何一步失败都 fail-open 回落、翻默认前先过对抗审计 + 真机生产路径探针）。
   取值超出 `[1, 2000]` 毫秒会被退回默认 15ms，并在日志里留一条限流 WARNING
   （写错配置不会静默 —— 「想要最慢」却得到「最快」是必须能查出来的）。
+- **`cardkit` 传输下有两个配置是 no-op**：`streaming_print_ms`（打字机由
+  `card_element.content` 带来，实体卡不带 `streaming_config`，拧它没有任何效果）与
+  `panel_expanded`（实体卡支持，但面板内容在 cardkit 下是**一个** markdown 子元素，
+  展开态由建实体时的 `expanded` 决定；改配置要等下一次建卡才生效）。`unified_panel: false`
+  在两条传输下都关得掉面板。
 - **`cardkit` 传输的取舍**：它换来真正的逐字打字机，代价是三条硬约束 ——
   ① 卡片**结构在建实体时定死**（流式期间只能按 `element_id` 写内容，任何结构性写入都会
   关闭流式会话）；所以那个折叠面板里的内容在 cardkit 模式下是**一个 markdown 字符串**

@@ -307,11 +307,44 @@ MUTATIONS = [
      '                                      "ck_seq": seq,',
      "test_units"),
     ("CK4-不写面板元素", "core/adapter.py",
-     "            if not await self._ld_ck_write(card_id, _cards.CARDKIT_PANEL_BODY_ID,\n                                           panel_text or \" \", seq + 2):\n                return self._ld_stream_fail(\"CardKit 写面板元素失败\")",
-     "            pass",
+     "            if not await self._ld_ck_write(card_id, _cards.CARDKIT_PANEL_BODY_ID,\n                                           panel_text or \" \", seq + 2):",
+     "            if False:",
      "test_units"),
-    ("CK6-默认传输被顺手改成 cardkit", "core/adapter.py",
-     '    "native_transport": "patch",', '    "native_transport": "cardkit",',
+    # ---- 第十一路审计续：`unified_panel: false` 在 cardkit 下也必须真的没有面板 ---------- #
+    ("CK7-建实体时面板开关写死成 True（无视统一面板配置）", "core/adapter.py",
+     '                                         panel=bool(_cfg("unified_panel")))',
+     '                                         panel=True)',
+     "test_units"),
+    ("CK8-面板关掉后仍然去写面板元素（真机 300313 ⇒ 整回合打回纯文本）", "core/adapter.py",
+     '            if not state.get("ck_panel"):',
+     '            if False:',
+     "test_units"),
+    ("CK7b-cards.py 里把面板参数当恒真（结构不看配置）", "core/cards.py",
+     '    ]\n    if panel:\n        elements.append(\n            {"tag": "collapsible_panel", "element_id": CARDKIT_PANEL_ID,',
+     '    ]\n    if True:\n        elements.append(\n            {"tag": "collapsible_panel", "element_id": CARDKIT_PANEL_ID,',
+     "test_units"),
+    # 默认值是 2026-09-13 翻成 cardkit 的（审计 + 真机生产路径探针都过了）。这条变异的
+    # 意思不是「cardkit 更差」，而是「**默认值必须是个显式决定**」：谁把它顺手改回去
+    # （或改坏成别的值），这条断言就得红。
+    ("CK6-默认传输被顺手改回 patch（或改坏）", "core/adapter.py",
+     '    "native_transport": "cardkit",', '    "native_transport": "patch",',
+     "test_units"),
+    ("CK9-_ld_transport 里写死一条传输（运行时不再跟随配置/默认）", "core/adapter.py",
+     '        return "cardkit" if str(_cfg_raw("native_transport") or "").strip() == "cardkit" else "patch"',
+     '        return "patch"',
+     "test_units"),
+    # ---- 第十一路审计：CardKit 的三条「门禁说绿、真机说 300301」----------------- #
+    ("M30-两个元素 id 撞车", "core/cards.py",
+     'CARDKIT_ANSWER_ID = "answer"\nCARDKIT_PANEL_ID = "panel"\nCARDKIT_PANEL_BODY_ID = "panel_body"',
+     'CARDKIT_ANSWER_ID = "answer"\nCARDKIT_PANEL_ID = "panel"\nCARDKIT_PANEL_BODY_ID = "answer"',
+     "test_units"),
+    ("M31-面板 body 的 id 抄错字面量", "core/cards.py",
+     'CARDKIT_PANEL_BODY_ID = "panel_body"',
+     'CARDKIT_PANEL_BODY_ID = "panel-body"',
+     "test_units"),
+    ("M07-写面板失败被吞（不回落）", "core/adapter.py",
+     '            if not await self._ld_ck_write(card_id, _cards.CARDKIT_PANEL_BODY_ID,\n                                           panel_text or " ", seq + 2):',
+     '            await self._ld_ck_write(card_id, _cards.CARDKIT_PANEL_BODY_ID,\n                                   panel_text or " ", seq + 2)\n            if False:',
      "test_units"),
     # ---- P6：黄金路径耗时 ---------------------------------------------------- #
     ("P6-轮耗时恒为 0", "core/panel.py",
@@ -463,6 +496,16 @@ def main() -> int:
                 bad.append(f"{name}: 变异锚点没找到（源码变了？）")
                 print(f"❓ {name}: 锚点没找到")
                 continue
+            # ⚠️ **锚点必须唯一**：`replace(..., 1)` 只换第一处，锚点串在文件里出现两次时
+            # 会去改**另一处**代码 —— 于是「变异没生效」被误报成「断言没有判别力」。
+            # 第十一路审计续实测：`if panel:` 那种短锚点在 cards.py 里有两处（统一面板那处
+            # 在前），一份变异静默地打到了无关分支上，报告写着 🟢。
+            # 歧义锚点与「锚点失效」同级：跑不到的变异等于没验，必须重新对准。
+            hits = text.count(old)
+            if hits != 1:
+                bad.append(f"{name}: 锚点在 {rel} 里出现 {hits} 次（歧义：会改到别处）")
+                print(f"❓ {name}: 锚点出现 {hits} 次（歧义，拒绝下结论）")
+                continue
             target.write_text(text.replace(old, new, 1), encoding="utf-8")
             results = _run_gates(repo)
             red = [k for k, (kind, _) in results.items() if kind != "green"]
@@ -500,6 +543,11 @@ def main() -> int:
         if old_text not in text:
             bad.append(f"{name}: 对照锚点没找到")
             print(f"❓ {name}: 锚点没找到")
+            continue
+        hits = text.count(old_text)
+        if hits != 1:
+            bad.append(f"{name}: 对照锚点在 {rel} 里出现 {hits} 次（歧义）")
+            print(f"❓ {name}: 锚点出现 {hits} 次（歧义，拒绝下结论）")
             continue
         target.write_text(text.replace(old_text, new_text, 1), encoding="utf-8")
         results = _run_gates(repo)

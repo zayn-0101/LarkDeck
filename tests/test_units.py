@@ -781,12 +781,27 @@ def test_declared_defaults_are_an_explicit_decision():
     而「默认到底是什么」由这一条集中声明：改默认就会红这一条，且**只红这一条**。
     """
     declared = dict(adapter._DEFAULTS)
-    # `patch` 是当前默认：cardkit 已实现并真机验证，但翻默认要先让单测替身学会那条传输
-    assert declared["native_transport"] == "patch", (
-        "翻这个默认要先确认：cardkit 传输的边界（序号/失败语义/孤儿卡）已过审计")
+    # cardkit 是 2026-09-13 翻的默认：两条前提都满足 —— ① 第十一路对抗审计无阻断
+    # （序号 / 失败语义 / 孤儿实体都过了一遍，它指出的三条门禁缺口已补）；
+    # ② 真机 `probe_render.py --cardkit-prod` 走生产路径全绿（建实体 1 + 发卡 1 + 写元素 6 + patch 1）。
+    # 想翻回去（或再翻过来）改这一条 + `_DEFAULTS` + `plugin.yaml` + README 四处，
+    # 然后**重跑变异套件**（CK6 专门钉这件事）。
+    assert declared["native_transport"] == "cardkit", (
+        "翻这个默认要先确认：cardkit 传输的边界（序号/失败语义/孤儿卡）已过审计，"
+        "且 --cardkit-prod 真机生产路径全绿")
     assert declared["clarify_dialect"] == "2.0"       # 真机点击到达 + 2.0 e2e 全绿后才翻的
     assert declared["cards"] is True
     assert declared["native_streaming"] is True
+    # 声明归声明：**什么都不配**时真正生效的传输必须是它 —— `_ld_transport()` 经 `_cfg_raw`
+    # 回退到 `_DEFAULTS`，所以这两处一旦分叉（例如有人在 `_ld_transport` 里写死一条），
+    # 「默认是逐字打字机」就只是文档里的一句话。四门禁此前只验显式配置过的值。
+    saved = dict(adapter._CONFIG)
+    adapter._CONFIG.clear()
+    try:
+        assert adapter.LarkDeckMixin._ld_transport() == declared["native_transport"], (
+            "没配置任何东西时真正跑的传输与 `_DEFAULTS` 声明的不一致")
+    finally:
+        adapter._CONFIG.update(saved)
 
 
 def test_cardkit_transport_writes_elements_and_falls_open():
@@ -801,8 +816,9 @@ def test_cardkit_transport_writes_elements_and_falls_open():
     """
     defaults = dict(adapter._DEFAULTS)
     try:
-        def _mk_fake(*, fail_write_after=10 ** 9, create_ok=True, fail_answer_only=False):
-            calls = {"create": 0, "send": 0, "content": [], "patch": 0}
+        def _mk_fake(*, fail_write_after=10 ** 9, create_ok=True, fail_answer_only=False,
+                     fail_panel_only=False):
+            calls = {"create": 0, "send": 0, "content": [], "patch": 0, "entity": []}
 
             class _Resp:
                 def __init__(self, code=0, **data):
@@ -816,6 +832,7 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             class _CardRes:
                 def create(self, request):
                     calls["create"] += 1
+                    calls["entity"].append(request.request_body["card_json"])
                     return _Resp(0, card_id="ck_1") if create_ok else _Resp(300305)
 
             class _ElemRes:
@@ -823,6 +840,8 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                     calls["content"].append((request.element_id, request.request_body.content,
                                              request.request_body.sequence))
                     if fail_answer_only and request.element_id == cards.CARDKIT_ANSWER_ID:
+                        return _Resp(300309)
+                    if fail_panel_only and request.element_id == cards.CARDKIT_PANEL_BODY_ID:
                         return _Resp(300309)
                     if len(calls["content"]) > fail_write_after:
                         return _Resp(300309)
@@ -877,7 +896,11 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         assert _run(raw.send_stream_frame("正文一，正文二", chat_id="oc_ck", turn_id="t-ck"))
         ids = [c[0] for c in calls["content"]]
         seqs = [c[2] for c in calls["content"]]
-        assert ids == [cards.CARDKIT_ANSWER_ID, cards.CARDKIT_PANEL_BODY_ID] * 2, ids
+        # ⚠️ 必须写**字面量**：两边都用 `cards.CARDKIT_*` 是**自比较** ——
+        # 第十一路审计实测「两个元素 id 都叫 answer」「面板 id 抄错字面量」两种变异四门禁全绿，
+        # 而真机 `cardkit.v1.card.create` 对这两种形状都回 `300301`
+        # （`Code 1001: Duplicate ID` / `Code 1002: elementID format error`）。
+        assert ids == ["answer", "panel_body"] * 2, ids
         assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs), seqs
         # 收尾帧走的是 `_ld_update_card`（= 普通 patch）—— 这里打桩记录，因为单测环境没有 SDK，
         # 而「收尾必须走 patch」正是 CardKit 设计的一部分（那一刻流式本来就结束）。
@@ -904,6 +927,19 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         assert not _run(raw2.send_stream_frame("正文", chat_id="oc_ck2", turn_id="t-2")), \
             "写元素失败必须返回 False 让核心回落，绝不能吞掉"
 
+        # ②b **正文写成功、面板写失败**：这一帧也必须返回 False（否则卡片停在
+        #    「正文新、面板旧」的半更新态，而核心以为成功、不做回落）—— 第十一路审计
+        #    实测这个形态此前没有任何断言（M07 四门禁全绿）。
+        calls, client = _mk_fake(fail_panel_only=True)
+        raw2b = _make()
+        raw2b._client = client
+        adapter.configure(native_transport="cardkit")
+        assert _run(raw2b.send_stream_frame("", chat_id="oc_ck2b", turn_id="t-2b"))
+        assert not _run(raw2b.send_stream_frame("正文", chat_id="oc_ck2b", turn_id="t-2b")), \
+            "面板写失败必须也返回 False（否则卡片半更新且无日志）"
+        assert any(c[0] == cards.CARDKIT_ANSWER_ID for c in calls["content"]), \
+            "前提：正文那一次确实写成功了"
+
         # ③ 建实体失败 ⇒ seed 帧就返回 False（整回合回落，消息不会丢）
         calls, client = _mk_fake(create_ok=False)
         raw3 = _make()
@@ -927,6 +963,31 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         adapter.configure(native_transport="cardkit")
         assert not _run(raw4.send_stream_frame("", chat_id="oc_ck4", turn_id="t-4")), \
             "没有 SDK 时必须 fail-open 返回 False（让核心回落），不能抛"
+
+        # ⑥ `unified_panel: false` ⇒ **面板元素压根不进卡**，帧里也只写正文那一个元素。
+        #    这一条同时钉两件事：① README 承诺「两条传输下都关得掉面板」是真的；
+        #    ② 面板关掉后**绝不能**再去写 `panel_body` 的 id —— 卡片里没有那个元素，
+        #    真机会回 `300313`，于是每一帧都失败、整个回合被打回纯文本（比面板丑严重得多）。
+        adapter.LarkDeckMixin._ld_ck_requests = staticmethod(_fake_requests)
+        calls, client = _mk_fake()
+        raw5 = _make()
+        raw5._client = client
+        adapter.configure(native_transport="cardkit", unified_panel=False)
+        assert _run(raw5.send_stream_frame("", chat_id="oc_ck5", turn_id="t-5"))
+        # 建实体时发的 JSON 才是**结构**的唯一证据（之后只能按 id 写内容，改不了结构）
+        assert calls["entity"], "⑥ 前提：建实体的请求必须被记录下来"
+        entity = json.loads(calls["entity"][0])
+        elem_ids = [e.get("element_id") for e in entity["body"]["elements"]]
+        assert elem_ids == ["answer"], \
+            f"unified_panel: false 时面板元素不该进卡（README 承诺两条传输下都关得掉）：{elem_ids}"
+        assert _run(raw5.send_stream_frame("正文一", chat_id="oc_ck5", turn_id="t-5"))
+        assert _run(raw5.send_stream_frame("正文一，正文二", chat_id="oc_ck5", turn_id="t-5"))
+        sent_ids = [c[0] for c in calls["content"]]
+        assert sent_ids == ["answer", "answer"], sent_ids
+        sent_seqs = [c[2] for c in calls["content"]]
+        assert sent_seqs == [1, 2], sent_seqs
+        assert all(cards.CARDKIT_PANEL_BODY_ID not in c[0] for c in calls["content"]), \
+            "面板关掉后写 panel_body 会得 300313（元素不存在）⇒ 每帧失败、整回合打回纯文本"
     finally:
         try:
             adapter.LarkDeckMixin._ld_ck_requests = old_reqs

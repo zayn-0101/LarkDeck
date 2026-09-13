@@ -828,7 +828,8 @@ def panel_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = ()
 
 
 def cardkit_entity_card(answer: str, panel_text: str, *, streaming: bool = True,
-                        status: Any = None) -> Dict[str, Any]:
+                        status: Any = None, expanded: bool = False,
+                        panel: bool = True) -> Dict[str, Any]:
     """**CardKit 实体卡**的 JSON（结构固定：一个正文元素 + 一个折叠面板，面板里一个 markdown）。
 
     结构固定是有原因的（真机实测）：`card_element.content` 只能按 id 写内容；而
@@ -836,15 +837,21 @@ def cardkit_entity_card(answer: str, panel_text: str, *, streaming: bool = True,
     所以：流式期间只写这两个元素，收尾才用 patch 整卡替换（那一刻流式本来也结束了）。
 
     面板的边框色按状态给（收尾帧会连面板一起换成带色的完整卡，这里只是建实体时的初始值）。
+
+    ``panel=False``（对应 ``unified_panel: false``）时**整个面板元素不进卡**。判据是配置而不是
+    ``panel_text`` 空不空：面板内容为空是**正常中间态**（还没有工具/推理数据），那一刻的元素
+    必须留着、等后面的帧往里写；而关掉面板的人不该在流式期间一直看着一个空面板头。
+    ⚠️ 调用方必须记住这个结构（元素 id 不在卡里时写它会得 `300313`），见
+    ``adapter._ld_stream_frame`` 里的 ``ck_panel``。
     """
-    return {
-        "schema": SCHEMA,
-        "config": {"streaming_mode": bool(streaming), "update_multi": True,
-                   "summary": _summary_of(answer, fallback=DEFAULT_TITLE)},
-        "body": {"elements": [
-            {"tag": "markdown", "element_id": CARDKIT_ANSWER_ID,
-             "content": answer_or_pending(answer, streaming)},
-            {"tag": "collapsible_panel", "element_id": CARDKIT_PANEL_ID, "expanded": False,
+    elements: List[Dict[str, Any]] = [
+        {"tag": "markdown", "element_id": CARDKIT_ANSWER_ID,
+         "content": answer_or_pending(answer, streaming)},
+    ]
+    if panel:
+        elements.append(
+            {"tag": "collapsible_panel", "element_id": CARDKIT_PANEL_ID,
+             "expanded": bool(expanded),
              "header": {"title": _i18n.i18n_text("panel.title"),
                         "vertical_align": "center",
                         "icon": {"tag": "standard_icon", "token": "down-small-ccm_outlined",
@@ -853,8 +860,12 @@ def cardkit_entity_card(answer: str, panel_text: str, *, streaming: bool = True,
              "border": {"color": border_for_status(status), "corner_radius": "8px"},
              "padding": "8px 8px 8px 8px",
              "elements": [{"tag": "markdown", "element_id": CARDKIT_PANEL_BODY_ID,
-                           "content": panel_text or " "}]},
-        ]},
+                           "content": panel_text or " "}]})
+    return {
+        "schema": SCHEMA,
+        "config": {"streaming_mode": bool(streaming), "update_multi": True,
+                   "summary": _summary_of(answer, fallback=DEFAULT_TITLE)},
+        "body": {"elements": elements},
     }
 
 

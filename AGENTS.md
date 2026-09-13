@@ -113,6 +113,8 @@ tests/        见「验证」
     序号必须**单调递增**（重开会话后没对齐得 `300317`）；收尾那一帧才用 `message.patch`
     整卡替换（补面板与状态色 —— 那一刻流式本来就结束）。**任何一步失败都 fail-open**
     返回 `False`，交给核心回落 edit/send（不变量 2）。
+    `unified_panel: false` 时面板元素**不进卡**，这个结构决定记在回合状态里（`ck_panel`），
+    后续帧**不再去写它的 id**（写了会得 `300313` ⇒ 每帧失败 ⇒ 整回合被打回纯文本）。
   * 想翻默认：先过一轮对抗性审计 + 真机 `probe_render.py --cardkit-prod`，
     再改 `_DEFAULTS` + `plugin.yaml` + README（三处同步有机械门禁：
     `test_config_schema_matches_defaults_exactly` 连 README 的键集一起核对，
@@ -148,6 +150,10 @@ python3 tests/mutate_check.py      # 变异验证器：撤掉每条修复必须�
 ② **锚点失效**（`❓ 锚点没找到` —— 源码改了、清单里那条变异的原文串已不存在）。
 第 ② 种**不是**「跳过一条」，而是「清单与源码脱节」：跑不到的变异等于没验，
 所以必须把锚点重新对准当前源码，**绝不允许把跑不到当通过**。
+⚠️ **锚点还必须唯一**（同属第 ② 种）：清单里那条原文串在目标文件里出现多次时，
+`replace(..., 1)` 只换**第一处** ⇒ 变异打到别处去，而报告照常打印「🟢 断言没有判别力」，
+**结论正好写反**（真发生的是「变异没生效」）。所以 `count(old) != 1` 也一律算红，
+锚点要带足够上下文让它唯一。（2026-09-13 实测：`if panel:` 在 `cards.py` 里有两处。）
 
 没有 CI / lint / formatter，这五个脚本就是全部验证。系统 `python3` 跑不动时用 Hermes
 自带解释器 `/Users/Zayn/.hermes/hermes-agent/venv/bin/python3`。

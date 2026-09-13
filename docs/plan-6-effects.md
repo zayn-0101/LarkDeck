@@ -477,7 +477,7 @@ seed 占位 → 面板出现 → 占位消失 → 收尾绿边且关 streaming_m
 | # | 效果 | 实现位置 | 默认 | 验证到 |
 |---|---|---|---|---|
 | 1a | 即时响应（首帧早于首个 token） | native seed 帧（核心契约，`stream_frame("")` 建卡）+ 等待期占位文案 | 开 | **A** + **E**（seed 帧必须带占位且 `streaming_mode: true`）+ 真机 `code=0`（探针 ⓪ 号卡） |
-| 1b | 打字机（**逐字**） | `native_transport: "cardkit"` → CardKit 实体（`card.create` + 发实体卡）+ 每帧 `card_element.content` 写正文与面板两个元素；收尾用 `message.patch` 整卡替换 | 开（可选 `cardkit`；默认仍 `patch`） | **B**（整链真机 `code=0`）+ **C ✅**（**用户肉眼判定**：甲「几个字几个字地跳」、乙「一个字一个字往外冒」⇒ 逐字必须走 CardKit）+ **D**（`--cardkit-prod` 走**生产代码路径**真机通过：建实体 + 4 次元素写入 + 1 次 patch 收尾） |
+| 1b | 打字机（**逐字**） | `native_transport: "cardkit"` → CardKit 实体（`card.create` + 发实体卡）+ 每帧 `card_element.content` 写正文与面板两个元素；收尾用 `message.patch` 整卡替换 | **开（`cardkit` 是默认**，2026-09-13 翻的；想回旧路径配 `patch`） | **B**（整链真机 `code=0`）+ **C ✅**（**用户肉眼判定**：甲「几个字几个字地跳」、乙「一个字一个字往外冒」⇒ 逐字必须走 CardKit）+ **D**（`--cardkit-prod` 走**生产代码路径**真机通过：建实体 + 4 次元素写入 + 1 次 patch 收尾） |
 | 1c | 无输入提示 | 覆盖 `_reactions_enabled()`（配置 `reactions`，默认保持 Hermes 行为） | 保持 | **A**（覆盖逻辑 + **尊重父类** + 私有名已登记进 `compat.REACTION_ADAPTER_ATTRS` 并在启动自检里上报；此前「父类缺失」那条路无门禁，第六路审计指出后已补） |
 | 2 | 完成态绿色面板 | `on_session_end` → `panel.record_turn_end` → `cards.border_for_status` | 开 | **A** + **B**（三种状态色的探针卡都被飞书接受）+ **D**（超预算档也保住颜色：`--stop-redraw` 真机实测载荷里有色、`code=0`）+ **E**（收尾帧必须绿边、必须关 `streaming_mode`、不许带占位） |
 | 3 | 中止黄边 / 报错红边 | 同上 + 覆盖 `interrupt_session_activity` 自己重绘 | 开 | **A**（含「空回合也要画出黄边」「必须落在绑定会话」）+ **B** + **D**（**60000 字节正文**的卡：正文留住 + 载荷带黄边 + 飞书 `code=0`，真机端到端；见第十四轮）+ **E**（`/stop` 之后至少一次写入且载荷含中止色） |
@@ -580,7 +580,12 @@ seed 占位 → 面板出现 → 占位消失 → 收尾绿边且关 streaming_m
 
 ---
 
-## 阶段 9（**待批准，未实现**）：CardKit 实体传输 —— 只为「打字机」这一项
+## 阶段 9（**已实现，默认仍 `patch`**）：CardKit 实体传输 —— 只为「打字机」这一项
+
+> **状态更正（2026-09-13）**：本节下面写的是它**决策时**的样子（原始推理与设计边界，
+> 原样保留）。它**已经实现**了 —— 实施记录、真机结果、第十一路审计与「翻默认」的前提
+> 见文末 **「阶段 9 实施记录」**。判定的那一眼答案是：**甲（`message.patch`）几个字几个字跳、
+> 乙（`card_element.content`）一个字一个字冒** ⇒ 逐字必须走 CardKit。
 
 **为什么现在才写这一节**：效果 1b（打字机）的传输问题在 2026-09-13 有了实测答案的一半 ——
 `tests/probe_render.py --cardkit` 把 CardKit 那整条链跑通了（**每一步 `code=0`**）：
@@ -685,3 +690,87 @@ CardKit 就是纯粹多余的复杂度**（多一条传输、多一套失败模�
 **这一轮最有价值的一条**：审计证明了「**调常量补不了这条缝**」——它第一版修法只判 `fit_reply_card(...) ≤ 128000`，
 而 `fit_reply_card` 装不下壳时会退回**裸卡**，判据于是又变宽、把「无色的正文」也留下。
 所以最后落地的形态是**直接问真正的问题**（那张带色的卡发不发得出去），而不是继续调数字。
+
+---
+
+## 阶段 9 实施记录（2026-09-13）
+
+**决策依据**：用户肉眼对照两张同时长大的卡 —— 「甲是几个字几个字出的，逐段逐段出……
+乙是一个字一个字往外冒的」。甲 = 普通卡 + `message.patch`，乙 = CardKit 实体 +
+`card_element.content`。**逐字只有 CardKit 给得了**，所以这一阶段必须做。
+
+**实现**（commit `8ebd8fc`）：配置 `native_transport: "patch" | "cardkit"`，**默认仍是 `patch`**。
+只换 native 流式帧的传输，`send` / `edit_message`（非 native 路径）、澄清卡、探针都不动。
+`cards.cardkit_entity_card` 建结构（正文元素 + 折叠面板内一个 markdown 子元素），
+`_ld_ck_create` / `_ld_ck_write` / `_ld_stream_frame` 走三步：建实体 → 每帧按 `element_id`
+写两个元素（单调 `sequence` + 唯一 `uuid`）→ 收尾用 `message.patch` 整卡替换（那一刻流式
+本来就结束）。**任何一步失败都 `_ld_stream_fail` 返回 `False`**，交给核心的 fail-open 链回落
+edit/send（不变量 2）—— 包括「没有 SDK」「建实体失败」「写正文失败」「写面板失败」。
+
+**真机证据**：`tests/probe_render.py --cardkit-prod` 走**生产代码路径**（真适配器的
+`send_stream_frame`，不是我手搓的 SDK 调用）：`card.create` **1 次**、`message.create` **1 次**、
+元素写入 **6 次**（3 帧 × 正文/面板两个元素）、收尾 `patch` **1 次**，全部 `code=0`。
+
+**已知取舍**（README 也写了）：① 结构在建实体时定死 —— 流式期间只能按 id 写内容，
+任何结构性写入（`message.patch` / `card.update`）都会**关闭流式会话**（之后写元素得 `300309`）；
+② 面板在 cardkit 下是**一个** markdown 字符串，每轮/工具的**结构**只在收尾帧出现；
+③ `streaming_print_ms` 与 `panel_expanded` 在这条传输上是 **no-op**（实体卡不带
+`streaming_config`；展开态由建实体时的 `expanded` 决定）；`unified_panel: false` 两条传输都生效。
+
+### 第十一路审计（审「阶段 9」这一批）：无阻断，4 条必修 + 1 条门禁缺口
+
+审计结论：**功能已经可以当默认**，卡住翻默认的不是功能而是**门禁**（三条该红的变异在四门禁下
+全绿）。逐条：
+
+| 级别 | 问题 | 为什么危险 | 修法 |
+|---|---|---|---|
+| 高 | **探针自己写错了 turn_id**：`--cardkit-prod` 用 `turn_id=f"ckt-{ts}"` 建种子帧，之后却读 `state['turn']`（恒为 `None`）⇒ 帧的 key 变了 ⇒ **又建了第二张实体卡**，第一张卡停在流式态、永远没人再写它，而探针打印 ✅（只写下 4 次元素而不是 6 次） | 探针是唯一真机门禁，**它会替你撒谎**：「生产路径通过」的结论建立在一个双建卡的错误路径上 | 全程复用同一个 `tid`，并**断言** `create==1 && send==1 && 元素写入==正文帧数×2`（数量对不上直接失败，而不是打印一行数字） |
+| 高 | **写面板元素失败被吞掉**：正文（`seq+1`）写成功了、面板（`seq+2`）失败 ⇒ 函数返回 `True` ⇒ 卡片停在「正文新、面板旧」的半更新态，核心以为成功、不做回落，而且**一行日志都没有** | 静默半更新正是本项目头号失败模式；判据是返回码，没日志就完全无迹可寻 | 返回 `False`（照旧 fail-open）+ 新增限流 WARNING `_log_ck_panel_write_failed_once()`；补 `fail_panel_only=True` 的测试用例（原来只有「正文失败」那个用例，两个元素都失败时面板那层会把正文的失败掩盖掉） |
+| 中 | **元素 id 断言是自比较**：`ids == [cards.CARDKIT_ANSWER_ID, cards.CARDKIT_PANEL_BODY_ID] * 2` —— 把两个 id 都改成 `"answer"`、或把面板 id 抄成 `"panel-body"`，四门禁全绿；而真机对这两种形状回的都是 `300301`（`Code 1001 Duplicate ID` / `Code 1002 elementID format error`，只允许字母数字下划线且 ≤20 字符） | 同一文件里的常量在等号两边 ⇒ 恒真 | 断言改成**字面量** `["answer", "panel_body"] * 2` |
+| 中 | CardKit 实体卡**绕过了字节预算阶梯**：patch 路径超预算会分级丢装饰（面板 → 页脚 → 裸卡），而 cardkit 的结构定死、超预算就是**整卡被拒**（`230099`）⇒ 这一帧什么都没有。原来的代码连**硬上限**都没查 | 与 `_stop_redraw_would_paint` 同一类问题：判据与守卫不同口径 | 建实体前加硬上限闸门（超了 fail-open + 限流 WARNING `_log_ck_over_budget_once`），并把这个真实形状（封面板的实体卡）写进测试 |
+| 中 | CardKit 路径**无视 `unified_panel`**、也**忽略 `panel_expanded`**：关掉统一面板的人在这条传输下还会看到一个空面板；展开偏好失效 | 配置承诺与代码不符（静默失效） | `_ld_panel_markdown` 与 `_ld_panel` 同一条门禁；`expanded` 透传；`unified_panel: false` 时**面板元素压根不进卡**，并且**后续帧不再去写它的 id**（写了会得 `300313 not find elementID` ⇒ 每帧失败 ⇒ 整回合被打回纯文本，比面板丑严重得多）—— `ck_panel` 随建实体时的结构一起记进 `self._ld_streams` |
+
+### 第十一路审计「续」：两条**工具本身**的缺陷（比它抓到的代码缺陷更值得记）
+
+审计（和我在补门禁时）踩到两处**验证工具撒谎**的形态，都属于「报告说绿、其实没验」：
+
+1. **歧义锚点让变异打到别处。** 我新写的一条变异用 `if panel:` 当锚点，而这段字符串在
+   `cards.py` 里出现**两次**（统一面板那处在前）。`mutate_check.py` 用的是
+   `text.replace(old, new, 1)`，于是它改了**无关分支**，然后报告 **🟢 全绿（断言没有判别力！）**
+   —— 结论完全反了：真正发生的是「这条变异根本没生效」。
+   修法：**锚点必须唯一**，`count(old) != 1` 一律按「锚点有问题」处理（拒绝下结论、退出码非 0），
+   与「锚点没找到」同级；对照表也一并加。这条纪律写进 `AGENTS.md`。
+2. **分页不去重，计数是虚构的。** DM 残留盘点脚本没检查 `page_token` 是否真的前进，
+   结果飞书把同一页返回了 4 次 ⇒ 报告「最近 3 天共 200 条、删除 4 条」，而 4 条的
+   `message_id` **完全相同**（同一条消息的副本）。按 id 去重后真实数字是 832 条消息、
+   其中 **182 条未撤回的卡片**（而那一轮只删掉了 1 条）。
+   教训：**清点类证据必须先按主键去重**，再谈论「多少条」；否则「删了 72 条」这种数字
+   全是假的，而它会被写进报告当成成果。
+
+### 阶段 9 翻默认（2026-09-13）：`native_transport: "cardkit"` 成为默认
+
+**为什么翻**：目标里效果 1b 是「打字机逐字显示」，而 aiduPOP 那条效果的真实来源就是
+CardKit。用户肉眼判定「甲（patch）几个字几个字跳、乙（cardkit）一个字一个字冒」之后，
+**让用户默认拿到甲、需要自己去改配置才能拿到乙，等于这一项没交付**。
+
+**前置条件（两条都满足，缺一条不许翻）** —— 这也是 `AGENTS.md` 写死的规矩：
+
+| 条件 | 证据 |
+|---|---|
+| ① 一轮对抗性审计无阻断 | 第十一路审计：功能无阻断，卡翻默认的只是**门禁缺口**（三条该红的变异全绿），已全部补齐 |
+| ② 真机 `probe_render.py --cardkit-prod` 全绿 | 建实体 1 次 + 发实体卡 1 次 + 元素写入 6 次 + patch 收尾 1 次，全 `code=0` |
+
+**翻动的四处**（有机械门禁保证不会漏）：`core/adapter.py` 的 `_DEFAULTS`、
+`plugin.yaml` 的 `config_schema`、`README.md` 的配置块与效果表、
+`tests/test_units.py::test_declared_defaults_are_an_explicit_decision`。
+
+**这一轮新加的三条门禁**（都是「默认翻过去之后才可能出现」的失效形态）：
+
+| 变异 | 撤掉的是什么 | 现在谁抓 |
+|---|---|---|
+| `CK6-默认传输被顺手改回 patch（或改坏）` | 默认值本身 | `test_declared_defaults_are_an_explicit_decision` |
+| `CK9-_ld_transport 里写死一条传输` | 「运行时跟随配置/默认」这条接线 | 同上（新增：**清空 `_CONFIG` 后真正生效的传输必须等于声明值** —— 此前四门禁只验显式配置过的值，「默认是不是真的在跑」没人管） |
+| `CK7 / CK7b / CK8-unified_panel: false` | 面板结构决定与它的跟随写入 | `test_cardkit_transport_writes_elements_and_falls_open` 的 ⑥ 段 |
+
+**回滚**：一条配置 `native_transport: "patch"`。失败方向也是安全的 —— 任何一步失败都
+fail-open 回落到 edit/send（那仍然是一张卡，只是没有逐字动画）。
