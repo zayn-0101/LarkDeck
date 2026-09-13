@@ -267,6 +267,7 @@ LarkDeckFeishuAdapter → LarkDeckMixin → FeishuAdapter → BasePlatformAdapte
   在中文客户端上显示出英文，证明客户端确实按 `i18n_content` 选语言，而不是永远读默认值。
   兜底仍然安全：客户端不认时回落到 `content`，不会让卡片发不出去。
   **注意 AI 生成的正文不翻译**，双语只覆盖界面文案。
+- 与同类插件的横向对比（六家、含各自特色与我们可借鉴的部分、ROI 排序）：[`docs/plugins-compare.md`](docs/plugins-compare.md)
 - 与 hermes-feishu-streaming-card（HFC）**不能共存**：两边都要接管 `feishu` 平台，且 HFC 还改了源码。切换步骤见 [`docs/switch-from-hfc.md`](docs/switch-from-hfc.md)。
 - **页脚数据是进程内全局的**：钩子记录的是「最近一次 API 请求」，多会话并发时所有卡片共享同一份快照。单用户单会话无影响；真要按会话隔离，得从钩子载荷里的 `session_id` 分桶，目前没做。
 - **面板归属**：钩子载荷只有 `session_id`、没有 chat_id。归属靠 `pre_gateway_dispatch` 观察到的
