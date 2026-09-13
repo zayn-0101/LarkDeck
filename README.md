@@ -294,6 +294,12 @@ LarkDeckFeishuAdapter → LarkDeckMixin → FeishuAdapter → BasePlatformAdapte
   （只换 native 流式帧的传输、任何一步失败都 fail-open 回落、默认仍走 patch）。
   取值超出 `[1, 2000]` 毫秒会被退回默认 15ms，并在日志里留一条限流 WARNING
   （写错配置不会静默 —— 「想要最慢」却得到「最快」是必须能查出来的）。
+- **`cardkit` 传输的取舍**：它换来真正的逐字打字机，代价是三条硬约束 ——
+  ① 卡片**结构在建实体时定死**（流式期间只能按 `element_id` 写内容，任何结构性写入都会
+  关闭流式会话）；所以那个折叠面板里的内容在 cardkit 模式下是**一个 markdown 字符串**
+  （不是多个元素），观感一致但元素更少；② 面板边框的**状态色在收尾那一帧**才上（那时流式
+  本来也结束），所以流式期间是灰边、结束才变绿/黄/红；③ 序号必须单调递增。
+  任何一步失败都会自动回落到 `patch` 的行为（再不行回落官方纯文本）—— 不会丢消息。
 - **面板的更新时机由核心决定**：Hermes 自己就跳过「文本没变」的中间帧
   （`gateway/stream_consumer_transport.py`：`if not finalize and text == self._last_sent_text`），
   所以**纯推理阶段（正文还是空的）根本不会有帧**，面板只能在正文开始增长之后才更新。

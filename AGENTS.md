@@ -69,7 +69,9 @@ plugin.yaml   插件清单（kind: platform，含 requires_env 与 config_schema
 __init__.py   插件入口：只从 core.adapter 转发 register
 core/         插件本体（Hermes 加载器以 hermes_plugins.larkdeck.core.* 命名空间加载）
   adapter.py    覆盖层：LarkDeckMixin（含 native streaming 契约）+ merged_class() + build_adapter() + register() + 启动自检
-  cards.py      卡片 JSON 构造（纯函数、无 I/O）—— 两种方言的边界在这里
+  cards.py      卡片 JSON 构造（纯函数、无 I/O）—— 两种方言的边界在这里；
+                也放 CardKit 实体卡与面板 markdown 的构造（`cardkit_entity_card` /
+                `panel_markdown`：结构固定，因为结构性写入会关闭流式会话）
   i18n.py       双语文案（飞书原生 i18n_content）
   compat.py     版本 / 能力探测 —— Hermes 私有名的唯一存放处
   context.py    运行时指标（钩子写入 → 页脚读取的进程内全局快照）
@@ -102,6 +104,19 @@ tests/        见「验证」
 - native 流式是官方契约：`send_stream_frame(text, ...)` 的 `text` 是**累积全文**
   （不是增量），整卡替换到同一张卡；回合状态挂 `self._ld_streams`
   （key = `chat:turn_id`），帧间有节流（`_STREAM_MIN_INTERVAL`）。
+- **native 帧有两条传输**（配置 `native_transport`，默认 `patch`）：
+  * `patch`：普通卡 + `message.patch` 整卡替换。字是**几个几个跳**（用户实测语）。
+  * `cardkit`：CardKit 实体（`card.create` + 发实体卡）+ 每帧 `card_element.content`
+    写**两个元素**（正文 + 面板内的 markdown 子元素）⇒ **真逐字打字机**（用户实测语）。
+    硬约束（全部真机实测）：**结构必须在建实体时定死**，因为任何结构性写入
+    （`message.patch` / `card.update`）都会**关闭流式会话**（之后写元素得 `300309`）；
+    序号必须**单调递增**（重开会话后没对齐得 `300317`）；收尾那一帧才用 `message.patch`
+    整卡替换（补面板与状态色 —— 那一刻流式本来就结束）。**任何一步失败都 fail-open**
+    返回 `False`，交给核心回落 edit/send（不变量 2）。
+  * 想翻默认：先过一轮对抗性审计 + 真机 `probe_render.py --cardkit-prod`，
+    再改 `_DEFAULTS` + `plugin.yaml` + README（三处同步有机械门禁：
+    `test_config_schema_matches_defaults_exactly` 连 README 的键集一起核对，
+    另有 `test_declared_defaults_are_an_explicit_decision` 专门钉默认值）。
 - 页脚指标是进程内全局（钩子记「最近一次 API 请求」），多会话并发共享同一快照；
   要按会话隔离得从钩子载荷的 `session_id` 分桶（未做）。
 - 面板数据策略与页脚不同：`panel.py` 按 `session_id` 分桶；归属优先用
