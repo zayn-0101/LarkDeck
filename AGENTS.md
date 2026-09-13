@@ -81,7 +81,8 @@ core/         插件本体（Hermes 加载器以 hermes_plugins.larkdeck.core.* 
                 只写内存、异常自吞、永不返回 directive
 install.sh    安装脚本（默认软链；NAS 用 --copy，其 FILES 数组是手动的，新增模块要同步）
 docs/         踩坑与开工索引（lessons）、指标钩子原理、部署与迁移步骤、
-              同类插件横向对比与 ROI（plugins-compare）
+              同类插件横向对比与 ROI（plugins-compare）、
+              当前分阶段方案（plan-v1，已过三路审计）
 tests/        见「验证」
 ```
 
