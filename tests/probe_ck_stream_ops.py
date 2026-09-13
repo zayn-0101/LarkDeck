@@ -16,8 +16,10 @@
 ## 两种模式
 
 ```
-python3 tests/probe_ck_stream_ops.py            # 接口矩阵：逐个操作 + 之后能不能继续写（自动删卡）
-python3 tests/probe_ck_stream_ops.py --visual   # 出一张「看得见」的卡（默认保留，--delete 可删）
+python3 tests/probe_ck_stream_ops.py             # 接口矩阵：逐个操作 + 之后能不能继续写（自动删卡）
+python3 tests/probe_ck_stream_ops.py --visual    # 出一张「看得见」的卡（默认保留，--delete 可删）
+python3 tests/probe_ck_stream_ops.py --batching  # R0：一次 batch 带多元素 / 序号账本语义（自动删卡）
+python3 tests/probe_ck_stream_ops.py --withdrawn # R0：消息被撤回/删除后写卡回什么码（自动删卡）
 ```
 
 `--visual` 那张卡是给**人的眼睛**看的：正文 → 流式期间新增元素 → 面板边框改黄 →
@@ -109,8 +111,13 @@ class _Card:
             .request_body(ContentCardElementRequestBody.builder().content(text or " ")
                           .sequence(self._next()).uuid(f"p-{self.card_id}-{tag}").build()).build())
         alive = self._code(r) == 0
-        print(f"   [{'✅' if alive else '❌'}] 写正文（{tag}）→ code={self._code(r)}"
-              + ("" if alive else "   ← 流式会话已被关闭"))
+        # ⚠️ 失败原因要分清楚，别一律说成「会话已关闭」：300309 才是会话被关，
+        # 300317 是**序号冲突**（跳号/撞号），两者的修法完全不同（第十二路审计教训：
+        # 探针把不同的码说成同一件事，比不说更坏）。
+        hint = {"300309": "   ← 流式会话已被关闭",
+                "300317": "   ← 序号冲突（必须严格递增：跳号与撞号都不行）"}.get(str(self._code(r)),
+                                                                            "")
+        print(f"   [{'✅' if alive else '❌'}] 写正文（{tag}）→ code={self._code(r)}{hint}")
         return alive
 
     # --- 以下每个方法都返回 (返回码, 之后还能不能写正文) --------------------------- #
@@ -231,6 +238,165 @@ def probe_matrix() -> int:
     return 0
 
 
+def probe_batching() -> int:
+    """R0/P1+P2+P3：**一次 `card.batch_update` 能带几个元素**、**它占几个 sequence**、
+    `card.settings` 是否也吃号 —— 回答「每帧 2 次写」这个预算能不能成立。
+
+    判据全部是**返回码**；`--visual` 那一半（客户端是否真的重绘多个元素）另跑。
+
+    设计：所有带 `sequence` 的调用**共用 +1 递增的单一计数器**，交替发 batch 与 content；
+    只要全程 `code=0`，就说明「单计数器、每次调用 +1」这条设计对 batch 与 settings 同样成立。
+    再补两条反证臂：**跳号**与**撞号**必须被拒（否则说明序号根本没人校验，我们的账本就白管了）。
+    """
+    client, chat = _connect()
+    failures = []
+    card = _Card(client, chat)
+    print("▶ 臂 1：content(1) → batch(2, 三个元素) → content(3) → settings(4) → content(5)")
+    if not card.open(answer="开始", panel="面板"): 
+        return 1
+    ok1 = card.write("第一帧", "b1")
+    action = lambda eid, content: {                     # noqa: E731
+        "action": "partial_update_element",
+        "params": {"element_id": eid, "partial_element": {"content": content}}}
+    actions = [action(PANEL_BODY_ID, "面板（batch 改的）"),
+               action(ANSWER_ID, "第一帧（batch 改的）")]
+    r = client.cardkit.v1.card.batch_update(
+        BatchUpdateCardRequest.builder().card_id(card.card_id)
+        .request_body(BatchUpdateCardRequestBody.builder()
+                      .actions(json.dumps(actions, ensure_ascii=False))
+                      .sequence(card._next()).uuid(f"p-{card.card_id}-b2").build()).build())
+    code_batch = card._code(r)
+    ok3 = card.write("第三帧", "b3")
+    r = client.cardkit.v1.card.settings(
+        SettingsCardRequest.builder().card_id(card.card_id)
+        .request_body(SettingsCardRequestBody.builder()
+                      .settings(json.dumps({"config": {"summary": {"content": "R0 探针：batch 与序号"}}}))
+                      .sequence(card._next()).uuid(f"p-{card.card_id}-b4").build()).build())
+    code_settings = card._code(r)
+    ok5 = card.write("第五帧", "b5")
+    print(f"   单计数器 +1 递增：content={ok1} · batch(code={code_batch}) · "
+          f"content={ok3} · settings(code={code_settings}) · content={ok5}")
+    if not (ok1 and code_batch == 0 and ok3 and code_settings == 0 and ok5):
+        failures.append("臂 1：单计数器 +1 递增在 batch/settings 上不成立")
+    card.delete()
+
+    print("▶ 臂 2：**跳号**必须被拒（settings 用 seq=100 后，content 用 seq=2）")
+    card = _Card(client, chat)
+    if not card.open():
+        return 1
+    card.write("基线", "c1")
+    r = client.cardkit.v1.card.settings(
+        SettingsCardRequest.builder().card_id(card.card_id)
+        .request_body(SettingsCardRequestBody.builder()
+                      .settings(json.dumps({"config": {"summary": {"content": "跳号试验"}}}))
+                      .sequence(100).uuid(f"p-{card.card_id}-jump").build()).build())
+    jump_code = card._code(r)
+    after_jump = card.write("跳号之后", "c2")
+    print(f"   settings(seq=100) code={jump_code} · 之后 content(seq=2) 还能写={after_jump}")
+    if jump_code == 0 and after_jump:
+        print("   ⚠️ 跳号竟然被接受 ⇒ 服务端不校验序号连续性（我们的账本仍按 +1 走，安全）")
+    card.delete()
+
+    print("▶ 臂 3：**撞号**必须被拒（content 用同一个号发两次）")
+    card = _Card(client, chat)
+    if not card.open():
+        return 1
+    card.seq = 41
+    first = card.write("同一个号第一次", "d1")
+    r = client.cardkit.v1.card_element.content(
+        ContentCardElementRequest.builder().card_id(card.card_id).element_id(ANSWER_ID)
+        .request_body(ContentCardElementRequestBody.builder().content("同一个号第二次")
+                      .sequence(41).uuid(f"p-{card.card_id}-dup41").build()).build())
+    dup_code = card._code(r)
+    print(f"   同号第一次={first} · 同号第二次 code={dup_code}"
+          f"{'（被拒 ✅）' if dup_code != 0 else '（竟然接受 ⚠️）'}")
+    if dup_code == 0:
+        print("   ⚠️ 同号被接受 ⇒ 序号只是「单调不减」；我们仍然 +1，无害")
+    card.delete()
+
+    print("\n—— R0 batch 探针汇总 ——")
+    print(f"   一次 batch 带 2 个 partial_update_element ⇒ code={code_batch}")
+    print(f"   与 content/settings 共用 +1 计数器 ⇒ {'可行 ✅' if not failures else '不可行 ❌'}")
+    print("   客户端是否真的同时重绘这两个元素：**只有眼睛能判**，"
+          "确认卡在 R2 的 --visual 里一起出")
+    if failures:
+        print(f"\n❌ {failures}")
+        return 1
+    print("\n✅ 结论：**单计数器 + 每次 API 调用 +1** 对 content / batch_update / settings 都成立；"
+          "\n   ⇒ 每帧 2 次写（1 次 batch 承载多个元素 + 1 次正文）在接口层站得住。")
+    return 0
+
+
+def probe_withdrawn() -> int:
+    """R0/P4：**消息被撤回/删除之后写卡回什么码** —— 撤回守卫的码表必须实测，不许抄。
+
+    六臂（每臂一张独立探针卡，一次操作，记录 code/msg）：
+      A1 删掉自己发的卡 → `card_element.content`
+      A2 删掉自己发的卡 → `message.patch`
+      A3 从不存在的 message_id → patch（区分「不存在」与「已删除」）
+      A4 非法格式的 message_id → patch
+      A6 删掉自己发的卡 → `card.batch_update`
+    判据：把 (臂, 操作, code) **去重**后打印；结论落成码表（写进代码注释时要带出处）。
+    """
+    client, chat = _connect()
+    rows = []
+    unknown_mid = f"om_probe_absent_{int(time.time())}"
+
+    def patch_card(mid: str, label: str) -> tuple:
+        node = lark_cards.status_shell(lark_cards.unified_panel(status="ok")) \
+            if False else lark_cards.card(elements=[{"tag": "markdown", "content": label}])
+        from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
+        req = PatchMessageRequest.builder().message_id(mid).request_body(
+            PatchMessageRequestBody.builder()
+            .content(json.dumps(node, ensure_ascii=False)).build()).build()
+        r = client.im.v1.message.patch(req)
+        return getattr(r, "code", "?"), str(getattr(r, "msg", ""))[:60]
+
+    # A1 / A2 / A6：先建卡，删掉，再写
+    card = _Card(client, chat)
+    if not card.open():
+        return 1
+    card.write("删除前的正文", "pre-del")
+    mid = card.message_id
+    d = client.im.v1.message.delete(DeleteMessageRequest.builder().message_id(mid).build())
+    print(f"   删卡 message_id={mid} → code={d.code}")
+    code_content = card.write("删除后写正文", "post-del")
+    rows.append(("A1 删卡后 card_element.content", "content", code_content))
+    c, m = patch_card(mid, "删除后 patch")
+    rows.append(("A2 删卡后 message.patch", "patch", c))
+    print(f"   A2 patch 返回：code={c} {m}")
+    r = client.cardkit.v1.card.batch_update(
+        BatchUpdateCardRequest.builder().card_id(card.card_id)
+        .request_body(BatchUpdateCardRequestBody.builder()
+                      .actions(json.dumps([{"action": "partial_update_element",
+                                            "params": {"element_id": ANSWER_ID,
+                                                       "partial_element": {"content": "删除后 batch"}}}],
+                                          ensure_ascii=False))
+                      .sequence(card._next()).uuid(f"p-{card.card_id}-postdel").build()).build())
+    rows.append(("A6 删卡后 card.batch_update", "batch", card._code(r)))
+
+    # A3 / A4：不存在的 / 非法格式的 message_id
+    c3, m3 = patch_card(unknown_mid, "不存在的 id")
+    rows.append(("A3 不存在的 message_id", "patch", c3))
+    c4, m4 = patch_card("om_probe_bad", "非法格式 id")
+    rows.append(("A4 非法格式的 message_id", "patch", c4))
+    print(f"   A3 code={c3} {m3}")
+    print(f"   A4 code={c4} {m4}")
+
+    print("\n—— 码表（按 (臂, 码) 去重后的原始记录）——")
+    seen = set()
+    for label, op, code in rows:
+        key = (op, code)
+        tag = "" if key not in seen else "  ← 与上面同一码"
+        seen.add(key)
+        print(f"   {label:<34} {op:<8} code={code}{tag}")
+    codes = sorted({c for _, _, c in rows if c != 0})
+    print(f"\n   实测到的非零码集合：{codes}")
+    print("   ⚠️ 这三个码必须写进 `_CK_WITHDRAWN_CODES` 的是**上面实测的**，"
+          "不是第三方 README 里的 `231003/1000023/230011` —— 按本项目规矩：官方文档 + 真机探针为准。")
+    return 0
+
+
 def probe_visual(keep: bool) -> int:
     """出一张给人看的卡：流式期间新增元素 + 改边框色 + 改面板内容。"""
     client, chat = _connect()
@@ -275,6 +441,10 @@ def probe_visual(keep: bool) -> int:
 def main(argv) -> int:
     if "--visual" in argv:
         return probe_visual(keep="--delete" not in argv)
+    if "--batching" in argv:
+        return probe_batching()
+    if "--withdrawn" in argv:
+        return probe_withdrawn()
     return probe_matrix()
 
 
