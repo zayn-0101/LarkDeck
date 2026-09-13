@@ -174,8 +174,10 @@ MUTATIONS = [
      "            break",
      "test_units"),
     ("E37-PROBE_REPORT_KEYS 少一项", "core/compat.py",
-     "    \"missing_callback\", \"missing_signal\", \"missing_reactions\", \"session_attribution_ok\",\n)",
-     "    \"missing_callback\", \"missing_signal\", \"session_attribution_ok\",\n)",
+     '    "missing_callback", "missing_signal", "missing_reactions", "missing_display_chrome",\n'
+     '    "session_attribution_ok",\n)',
+     '    "missing_callback", "missing_signal", "missing_display_chrome",\n'
+     '    "session_attribution_ok",\n)',
      "test_units"),
     # ---- 第十五轮：首帧占位 + 面板耗时段 -------------------------------------- #
     ("T1-建卡不再显示占位（空白卡）", "core/cards.py",
@@ -523,6 +525,19 @@ MUTATIONS = [
      '            state.setdefault("alive_at", time.monotonic())\n'
      '            state["alive_at"] = time.monotonic()',
      '            pass',
+     "test_units"),
+    # ---- 显示 chrome：核心的工具行默认不进正文（用户在真机上明确要求过） ---------------- #
+    ("PL-1-无视配置一律转发父类（工具行又并进正文）", "core/adapter.py",
+     '            if _cfg("progress_lines_in_body"):\n'
+     '                return super().format_tool_event(\n'
+     '                    event, mode=mode, preview_max_len=preview_max_len)',
+     '            if True:\n'
+     '                return super().format_tool_event(\n'
+     '                    event, mode=mode, preview_max_len=preview_max_len)',
+     "check_override"),
+    ("PL-2-工具行开关默认翻成 true（用户会看到正文区又滚工具行）", "core/adapter.py",
+     '    "progress_lines_in_body": False,',
+     '    "progress_lines_in_body": True,',
      "test_units"),
     ("R5-17-降级那一帧丢掉本帧算出的标死（同一件事两处真相）", "core/adapter.py",
      '                self._ld_stream_put(key, {**live_state, "ck_degrade": degrade_code, "card_id": "",\n'

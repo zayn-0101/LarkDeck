@@ -309,7 +309,8 @@ def test_probe_report_warnings_name_the_right_contract():
     # 而崩溃不算判别力证据（第九路审计 F3 指出过这种归因）。
     for required in ("hermes_version", "adapter_class", "ok", "missing_required",
                      "missing_optional", "missing_callback", "missing_signal",
-                     "missing_reactions", "session_attribution_ok"):
+                     "missing_reactions", "missing_display_chrome",
+                     "session_attribution_ok"):
         assert required in compat.PROBE_REPORT_KEYS, (
             f"探测契约少了 {required} —— 上游改名后不会有任何上报")
 

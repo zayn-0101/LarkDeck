@@ -258,6 +258,10 @@ _DEFAULTS: Dict[str, Any] = {
     "streaming_print_ms": _cards.DEFAULT_PRINT_FREQUENCY_MS,
     "unified_panel": True,    # 推理 + 工具合并为底部一个可折叠面板
     "panel_expanded": False,  # 面板默认收起（展开态很占屏；aiduPOP 同为默认收起）
+    #: 核心的工具行要不要进**正文**。默认 False = **吃掉**：那些行（`⚙️ mem0_search: "…"`）
+    #: 会被并进流式正文，而同一份信息我们已经在「执行详情」面板里结构化地给了一遍
+    #: ⇒ 默认不重复、正文只有回答（用户 2026-09-13 明确要求）。想看核心那套就设 true。
+    "progress_lines_in_body": False,
     "footer": True,           # 页脚：只放上下文用量（模型/耗时已并入面板标题行）
     "show_model": True,       # 面板标题行里显示模型名
     "context_style": "text",  # 上下文用量样式：text（默认）| bar | both
@@ -1813,6 +1817,35 @@ class LarkDeckMixin:
         with self._ld_lock:
             self._ld_streams.pop(key, None)
 
+    # ------------------------------------------------- 显示 chrome（工具行是否进正文）
+    def format_tool_event(self, event: Any, *, mode: str = "all",
+                          preview_max_len: int = 40) -> Optional[str]:
+        """**吃掉**核心的工具行（默认），还是原样交给父类渲染。
+
+        为什么这件事归我们管：父类（`gateway/platforms/base.py`）把每个工具调用渲染成一行
+        chrome，原生流式路径会把它**并进正文**（`gateway/stream_dispatch.py` 的
+        `_dispatch_tool_call` → `_enqueue_tool_line`），老路径则会发一条独立的「进度气泡」。
+        于是同一回合里工具信息出现两遍：正文区滚着 `⚙️ mem0_search: "…"`，而下面收起的
+        「执行详情」面板里还有一份**结构化**的（来自我们订阅的官方钩子）。
+
+        基类 docstring 明写「adapters without editing/rich text override to None」——
+        返回 `None` 表示**适配器选择吃掉这个事件**，这是官方给的扩展点（不是 monkeypatch，
+        更不是改源码：不变量 1）。所以默认吃掉：**正文只有回答，工具步骤收在面板里**。
+        想恢复核心那套（正文区也滚工具行）就配 `progress_lines_in_body: true`。
+
+        ⚠️ 缺了不致命但要上报（`compat.DISPLAY_CHROME_ATTRS`）：父类哪天改名，这里会静默失效
+        ——用户看到的就不再是干净卡片，而启动自检不会说一句话。
+        """
+        try:
+            if _cfg("progress_lines_in_body"):
+                return super().format_tool_event(
+                    event, mode=mode, preview_max_len=preview_max_len)
+            return None
+        except Exception:
+            # 渲染 chrome 是**装饰**：任何异常都不许影响消息本身，静默吃掉即可
+            logger.debug("[larkdeck] 工具行渲染失败，吃掉这个事件", exc_info=True)
+            return None
+
     # ------------------------------------------------------ 即时响应观感
     def _reactions_enabled(self) -> bool:
         """「处理中」表情反应开关 —— 对应 aiduPOP README 效果 1 里的「无输入提示」。
@@ -2356,6 +2389,10 @@ def _log_probe_report(report: Dict[str, Any]) -> None:
     if missing_reactions:
         logger.warning("[larkdeck] 能力探测：内置适配器缺少 %s —— "
                        "`reactions: false` 会静默失效（「处理中」表情照旧）", missing_reactions)
+    missing_display = list(report.get("missing_display_chrome") or [])
+    if missing_display:
+        logger.warning("[larkdeck] 能力探测：内置适配器缺少 %s —— "
+                       "工具行会重新并进正文（「干净卡片」静默失效）", missing_display)
 
 
 def merged_class(base_cls: type) -> type:

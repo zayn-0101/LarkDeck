@@ -268,6 +268,43 @@ else:
         problems.append(f"启动自检没有如实自报传输：这个进程实际生效 {_effective!r}，"
                         f"但日志是 {_detail!r}")
 
+# ⚠️ **工具行是否进正文**必须在真加载器里验：那条判据（`format_tool_event` → `None`）只有在
+# 有真 Hermes 类型（`ToolCallChunk`）时才有意义，而单测是零 Hermes 依赖的。
+# 没有这条断言，把覆盖删掉 / 无视配置一律转发父类，四门禁全绿 —— 而用户看到的正是
+# 「正文区又滚起了 ⚙️ 工具行」（默认行为被静默改掉）。
+try:
+    from gateway.stream_events import ToolCallChunk
+    _probe_event = ToolCallChunk(tool_name="terminal", preview="date", args={"command": "date"})
+except Exception as _exc:      # noqa: BLE001
+    problems.append(f"拿不到 ToolCallChunk，工具行开关这条断言失效：{_exc!r}")
+else:
+    # ⚠️ 要**实例**：`format_tool_event` 是普通方法（不是 classmethod），在类上调用会
+    # 「missing 1 required positional argument: 'event'」（这一版就是这么红的）。
+    try:
+        from gateway.config import PlatformConfig
+        _factory = getattr(platform_registry.get("feishu"), "adapter_factory", None)
+        _inst = _factory(PlatformConfig(enabled=True, extra={})) if _factory else None
+    except Exception as _exc:      # noqa: BLE001
+        _inst = None
+        problems.append(f"造不出适配器实例，工具行开关这条断言失效：{_exc!r}")
+    _mix = _inst
+    _saved_cfg = dict(getattr(_admin_mod, "_CONFIG", {}) or {})
+    try:
+        if _mix is None:
+            raise SystemExit(5)
+        _admin_mod.configure(progress_lines_in_body=False)
+        _eaten = _mix.format_tool_event(_probe_event, mode="all", preview_max_len=40)
+        if _eaten is not None:
+            problems.append(f"默认必须**吃掉**核心的工具行（正文才干净），实得 {_eaten!r}")
+        _admin_mod.configure(progress_lines_in_body=True)
+        _shown = _mix.format_tool_event(_probe_event, mode="all", preview_max_len=40)
+        if not _shown:
+            problems.append("`progress_lines_in_body: true` 时必须原样转发父类（能看到工具行），"
+                            f"实得 {_shown!r}")
+    finally:
+        _admin_mod._CONFIG.clear()
+        _admin_mod._CONFIG.update(_saved_cfg)
+
 if problems:
     for p in problems:
         print("FAIL:", p)

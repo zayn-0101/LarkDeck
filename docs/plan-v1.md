@@ -362,7 +362,11 @@ _CK_WRITES_PER_FRAME = max(1, int(_CK_WRITES_PER_SECOND * _STREAM_MIN_INTERVAL))
 1. **面板子元素落点对比卡**（已在 DM，P5）：决定 R3 能否做成「面板内多元素」。
 2. 逐字打字机一眼（R2 之后的常规确认，沿用老习惯）。
 3. R8 的内联换卡与 R2 的「每帧 patch 面板是否引起动画重放」（只有眼睛能判）。
-4. **工具进度行出现在正文区**（2026-09-13 用户真机反馈）：那些 `⚙️ mem0_search: "..."` 行**不是**我们面板里的内容（我们面板的行格式是 `cards.tool_step`：`✅ read_file · 2.3s · \`{...}\``）——核心的 `display.tool_progress`（飞书档位是 `_TIER_MEDIUM` ⇒ `"new"`）与 `interim_assistant_messages` 会把工具进度送进同一条流里，而卡片的正文**按契约原样渲染整帧文本**（我们不猜哪几行是核心加的，猜错会静默吞掉整条回答）。想少看这些行是**核心配置**（`display.platforms.feishu.tool_progress: "off"`），不是插件该动的事（不变量 1）。
+4. **工具进度行出现在正文区**（2026-09-13 用户真机反馈）——**已落地**：那些行是核心的
+   `format_tool_event` chrome，原生流式路径会把它**并进正文**；我们在**基类 docstring 明写的
+   扩展点**上返回 `None`（`progress_lines_in_body: false`，新默认）把它吃掉 ⇒ 正文只有回答，
+   工具步骤仍在「执行详情」面板里（来自官方钩子）。**不变量 1 守住**：这是覆盖父类方法的
+   官方扩展点，不是改源码、不是 monkeypatch。原来的分析：那些 `⚙️ mem0_search: "..."` 行**不是**我们面板里的内容（我们面板的行格式是 `cards.tool_step`：`✅ read_file · 2.3s · \`{...}\``）——核心的 `display.tool_progress`（飞书档位是 `_TIER_MEDIUM` ⇒ `"new"`）与 `interim_assistant_messages` 会把工具进度送进同一条流里，而卡片的正文**按契约原样渲染整帧文本**（我们不猜哪几行是核心加的，猜错会静默吞掉整条回答）。想少看这些行是**核心配置**（`display.platforms.feishu.tool_progress: "off"`），不是插件该动的事（不变量 1）。
 
 ## 附录 D：发布清单
 

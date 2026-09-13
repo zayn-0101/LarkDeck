@@ -68,6 +68,16 @@ REACTION_ADAPTER_ATTRS: Tuple[str, ...] = (
     "_reactions_enabled",
 )
 
+#: **显示 chrome** 扩展点：父类把工具调用渲染成一行行 chrome 并交给我们，
+#: `gateway/platforms/base.py` 的 docstring 明写「adapters without editing/rich text
+#: override to None」⇒ 覆盖成 ``None`` 是**官方允许**的做法（不是 monkeypatch）。
+#: 我们用它来**吃掉**核心的工具行：那些行会被并进**流式正文**，而同一份信息我们已经在
+#: 卡片的「执行详情」面板里结构化地给了一遍（来自官方钩子）⇒ 两份重复、正文被污染。
+#: 登记在这里是为了不变量 3：覆盖父类方法也算「用到上游的名字」，缺了要能探测上报。
+DISPLAY_CHROME_ATTRS: Tuple[str, ...] = (
+    "format_tool_event",
+)
+
 #: 本插件订阅的**观察型**钩子清单（与 ``core/hooks.py`` 一一对应）。
 #: 这个元组存在的意义是让「订阅了几个」有单一事实来源：文档、门禁、自检都读它。
 OBSERVED_HOOKS: Tuple[str, ...] = (
@@ -144,7 +154,8 @@ def probe_adapter_class(cls: type) -> Tuple[bool, List[str]]:
 #: （门禁自己的覆盖清单没人守）；`core/adapter.py` 的 `_log_probe_report` 里还有第三份。
 PROBE_REPORT_KEYS: Tuple[str, ...] = (
     "hermes_version", "adapter_class", "ok", "missing_required", "missing_optional",
-    "missing_callback", "missing_signal", "missing_reactions", "session_attribution_ok",
+    "missing_callback", "missing_signal", "missing_reactions", "missing_display_chrome",
+    "session_attribution_ok",
 )
 
 
@@ -170,6 +181,8 @@ def probe_report(cls: Optional[type]) -> Dict[str, Any]:
     report["missing_signal"] = [n for n in SIGNAL_ADAPTER_ATTRS if not _has(cls, n)]
     # 处理生命周期：缺了也只是「reactions 开关静默失灵」，同样要上报（不能只靠名字不变）
     report["missing_reactions"] = [n for n in REACTION_ADAPTER_ATTRS if not _has(cls, n)]
+    # 显示 chrome：缺了不致命（工具行照旧并进正文），但用户要的「干净卡片」就静默失效了
+    report["missing_display_chrome"] = [n for n in DISPLAY_CHROME_ATTRS if not _has(cls, n)]
     # 会话归属是「卡片能否确定属于哪个会话」的前提，缺了只是退回旧行为（不阻断卡片）
     report["session_attribution_ok"] = session_attribution_available()
     # 自检：契约里的键一个都不能少（改这个函数时忘同步 PROBE_REPORT_KEYS 就会被抓）

@@ -14,11 +14,14 @@
    宁可退回纯文本，也不能因为卡片报错而丢消息。改 `adapter.py` 时逐条保住这个性质。
    native streaming（`SUPPORTS_NATIVE_STREAMING` + `send_stream_frame`）的帧失败由核心
    自动回退 edit/send —— 这条 fail-open 链是官方契约，别绕过、别在帧里吞掉回落。
-3. **Hermes 私有接口只允许出现在 `compat.py`。** 目前分七组登记
+3. **Hermes 私有接口只允许出现在 `compat.py`。** 目前分八组登记
    （会话归属与澄清网关另见 `SESSION_ATTRIBUTION_API` 与「约定」里的归属条目）：
    适配器必需 3 个（`REQUIRED_ADAPTER_ATTRS`，`probe_adapter_class()` 运行时校验，
    缺了拒绝覆盖）；适配器可选 1 个（`OPTIONAL_ADAPTER_ATTRS` —— `edit_message`，
-   有则用、无则退回内置）；点击回调路径 5 个类属性（`CALLBACK_ADAPTER_ATTRS`）+ 2 个实例属性
+   有则用、无则退回内置）；**显示 chrome 1 个**（`DISPLAY_CHROME_ATTRS` —— `format_tool_event`：
+   我们**覆盖它并允许返回 `None`**（基类 docstring 明写的官方扩展点）来吃掉核心并进正文的工具行；
+   缺了不致命，但「正文干净」这件事会静默失效，所以要探测上报）；
+   点击回调路径 5 个类属性（`CALLBACK_ADAPTER_ATTRS`）+ 2 个实例属性
    （`CALLBACK_INSTANCE_ATTRS` —— 实例属性在类上探不到，只在运行时 `AttributeError` 时回落）；
    **信号型契约 1 个**（`SIGNAL_ADAPTER_ATTRS` ——
    核心在 `/stop`、`/new` 路径**主动调我们**的 `interrupt_session_activity`，
