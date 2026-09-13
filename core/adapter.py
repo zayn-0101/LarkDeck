@@ -180,6 +180,13 @@ _WITHDRAWN_CODES = frozenset({230011, 99992354})
 #: （`probe_ck_stream_ops.py --lanes` 实测 `code=0`，且随后写元素得 `300309` ⇒ 会话确实被替换掉了）。
 _CARD_DEATH_CODES = frozenset({300309, 300313, 300317})
 
+#: **装饰通道**的卡级死法（比正文那组少一个 `300313`，差别是**有意的**，R5 审计高-1 的收口）：
+#:   * `300309`（会话已关）/ `300317`（序号账本废了）⇒ 整条元素通道都不可用（正文那一次也一定会
+#:     失败）⇒ **必须降级**，否则后续每帧都在往一个关掉的会话写正文，卡片静默冻住；
+#:   * `300313`（元素不存在）⇒ **只是那一个装饰元素**在卡里没了（msg 会点名它），正文元素是另一个
+#:     id、照样写得进去 ⇒ 只标死被点名的那个，**不降级**（保住打字机）。
+_CARD_DEATH_DECOR_CODES = frozenset({300309, 300317})
+
 #: **写接口可以安全重试**的错误码：只有「服务端明确拒绝、什么都没执行」的频率限制类。
 #: 为什么必须与 `_TRANSIENT_CODES` 分开：`300309`（流式会话已关闭）与 `300317`（序号不匹配）
 #: 是**结构性状态**，把同一个请求原样重发**不可能成功** —— 重试只会白等 ~1 秒再 fail-open，
@@ -541,15 +548,25 @@ class _CkResult(NamedTuple):
     def bad_element_id(self) -> Optional[str]:
         """从 msg 里解析被服务端点名的坏 `element_id`（解析不出返回 ``None``）。
 
-        口径来自真机实测的两种文案：``not find elementID : <id>``（写入卡里不存在的 id）。
-        解析失败时调用方必须退回「整批标死」这个保守处置 —— **解析不出来不等于没坏**。
+        ⚠️ 两道收紧（R5 审计的中-4，两个反例都是实测 msg 形状）：
+          * **只在 `300313`（元素不存在）这个码上解析** —— 别的码的 msg 里出现 `elementID :`
+            往往是在描述**上下文**（实测：`... elementID : panel_body content is too long,
+            (the offending field is footer)` ⇒ 真凶是 footer，照解析会把好元素标死）；
+          * **不截断 id**：id 字符集 `[A-Za-z0-9_]{1,20}` 是**我们自己建元素时**的规约，
+            而服务端回显的可能是别人给的长 id（实测 21 字符被旧正则截成 20）⇒ 截断后匹配不上，
+            调用方会「一个都不标死」而日志还说「只标死它」。所以这里贪婪匹配，
+            **由调用方拿结果去和这一批的 op 对**（对不上就整批标死）。
         """
+        if self.code != 300313:
+            return None
         found = _CK_BAD_ELEMENT_RE.search(self.msg or "")
         return found.group(1) if found else None
 
 
-#: 从 CardKit 的 msg 里抓坏元素 id 的正则。id 字符集是实测出来的 `[A-Za-z0-9_]{1,20}`。
-_CK_BAD_ELEMENT_RE = re.compile(r"elementID\s*:\s*([A-Za-z0-9_]{1,20})")
+#: 从 CardKit 的 msg 里抓坏元素 id 的正则。
+#: ⚠️ **故意不写长度上界**：上界只对我们自己创建的 id 成立，对服务端回显的 id 不成立 ——
+#: 截断会让「解析出来的 id」匹配不上任何 op，从而静默滑过标死那一步（R5 审计的中-4）。
+_CK_BAD_ELEMENT_RE = re.compile(r"elementID\s*:\s*([A-Za-z0-9_]+)")
 
 
 class _CkOp(NamedTuple):
@@ -1442,14 +1459,29 @@ class LarkDeckMixin:
                 # 把装饰失败升级成整帧失败，会买下「上游补 finalize + `_first_send` ⇒ DM 两张卡」
                 # 这条链；而静默吞掉又是本项目的头号失败模式 —— 唯一同时满足两边的形态是
                 # 「不 fail-open 但必须留痕」。正文失败仍然 fail-open（没有正文这张卡就没意义）。
+                #
+                # ⚠️⚠️ **卡级死法在装饰这一路也要降级**（R5 审计的高-1，实测能绕过全部门禁）：
+                # 旧代码只在**正文**写入失败时查 `_CARD_DEATH_CODES`。于是「批量写入先撞上
+                # `300309`（会话已关）」这条形状会走 DEAD 分支：整批标死、帧照旧返回 True、
+                # `ck_degrade` 永远不置位 ⇒ 后续每一帧都往一个**已经关掉的会话**写正文，
+                # 卡片静默冻在流式态 —— 正是 R5 要治的病。所以这里先把降级决定记下来，
+                # 由帧路径统一处理（帧路径会清 `card_id` 并改用整卡 patch 续写同一张卡）。
+                if batch_res.code in _CARD_DEATH_DECOR_CODES:
+                    state_ref["ck_degrade"] = batch_res.code
                 # ⚠️ **标死范围尽量收窄**（R5，真机实测支撑）：批级返回码能反映坏 id，而且
                 # **msg 会点名它**（`ErrMsg: not find elementID : <id>`，`--lanes` 实测
-                # `code=300313`）⇒ 解析得出就**只标那一个**，其余装饰下一帧照常写；
-                # 解析不出才退回「整批标死」（保守：解析不出来不等于没坏）。
+                # `code=300313`）⇒ 解析得出**且真的在这一批里**就只标那一个，其余装饰下一帧照常写。
+                # ⚠️ 「解析得出」不够（R5 审计的中-4）：msg 形状不止一种，实测有两个反例 ——
+                # ① 解析结果被截断（`ghost_missing_element` ⇒ `ghost_missing_elemen`）；
+                # ② 误伤（`elementID : panel_body … (the offending field is footer)` 里点名的是
+                #    上下文而不是真凶）。两种情况都会「标死一个好元素、放走坏元素」，且日志会撒谎。
+                # 所以判据是**解析出的 id 必须命中这一批的 op**，否则一律退回整批标死（保守）。
                 blamed = batch_res.bad_element_id()
-                dead_ops = [op for op in fresh if op.element_id == blamed] if blamed else list(fresh)
+                hit = [op for op in fresh if op.element_id == blamed] if blamed else []
+                dead_ops = hit or list(fresh)
                 self._ld_ck_mark_dead(state_ref, dead_ops)
-                _log_ck_decor_write_failed_once(dead_ops, batch_res.code, blamed)
+                _log_ck_decor_write_failed_once(dead_ops, batch_res.code,
+                                                blamed if hit else None)
             else:
                 # 记账 = 「卡上现在是这个内容」。所以 ① 只记**这一次真的发出去的** op
                 # ② **合并**历史：本帧只写面板（页脚没变）时，页脚的记录不能被本帧抹掉，
@@ -1636,7 +1668,8 @@ class LarkDeckMixin:
             live_state = dict(state)
             ok, seq_after, failed = await self._ld_ck_apply(card_id, ops, _ck_seq(state),
                                                            live_state)
-            if ok:
+            degrade_code = int(live_state.get("ck_degrade") or 0)
+            if ok and not degrade_code:
                 # `live_state` 里带着装饰失败时标下的 `ck_dead`，所以这里用它的并集
                 self._ld_stream_put(key, {**state, "ck_dead": live_state.get("ck_dead") or set(),
                                           # 装饰的「已写成功」记账（未变化不重写的判据）
@@ -1645,25 +1678,36 @@ class LarkDeckMixin:
                                           "ck_seq": seq_after,
                                           "frames": int(state.get("frames") or 0) + 1})
                 return True
-            if live_state.get("ck_degrade"):
+            if ok and degrade_code:
+                # 这一帧**正文写成功了**，但同一帧的装饰批量拿到了卡级死法（会话是在两次调用
+                # 之间被关掉的）。这一帧算成功，但**降级决定必须落进状态**：否则下一帧又去写
+                # 一个已经关掉的会话（R5 审计高-1 的另一半：决定写进 `live_state`、却在成功
+                # 分支被丢掉）。同时清 `card_id`，让后续帧走 patch。
+                _log_ck_degrade_once(degrade_code)
+                self._ld_stream_put(key, {**live_state, "ck_degrade": degrade_code, "card_id": "",
+                                          "last": text, "last_at": now, "ck_seq": seq_after,
+                                          "frames": int(state.get("frames") or 0) + 1})
+                return True
+            if degrade_code:
                 # ── `DEGRADE`：元素通道死了，但**消息还在** ⇒ 用 `message.patch` 把同一张卡
                 # 换成普通卡继续写（真机实测 patch 能覆盖实体卡消息，`--lanes`）。
                 # 为什么值得为它写一条车道：不降级就是「本帧失败 ⇒ 内核停用本回合 native ⇒
                 # 用户后面看到纯文本」，而这里完全可以保住卡片（只是没有逐字打字机）。
                 # **绝不另建卡**：patch 打在原 message_id 上，DM 里始终只有一张卡。
-                _log_ck_degrade_once(int(live_state.get("ck_degrade") or 0))
-                self._ld_stream_put(key, {**state, "ck_degrade": int(live_state["ck_degrade"]),
-                                          "card_id": "", "ck_seq": seq_after})
+                # ⚠️ 状态从 `live_state` 出发（不是旧 `state`）：本帧算出来的 `ck_dead`/`ck_decor`
+                # 不能被降级分支悄悄丢掉 —— 「同一件事两处真相」是本项目最怕的形态（审计低-5）。
+                _log_ck_degrade_once(degrade_code)
                 card = self._ld_build_card(display, streaming=True,
                                            panel=self._ld_panel(chat, state.get("t0")),
                                            footer=self._ld_footer())
                 result = await self._ld_update_card(chat, message_id, card)
                 if result is None or not getattr(result, "success", False):
+                    self._ld_stream_put(key, {**live_state, "ck_degrade": degrade_code,
+                                              "card_id": "", "ck_seq": seq_after})
                     return self._ld_stream_fail(
                         f"降级到 patch 后仍然失败（{getattr(result, 'error', 'unknown')}）")
-                self._ld_stream_put(key, {**state, "ck_degrade": int(live_state["ck_degrade"]),
-                                          "card_id": "", "ck_seq": seq_after,
-                                          "last": text, "last_at": now,
+                self._ld_stream_put(key, {**live_state, "ck_degrade": degrade_code, "card_id": "",
+                                          "ck_seq": seq_after, "last": text, "last_at": now,
                                           "frames": int(state.get("frames") or 0) + 1})
                 return True
             # 失败：**只把序号推进**（绝不回退，见 `_ld_ck_apply` 的说明），
@@ -1709,9 +1753,19 @@ class LarkDeckMixin:
         return False
 
     def _ld_stream_get(self, key: str) -> Optional[Dict[str, Any]]:
+        """读回合状态（**顺带刷新活跃度**）。
+
+        ⚠️ 活跃度用**独立字段** `alive_at`，不复用 `last_at`：后者是**帧节流**用的
+        （`now - last_at < _STREAM_MIN_INTERVAL`），拿它当存活判据会让「节流跳过的帧」看起来
+        像「这个回合死了」（R5 审计的低-6）。刷新在这里做，是为了让「查过状态」也算活动，
+        与 `_ld_state` 那边 `_ld_known` 的行为对称。
+        """
         with self._ld_lock:
             state = self._ld_streams.get(key)
-            return dict(state) if state else None
+            if state:
+                state["alive_at"] = time.monotonic()
+                return dict(state)
+            return None
 
     def _ld_stream_put(self, key: str, state: Dict[str, Any]) -> None:
         with self._ld_lock:
@@ -1722,10 +1776,14 @@ class LarkDeckMixin:
                 # 「很陈旧」，实际正活跃。踢掉它，下一帧就会因为查不到状态而
                 # **另发一张新卡**（重复卡 + 老卡永久停在流式态），正是这里要防的事。
                 # 所以阈值取**小时级**，专门收核心没发 finalize 的泄漏回合。
+                # 存活判据是 `alive_at`（每次 get/put 都刷新），**不是** `last_at`
+                # （后者只在成功写帧时推进，且被帧节流读 —— 拿它当存活判据会误踢活跃回合，
+                # R5 审计低-6）。
                 now = time.monotonic()
                 stale = [
                     other for other, value in self._ld_streams.items()
-                    if now - float(value.get("last_at") or value.get("t0") or 0.0)
+                    if now - float(value.get("alive_at") or value.get("last_at")
+                                   or value.get("t0") or 0.0)
                     > _STREAM_LEAK_SECONDS
                 ]
                 for other in stale[: max(1, _MAX_STREAMS // 4)]:
@@ -1735,8 +1793,9 @@ class LarkDeckMixin:
                     # 只告警（宁可多留状态，也不能踢活跃流造重复卡）；硬上限兜底内存。
                     if len(self._ld_streams) >= _MAX_STREAMS * _STREAM_HARD_CAP_FACTOR:
                         oldest = sorted(self._ld_streams.items(),
-                                        key=lambda kv: kv[1].get("last_at",
-                                                                 kv[1].get("t0", 0.0)))
+                                        key=lambda kv: kv[1].get("alive_at",
+                                                                 kv[1].get("last_at",
+                                                                           kv[1].get("t0", 0.0))))
                         for other, _ in oldest[: max(1, _MAX_STREAMS // 4)]:
                             self._ld_streams.pop(other, None)
                         logger.error("[larkdeck] 并发流已达硬上限 %d，被迫淘汰最旧的回合"
@@ -1745,6 +1804,9 @@ class LarkDeckMixin:
                     else:
                         logger.warning("[larkdeck] 并发流超过软上限 %d 且无可回收的泄漏流"
                                        "（活跃回合不淘汰，仅告警）", _MAX_STREAMS)
+            # 每次写入都盖一次活跃度戳（`alive_at` 与帧节流的 `last_at` 是两件事）
+            state.setdefault("alive_at", time.monotonic())
+            state["alive_at"] = time.monotonic()
             self._ld_streams[key] = state
 
     def _ld_stream_pop(self, key: str) -> None:

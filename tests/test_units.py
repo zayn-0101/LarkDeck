@@ -1113,6 +1113,7 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                      fail_at=None, fail_at_code=300309, fail_batch=False,
                      fail_batch_code=300309, fail_batch_msg=None, patch_code=0):
             calls = {"create": 0, "send": 0, "reply": 0, "content": [], "patch": 0,
+                     "patch_mids": [],
                      "entity": [], "send_req": [], "reply_req": [], "batch": [],
                      "writes": 0}
 
@@ -1198,6 +1199,9 @@ def test_cardkit_transport_writes_elements_and_falls_open():
 
                 def patch(self, request):
                     calls["patch"] += 1
+                    # ⚠️ **必须记下目标 message_id**（R5 审计高-2：把它换成别的 id，四门禁曾全绿）
+                    calls.setdefault("patch_mids", []).append(
+                        getattr(request, "message_id", None))
                     # ⚠️ 形状必须是 **dict**：替身适配器的 `_finalize_send_result` 读
                     # `response["data"]["message_id"]`（与真 SDK 响应的取值路径一致）。
                     # 返回 `_Resp` 对象会让它 AttributeError ⇒ 帧路径吞掉异常 ⇒
@@ -1348,7 +1352,10 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         #    旧行为是「面板失败 ⇒ 整帧 fail-open」，而 fail-open 的代价是上游会补一帧 finalize
         #    再落到 `_first_send` ⇒ **DM 里第二张卡**。装饰（面板/页脚）坏了不该买下这条路：
         #    处置改成 `DEAD`（标死 + 限流 WARNING + 本帧继续），正文照常落盘。
-        calls, client = _mk_fake(fail_batch=True)
+        #    ⚠️ 用例码的选择（R5 审计高-1 落地后调整）：`300309` 现在是**卡级死法** ⇒ 会走降级
+        #    车道（见 ②g），所以这条「装饰失败 ⇒ 帧仍成功、坏元素不再重试」的用例改用
+        #    **确定性拒收**码 `230099`（附录 A 里装饰那一格是 `DEAD`）。
+        calls, client = _mk_fake(fail_batch=True, fail_batch_code=230099)
         raw2b = _make()
         raw2b._client = client
         adapter.configure(native_transport="cardkit", unified_panel=True)
@@ -1361,6 +1368,10 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             "装饰失败必须留下那条 WARNING（「正文在长、装饰冻结」的唯一线索）"
         assert any("整批标死" in r.getMessage() for r in records), \
             "msg 解析不出坏元素时必须如实说「整批标死」（别让人以为只死了一个）"
+        # ⚠️ 告警必须**点名受影响的元素**（R5 审计低-10：把 ids 清空成 "" ⇒ 133/133 曾全绿，
+        # 而那段清单正是这条告警存在的理由 —— 排查时要知道「冻了哪几个」）。
+        assert any("panel_body" in r.getMessage() and "footer" in r.getMessage() for r in records), \
+            f"装饰失败的告警必须列出受影响的元素 id：{[r.getMessage() for r in records]}"
         state2b = raw2b._ld_stream_get("oc_ck2b:t-2b") or {}
         assert state2b.get("ck_dead") == {"panel_body", "footer"}, \
             f"失败过的装饰元素必须被标死（后续不再尝试）：{state2b.get('ck_dead')}"
@@ -1423,27 +1434,90 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         #    CardKit 实体卡消息：`probe_ck_stream_ops.py --lanes`，`code=0` 且随后写元素得
         #    `300309` ⇒ 会话确实被替换掉了）。四条一起钉：本帧 True、patch 真的发了、
         #    **没有第二张卡**（create 仍为 1）、后续帧不再碰元素通道。
-        calls, client = _mk_fake(fail_at=2, fail_at_code=300309)
-        raw2e = _make()
-        raw2e._client = client
+        #    ⚠️ **三个码都要跑**（R5 审计中-3：只测过 300309 ⇒ 把另外两个从集合里删掉四门禁全绿）。
+        #    ⚠️ 必须写**字面量**：用 `sorted(adapter._CARD_DEATH_CODES)` 就是自比较 ——
+        #    把表里的码删掉，循环也跟着少跑一圈，门禁照样全绿（R5 审计中-3，实测）。
+        assert adapter._CARD_DEATH_CODES == frozenset({300309, 300313, 300317}), \
+            f"卡级死法码表是实测出来的三个：{adapter._CARD_DEATH_CODES}"
+        for _death in (300309, 300313, 300317):
+            calls, client = _mk_fake(fail_at=2, fail_at_code=_death)
+            raw2e = _make()
+            raw2e._client = client
+            adapter.configure(native_transport="cardkit", unified_panel=True)
+            assert _run(raw2e.send_stream_frame("", chat_id="oc_ck2e", turn_id="t-2e")), "seed 帧"
+            mid2e = (raw2e._ld_stream_get("oc_ck2e:t-2e") or {}).get("message_id")
+            adapter._log_ck_degrade_once._at = 0.0
+            with _LogCapture("larkdeck") as records:
+                assert _run(raw2e.send_stream_frame("正文", chat_id="oc_ck2e", turn_id="t-2e")), \
+                    f"卡级死法 {_death} 必须降级续写同一张卡，**不许** fail-open 掉卡片"
+            assert any("降级为整卡 patch" in r.getMessage() for r in records), \
+                f"降级必须留痕（「看起来正常、其实换了实现」的唯一线索）：{[r.getMessage() for r in records]}"
+            assert calls["patch"] == 1, f"降级那一帧必须真的 patch 出去：{calls['patch']}"
+            # ⚠️ **必须打在同一张卡上**（R5 审计高-2：只看次数的话，把目标换成别的 id 四门禁全绿）
+            assert calls.get("patch_mids") == [mid2e], \
+                f"降级 patch 必须打在原来那条 message_id 上（{mid2e}）：{calls.get('patch_mids')}"
+            assert calls["create"] == 1, f"降级**绝不另建卡**（DM 里只能有一张卡）：{calls['create']}"
+            state2e = raw2e._ld_stream_get("oc_ck2e:t-2e") or {}
+            assert state2e.get("ck_degrade") == _death, \
+                f"降级决定必须记进回合状态（要的是 {_death}）：{state2e}"
+            assert not state2e.get("card_id"), f"降级后不许再走元素通道：{state2e.get('card_id')}"
+            element_writes_after = len(calls["content"])
+            assert _run(raw2e.send_stream_frame("正文二", chat_id="oc_ck2e", turn_id="t-2e"))
+            assert len(calls["content"]) == element_writes_after, \
+                "降级之后的帧不许再写元素（会话已关，写了就是每帧失败）"
+            assert calls["patch"] == 2, f"降级之后每帧都该走 patch：{calls['patch']}"
+            assert calls.get("patch_mids") == [mid2e, mid2e], calls.get("patch_mids")
+
+        # ②g **装饰批量拿到卡级死法（会话已关）也必须降级**（R5 审计的高-1：旧代码只在**正文**
+        #    写入失败时查 `_CARD_DEATH_CODES`）⇒ 否则后续每帧都往一个关掉的会话写正文，
+        #    卡片静默冻在流式态。构造：`fail_batch` 用 `300309`（走 `_CARD_DEATH_DECOR_CODES`）。
+        for _decor_death in sorted(adapter._CARD_DEATH_DECOR_CODES):
+            calls, client = _mk_fake(fail_batch=True, fail_batch_code=_decor_death)
+            raw2g = _make()
+            raw2g._client = client
+            adapter.configure(native_transport="cardkit", unified_panel=True)
+            assert _run(raw2g.send_stream_frame("", chat_id="oc_ck2g", turn_id="t-2g"))
+            mid2g = (raw2g._ld_stream_get("oc_ck2g:t-2g") or {}).get("message_id")
+            assert _run(raw2g.send_stream_frame("正文", chat_id="oc_ck2g", turn_id="t-2g")), \
+                "装饰撞上卡级死法时这一帧仍算成功（正文已落盘）"
+            state2g = raw2g._ld_stream_get("oc_ck2g:t-2g") or {}
+            assert state2g.get("ck_degrade") == _decor_death, \
+                (f"装饰批量拿到卡级死法 {_decor_death} 时**必须**把降级决定写回状态："
+                 f"{state2g.get('ck_degrade')}")
+            assert not state2g.get("card_id"), "降级必须同时清掉 card_id"
+            # ⚠️ 本帧算出来的标死也要落进状态（从 `live_state` 出发，不是旧 `state`）——
+            #    否则「同一件事两处真相」（审计低-5），而这条断言是它唯一的可观测量。
+            assert state2g.get("ck_dead") == {"panel_body", "footer"}, \
+                f"降级那一帧标死的装饰不能被丢掉：{state2g.get('ck_dead')}"
+            element_writes = len(calls["content"])
+            assert _run(raw2g.send_stream_frame("正文二", chat_id="oc_ck2g", turn_id="t-2g"))
+            assert len(calls["content"]) == element_writes, \
+                "降级之后不许再写元素（否则每帧都在往关掉的会话写）"
+            assert calls.get("patch_mids") == [mid2g] or calls["patch"] >= 1, calls
+        # ②h **别的码的 msg 里出现 `elementID :` 时不许按名字标死**（R5 审计中-4 的误伤样本）：
+        #    平台会拿这条 msg 去描述**上下文**（真凶写在后面），照解析就会标死一个好元素、
+        #    放走真正坏的那个，而且日志会把人带到错方向。
+        calls, client = _mk_fake(
+            fail_batch=True, fail_batch_code=230099,
+            fail_batch_msg="[230099] invalid params: elementID : panel_body content is too long,"
+                           " (the offending field is footer)")
+        raw2h = _make()
+        raw2h._client = client
         adapter.configure(native_transport="cardkit", unified_panel=True)
-        assert _run(raw2e.send_stream_frame("", chat_id="oc_ck2e", turn_id="t-2e"), ), "seed 帧"
-        adapter._log_ck_degrade_once._at = 0.0
+        assert _run(raw2h.send_stream_frame("", chat_id="oc_ck2h", turn_id="t-2h"))
+        adapter._log_ck_decor_write_failed_once._at = 0.0
         with _LogCapture("larkdeck") as records:
-            assert _run(raw2e.send_stream_frame("正文", chat_id="oc_ck2e", turn_id="t-2e")), \
-                "卡级死法必须降级续写同一张卡，**不许** fail-open 掉卡片"
-        assert any("降级为整卡 patch" in r.getMessage() for r in records), \
-            f"降级必须留痕（「看起来正常、其实换了实现」的唯一线索）：{[r.getMessage() for r in records]}"
-        assert calls["patch"] == 1, f"降级那一帧必须真的 patch 出去：{calls['patch']}"
-        assert calls["create"] == 1, f"降级**绝不另建卡**（DM 里只能有一张卡）：{calls['create']}"
-        state2e = raw2e._ld_stream_get("oc_ck2e:t-2e") or {}
-        assert state2e.get("ck_degrade") == 300309, f"降级决定必须记进回合状态：{state2e}"
-        assert not state2e.get("card_id"), f"降级后不许再走元素通道：{state2e.get('card_id')}"
-        element_writes_after = len(calls["content"])
-        assert _run(raw2e.send_stream_frame("正文二", chat_id="oc_ck2e", turn_id="t-2e"))
-        assert len(calls["content"]) == element_writes_after, \
-            "降级之后的帧不许再写元素（会话已关，写了就是每帧失败）"
-        assert calls["patch"] == 2, f"降级之后每帧都该走 patch：{calls['patch']}"
+            assert _run(raw2h.send_stream_frame("正文", chat_id="oc_ck2h", turn_id="t-2h"))
+        state2h = raw2h._ld_stream_get("oc_ck2h:t-2h") or {}
+        assert state2h.get("ck_dead") == {"panel_body", "footer"}, \
+            (f"只有 `300313` 的 msg 才允许按名字标死；这条 230099 必须整批标死（保守）："
+             f"{state2h.get('ck_dead')}")
+        assert any("整批标死" in r.getMessage() for r in records), \
+            f"没按名字标死时必须如实说「整批标死」：{[r.getMessage() for r in records]}"
+
+        # 对照：**`300313`（元素不存在）不该让装饰把整条通道拖死** —— 那只是某一个装饰元素没了
+        # （msg 点名它），正文元素是另一个 id ⇒ 只标死它、保住打字机（`_CARD_DEATH_DECOR_CODES`
+        # 故意比 `_CARD_DEATH_CODES` 少一个码，用例 ②d 覆盖）。
 
         # ②f **撤回守卫**（R5）：整卡写入拿到 `230011 The message was withdrawn.`（真机实测，
         #    R0 的 P4）⇒ 标死这条 message_id + 清追踪 + 留痕，**绝不自己补发**（补发 = DM 两张卡）。
@@ -2040,14 +2114,47 @@ def test_native_streaming_cap_reclaims_only_leaked_streams():
     raw = _make()
     now = time.monotonic()
     leaked = now - adapter._STREAM_LEAK_SECONDS - 10
-    # 造满容量：一半是泄漏流，一半是活跃流
     for i in range(adapter._MAX_STREAMS):
         raw._ld_stream_put(f"leaked-{i}", {"t0": leaked, "last_at": leaked,
                                           "message_id": f"om_l{i}"})
+    # ⚠️ 「泄漏」= **插进来之后就再没人碰过**。存活判据是 `alive_at`（每次 get/put 都盖新戳，
+    # 见 R5 审计低-6），所以这里必须**把戳回拨到过去**才能造出真的泄漏流 —— 只在入参里写
+    # 旧的 `t0`/`last_at` 是不够的：插入那一刻就会被盖上「刚刚活动」。
+    for i in range(adapter._MAX_STREAMS):
+        raw._ld_streams[f"leaked-{i}"]["alive_at"] = leaked
     assert len(raw._ld_streams) == adapter._MAX_STREAMS
     raw._ld_stream_put("newcomer", {"t0": now, "last_at": now, "message_id": "om_new"})
     assert len(raw._ld_streams) <= adapter._MAX_STREAMS
     assert "newcomer" in raw._ld_streams, "新流必须能进来"
+
+
+def test_stream_liveness_survives_a_long_silent_turn():
+    """**长时间没写帧但一直在被读的回合，绝不能被当成泄漏流回收**（R5 审计的低-6）。
+
+    场景：跑了 >1 小时工具的回合 —— 期间**正文没变**（帧被节流跳过或早返回），
+    `last_at` 一动不动，`_ld_stream_put` 也不一定被调用；但每一帧都会 `_ld_stream_get`。
+    存活判据必须是独立字段 `alive_at`（每次 get/put 刷新），否则 64 个流满的时候会把这
+    个**真活跃**的回合当泄漏踢掉 ⇒ 下一帧查不到状态 ⇒ **另发一张新卡**（重复卡）。
+    """
+    raw = _make()
+    now = time.monotonic()
+    old = now - adapter._STREAM_LEAK_SECONDS - 10
+    for i in range(adapter._MAX_STREAMS):
+        raw._ld_stream_put(f"silent-{i}", {"t0": old, "last_at": old, "message_id": f"om_s{i}"})
+        raw._ld_streams[f"silent-{i}"]["alive_at"] = old
+    # 两条刷新路径都要隔离测（审计低-6）：
+    # ① 0 号一直在被**读**（帧节流跳过 / 文本没变早返回的回合就是这个形状）
+    assert raw._ld_stream_get("silent-0"), "前提：这个回合在状态表里"
+    # ② 2 号这一帧**写了状态**（`_ld_stream_put`）⇒ 也必须算活跃
+    raw._ld_stream_put("silent-2", {"t0": old, "last_at": old, "message_id": "om_s2"})
+    raw._ld_stream_put("newcomer", {"t0": now, "last_at": now, "message_id": "om_new"})
+    assert "silent-0" in raw._ld_streams, \
+        "「没写帧但一直被读」的活跃回合被当泄漏回收了 —— 它的下一帧会另发一张新卡"
+    assert "silent-2" in raw._ld_streams, \
+        "刚写过状态的流被当泄漏回收了 —— `_ld_stream_put` 也必须刷新活跃度"
+    assert "newcomer" in raw._ld_streams, "新流仍要能进来"
+    assert "silent-1" not in raw._ld_streams, \
+        "对照组：真的没人碰过的流必须被回收（否则这条断言恒真、证明不了回收会发生）"
 
 
 def test_native_streaming_cap_never_evicts_active_streams():
@@ -2064,10 +2171,11 @@ def test_native_streaming_cap_never_evicts_active_streams():
     """
     raw = _make()
     now = time.monotonic()
-    # 全部是「创建很久、但最近刚活动」的流：旧实现按 t0 淘汰，会把它们踢掉
+    # 全部是「创建很久、但最近刚活动」的流：按 t0 淘汰的实现会把它们踢掉
     for i in range(adapter._MAX_STREAMS):
         raw._ld_stream_put(f"active-{i}", {"t0": now - 99999.0, "last_at": now,
                                           "message_id": f"om_a{i}"})
+        raw._ld_streams[f"active-{i}"]["alive_at"] = now        # 「刚刚活动过」
     assert len(raw._ld_streams) == adapter._MAX_STREAMS
     raw._ld_stream_put("active-new", {"t0": now, "last_at": now, "message_id": "om_an"})
     assert all(f"active-{i}" in raw._ld_streams for i in range(adapter._MAX_STREAMS)), \

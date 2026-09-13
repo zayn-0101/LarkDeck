@@ -632,6 +632,25 @@ def probe_lanes() -> int:
           "0 ⇒ 服务端不校验坏 id，附录 A 的 DEAD 要重写。")
     print("             ② 0 ⇒ DEGRADE 车道可做；非 0（含 230001/230099）⇒ 做不到，"
           "只能 fail-open 交核心回落，并把这条写进附录 A。")
+    # ⚠️ **必须判定，不能只 print**（R5 审计低-9）：这条探针原来自称「以返回码为判据」，
+    # 实际一条 assert 都没有、恒定 `return 0` —— 也就是说返回码变了它也不会红。
+    problems = []
+    if code_bad == 0:
+        problems.append("① batch 混坏 id 竟然 code=0 ⇒ 服务端不校验坏 id，附录 A 的 DEAD 要重写")
+    if code_bad and "elementID" not in str(getattr(r, "msg", "")):
+        problems.append(f"① 返回码非 0 但 msg 没点名坏 id（bad_element_id() 会失效）：{getattr(r, 'msg', '')!r}")
+    if not alive:
+        problems.append("① 坏 id 之后会话被关（说明坏 id 是卡级死法，与 300313 的定位冲突）")
+    if code_patch != 0:
+        problems.append(f"② 整卡 patch 覆盖实体卡消息失败（code={code_patch}）⇒ DEGRADE 车道做不到")
+    if alive2 != 0:
+        problems.append("② patch 之后元素写入竟然还能写（说明 patch 没真的替换掉那张卡）")
+    if problems:
+        print("\n❌ 与代码里的码表/车道前提不一致：")
+        for item in problems:
+            print(f"   - {item}")
+        return 1
+    print("\n✅ 两条前提都成立（码表与 DEGRADE 车道的前提与代码一致）")
     return 0
 
 

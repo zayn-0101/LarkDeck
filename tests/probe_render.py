@@ -1057,9 +1057,10 @@ def probe_degrade_lane(client, chat: str, cards) -> int:
         calls["batch"] += 1
         return await original_batch(*a, **k)
 
-    async def _spy_update(*a, **k):
+    async def _spy_update(chat_id, message_id, card, **k):
         calls["patch"] += 1
-        return await original_update(*a, **k)
+        calls.setdefault("patch_mids", []).append(message_id)
+        return await original_update(chat_id, message_id, card, **k)
 
     adapter._client.cardkit.v1.card.create = _count_card_create
     adapter._client.im.v1.message.create = _count_msg_create
@@ -1086,9 +1087,7 @@ def probe_degrade_lane(client, chat: str, cards) -> int:
             # ⚠️ 序号必须取**当前**状态：第一帧跑完之后 `ck_seq` 已经不是 seed 那一刻的值了，
             #    拿旧值会得 `300317`（序号冲突）—— 探针第一版就是这么失败的，而它看起来
             #    像是「关会话失败」，其实是探针自己拿错了号。
-            now_state = None
-            for item in list(adapter._ld_streams.values()):
-                now_state = item
+            now_state = adapter._ld_stream_get(f"{chat}:{tid}")
             seq_now = int((now_state or {}).get("ck_seq") or 0)
             closed = adapter._client.cardkit.v1.card.settings(
                 SettingsCardRequest.builder().card_id(card_id)
@@ -1103,9 +1102,7 @@ def probe_degrade_lane(client, chat: str, cards) -> int:
             time.sleep(0.4)
             ok2 = loop.run_until_complete(adapter.send_stream_frame(
                 "这一帧必须降级", chat_id=chat, turn_id=tid))
-            state2 = None
-            for item in list(adapter._ld_streams.values()):
-                state2 = item
+            state2 = adapter._ld_stream_get(f"{chat}:{tid}")
             degrade = (state2 or {}).get("ck_degrade") if isinstance(state2, dict) else None
             print(f"   降级那一帧 = {ok2} · ck_degrade={degrade} · "
                   f"card_id={((state2 or {}).get('card_id') if isinstance(state2, dict) else None)!r}"
@@ -1122,9 +1119,14 @@ def probe_degrade_lane(client, chat: str, cards) -> int:
             print(f"   收尾帧 = {ok_fin}")
         finally:
             loop.close()
+        # ⚠️ 必须断言 patch 的目标就是原来那条 message_id（R5 审计低-9/高-2：只看次数的话
+        #    「打到别的卡上」也会绿）
+        patch_mids = calls.get("patch_mids") or []
         ok = (ok1 and ok2 and ok3 and degrade == 300309
               and calls["create"] == 1 and calls["send"] == 1
-              and calls["patch"] >= 3 and calls["content"] == content_after_degrade)
+              and calls["patch"] >= 3 and calls["content"] == content_after_degrade
+              and bool(message_id) and all(mid == message_id for mid in patch_mids))
+        print(f"   降级后的 patch 目标：{patch_mids}（必须全是这一张：{message_id}）")
         print("✅ 降级车道真机通过：卡级死法 ⇒ 整卡 patch 续写同一张卡，没有第二张卡"
               if ok else "❌ 降级车道有问题（见上面的计数与状态）")
         return 0 if ok else 1
