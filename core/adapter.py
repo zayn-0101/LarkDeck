@@ -436,12 +436,64 @@ _CK_ROLE_PANEL = "panel"        # 内容型装饰（面板正文）
 _CK_ROLE_DECOR = "decor"        # 纯装饰（页脚 / 状态色 / summary），R2 起才会出现
 
 
-def _ck_elems_for_entity() -> List[str]:
-    """建实体时这张卡会有哪些元素（**结构的唯一来源**，R2 起往里加页脚/状态元素）。"""
-    elems = [_cards.CARDKIT_ANSWER_ID]
-    if _cfg("unified_panel"):
-        elems.append(_cards.CARDKIT_PANEL_BODY_ID)
-    return elems
+def _log_ck_seq_invalid_once(raw: Any) -> None:
+    """回合状态里的序号是坏值（字符串/负数/None 之外的怪东西）时限流告警。
+
+    为什么必须留痕：坏值本身不会丢消息（外层 except 会兜住并让这一帧 fail-open），
+    但「为什么这个回合掉成纯文本了」在真机上只有这一条线索。
+    """
+    now = time.monotonic()
+    if now - getattr(_log_ck_seq_invalid_once, "_at", 0.0) < 60.0:
+        return
+    _log_ck_seq_invalid_once._at = now  # type: ignore[attr-defined]
+    logger.warning("[larkdeck] 回合状态里的 ck_seq 不是可用的整数（%r）—— 按 0 处理；"
+                   "这一帧可能因此撞号（服务端回 300317）", raw)
+
+
+def _ck_seq(state: Dict[str, Any]) -> int:
+    """回合状态里的 ``ck_seq`` → 可用的非负整数（**坏值归零 + 留痕，绝不抛**）。
+
+    收口成一个函数而不是在五个调用点各写一遍 `int(state.get("ck_seq") or 0)`：散着写就是
+    「同一件事多个口径」（推论 13），而且 `int("abc")` 会抛 —— 抛出去会被帧路径的外层
+    except 兜住 ⇒ 整回合掉 native，用户只见「卡片怎么不变了」。R1 审计实测：把状态里的
+    序号写成字符串，四门禁**全绿**（Y3）。
+    """
+    raw = state.get("ck_seq")
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        if raw is not None:
+            _log_ck_seq_invalid_once(raw)
+        return 0
+    if raw < 0:
+        _log_ck_seq_invalid_once(raw)
+        return 0
+    return raw
+
+
+def _ck_elems_from_card(card: Dict[str, Any]) -> List[str]:
+    """从**真正建出来的那张卡**里抽出「可流式写的元素 id」——结构的**唯一来源**。
+
+    为什么从卡 JSON 里抽，而不是「再读一遍配置算一遍」：`_ck_elems_for_entity()` 与
+    `cards.cardkit_entity_card(panel=…)` 各自读一次 `_cfg("unified_panel")`（`_ld_panel_markdown`
+    内部还有第三次），是**三个可以分叉的真相源**。R2 往结构里加页脚/状态元素时只要漏一处，
+    症状就是「每帧去写一个卡里不存在的 id」⇒ `300313` 每帧失败 ⇒ 本回合掉 native +
+    DM 里第二张卡（R1 审计的 U3）。从卡里抽，这种分叉**在构造上不可能发生**。
+    """
+    out: List[str] = []
+    for rid in (_cards.CARDKIT_ANSWER_ID, _cards.CARDKIT_PANEL_BODY_ID):
+        found = False
+        stack: List[Any] = [card]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                if node.get("element_id") == rid:
+                    found = True
+                    break
+                stack.extend(node.values())
+            elif isinstance(node, (list, tuple)):
+                stack.extend(node)
+        if found:
+            out.append(rid)
+    return out
 
 
 class _CkOp(NamedTuple):
@@ -456,9 +508,13 @@ class _CkOp(NamedTuple):
     role: str
 
     def fail_reason(self) -> str:
-        return {"answer": "CardKit 写正文元素失败",
-                "panel": "CardKit 写面板元素失败"}.get(
-                    self.role, f"CardKit 写 {self.element_id} 元素失败")
+        """失败文案**必须点名角色**：三条文案互不相同，且各自带自己的 element_id。
+
+        为什么强调：`_ld_stream_fail` 的告警是**进程级 30 秒限流** ⇒ 一帧里第二个失败的
+        元素终生不留痕。文案里带 id 是唯一能区分「到底哪个元素死了」的线索（R1 审计 U4）。
+        """
+        what = {_CK_ROLE_ANSWER: "正文", _CK_ROLE_PANEL: "面板"}.get(self.role, "元素")
+        return f"CardKit 写{what}元素失败（{self.element_id}）"
 
 
 def _ck_plan(display: str, panel_text: str, elems: Sequence[str]) -> List[_CkOp]:
@@ -469,10 +525,14 @@ def _ck_plan(display: str, panel_text: str, elems: Sequence[str]) -> List[_CkOp]
     「哪些元素、什么顺序、什么内容」，不必跑整条帧路径。
     """
     ops: List[_CkOp] = []
-    if _cards.CARDKIT_ANSWER_ID in elems:
-        ops.append(_CkOp(_cards.CARDKIT_ANSWER_ID, display, _CK_ROLE_ANSWER))
+    # 装饰先写、**正文最后写**（提交点在后）：上游按「最后一次**成功**发出的帧文本」记账
+    # （`stream_consumer_fallback._visible_prefix`），正文最后落盘才能让「这一帧失败」
+    # 等价于「正文没更新」——否则卡上已经有这一帧的正文，而核心以为可见前缀还停在前一帧，
+    # 回落补发的尾部会把同一段话再说一遍（R1 审计的第③条，也是 `docs/plan-v1.md` 的 R1 交付项）。
     if _cards.CARDKIT_PANEL_BODY_ID in elems:
         ops.append(_CkOp(_cards.CARDKIT_PANEL_BODY_ID, panel_text or " ", _CK_ROLE_PANEL))
+    if _cards.CARDKIT_ANSWER_ID in elems:
+        ops.append(_CkOp(_cards.CARDKIT_ANSWER_ID, display or " ", _CK_ROLE_ANSWER))
     return ops
 
 
@@ -1033,7 +1093,10 @@ class LarkDeckMixin:
 
     async def _ld_ck_create(self, chat: str, *, answer: str, panel_text: str,
                             reply_to: Optional[str] = None) -> Any:
-        """建 CardKit 实体 + 发实体卡。返回 ``(message_id, card_id)`` 或 ``None``。
+        """建 CardKit 实体 + 发实体卡。返回 ``(result, card_id, card_json)`` 或 ``None``。
+
+        ⚠️ 第三个返回值是**建出来的那张卡的 JSON**：回合状态的元素表要从它里面抽
+        （`_ck_elems_from_card`）—— 那是「结构」的唯一来源，不能靠再读一遍配置去猜。
 
         走的是官方三个接口（真机实测每一步都 ``code=0``，见 `docs/plan-6-effects.md` 阶段 9）：
         ``cardkit.v1.card.create`` → ``im.v1.message.create``（content 是
@@ -1070,7 +1133,7 @@ class LarkDeckMixin:
         result = self._finalize_send_result(sent, "larkdeck cardkit send failed")
         if not getattr(result, "success", False):
             return None
-        return result, str(card_id)
+        return result, str(card_id), card
 
     async def _ld_ck_write(self, card_id: str, element_id: str, content: str,
                            sequence: int) -> bool:
@@ -1096,15 +1159,16 @@ class LarkDeckMixin:
     def _ld_ck_elems(state: Dict[str, Any]) -> List[str]:
         """这张实体卡**实际有哪些元素**（建实体时的决定，之后只读）。
 
-        兼容老回合状态（`ck_elems` 出现之前只有 `ck_panel` 布尔）：由它推出元素表。
+        ⚠️ 这里**故意不做**「老状态兼容」：`ck_elems` 之前用的是 `ck_panel` 布尔，而
+        `self._ld_streams` 是**纯进程内**状态 —— 换了代码就必须重启网关（否则跑的是旧模块），
+        所以「老状态的回合」在新代码里根本不可能存在。留一个没人测的兼容分支比删掉它更危险
+        （R1 审计的 D9：把兼容分支改坏，四门禁全绿）。真拿到坏状态就返回空表，
+        由 `_ld_ck_apply` 把「空 ops」当契约违反处理（帧失败 + 留痕），而不是静默冻卡。
         """
         elems = state.get("ck_elems")
         if isinstance(elems, (list, tuple)):
             return [str(e) for e in elems]
-        out = [_cards.CARDKIT_ANSWER_ID]
-        if state.get("ck_panel"):
-            out.append(_cards.CARDKIT_PANEL_BODY_ID)
-        return out
+        return []
 
     async def _ld_ck_apply(self, card_id: str, ops: Sequence["_CkOp"],
                            seq: int) -> Tuple[bool, int, Optional["_CkOp"]]:
@@ -1115,6 +1179,11 @@ class LarkDeckMixin:
         去重键处理（**可能返回 0 但内容没变** = 静默半更新）。这条规矩来自第十二路审计，
         R0 的真机探针也印证了「严格递增」：跳号与撞号都回 `300317`。
         """
+        if not ops:
+            # **空 ops 是契约违反**，不是「没什么可写」：元素表为空（或表里全是卡里没有的 id）
+            # 意味着这张卡永远长不动，而返回成功会让核心以为一切正常 —— 卡片静默冻死、
+            # 一行日志都没有、也不回落（R1 审计的 U1）。所以按失败处理。
+            return False, seq, None
         for op in ops:
             seq += 1
             if not await self._ld_ck_write(card_id, op.element_id, op.content, seq):
@@ -1172,7 +1241,7 @@ class LarkDeckMixin:
                 if made is None:
                     # 任何一步失败都交给核心回落（这是**契约**：帧失败 ⇒ 本回合改走 edit/send）
                     return self._ld_stream_fail("CardKit 建实体/发实体卡失败")
-                result, card_id = made
+                result, card_id, card_json = made
                 message_id = getattr(result, "message_id", "") or ""
                 if not message_id:
                     return self._ld_stream_fail("CardKit 建卡成功但没拿到 message_id")
@@ -1185,7 +1254,9 @@ class LarkDeckMixin:
                                           # 后续每一帧只写这里面的 id（写不在卡里的 id 会得
                                           # 300313，整帧失败）。这是 R1 的元素表，R2 往里加
                                           # 页脚/状态元素、R3 加面板子元素都靠它。
-                                          "ck_elems": _ck_elems_for_entity()})
+                                          # 元素表 = **这张卡里真有**的 id（从卡 JSON 抽出来，
+                                          # 不是另读一遍配置算的）⇒ 结构分叉在构造上不可能
+                                          "ck_elems": _ck_elems_from_card(card_json)})
                 return True
             card = self._ld_build_card(display, streaming=True,
                                        panel=self._ld_panel(chat, now),
@@ -1236,14 +1307,19 @@ class LarkDeckMixin:
             # 整卡硬上限时，这张卡无论怎么写都不可能成立 —— 与其白花一次往返等飞书拒，
             # 不如当场 fail-open 交核心回落（第十二路审计：建实体那道闸门守的其实是**空正文**
             # 的 seed 帧，真正会长大的这一步此前没有任何判断）。
-            body_bytes = len(display.encode("utf-8"))
+            # ⚠️ 口径必须是 **JSON 转义后**的大小，不是原始 utf-8 字节：飞书拒的是**整卡
+            # JSON**，而 `"` `\` `\n` 在 JSON 里会翻倍。R1 审计实测：正文
+            # `"\n"*100000 + "a"*27000` 原始 127000 字节（本地闸门放行），而那一帧的真实
+            # 卡片 JSON 是 **227291 字节** ⇒ 必被拒 ⇒ 帧失败 ⇒ 上游补 finalize + `_first_send`
+            # ⇒ **DM 两张卡**。仓库里早有正确口径的函数（`_card_body_bytes`，第九路审计为
+            # 这个病写的），这条路径此前没接上（推论 13）。
+            body_bytes = _card_body_bytes(display)
             if body_bytes > _cards.FEISHU_CARD_BYTE_LIMIT:
                 _log_ck_over_budget_once(body_bytes)
                 return self._ld_stream_fail("CardKit 正文超过硬上限")
             ops = _ck_plan(display, self._ld_panel_markdown(chat, state.get("t0")),
                            self._ld_ck_elems(state))
-            ok, seq_after, failed = await self._ld_ck_apply(
-                card_id, ops, int(state.get("ck_seq") or 0))
+            ok, seq_after, failed = await self._ld_ck_apply(card_id, ops, _ck_seq(state))
             if ok:
                 self._ld_stream_put(key, {**state, "last": text, "last_at": now,
                                           "ck_seq": seq_after,
