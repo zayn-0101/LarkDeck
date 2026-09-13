@@ -781,6 +781,16 @@ CARD_BYTE_BUDGET = 40000
 FEISHU_CARD_BYTE_LIMIT = 128000
 
 
+def code_spans(text: str):
+    """**公开**入口：所有代码区（围栏 + 行内代码）的跨度，按起点排序。
+
+    R6a 的 markdown 卫生用它避开代码区；R4 的**切卡点**也用它 —— 切在围栏中间会让两张卡
+    各自的 markdown 残缺（前半段围栏没闭合、后半段凭空多出一段代码）。私有实现留在本模块，
+    别处不要再抄一份正则。
+    """
+    return _code_spans(text)
+
+
 def count_elements(node: Any) -> int:
     """递归数出卡片里**所有**带 ``tag`` 键的对象（嵌套面板的子元素全算）。
 

@@ -1187,14 +1187,18 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                 def create(self, request):
                     calls["create"] += 1
                     calls["entity"].append(request.request_body["card_json"])
+                    # ⚠️ card_id **按次数递增**（R4 卡链要能分辨第一张/第二张；原来恒为 `ck_1`
+                    # 会让「切卡后还在写旧卡」这种缺陷从账本上看不出来）
+                    _cid = f"ck_{calls['create']}"
+                    calls.setdefault("entity_ids", []).append(_cid)
                     if create_codes:
                         # 按脚本发码：列表用完后重复最后一个（模拟「一直限流」）
                         code = create_codes[min(calls["create"] - 1, len(create_codes) - 1)]
-                        return _Resp(code, card_id="ck_1") if code == 0 else _Resp(code)
+                        return _Resp(code, card_id=_cid) if code == 0 else _Resp(code)
                     if create_empty_id:
                         # code=0 但 data.card_id 是空串：飞书没给实体 id
                         return _Resp(0, card_id="")
-                    return _Resp(0, card_id="ck_1") if create_ok else _Resp(300305)
+                    return _Resp(0, card_id=_cid) if create_ok else _Resp(300305)
 
             class _ElemRes:
                 def content(self, request):
@@ -1243,6 +1247,9 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                     # ⚠️ **必须记下目标 message_id**（R5 审计高-2：把它换成别的 id，四门禁曾全绿）
                     calls.setdefault("patch_mids", []).append(
                         getattr(request, "message_id", None))
+                    # R4：封旧卡走的是整卡 patch ⇒ 内容要能断言（封的是哪一段、有没有关流式态）
+                    calls.setdefault("patch_cards", []).append(
+                        json.loads(request.request_body.content))
                     # ⚠️ 形状必须是 **dict**：替身适配器的 `_finalize_send_result` 读
                     # `response["data"]["message_id"]`（与真 SDK 响应的取值路径一致）。
                     # 返回 `_Resp` 对象会让它 AttributeError ⇒ 帧路径吞掉异常 ⇒
@@ -1728,6 +1735,100 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         state2p = raw2p._ld_stream_get("oc_ck2p:t-2p") or {}
         assert state2p.get("ck_summary_dead") is True, state2p
 
+        # ㉔ **R4 卡链**：正文涨到单卡容量 ⇒ 封旧卡 + 开新卡，新卡只显示**剩下的那一段**。
+        #    五件事一起钉：① 超过阈值才切；② 封旧卡是**整卡 patch + streaming=False** 且带
+        #    「（续下一条）」；③ 新卡正文 == `text[cut:]`（**不重放**前半段）；④ 之后的帧继续写
+        #    **新卡**；⑤ 收尾与降级车道同样只写本卡那一段。
+        #    ⚠️ 正文里必须放**可辨认的标记**：整段同一个字时，「不许重放」这类断言会被子串匹配
+        #    顺带满足（⑭ 的旧版就是这么假绿的 —— 恒真断言的又一个形态）。
+        _saved_split_at = adapter._CK_SPLIT_SEAL_AT
+        adapter._CK_SPLIT_SEAL_AT = 3000      # 压小阈值，用几千字就能触发（真机是 64000 字节）
+        try:
+            adapter.LarkDeckMixin._ld_ck_requests = staticmethod(_fake_requests)
+            calls, client = _mk_fake()
+            raw2r = _make()
+            raw2r._client = client
+            adapter.configure(native_transport="cardkit", unified_panel=True)
+            adapter._STREAM_MIN_INTERVAL = 0.0
+            assert _run(raw2r.send_stream_frame("", chat_id="oc_ck2r", turn_id="t-2r"))
+            assert calls["create"] == 1, "seed 建第一张卡"
+            head = "前段标记" + "甲" * 950
+            assert _run(raw2r.send_stream_frame(head, chat_id="oc_ck2r", turn_id="t-2r"))
+            assert calls["create"] == 1, "没超过阈值就不该切卡"
+            # 再涨一点、跨过（被压小的）阈值：切完之后**尾巴也在阈值以内** ⇒ 下一帧不该再切
+            # （尾巴比阈值还大时再切一次是**合法**的：卡链一段段收窄，见 `_ld_ck_split` 的注释）
+            # ⚠️ 两段之间**必须有换行**：切点会优先落在换行上，只有这样「封卡里不含后半段标记」
+            # 才是一条有判别力的断言（没有换行时切点会落在后半段标记中间，断言就变成假红）
+            full = head + "\n\n" + "后段标记" + "乙" * 400
+            assert _run(raw2r.send_stream_frame(full, chat_id="oc_ck2r", turn_id="t-2r")), \
+                "跨过阈值那一帧必须成功（切卡是它的职责）"
+            assert calls["create"] == 2, f"应当建出第二张卡：{calls['create']}"
+            state2r = raw2r._ld_stream_get("oc_ck2r:t-2r") or {}
+            cut = int(state2r.get("ck_offset") or 0)
+            assert 0 < cut < len(full), f"切点必须在正文中间：{cut} / {len(full)}"
+            assert state2r.get("ck_cards"), f"封掉的卡要记进 ck_cards：{state2r}"
+            assert state2r.get("card_id") == "ck_2", f"状态要指向新卡：{state2r.get('card_id')}"
+            # ① 封旧卡：整卡 patch、内容 = 前半段 + 「续下一条」、**并且关掉了流式态**
+            sealed = calls["patch_cards"][-1]
+            assert calls["patch_mids"][-1] == "om_ck_1", f"封的是第一张卡：{calls['patch_mids']}"
+            sealed_body = json.dumps(sealed, ensure_ascii=False)
+            assert not sealed.get("config", {}).get("streaming_mode"), \
+                f"封掉的卡必须关掉流式态（否则永远停在「正在生成」）：{sealed_body[:200]}"
+            assert "前段标记" in sealed_body and i18n.t("stream.continued") in sealed_body, \
+                "封卡内容必须是**前半段** + 续下一条提示"
+            assert "后段标记" not in sealed_body, "封卡里不许出现后半段（那是新卡的内容）"
+            # ② 新卡正文 == text[cut:]（**不重放**前半段）
+            new_answers = [c[1] for c in calls["content"] if c[0] == cards.CARDKIT_ANSWER_ID]
+            assert new_answers[-1] == full[cut:], \
+                f"新卡只显示剩下的那一段：{new_answers[-1][:40]!r} vs {full[cut:][:40]!r}"
+            assert "前段标记" not in new_answers[-1], "新卡不许重放前半段（R4 最大的观感坑）"
+            # ③ 切完之后的帧继续写**新卡**、只写增量
+            grown = full + "丙" * 100
+            assert _run(raw2r.send_stream_frame(grown, chat_id="oc_ck2r", turn_id="t-2r"))
+            assert calls["create"] == 2, "没再超阈值就不该再切"
+            new_answers = [c[1] for c in calls["content"] if c[0] == cards.CARDKIT_ANSWER_ID]
+            assert new_answers[-1] == grown[cut:], new_answers[-1][:40]
+            # ④ patch 车道（`card_id` 被清空 ⇒ 之后每帧走整卡 patch）同样只写本卡那一段
+            raw2r._ld_streams["oc_ck2r:t-2r"]["card_id"] = ""
+            grown2 = grown + "丁" * 50
+            assert _run(raw2r.send_stream_frame(grown2, chat_id="oc_ck2r", turn_id="t-2r"))
+            lane_body = json.dumps(calls["patch_cards"][-1], ensure_ascii=False)
+            assert grown2[cut:] in lane_body and "前段标记" not in lane_body, \
+                "降级车道也不许重放前半段"
+            # ⑤ **元素通道拿到卡级死法**（300309）那一帧走的是降级分支（整卡 patch 续写同一张卡）：
+            #    它也**只写本卡那一段**（写整段会把封掉的前半段重放一遍）
+            _orig_write = raw2r._ld_ck_write
+
+            async def _die_on_answer(card_id, element_id, content, sequence):
+                if element_id == cards.CARDKIT_ANSWER_ID:
+                    return adapter._CkResult(False, 300309, "session closed")
+                return await _orig_write(card_id, element_id, content, sequence)
+
+            raw2r._ld_streams["oc_ck2r:t-2r"]["card_id"] = "ck_2"
+            raw2r._ld_ck_write = _die_on_answer
+            grown3 = grown2 + "戊" * 30
+            try:
+                assert _run(raw2r.send_stream_frame(grown3, chat_id="oc_ck2r", turn_id="t-2r")), \
+                    "卡级死法要降级续写（不是 fail-open）"
+            finally:
+                raw2r._ld_ck_write = _orig_write
+            degrade_body = json.dumps(calls["patch_cards"][-1], ensure_ascii=False)
+            assert grown3[cut:] in degrade_body and "前段标记" not in degrade_body, \
+                "降级分支同样不许重放前半段"
+
+            # ⑥ 收尾：封的是**最新那张**，内容同样是本卡那一段
+            raw2r._ld_streams["oc_ck2r:t-2r"]["card_id"] = "ck_2"
+            raw2r._ld_streams["oc_ck2r:t-2r"]["card_id"] = "ck_2"
+            patched_before = len(calls["patch_cards"])
+            assert _run(raw2r.send_stream_frame(grown2, finalize=True, chat_id="oc_ck2r",
+                                                turn_id="t-2r"))
+            assert len(calls["patch_cards"]) == patched_before + 1
+            final_body = json.dumps(calls["patch_cards"][-1], ensure_ascii=False)
+            assert grown2[cut:] in final_body and "前段标记" not in final_body, \
+                "收尾帧只写本卡那一段"
+        finally:
+            adapter._CK_SPLIT_SEAL_AT = _saved_split_at
+
         # ⑤ SDK 取不到（单测/裁剪环境）⇒ 建实体返回 None ⇒ **fail-open**，绝不抛
         adapter.LarkDeckMixin._ld_ck_requests = staticmethod(lambda: None)
         calls, client = _mk_fake()
@@ -1982,17 +2083,40 @@ def test_cardkit_transport_writes_elements_and_falls_open():
 
         # ⑭ **正文长大之后也要守硬上限**（第十二路审计第 5 条）：建实体那道闸门守的是
         #    **空正文**的 seed 帧（核心传 `""`），真正会长大的是后面每一帧的累积全文。
-        #    它自己超过整卡硬上限时这张卡不可能成立，必须当场 fail-open（而不是白花一次往返）。
+        #    ⚠️ R4 起这一格分**两半**（行为**有意**变了，别再当成回归）：
+        #      ① 超硬上限但**切得开** ⇒ 走卡链（帧成功、内容一个字节都不丢）；
+        #      ② 一帧的增量太大、连新卡都装不下 ⇒ 仍然 fail-open（不白花一次往返）。
         calls, client = _mk_fake()
         raw14 = _make()
         raw14._client = client
         adapter.configure(native_transport="cardkit")
         assert _run(raw14.send_stream_frame("", chat_id="oc_ck15", turn_id="t-15"))
-        _huge = "汉" * ((cards.FEISHU_CARD_BYTE_LIMIT // 3) + 1000)
+        # ⚠️ 正文要有**可辨认的开头标记**：整段都是同一个汉字时，「新卡不许重放前半段」这类
+        # 断言会被子串匹配**顺带满足**（第一版就是这么假绿的 —— 恒真断言的又一个形态）。
+        _huge = "开头标记" + "汉" * ((cards.FEISHU_CARD_BYTE_LIMIT // 3) + 1000)   # 略超硬上限
+        assert _run(raw14.send_stream_frame(_huge, chat_id="oc_ck15", turn_id="t-15")), \
+            "R4：超过单卡容量但**切得开**时必须切卡（不是 fail-open）"
+        assert calls["create"] == 2, f"应当封一张、开一张：{calls['create']}"
+        _sealed_body = json.dumps(calls["patch_cards"][-1], ensure_ascii=False)
+        _tail_answer = [c[1] for c in calls["content"] if c[0] == cards.CARDKIT_ANSWER_ID][-1]
+        # 内容不许丢：封卡里是**前半段**、新卡里是**后半段**（两段拼起来才是原文）
+        assert "开头标记" in _sealed_body, "封卡里应当有正文开头"
+        assert "开头标记" not in _tail_answer, "新卡不许重放前半段（R4 最大的观感坑）"
+        assert len(_tail_answer) > 1000, f"新卡里应当有后半段：{len(_tail_answer)} 字"
+
+        # ② 一帧的增量**太大**（切完的尾巴仍超新卡容量）⇒ 只能 fail-open 交核心回落
+        calls, client = _mk_fake()
+        raw14b = _make()
+        raw14b._client = client
+        adapter.configure(native_transport="cardkit")
+        assert _run(raw14b.send_stream_frame("", chat_id="oc_ck15b", turn_id="t-15b"))
+        # 阈值：封卡预算 + 尾巴预算 ≈ 0.5 + 0.9 = 1.4 倍硬上限 ⇒ 取 2 倍必然切不开
+        _too_big = "汉" * (cards.FEISHU_CARD_BYTE_LIMIT * 2 // 3)
         adapter._log_ck_over_budget_once._at = 0.0
         with _LogCapture("larkdeck") as records:
-            assert not _run(raw14.send_stream_frame(_huge, chat_id="oc_ck15", turn_id="t-15")), \
-                "正文超过硬上限时必须 fail-open"
+            assert not _run(raw14b.send_stream_frame(_too_big, chat_id="oc_ck15b",
+                                                     turn_id="t-15b")), \
+                "一帧塞不下的增量必须 fail-open（否则发一张必被飞书拒的卡）"
         assert calls["content"] == [], \
             f"超上限的正文不该再往元素里写（白花一次 API 往返）：{calls['content']}"
         assert any("硬上限" in r.getMessage() for r in records), "超上限必须留痕"
@@ -5896,6 +6020,45 @@ def test_accepts_positional_is_the_real_contract():
     assert compat.accepts_positional(lambda *a: None, 3) is True
     assert compat.accepts_positional(lambda a, b: None, 2) is True
     assert compat.accepts_positional(lambda a, b: None, 3) is False
+
+
+# --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# 15. R4 卡链的**切点纯函数**（卡片容量相关的判据都在这里，逐条钉住）
+# --------------------------------------------------------------------------- #
+def test_ck_split_point_respects_budgets_and_avoids_code_fences() -> None:
+    """`_ck_split_point` 是卡链的判据中心：预算、代码区、以及「切不开」的返回 None。
+
+    判别力：变异 `R4-5`（不再避开代码围栏）必须让这条红。
+    """
+    limit = cards.FEISHU_CARD_BYTE_LIMIT
+    seal, tail = limit // 2, int(limit * 0.9)
+
+    # ① 预算：切点左边装得进 `seal`，右边装得进 `tail`
+    text = ("甲" * 400) + "\n" + ("乙" * 400) + "\n" + ("丙" * 400)
+    cut = adapter._ck_split_point(text, 0, seal_budget=2000, tail_budget=limit)
+    assert cut is not None and 0 < cut < len(text), cut
+    assert adapter._card_body_bytes(text[:cut]) <= 2000, "封卡那一段必须装得进预算"
+    assert adapter._card_body_bytes(text[cut:]) <= limit, "尾巴也必须装得下"
+
+    # ② 代码围栏：切点**不能落在围栏/行内代码中间**（否则两张卡的 markdown 各自残缺）
+    fenced = "前面一段话。\n\n```\n" + ("code\n" * 200) + "```\n\n后面一段话。"
+    cut2 = adapter._ck_split_point(fenced, 0, seal_budget=len("前面一段话。") + 40,
+                                   tail_budget=limit)
+    spans = cards.code_spans(fenced)
+    if cut2 is not None:
+        assert not any(start < cut2 < end for start, end in spans), \
+            f"切点落在代码区里（{cut2} ∈ {spans}）—— 两张卡的 markdown 都会残缺"
+        assert not fenced[:cut2].endswith("```"), "切点不能正好把围栏劈开"
+
+    # ③ 切不开：一帧的增量连「最大的可行切点」都留不下尾巴 ⇒ None（调用方 fail-open）
+    huge = "汉" * (limit * 2 // 3)
+    assert adapter._ck_split_point(huge, 0, seal_budget=seal, tail_budget=tail) is None, \
+        "尾巴装不下时必须返回 None（否则会发一张必被飞书拒的卡）"
+
+    # ④ 已经切过（offset > 0）时只从 offset 往后算，且**绝不回头**
+    cut3 = adapter._ck_split_point(huge, 1000, seal_budget=seal, tail_budget=tail)
+    assert cut3 is None or cut3 > 1000, cut3
 
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items())

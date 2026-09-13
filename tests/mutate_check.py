@@ -249,9 +249,10 @@ MUTATIONS = [
      '                status=snap.get("status"),',
      "                status=None,",
      "check_hooks"),
+    # ⚠️ R4 起收尾帧写的是**本卡那一段**（`tail_visible`），锚点跟着改（不然就是「清单与源码脱节」）
     ("SEQ3-收尾帧不关 streaming_mode", "core/adapter.py",
-     "            card = self._ld_build_card(display or \" \", streaming=False,\n                                       panel=self._ld_panel(chat, state.get(\"t0\")),\n                                       footer=self._ld_footer())",
-     "            card = self._ld_build_card(display or \" \", streaming=True,\n                                       panel=self._ld_panel(chat, state.get(\"t0\")),\n                                       footer=self._ld_footer())",
+     "            card = self._ld_build_card(tail_visible or \" \", streaming=False,\n                                       panel=self._ld_panel(chat, state.get(\"t0\")),\n                                       footer=self._ld_footer())",
+     "            card = self._ld_build_card(tail_visible or \" \", streaming=True,\n                                       panel=self._ld_panel(chat, state.get(\"t0\")),\n                                       footer=self._ld_footer())",
      "check_hooks"),
     ("SEQ4-/stop 重绘不再带中止色", "core/adapter.py",
      "            panel = self._ld_panel(chat, started) or _cards.unified_panel(\n                status=_panel.STATUS_STOPPED)",
@@ -729,8 +730,14 @@ MUTATIONS = [
      '                .msg_type("interactive").uuid(f"ld-msg-{card_id}")',
      '                .msg_type("interactive")',
      "test_units"),
-    ("CK23-正文长大之后不再守硬上限（往元素里写 135KB）", "core/adapter.py",
+    # ⚠️ R4 起「超上限」分两半（切得开就切卡、切不开才 fail-open），这条变异钉的是**后半**：
+    #    把闸门整个拆掉 ⇒ 一帧超大的增量会直接往元素里写（必被飞书拒）
+    ("CK23-一帧塞不下时不再 fail-open（往一张新卡里硬写超上限的增量）", "core/adapter.py",
+     '            body_bytes = _card_body_bytes(visible)\n'
      '            if body_bytes > _cards.FEISHU_CARD_BYTE_LIMIT:\n'
+     '                # 走到这里说明「一张**全新的卡**也装不下这一帧的增量」—— 切卡帮不上忙\n'
+     '                # （切点判据 ② 会拒绝），只能 fail-open 交核心回落。与切卡前的差别是：\n'
+     '                # 这条路上卡里已经有前面几万字的正文，回落后核心只补发**剩余部分**。\n'
      '                _log_ck_over_budget_once(body_bytes)\n'
      '                return self._ld_stream_fail("CardKit 正文超过硬上限")\n'
      '            elems = self._ld_ck_elems(state)',
@@ -863,6 +870,39 @@ MUTATIONS = [
      "tests/test_units.py",
      '    original_builder = adapter.LarkDeckMixin.__dict__["_ld_build_resolved_card"]',
      '    original_builder = adapter.LarkDeckMixin._ld_build_resolved_card.__func__',
+     "test_units"),
+    # ---- R4：卡链（超长回答封旧卡 + 开新卡，正文只写本卡那一段）------------------------- #
+    ("R4-1-新卡重放整段（用户把前半段再看一遍）", "core/adapter.py",
+     '            ops = _ck_plan(visible, self._ld_panel_markdown(chat, state.get("t0")),',
+     '            ops = _ck_plan(display, self._ld_panel_markdown(chat, state.get("t0")),',
+     "test_units"),
+    ("R4-2-封旧卡忘了关流式态（旧卡永远停在「正在生成」）", "core/adapter.py",
+     '                                   streaming=False,',
+     '                                   streaming=True,',
+     "test_units"),
+    ("R4-3-切点不看尾巴预算（发一张必被飞书拒的卡）", "core/adapter.py",
+     '    if _card_body_bytes(text[offset + best:]) > tail_budget:\n'
+     '        return None',
+     '    if False:\n'
+     '        return None',
+     "test_units"),
+    ("R4-4-收尾帧重放整段", "core/adapter.py",
+     '            tail_visible = display[tail_offset:]',
+     '            tail_visible = display',
+     "test_units"),
+    ("R4-5-切点不避开代码围栏（两张卡的 markdown 各自残缺）", "core/adapter.py",
+     '        if text[index - 1] != "\\n" or _inside(index):',
+     '        if text[index - 1] != "\\n":',
+     "test_units"),
+    ("R4-6-patch 车道（降级之后）重放整段", "core/adapter.py",
+     '        card = self._ld_build_card(visible, streaming=True,\n'
+     '                                   panel=self._ld_panel(chat, state.get("t0")),',
+     '        card = self._ld_build_card(display, streaming=True,\n'
+     '                                   panel=self._ld_panel(chat, state.get("t0")),',
+     "test_units"),
+    ("R4-7-降级分支（元素通道死法）重放整段", "core/adapter.py",
+     '                card = self._ld_build_card(visible, streaming=True,',
+     '                card = self._ld_build_card(display, streaming=True,',
      "test_units"),
 ]
 

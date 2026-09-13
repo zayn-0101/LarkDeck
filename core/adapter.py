@@ -148,6 +148,75 @@ _CK_SUMMARY_INTERVAL = 5.0
 _CK_WRITES_PER_SECOND = 10
 _CK_WRITES_PER_FRAME = max(1, int(_CK_WRITES_PER_SECOND * _STREAM_MIN_INTERVAL))   # 0.25s ⇒ 2
 
+#: **R4 卡链**：一张卡装到硬上限的这个比例就**封卡**、另开一张（超长回答不再掉成纯文本）。
+#:
+#: 为什么不是 1.0：封卡那一段还要多带一行「（续下一条）」，而**新卡要一次写完剩余的整段**
+#: （帧文本是累积全文）⇒ 两边都得留余量。取 0.5 时，前半段与后半段都装得下。
+#: ⚠️ 量的是**卡片正文的 JSON 字节**（`_card_body_bytes`，与两道墙同源）—— 拿原始 utf-8
+#: 字节估会低估（`"` `\` `\n` 在 JSON 里翻倍，R1 审计实测过 127000 → 227291）。
+_CK_SPLIT_SEAL_RATIO = 0.5
+#: 上面那个比例换算成**字节阈值**（帧路径每帧都要比一次，别在热路径里重复算）
+_CK_SPLIT_SEAL_AT = int(_cards.FEISHU_CARD_BYTE_LIMIT * _CK_SPLIT_SEAL_RATIO)
+#: 切完之后**尾巴**最多能占硬上限的比例 —— 超了说明这一帧的增量太大、单张新卡装不下
+#: ⇒ fail-open 交核心回落（宁可这一次掉成纯文本，也不发一张必被飞书拒的卡）。
+_CK_SPLIT_TAIL_RATIO = 0.9
+
+
+def _ck_split_point(text: str, offset: int, *, seal_budget: int,
+                    tail_budget: int) -> Optional[int]:
+    """给「累积全文」挑一个**封卡切点** ``cut``（``offset < cut <= len(text)``）；挑不到返回 None。
+
+    三条判据（顺序即优先级）：
+      1. ``text[offset:cut]`` 的卡片正文 JSON 字节 ≤ ``seal_budget``（旧卡装得下这一段）；
+      2. ``text[cut:]`` 的字节 ≤ ``tail_budget``（**新卡这一帧就要把它整段写进去**）；
+      3. 尽量落在**换行**上、且**不切在代码围栏/行内代码中间** —— 切在围栏里会让两张卡各自的
+         markdown 残缺（前半段围栏没闭合、后半段凭空多出一段代码）。若可行区间整段都在代码区里，
+         退到**围栏起点**（把代码块整块留给新卡）；连那也不行时退回 ``best`` —— **宁可让第一张卡
+         的代码块残缺，也不 fail-open**：内容一个字节都不能丢，残缺只是观感问题。
+
+    为什么用**二分**：``_card_body_bytes(text[offset:offset+n])`` 对 n **单调不减**（每个字符至少
+    贡献 1 字节，JSON 转义只会加不会减）⇒ 二分找最大可行前缀是精确的，不必逐字符试（那是 O(n²)，
+    几十万字的回答会卡住事件循环）。
+    ⚠️ 判据 2 **只会随 cut 变小而变差**（尾巴变长）⇒ 若「最大的可行 cut」都装不下尾巴，就没有
+    任何切点可行（这一帧的增量确实太大）⇒ 返回 None 让调用方 fail-open。
+    ⚠️ 下标一律是**全文绝对下标**：``best`` 是相对 ``offset`` 的字符数，回溯找换行前要换算 ——
+    第一版拿相对下标去索引全文，切过一次卡（``offset > 0``）之后就会看错位置。
+    """
+    span = len(text) - offset
+    if span <= 0:
+        return None
+    lo, hi, best = 1, span, 0
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if _card_body_bytes(text[offset:offset + mid]) <= seal_budget:
+            best, lo = mid, mid + 1
+        else:
+            hi = mid - 1
+    if best <= 0:
+        return None
+    if best >= span:
+        return None                       # 整段都装得下 ⇒ 没有可切的地方（调用方正常写卡）
+    if _card_body_bytes(text[offset + best:]) > tail_budget:
+        return None
+    absolute = offset + best
+    spans = _cards.code_spans(text)
+
+    def _inside(index: int) -> bool:
+        return any(start < index < end for start, end in spans)
+
+    floor = absolute - max(1, int(best * 0.3))
+    for index in range(absolute, floor, -1):
+        if text[index - 1] != "\n" or _inside(index):
+            continue
+        return index                       # ① 换行 + 不在代码区：最理想的切点
+    starts = [start for start, end in spans if start < absolute < end]
+    if starts:
+        candidate = min(starts)            # ② 整段都在代码区里 ⇒ 退到围栏起点，代码块整块给新卡
+        if candidate > offset and _card_body_bytes(text[candidate:]) <= tail_budget:
+            return candidate
+    return absolute                        # ③ 兜底：仍在代码区里切（观感残缺 > 掉成纯文本）
+
+
 #: 飞书的**瞬态**错误码 —— 命中就退避重试，而不是当成定义性失败。
 #: 为什么这件事重要：一帧失败会被内核判成「本回合 native 不可用」
 #: （``stream_consumer_transport.py`` 里定义性失败后置 ``_use_native_streaming = False``），
@@ -1631,6 +1700,68 @@ class LarkDeckMixin:
                 return False, seq, answer
         return True, seq, None
 
+    async def _ld_ck_split(self, chat: str, text: str, state: Dict[str, Any],
+                           offset: int, reply_to: Optional[str],
+                           now: float) -> Optional[Dict[str, Any]]:
+        """**封旧卡 + 开新卡**（R4）：成功返回新卡那一份回合状态，失败返回 None（调用方 fail-open）。
+
+        为什么值得为它多花写入配额：不切卡的话，正文一超过单卡硬上限，这一帧就只能 fail-open
+        ⇒ 核心停用本回合 native ⇒ 用户从「逐字卡片」掉成一条条纯文本（卡上还停在半截）。
+        超长回答（约四万字以上）恰恰是最需要卡片的时候。
+
+        ⚠️ **这一帧的写入次数故意超出「每帧 ≤2 次」的预算**（封卡 patch + 建实体 + 发实体卡 +
+        元素写）：切卡是**低频事件**（几万字才一次），而那条预算规则是给「稳态每 0.25 秒一帧」
+        定的 —— 宁可多花一次配额，也不要丢内容或掉回纯文本。这条例外写在这里，别当成预算被无视。
+        """
+        # ⚠️ 封卡预算**必须与帧路径的触发阈值同源**（`_CK_SPLIT_SEAL_AT`）：两处各算一次的话，
+        # 阈值一改就会出现「触发了但切点说『整段都装得下』」这种自相矛盾（实测踩到过）。
+        seal_budget = int(_CK_SPLIT_SEAL_AT)
+        tail_budget = int(_cards.FEISHU_CARD_BYTE_LIMIT * _CK_SPLIT_TAIL_RATIO)
+        cut = _ck_split_point(text, offset, seal_budget=seal_budget, tail_budget=tail_budget)
+        if cut is None:
+            return None
+        old_message_id = str(state.get("message_id") or "")
+        # ① 封旧卡：整卡 patch（那一刻流式本来就结束 —— 我们**绝不会**再往它写元素）
+        sealed = text[offset:cut]
+        card = self._ld_build_card(sealed + "\n\n" + _i18n.t("stream.continued"),
+                                   streaming=False,
+                                   panel=self._ld_panel(chat, state.get("t0")),
+                                   footer=self._ld_footer())
+        result = await self._ld_update_card(chat, old_message_id, card)
+        if result is None or not getattr(result, "success", False):
+            logger.warning("[larkdeck] 卡链：封旧卡失败（%s），本帧回落",
+                           getattr(result, "error", "unknown"))
+            return None
+        # 封掉的卡不再追踪：`/stop` 的重绘只针对**最新那张**（多卡同时变色列入后续阶段）。
+        # 但它的 id 留在 `ck_cards` 里 —— 那是「这一回合发过哪几张卡」的唯一记录。
+        self._ld_forget(old_message_id)
+        # ② 开新卡：只写**剩下的那一段**（写整段会让用户把前半段再看一遍 —— R4 最大的观感坑）
+        made = await self._ld_ck_create(chat, answer=text[cut:],
+                                        panel_text=self._ld_panel_markdown(chat, now),
+                                        reply_to=reply_to, footer_text=self._ld_footer())
+        if made is None:
+            logger.warning("[larkdeck] 卡链：开新卡失败，本帧回落")
+            return None
+        new_result, new_card_id, new_card_json = made
+        new_message_id = getattr(new_result, "message_id", "") or ""
+        if not new_message_id:
+            logger.warning("[larkdeck] 卡链：新卡没拿到 message_id，本帧回落")
+            return None
+        self._ld_track(new_message_id, chat)
+        logger.info("[larkdeck] 卡链：封 %s（%d 字）→ 新卡 %s（余 %d 字）",
+                    old_message_id[-8:], len(sealed), new_message_id[-8:], len(text) - cut)
+        return {
+            "message_id": new_message_id, "chat_id": chat, "t0": state.get("t0") or now,
+            "last": text, "last_at": now, "frames": 0, "skipped": 0,
+            "card_id": new_card_id, "ck_seq": 0,
+            "ck_elems": _ck_elems_from_card(new_card_json),
+            "ck_summary_at": now, "ck_summary": _cards.summary_text(text),
+            # 新卡的正文从 cut 开始 ⇒ 之后每一帧都按 `text[ck_offset:]` 渲染
+            "ck_offset": cut,
+            "ck_cards": list(state.get("ck_cards") or []) + [old_message_id],
+            "ck_sealed_bytes": int(state.get("ck_sealed_bytes") or 0) + _card_body_bytes(sealed),
+        }
+
     async def _ld_ck_maybe_summary(self, card_id: str, display: str, state_ref: Dict[str, Any],
                                    seq: int, now: float) -> Tuple[int, Dict[str, Any]]:
         """按限频更新**会话列表预览**（R7 的后半），返回 ``(新的序号, 要并进状态的字段)``。
@@ -1767,7 +1898,12 @@ class LarkDeckMixin:
                                           # 所以这里把「上次预览」记成**刚刚**——第一帧不必再写一次
                                           # （限频窗口到点后才更新成真实进展）
                                           "ck_summary_at": now,
-                                          "ck_summary": _cards.summary_text(display)})
+                                          "ck_summary": _cards.summary_text(display),
+                                          # R4：这一张卡显示的是累积全文里的哪一段
+                                          # （`text[ck_offset:]`）。第一张卡从 0 开始。
+                                          "ck_offset": 0,
+                                          # 这一回合已经**封掉**的卡（按顺序）—— 卡链的唯一记录
+                                          "ck_cards": []})
                 _context.note_frame_ok()      # R9：建实体 + 发实体卡也是一次真的写卡
                 return True
             card = self._ld_build_card(display, streaming=True,
@@ -1793,7 +1929,10 @@ class LarkDeckMixin:
             # 帧文本是可见前缀」记账），中间帧改写会让前缀链断掉 ⇒ 回答被重发一遍。
             # 收尾帧之后不再有帧，所以在这里改写是安全的；而且用户最终看到的就是这一帧。
             display = _cards.sanitize_markdown(display)
-            card = self._ld_build_card(display or " ", streaming=False,
+            # R4：收尾只封**最新那张**卡，正文同样是本卡那一段；封掉的那几张保持原样
+            tail_offset = int(state.get("ck_offset") or 0)
+            tail_visible = display[tail_offset:]
+            card = self._ld_build_card(tail_visible or " ", streaming=False,
                                        panel=self._ld_panel(chat, state.get("t0")),
                                        footer=self._ld_footer())
             result = await self._ld_update_card(chat, message_id, card)
@@ -1822,22 +1961,41 @@ class LarkDeckMixin:
         # `card_id` 清成空串（见下面的 `DEGRADE` 分支）—— 以前这里还额外查了一次 `ck_degrade`，
         # 那是**同一件事的第二处机制**：变异证明它是死代码（把这一查去掉，门禁全绿）。
         # `ck_degrade` 现在只承担一件事：**记住降级的原因**（供日志/summary/后续阶段读）。
+        # R4：本卡那一段（`text[ck_offset:]`）—— **两条车道**（元素写 / 整卡 patch）都用它，
+        # 所以算在分支之前。patch 传输没有切卡（`ck_offset` 缺省 0）⇒ `visible is display`。
+        offset = int(state.get("ck_offset") or 0)
+        visible = display[offset:]
         card_id = str(state.get("card_id") or "")
         if card_id:
             # ---- CardKit：本实现只写元素内容（**不做整卡替换** —— 那会关闭流式会话。
             # 元素级/批量接口其实可以在流式期间用，见 docs/plan-6-effects.md 的「重大更正」）----
-            # **正文的预算闸门**（与建实体那道同源）：元素内容是**累积全文**，它自己就超过
-            # 整卡硬上限时，这张卡无论怎么写都不可能成立 —— 与其白花一次往返等飞书拒，
-            # 不如当场 fail-open 交核心回落（第十二路审计：建实体那道闸门守的其实是**空正文**
-            # 的 seed 帧，真正会长大的这一步此前没有任何判断）。
-            # ⚠️ 口径必须是 **JSON 转义后**的大小，不是原始 utf-8 字节：飞书拒的是**整卡
-            # JSON**，而 `"` `\` `\n` 在 JSON 里会翻倍。R1 审计实测：正文
-            # `"\n"*100000 + "a"*27000` 原始 127000 字节（本地闸门放行），而那一帧的真实
-            # 卡片 JSON 是 **227291 字节** ⇒ 必被拒 ⇒ 帧失败 ⇒ 上游补 finalize + `_first_send`
-            # ⇒ **DM 两张卡**。仓库里早有正确口径的函数（`_card_body_bytes`，第九路审计为
-            # 这个病写的），这条路径此前没接上（推论 13）。
-            body_bytes = _card_body_bytes(display)
+            # **正文的容量闸门**（口径与建实体那两道墙同源）：这里量的是**要写进元素的那一段**，
+            # 单位必须是 **JSON 转义后的字节**，不是原始 utf-8 —— 飞书拒的是**整卡 JSON**，而
+            # `"` `\` `\n` 在 JSON 里会翻倍。R1 审计实测：正文 `"\n"*100000 + "a"*27000`
+            # 原始 127000 字节（本地闸门放行），真实卡片 JSON 是 **227291 字节** ⇒ 必被拒 ⇒
+            # 帧失败 ⇒ 上游补 finalize + `_first_send` ⇒ **DM 两张卡**。
+            #
+            # ---- R4 卡链：本卡装不下这一段 ⇒ **封旧卡 + 开新卡**，正文只写新卡那一段 ----
+            # 触发阈值比硬上限保守（`_CK_SPLIT_SEAL_AT` = 硬上限的一半）：留出「（续下一条）」
+            # 那行、以及新卡要一次装下剩余整段的余量。切完仍可能超上限（说明这一帧的增量太大、
+            # 单张新卡也装不下）⇒ 下面那道闸门会用**硬上限**再判一次。
+            if _card_body_bytes(visible) > _CK_SPLIT_SEAL_AT:
+                split_state = await self._ld_ck_split(chat, display, state, offset, reply_to, now)
+                if split_state is None:
+                    # 切不开 ⇒ 这一帧只能回落。**字节数照旧打出来**（运维第一眼要的就是数字），
+                    # 复用另一条闸门的那句日志（同一件事：正文超过单卡能装下的量）。
+                    _log_ck_over_budget_once(_card_body_bytes(visible))
+                    return self._ld_stream_fail("正文超过单卡硬上限且这一帧切不出新卡")
+                state = split_state
+                self._ld_stream_put(key, state)
+                offset = int(state.get("ck_offset") or 0)
+                visible = display[offset:]
+                card_id = str(state.get("card_id") or "")
+            body_bytes = _card_body_bytes(visible)
             if body_bytes > _cards.FEISHU_CARD_BYTE_LIMIT:
+                # 走到这里说明「一张**全新的卡**也装不下这一帧的增量」—— 切卡帮不上忙
+                # （切点判据 ② 会拒绝），只能 fail-open 交核心回落。与切卡前的差别是：
+                # 这条路上卡里已经有前面几万字的正文，回落后核心只补发**剩余部分**。
                 _log_ck_over_budget_once(body_bytes)
                 return self._ld_stream_fail("CardKit 正文超过硬上限")
             elems = self._ld_ck_elems(state)
@@ -1845,7 +2003,10 @@ class LarkDeckMixin:
             dead = dead if isinstance(dead, set) else set()
             # 写失败的装饰元素后续不再尝试（省配额、也不再刷日志）
             live_elems = [e for e in elems if e not in dead]
-            ops = _ck_plan(display, self._ld_panel_markdown(chat, state.get("t0")),
+            # ⚠️ 正文写的是**本卡那一段**（`visible`），不是累积全文 —— 写全文会让新卡把
+            # 已经封掉的那几段**重放一遍**（R4 最大的观感坑，变异 `R4-1` 钉住）。
+            # 装饰（面板/页脚）与预览（summary）照旧用整回合的语义。
+            ops = _ck_plan(visible, self._ld_panel_markdown(chat, state.get("t0")),
                            live_elems, self._ld_footer())
             live_state = dict(state)
             ok, seq_after, failed = await self._ld_ck_apply(card_id, ops, _ck_seq(state),
@@ -1885,7 +2046,8 @@ class LarkDeckMixin:
                 # ⚠️ 状态从 `live_state` 出发（不是旧 `state`）：本帧算出来的 `ck_dead`/`ck_decor`
                 # 不能被降级分支悄悄丢掉 —— 「同一件事两处真相」是本项目最怕的形态（审计低-5）。
                 _log_ck_degrade_once(degrade_code)
-                card = self._ld_build_card(display, streaming=True,
+                # ⚠️ 降级后写的也是**本卡那一段**（同 R4：写全文会把封掉的几段重放一遍）
+                card = self._ld_build_card(visible, streaming=True,
                                            panel=self._ld_panel(chat, state.get("t0")),
                                            footer=self._ld_footer())
                 result = await self._ld_update_card(chat, message_id, card)
@@ -1912,7 +2074,9 @@ class LarkDeckMixin:
                 _log_ck_panel_write_failed_once()
             return self._ld_stream_fail(failed.fail_reason() if failed
                                         else "CardKit 写元素失败（没有可写的元素）")
-        card = self._ld_build_card(display, streaming=True,
+        # ⚠️ 这条车道（patch 传输 / 降级之后）同样只写**本卡那一段**：写整段会让降级后的卡
+        # 把已经封掉的几段重放一遍（与元素车道同一条纪律）。
+        card = self._ld_build_card(visible, streaming=True,
                                    panel=self._ld_panel(chat, state.get("t0")),
                                    footer=self._ld_footer())
         result = await self._ld_update_card(chat, message_id, card)
