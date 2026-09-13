@@ -47,6 +47,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
 import time
 from types import SimpleNamespace
@@ -163,6 +164,21 @@ _CK_WRITES_PER_FRAME = max(1, int(_CK_WRITES_PER_SECOND * _STREAM_MIN_INTERVAL))
 #:     放在这里是为将来可能的 CardKit 传输（见 docs/plan-6-effects.md 阶段 9）预先收口 ——
 #:     多一个码只会多一次幂等重试，代价可接受。
 _TRANSIENT_CODES = frozenset({230020, 99991400, 300309, 300317})
+
+#: **撤回类**码（只可能在**整卡写入**时拿到 —— 元素写入对撤回无感，R0 的 P4 实测）：
+#:   * ``230011``  —— `The message was withdrawn.`（真机实测：删掉消息后 `message.patch` 就报它）；
+#:   * ``99992354`` —— 消息 id 不存在 / 非法（真机实测）。
+#: 处置：标死 + 清追踪 + **绝不另建卡**（我们自己不补发；要不要补发由核心的 fail-open 决定）。
+_WITHDRAWN_CODES = frozenset({230011, 99992354})
+
+#: **卡级死法**（元素级写入拿到的、说明这张实体卡不能再走元素通道的码 ⇒ 转 patch 车道，
+#: 用**同一张卡**继续）：
+#:   * ``300309``  —— 流式会话已关闭（真机实测：整卡 patch / 显式关流式之后写元素就得它）；
+#:   * ``300313``  —— 元素不存在（真机实测，msg 里点名 id）；
+#:   * ``300317``  —— 序号冲突（跳号/撞号，真机实测）。
+#: ⚠️ 转 patch 车道的**前提**是真机验过的：`message.patch` **能覆盖一张 CardKit 实体卡的消息**
+#: （`probe_ck_stream_ops.py --lanes` 实测 `code=0`，且随后写元素得 `300309` ⇒ 会话确实被替换掉了）。
+_CARD_DEATH_CODES = frozenset({300309, 300313, 300317})
 
 #: **写接口可以安全重试**的错误码：只有「服务端明确拒绝、什么都没执行」的频率限制类。
 #: 为什么必须与 `_TRANSIENT_CODES` 分开：`300309`（流式会话已关闭）与 `300317`（序号不匹配）
@@ -508,6 +524,34 @@ def _ck_elems_from_card(card: Dict[str, Any]) -> List[str]:
     return out
 
 
+class _CkResult(NamedTuple):
+    """一次 CardKit 写的**结果三件套**：成功与否 + 返回码 + 原始 msg。
+
+    为什么不再只返回 bool（R5）：处置**分档**需要码（`300309` 会话已关 ⇒ 转 patch 车道；
+    `230020` 限流 ⇒ 重试），而「一批里哪个 id 是坏的」只能从 **msg** 里读出来 ——
+    真机实测（`probe_ck_stream_ops.py --lanes`）：
+    ``code=300313 · msg='ErrMsg: not find elementID : ghost_missing_element; '``
+    ⇒ 服务端**会点名**坏 id。只看 bool 的话，「整批标死」是唯一能做的事（R2 审计第 3 条
+    就是这么记的）；有了 msg 就能**只标坏的那个**，其余装饰下一帧照常写。
+    """
+    ok: bool
+    code: int
+    msg: str
+
+    def bad_element_id(self) -> Optional[str]:
+        """从 msg 里解析被服务端点名的坏 `element_id`（解析不出返回 ``None``）。
+
+        口径来自真机实测的两种文案：``not find elementID : <id>``（写入卡里不存在的 id）。
+        解析失败时调用方必须退回「整批标死」这个保守处置 —— **解析不出来不等于没坏**。
+        """
+        found = _CK_BAD_ELEMENT_RE.search(self.msg or "")
+        return found.group(1) if found else None
+
+
+#: 从 CardKit 的 msg 里抓坏元素 id 的正则。id 字符集是实测出来的 `[A-Za-z0-9_]{1,20}`。
+_CK_BAD_ELEMENT_RE = re.compile(r"elementID\s*:\s*([A-Za-z0-9_]{1,20})")
+
+
 class _CkOp(NamedTuple):
     """一次要发给飞书的元素写入。
 
@@ -579,7 +623,8 @@ def _log_ck_panel_write_failed_once() -> None:
                    "「正文新、面板旧」的半更新态；本帧按失败处理，交核心回落")
 
 
-def _log_ck_decor_write_failed_once(ops: Sequence["_CkOp"]) -> None:
+def _log_ck_decor_write_failed_once(ops: Sequence["_CkOp"], code: int = 0,
+                                    blamed: Optional[str] = None) -> None:
     """装饰元素（面板/页脚）写失败的限流告警（60 秒一条）。
 
     为什么单列一条而不是并进面板那条：装饰失败**不 fail-open**（见 `_ld_ck_apply`），
@@ -591,9 +636,11 @@ def _log_ck_decor_write_failed_once(ops: Sequence["_CkOp"]) -> None:
         return
     _log_ck_decor_write_failed_once._at = now  # type: ignore[attr-defined]
     ids = "、".join(op.element_id for op in ops)
-    logger.warning("[larkdeck] CardKit 装饰元素写入失败（%s）—— 本帧继续（正文不受影响），"
-                   "**这一批里的全部装饰**本回合内不再尝试（返回码是卡级的，无法只标坏的那个）；"
-                   "卡片会停在「正文在长、装饰冻结」的状态，**收尾帧的整卡 patch 会补齐**", ids)
+    scope = (f"服务端点名的坏元素是 {blamed} ⇒ 只标死它" if blamed
+             else "返回码没点名坏元素 ⇒ 整批标死（解析不出来不等于没坏）")
+    logger.warning("[larkdeck] CardKit 装饰写入失败 code=%s（%s）—— 本帧继续、正文不受影响；"
+                   "标死：%s；%s；这些元素本回合内不再尝试，收尾帧的整卡 patch 会补齐",
+                   code, ids, scope, "卡片会停在「正文在长、装饰冻结」的状态")
 
 
 def _ck_create_wall(card: Mapping[str, Any]) -> Optional[str]:
@@ -630,6 +677,35 @@ def _log_ck_over_budget_once(size: int) -> None:
     logger.warning("[larkdeck] CardKit 实体卡 %d 字节超过飞书实测硬上限 %d —— "
                    "不能像 patch 路径那样分级丢装饰（结构已定死），本帧 fail-open 交核心回落",
                    size, _cards.FEISHU_CARD_BYTE_LIMIT)
+
+
+def _log_ck_degrade_once(code: int) -> None:
+    """「卡级死法 ⇒ 转 patch 车道」的限流告警（60 秒一条）——绝不静默。
+
+    为什么必须留痕：降级之后**用户看到的东西不变**（还是同一张卡），只是不再逐字 ——
+    这正是本项目最怕的那类「看起来正常、其实换了实现」的形态。这条日志是唯一的线索。
+    """
+    now = time.monotonic()
+    if now - getattr(_log_ck_degrade_once, "_at", 0.0) < 60.0:
+        return
+    _log_ck_degrade_once._at = now  # type: ignore[attr-defined]
+    logger.warning("[larkdeck] CardKit 元素通道拿到卡级死法（code=%s）⇒ 本回合**降级为整卡 patch**"
+                   "续写同一张卡（不另建卡、不丢消息），代价是没有逐字打字机", code)
+
+
+def _log_withdrawn_once(code: int) -> None:
+    """「这张卡被撤回/删了」的限流告警（60 秒一条）——绝不静默。
+
+    R0 的 P4 实测：元素写入对撤回**无感**（删掉消息后写元素照样 `code=0`），**只有整卡写入**
+    会报 `230011`。所以这条守卫只可能在整卡写入路径上生效 —— 留痕是为了说明
+    「卡片不见了不是我们丢消息，是这条消息被撤回了」。
+    """
+    now = time.monotonic()
+    if now - getattr(_log_withdrawn_once, "_at", 0.0) < 60.0:
+        return
+    _log_withdrawn_once._at = now  # type: ignore[attr-defined]
+    logger.warning("[larkdeck] 这张卡的消息已被撤回/删除（code=%s）⇒ 标死它并清掉追踪，"
+                   "**不再往这条 message_id 写**（要不要重新发一条由核心的回落决定）", code)
 
 
 def _log_ck_elements_over_once(count: int) -> None:
@@ -794,6 +870,20 @@ class LarkDeckMixin:
                                  key=lambda mid: self._ld_state[mid].get("last", 0.0))
                 for stale_id in holders[:-_MAX_TEXT_ENTRIES]:
                     self._ld_state[stale_id]["last_text"] = ""
+
+    def _ld_drop_message(self, message_id: str, code: int) -> None:
+        """把一条**已经不存在**的消息标死：清追踪 + 清回合状态 + 限流留痕（R5 的撤回守卫）。
+
+        ⚠️ 只清我们自己那一份状态：**不补发、不另建卡**。补发是核心的事（fail-open 链），
+        我们补发就会变成「DM 两张卡」——那是本项目明确要避免的形态。
+        """
+        if not message_id:
+            return
+        _log_withdrawn_once(int(code))
+        try:
+            self._ld_forget(message_id)
+        except Exception:      # noqa: BLE001 —— 守卫本身绝不许把帧路径炸掉
+            logger.debug("[larkdeck] 清追踪失败（忽略）", exc_info=True)
 
     def _ld_known(self, message_id: str) -> Optional[Dict[str, Any]]:
         """查这张卡是不是我们自己发的（并顺带刷新「最近活动」，供淘汰用）。
@@ -1019,6 +1109,12 @@ class LarkDeckMixin:
             result = self._finalize_send_result(response, "larkdeck card patch failed")
             if getattr(result, "success", False):
                 return result
+            if _ld_response_code(response) in _WITHDRAWN_CODES:
+                # **撤回守卫**（R5）：这张消息没了（被撤回/删除，或 id 非法）⇒ 标死 + 清追踪，
+                # 之后不再往它写。**绝不在这里另建卡**（我们自己补发会造成「DM 两张卡」）；
+                # 要不要把内容送到用户面前，交给核心按既有 fail-open 决定。
+                self._ld_drop_message(message_id, _ld_response_code(response))
+                return result
             if _ld_response_code(response) not in _TRANSIENT_CODES:
                 return result
             if attempt < len(_TRANSIENT_BACKOFF):
@@ -1232,7 +1328,7 @@ class LarkDeckMixin:
         return result, str(card_id), card
 
     async def _ld_ck_write(self, card_id: str, element_id: str, content: str,
-                           sequence: int) -> bool:
+                           sequence: int) -> "_CkResult":
         """往实体卡的某个元素里写文本（**这是打字机的写入通道**）。
 
         ⚠️ 序号必须**单调递增**：用 ``settings`` 重开会话后序号没对齐会拿到
@@ -1243,13 +1339,16 @@ class LarkDeckMixin:
         """
         reqs = self._ld_ck_requests()
         if reqs is None:
-            return False
+            # 没有 SDK ⇒ **不是**「卡死了」，是这一帧没法写：码给 0 会让调用方以为成功，
+            # 所以这里合成一个「失败但无码」的结果（`code=0` 与 `ok=False` 的组合只有这一处）。
+            return _CkResult(False, 0, "没有 CardKit SDK")
         resp = await self._ld_write_with_retry(
             lambda: reqs.write_element(card_id, element_id, content, int(sequence),
                                        f"ld-{card_id}-{element_id}-{sequence}"),
             self._client.cardkit.v1.card_element.content,
             f"写元素 {element_id}")
-        return _ld_response_code(resp) == 0
+        return _CkResult(_ld_response_code(resp) == 0, _ld_response_code(resp),
+                         str(getattr(resp, "msg", "") or ""))
 
     @staticmethod
     def _ld_ck_elems(state: Dict[str, Any]) -> List[str]:
@@ -1266,14 +1365,15 @@ class LarkDeckMixin:
             return [str(e) for e in elems]
         return []
 
-    async def _ld_ck_batch(self, card_id: str, ops: Sequence["_CkOp"], seq: int) -> bool:
+    async def _ld_ck_batch(self, card_id: str, ops: Sequence["_CkOp"],
+                           seq: int) -> "_CkResult":
         """一次 `card.batch_update` 写多个装饰元素（每帧最多这一次 + 正文一次）。
 
         真机实测（R0）：流式期间可用、**不关会话**、只占**一个** sequence。
         """
         reqs = self._ld_ck_requests()
         if reqs is None:
-            return False
+            return _CkResult(False, 0, "没有 CardKit SDK")
         actions = [{"action": "partial_update_element",
                     "params": {"element_id": op.element_id,
                                # ⚠️ `tag`/`text_size` 这类**结构性**字段不能进 partial update
@@ -1283,7 +1383,8 @@ class LarkDeckMixin:
         resp = await self._ld_write_with_retry(
             lambda: reqs.batch_update(card_id, actions, int(seq), f"ld-{card_id}-b{seq}"),
             self._client.cardkit.v1.card.batch_update, "装饰元素")
-        return _ld_response_code(resp) == 0
+        return _CkResult(_ld_response_code(resp) == 0, _ld_response_code(resp),
+                         str(getattr(resp, "msg", "") or ""))
 
     @staticmethod
     def _ld_ck_mark_dead(state_ref: Dict[str, Any], ops: Sequence["_CkOp"]) -> None:
@@ -1335,13 +1436,20 @@ class LarkDeckMixin:
         if fresh:
             # 装饰**一次 batch 发走**（写入预算：每帧 ≤2 次；R0 实测 batch 只占 1 个 sequence）
             seq += 1
-            if not await self._ld_ck_batch(card_id, fresh, seq):
+            batch_res = await self._ld_ck_batch(card_id, fresh, seq)
+            if not batch_res.ok:
                 # 装饰失败**不 fail-open**（处置矩阵：`DEAD` + 限流 WARNING，帧继续）：
                 # 把装饰失败升级成整帧失败，会买下「上游补 finalize + `_first_send` ⇒ DM 两张卡」
                 # 这条链；而静默吞掉又是本项目的头号失败模式 —— 唯一同时满足两边的形态是
                 # 「不 fail-open 但必须留痕」。正文失败仍然 fail-open（没有正文这张卡就没意义）。
-                self._ld_ck_mark_dead(state_ref, fresh)
-                _log_ck_decor_write_failed_once(fresh)
+                # ⚠️ **标死范围尽量收窄**（R5，真机实测支撑）：批级返回码能反映坏 id，而且
+                # **msg 会点名它**（`ErrMsg: not find elementID : <id>`，`--lanes` 实测
+                # `code=300313`）⇒ 解析得出就**只标那一个**，其余装饰下一帧照常写；
+                # 解析不出才退回「整批标死」（保守：解析不出来不等于没坏）。
+                blamed = batch_res.bad_element_id()
+                dead_ops = [op for op in fresh if op.element_id == blamed] if blamed else list(fresh)
+                self._ld_ck_mark_dead(state_ref, dead_ops)
+                _log_ck_decor_write_failed_once(dead_ops, batch_res.code, blamed)
             else:
                 # 记账 = 「卡上现在是这个内容」。所以 ① 只记**这一次真的发出去的** op
                 # ② **合并**历史：本帧只写面板（页脚没变）时，页脚的记录不能被本帧抹掉，
@@ -1365,7 +1473,15 @@ class LarkDeckMixin:
             return False, seq, None
         if answer is not None:
             seq += 1
-            if not await self._ld_ck_write(card_id, answer.element_id, answer.content, seq):
+            wrote = await self._ld_ck_write(card_id, answer.element_id, answer.content, seq)
+            if not wrote.ok:
+                # **卡级死法 ⇒ 转 patch 车道**（R5，处置矩阵的 `DEGRADE`）：这张实体卡的元素通道
+                # 已经不可用（会话被关 / 序号冲突 / 元素没了），但消息本身还在 ⇒ 用 `message.patch`
+                # 把**同一张卡**换成普通卡继续写（真机实测 patch 能覆盖实体卡消息）。
+                # 只把决定记进 state，**真正的降级动作在帧路径上做**（那里才有 patch 的代码路径）：
+                # 这里负责「不吞掉这个事实」。
+                if wrote.code in _CARD_DEATH_CODES:
+                    state_ref["ck_degrade"] = wrote.code
                 return False, seq, answer
         return True, seq, None
 
@@ -1488,6 +1604,10 @@ class LarkDeckMixin:
             # 节流窗口内的中间帧：跳过，等下个 tick（首帧不节流）
             self._ld_stream_put(key, {**state, "skipped": int(state.get("skipped") or 0) + 1})
             return True
+        # ⚠️ 「这个回合要不要走元素通道」的判据**只有一个**：`card_id` 在不在。降级时帧路径会把
+        # `card_id` 清成空串（见下面的 `DEGRADE` 分支）—— 以前这里还额外查了一次 `ck_degrade`，
+        # 那是**同一件事的第二处机制**：变异证明它是死代码（把这一查去掉，门禁全绿）。
+        # `ck_degrade` 现在只承担一件事：**记住降级的原因**（供日志/summary/后续阶段读）。
         card_id = str(state.get("card_id") or "")
         if card_id:
             # ---- CardKit：本实现只写元素内容（**不做整卡替换** —— 那会关闭流式会话。
@@ -1523,6 +1643,27 @@ class LarkDeckMixin:
                                           "ck_decor": live_state.get("ck_decor") or {},
                                           "last": text, "last_at": now,
                                           "ck_seq": seq_after,
+                                          "frames": int(state.get("frames") or 0) + 1})
+                return True
+            if live_state.get("ck_degrade"):
+                # ── `DEGRADE`：元素通道死了，但**消息还在** ⇒ 用 `message.patch` 把同一张卡
+                # 换成普通卡继续写（真机实测 patch 能覆盖实体卡消息，`--lanes`）。
+                # 为什么值得为它写一条车道：不降级就是「本帧失败 ⇒ 内核停用本回合 native ⇒
+                # 用户后面看到纯文本」，而这里完全可以保住卡片（只是没有逐字打字机）。
+                # **绝不另建卡**：patch 打在原 message_id 上，DM 里始终只有一张卡。
+                _log_ck_degrade_once(int(live_state.get("ck_degrade") or 0))
+                self._ld_stream_put(key, {**state, "ck_degrade": int(live_state["ck_degrade"]),
+                                          "card_id": "", "ck_seq": seq_after})
+                card = self._ld_build_card(display, streaming=True,
+                                           panel=self._ld_panel(chat, state.get("t0")),
+                                           footer=self._ld_footer())
+                result = await self._ld_update_card(chat, message_id, card)
+                if result is None or not getattr(result, "success", False):
+                    return self._ld_stream_fail(
+                        f"降级到 patch 后仍然失败（{getattr(result, 'error', 'unknown')}）")
+                self._ld_stream_put(key, {**state, "ck_degrade": int(live_state["ck_degrade"]),
+                                          "card_id": "", "ck_seq": seq_after,
+                                          "last": text, "last_at": now,
                                           "frames": int(state.get("frames") or 0) + 1})
                 return True
             # 失败：**只把序号推进**（绝不回退，见 `_ld_ck_apply` 的说明），

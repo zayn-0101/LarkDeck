@@ -190,6 +190,10 @@ python3 tests/mutate_check.py      # 变异验证器：撤掉每条修复必须�
   （`0` = 没关，`300309` = 关了）。实测结论：关会话的只有**整卡替换**与**显式关流式**；
   `card_element.patch` / `card_element.create` / `card_element.update` / `card.batch_update`
   在流式期间**可用且不关会话**（更正了「任何结构性写入都关」那句旧话）。
+  `--lanes` 答 R5 的两个问题（**都以返回码为判据，不需要眼睛**）：① `batch_update` 混一个
+  卡里不存在的 id ⇒ 返回码是卡级的、且 **msg 点名坏 id**（实测 `300313` +
+  `ErrMsg: not find elementID : <id>;`，之后写元素仍 `code=0`）；② 整卡 `message.patch`
+  **能覆盖 CardKit 实体卡的消息**（`code=0`，随后写元素得 `300309`）⇒ `DEGRADE` 车道可做。
   `--visual` 出**一张给人看的卡**（流式期间新增元素 + 面板边框改黄 + 面板内容更新）——
   「接口收下了」与「客户端画出来了」是两件事，后者只有眼睛能判（2026-09-13 已确认过一次）。
   默认自动删卡，`--visual --delete` 同样不留下卡片。

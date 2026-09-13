@@ -299,9 +299,10 @@ MUTATIONS = [
      "test_units"),
     # ---- 阶段 9：CardKit 传输（撤掉任何一条保证都必须变红）------------------- #
     ("CK2-正文写失败被吞（不回落）", "core/adapter.py",
-     "            if not await self._ld_ck_write(card_id, answer.element_id, answer.content, seq):\n"
-     "                return False, seq, answer",
-     "            await self._ld_ck_write(card_id, answer.element_id, answer.content, seq)",
+     '            wrote = await self._ld_ck_write(card_id, answer.element_id, answer.content, seq)\n'
+     '            if not wrote.ok:',
+     '            wrote = await self._ld_ck_write(card_id, answer.element_id, answer.content, seq)\n'
+     '            if False:',
      "test_units"),
     ("CK3-序号不递增（成功路径不推进计数器）", "core/adapter.py",
      '                                          "last": text, "last_at": now,\n'
@@ -348,17 +349,11 @@ MUTATIONS = [
      '                                       f"ld-{card_id}-{element_id}-{sequence}"),',
      '                                       f"ld-{card_id}-{element_id}"),',
      "test_units"),
-    ("CK26-装饰与正文的发送顺序被颠倒（附录 B：提交点必须在最后）", "core/adapter.py",
-     '        if answer is not None:\n'
-     '            seq += 1\n'
-     '            if not await self._ld_ck_write(card_id, answer.element_id, answer.content, seq):',
-     '        if decor:\n'
-     '            seq += 1\n'
-     '            if not await self._ld_ck_batch(card_id, decor, seq):\n'
-     '                pass\n'
-     '        if answer is not None:\n'
-     '            seq += 1\n'
-     '            if not await self._ld_ck_write(card_id, answer.element_id, answer.content, seq):',
+    ("CK26-提交点在前（正文先写、装饰后写）", "core/adapter.py",
+     '            batch_res = await self._ld_ck_batch(card_id, fresh, seq)',
+     '            if answer is not None:\n'
+     '                await self._ld_ck_write(card_id, answer.element_id, answer.content, seq)\n'
+     '            batch_res = await self._ld_ck_batch(card_id, fresh, seq)',
      "test_units"),
     ("CK24-平台 entry 透传退回手写清单（丢掉 standalone_sender_fn 等）", "core/adapter.py",
      '        if field.name in _IDENTITY_ENTRY_FIELDS:',
@@ -399,15 +394,15 @@ MUTATIONS = [
      "test_units"),
     # ---- R2：每帧写入预算 + 页脚元素开关 + 装饰失败的 DEAD 语义 ---------------------- #
     ("R2-1-装饰不走 batch（改走 content，而且只写第一个元素）", "core/adapter.py",
-     '            if not await self._ld_ck_batch(card_id, fresh, seq):',
-     '            if not await self._ld_ck_write(card_id, fresh[0].element_id, fresh[0].content, seq):',
+     '            batch_res = await self._ld_ck_batch(card_id, fresh, seq)',
+     '            batch_res = await self._ld_ck_write(card_id, fresh[0].element_id, fresh[0].content, seq)',
      "test_units"),
     ("R2-2-页脚元素不看 `footer` 配置（关掉了还在卡里留个空壳）", "core/adapter.py",
      '                                         footer_text=("" if _cfg("footer") else None))\n',
      '                                         footer_text="")\n',
      "test_units"),
     ("R2-3-装饰失败升级成整帧失败（买下「DM 两张卡」那条链）", "core/adapter.py",
-     '                self._ld_ck_mark_dead(state_ref, fresh)',
+     '                self._ld_ck_mark_dead(state_ref, dead_ops)',
      '                return False, seq, fresh[0]',
      "test_units"),
     ("R2-4-装饰失败不标死（后续每帧继续白试同一个元素）", "core/adapter.py",
@@ -449,14 +444,60 @@ MUTATIONS = [
      '    if len(card.get("body", {}).get("elements") or []) > _cards.FEISHU_ELEMENT_LIMIT:',
      "test_units"),
     ("R2-13-记账提前到 batch 调用之前（没写成功也算「已写」⇒ 静默冻结的种子）", "core/adapter.py",
-     '            if not await self._ld_ck_batch(card_id, fresh, seq):',
+     '            batch_res = await self._ld_ck_batch(card_id, fresh, seq)',
      '            state_ref["ck_decor"] = {**sent,\n'
      '                                     **{op.element_id: op.content for op in fresh}}\n'
-     '            if not await self._ld_ck_batch(card_id, fresh, seq):',
+     '            batch_res = await self._ld_ck_batch(card_id, fresh, seq)',
      "test_units"),
     ("R2-14-退避表少一项（调用放大效应的最坏值变了，而文档口径没变）", "core/adapter.py",
      '_TRANSIENT_BACKOFF = (0.1, 0.3, 0.6)',
      '_TRANSIENT_BACKOFF = (0.1, 0.3)',
+     "test_units"),
+    # ---- R5：DEGRADE 车道 / 撤回守卫 / 坏元素点名 / 追踪表上界 ------------------------ #
+    ("R5-1-卡级死法仍然 fail-open（不降级 ⇒ 用户后面看到纯文本）", "core/adapter.py",
+     '                if wrote.code in _CARD_DEATH_CODES:\n'
+     '                    state_ref["ck_degrade"] = wrote.code',
+     '                if False:\n'
+     '                    state_ref["ck_degrade"] = wrote.code',
+     "test_units"),
+    ("R5-2-降级时另建一张卡（DM 里两张卡）", "core/adapter.py",
+     '                result = await self._ld_update_card(chat, message_id, card)',
+     '                result = await self._ld_send_card(chat, card)',
+     "test_units"),
+    ("R5-3-降级但不清 card_id（之后每帧仍然写已关的会话 ⇒ 每帧失败）", "core/adapter.py",
+     '                self._ld_stream_put(key, {**state, "ck_degrade": int(live_state["ck_degrade"]),\n'
+     '                                          "card_id": "", "ck_seq": seq_after,\n'
+     '                                          "last": text, "last_at": now,',
+     '                self._ld_stream_put(key, {**state, "ck_degrade": int(live_state["ck_degrade"]),\n'
+     '                                          "ck_seq": seq_after,\n'
+     '                                          "last": text, "last_at": now,',
+     "test_units"),
+    ("R5-4-撤回守卫不生效（消息没了还继续往它写）", "core/adapter.py",
+     '            if _ld_response_code(response) in _WITHDRAWN_CODES:',
+     '            if False:',
+     "test_units"),
+    ("R5-5-撤回之后自己补发一条（DM 两张卡）", "core/adapter.py",
+     '                self._ld_drop_message(message_id, _ld_response_code(response))\n'
+     '                return result',
+     '                self._ld_drop_message(message_id, _ld_response_code(response))\n'
+     '                await self._ld_update_card(chat_id, message_id, card)\n'
+     '                return result',
+     "test_units"),
+    ("R5-6-批量失败时无视 msg 点名，整批标死（好的装饰也一起冻）", "core/adapter.py",
+     '                dead_ops = [op for op in fresh if op.element_id == blamed] if blamed else list(fresh)',
+     '                dead_ops = list(fresh)',
+     "test_units"),
+    ("R5-7-点名的坏元素认错（把 blamed 当成好元素放过去，写它每帧 300313）", "core/adapter.py",
+     '                dead_ops = [op for op in fresh if op.element_id == blamed] if blamed else list(fresh)',
+     '                dead_ops = [op for op in fresh if op.element_id != blamed] if blamed else list(fresh)',
+     "test_units"),
+    ("R5-8-追踪表没有上界（长驻进程慢性泄漏）", "core/adapter.py",
+     '_MAX_TRACKED = 512',
+     '_MAX_TRACKED = 10 ** 9',
+     "test_units"),
+    ("R5-9-追踪表按创建时刻淘汰（长回合的卡被踢 ⇒ 卡片永久冻结）", "core/adapter.py",
+     '                                key=lambda kv: kv[1].get("last", kv[1].get("t0", 0.0)))',
+     '                                key=lambda kv: kv[1].get("t0", 0.0))',
      "test_units"),
     # R1 审计（U1/U2/U4/W5/W6）实测「四门禁全绿」的五种改法，逐条钉住。
     ("U1-空元素表/一个 op 都写不出去被当作成功（卡片静默冻死、无日志、不回落）", "core/adapter.py",
@@ -577,7 +618,7 @@ MUTATIONS = [
      '                return True, seq, None',
      "test_units"),
     ("M07b-装饰写失败不再留痕（「正文在长、装饰冻结」没了唯一线索）", "core/adapter.py",
-     '                _log_ck_decor_write_failed_once(fresh)',
+     '                _log_ck_decor_write_failed_once(dead_ops, batch_res.code, blamed)',
      '                pass',
      "test_units"),
     # ---- P6：黄金路径耗时 ---------------------------------------------------- #

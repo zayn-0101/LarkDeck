@@ -1110,15 +1110,19 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         def _mk_fake(*, fail_write_after=10 ** 9, create_ok=True, fail_answer_only=False,
                      fail_panel_only=False, create_empty_id=False,
                      create_codes=None, answer_codes=None, fail_first_only=False,
-                     fail_at=None, fail_batch=False, fail_batch_code=300309):
+                     fail_at=None, fail_at_code=300309, fail_batch=False,
+                     fail_batch_code=300309, fail_batch_msg=None, patch_code=0):
             calls = {"create": 0, "send": 0, "reply": 0, "content": [], "patch": 0,
                      "entity": [], "send_req": [], "reply_req": [], "batch": [],
                      "writes": 0}
 
             class _Resp:
-                def __init__(self, code=0, **data):
+                def __init__(self, code=0, msg=None, **data):
                     self.code = code
-                    self.msg = "success" if code == 0 else "boom"
+                    # msg 可注入：R5 的「服务端点名坏元素」那条路要求 msg 长得跟真机一样
+                    # （真机实测 `ErrMsg: not find elementID : ghost_missing_element; `），
+                    # 默认的 "boom" 解析不出 id ⇒ 走「整批标死」那条保守分支。
+                    self.msg = msg if msg is not None else ("success" if code == 0 else "boom")
                     self.data = types.SimpleNamespace(**data) if data else None
 
                 def success(self):
@@ -1131,10 +1135,11 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                                            request.request_body.sequence))
                     if fail_batch:
                         # 码可配：`300309`（结构性死法）与 `99991400`（限流类 ⇒ 会退避重试）
-                        # 在 R2 之后的处置**不一样**，用例要能分别构造
-                        return _Resp(fail_batch_code)
+                        # 在 R2 之后的处置**不一样**，用例要能分别构造；msg 也可配（R5 的
+                        # 「服务端点名坏元素」需要一个真机形状的 msg）
+                        return _Resp(fail_batch_code, msg=fail_batch_msg)
                     if fail_at is not None and calls["writes"] == fail_at:
-                        return _Resp(300309)
+                        return _Resp(fail_at_code)
                     return _Resp(0)
 
                 def create(self, request):
@@ -1160,13 +1165,19 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                     if fail_first_only and calls["writes"] == 1:
                         return _Resp(300309)
                     if fail_at is not None and calls["writes"] == fail_at:
-                        return _Resp(300309)
+                        # ⚠️ `fail_at_code` 必须可配：`300309`（会话已关）在 R5 起是**可降级的
+                        # 卡级死法**，用它当「这一帧真的失败了」的前提已经不成立（用例当场红）。
+                        # 测序号账本要用**确定性拒收**类码（附录 A 的 FATAL 那一行）。
+                        return _Resp(fail_at_code)
                     if answer_codes and request.element_id == cards.CARDKIT_ANSWER_ID:
                         idx = sum(1 for c in calls["content"]
                                   if c[0] == cards.CARDKIT_ANSWER_ID) - 1
                         return _Resp(answer_codes[min(idx, len(answer_codes) - 1)])
                     if fail_answer_only and request.element_id == cards.CARDKIT_ANSWER_ID:
-                        return _Resp(300309)
+                        # ⚠️ 故意用**确定性拒收**码（230099）而不是 `300309`：R5 起 `300309`
+                        # 是「可降级的卡级死法」（会走 DEGRADE 车道并让帧返回 True），
+                        # 拿它当「正文写失败 ⇒ 必须 fail-open」的前提已经不成立。
+                        return _Resp(230099, msg="deterministic rejection")
                     if fail_panel_only and request.element_id == cards.CARDKIT_PANEL_BODY_ID:
                         return _Resp(300309)
                     if len(calls["content"]) > fail_write_after:
@@ -1187,7 +1198,14 @@ def test_cardkit_transport_writes_elements_and_falls_open():
 
                 def patch(self, request):
                     calls["patch"] += 1
-                    return _Resp(0)
+                    # ⚠️ 形状必须是 **dict**：替身适配器的 `_finalize_send_result` 读
+                    # `response["data"]["message_id"]`（与真 SDK 响应的取值路径一致）。
+                    # 返回 `_Resp` 对象会让它 AttributeError ⇒ 帧路径吞掉异常 ⇒
+                    # 「降级车道」看起来像是没生效（这条断言当场红了一次）。
+                    # 码可配：R5 的撤回守卫要构造 `230011 The message was withdrawn.`
+                    if patch_code:
+                        return {"code": patch_code, "msg": "The message was withdrawn."}
+                    return {"code": 0, "data": {"message_id": "om_ck_1"}}
 
             client = types.SimpleNamespace(
                 cardkit=types.SimpleNamespace(v1=types.SimpleNamespace(
@@ -1339,8 +1357,10 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         with _LogCapture("larkdeck") as records:
             assert _run(raw2b.send_stream_frame("正文", chat_id="oc_ck2b", turn_id="t-2b")), \
                 "装饰失败不能让整帧失败（否则买下「DM 两张卡」那条链）"
-        assert any("装饰元素写入失败" in r.getMessage() for r in records), \
+        assert any("装饰写入失败" in r.getMessage() for r in records), \
             "装饰失败必须留下那条 WARNING（「正文在长、装饰冻结」的唯一线索）"
+        assert any("整批标死" in r.getMessage() for r in records), \
+            "msg 解析不出坏元素时必须如实说「整批标死」（别让人以为只死了一个）"
         state2b = raw2b._ld_stream_get("oc_ck2b:t-2b") or {}
         assert state2b.get("ck_dead") == {"panel_body", "footer"}, \
             f"失败过的装饰元素必须被标死（后续不再尝试）：{state2b.get('ck_dead')}"
@@ -1396,6 +1416,59 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         assert adapter.LarkDeckMixin._ld_transport() == "cardkit"
         adapter.configure(native_transport="???")
         assert adapter.LarkDeckMixin._ld_transport() == "patch", "认不出的值按 patch（不猜）"
+
+        # ②e **`DEGRADE` 车道**（R5）：元素通道拿到**卡级死法**（`300309` 会话已关 / `300313` /
+        #    `300317`）时，**不许** fail-open —— 那会让内核停用本回合 native、用户看到纯文本。
+        #    正确处置：用 `message.patch` 把**同一张卡**换成普通卡继续写（真机实测 patch 能覆盖
+        #    CardKit 实体卡消息：`probe_ck_stream_ops.py --lanes`，`code=0` 且随后写元素得
+        #    `300309` ⇒ 会话确实被替换掉了）。四条一起钉：本帧 True、patch 真的发了、
+        #    **没有第二张卡**（create 仍为 1）、后续帧不再碰元素通道。
+        calls, client = _mk_fake(fail_at=2, fail_at_code=300309)
+        raw2e = _make()
+        raw2e._client = client
+        adapter.configure(native_transport="cardkit", unified_panel=True)
+        assert _run(raw2e.send_stream_frame("", chat_id="oc_ck2e", turn_id="t-2e"), ), "seed 帧"
+        adapter._log_ck_degrade_once._at = 0.0
+        with _LogCapture("larkdeck") as records:
+            assert _run(raw2e.send_stream_frame("正文", chat_id="oc_ck2e", turn_id="t-2e")), \
+                "卡级死法必须降级续写同一张卡，**不许** fail-open 掉卡片"
+        assert any("降级为整卡 patch" in r.getMessage() for r in records), \
+            f"降级必须留痕（「看起来正常、其实换了实现」的唯一线索）：{[r.getMessage() for r in records]}"
+        assert calls["patch"] == 1, f"降级那一帧必须真的 patch 出去：{calls['patch']}"
+        assert calls["create"] == 1, f"降级**绝不另建卡**（DM 里只能有一张卡）：{calls['create']}"
+        state2e = raw2e._ld_stream_get("oc_ck2e:t-2e") or {}
+        assert state2e.get("ck_degrade") == 300309, f"降级决定必须记进回合状态：{state2e}"
+        assert not state2e.get("card_id"), f"降级后不许再走元素通道：{state2e.get('card_id')}"
+        element_writes_after = len(calls["content"])
+        assert _run(raw2e.send_stream_frame("正文二", chat_id="oc_ck2e", turn_id="t-2e"))
+        assert len(calls["content"]) == element_writes_after, \
+            "降级之后的帧不许再写元素（会话已关，写了就是每帧失败）"
+        assert calls["patch"] == 2, f"降级之后每帧都该走 patch：{calls['patch']}"
+
+        # ②f **撤回守卫**（R5）：整卡写入拿到 `230011 The message was withdrawn.`（真机实测，
+        #    R0 的 P4）⇒ 标死这条 message_id + 清追踪 + 留痕，**绝不自己补发**（补发 = DM 两张卡）。
+        #    这条守卫只可能在整卡路径上生效：元素写入对撤回**无感**（P4 实测 code=0）。
+        calls, client = _mk_fake(patch_code=230011)
+        raw2f = _make()
+        raw2f._client = client
+        adapter.configure(native_transport="cardkit", unified_panel=True)
+        assert _run(raw2f.send_stream_frame("", chat_id="oc_ck2f", turn_id="t-2f"))
+        assert _run(raw2f.send_stream_frame("正文", chat_id="oc_ck2f", turn_id="t-2f"))
+        mid2f = (raw2f._ld_stream_get("oc_ck2f:t-2f") or {}).get("message_id")
+        assert mid2f and raw2f._ld_known(mid2f), "前提：收尾之前这张卡是被追踪的"
+        adapter._log_withdrawn_once._at = 0.0
+        with _LogCapture("larkdeck") as records:
+            assert not _run(raw2f.send_stream_frame("正文", finalize=True,
+                                                     chat_id="oc_ck2f", turn_id="t-2f")), \
+                "消息已撤回 ⇒ 收尾必须返回失败（让核心按 fail-open 决定怎么送达）"
+        assert any("已被撤回/删除" in r.getMessage() for r in records), \
+            "撤回必须留痕（否则「卡片怎么没了」完全无迹可寻）"
+        assert not raw2f._ld_known(mid2f), "撤回之后必须忘掉这条 message_id（不再往它写）"
+        assert raw2f._ld_stream_get("oc_ck2f:t-2f") is None, "撤回之后回合状态也必须清掉"
+        assert calls["create"] == 1 and calls["send"] == 1, \
+            f"我们自己绝不补发（那会变成 DM 两张卡）：{calls}"
+        assert calls["patch"] == 1, \
+            f"撤回之后**不许再往这条 message_id 写**（一次 patch 都不该多）：{calls['patch']}"
 
         # ⑤ SDK 取不到（单测/裁剪环境）⇒ 建实体返回 None ⇒ **fail-open**，绝不抛
         adapter.LarkDeckMixin._ld_ck_requests = staticmethod(lambda: None)
@@ -1464,7 +1537,32 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         assert cards.CARDKIT_PANEL_BODY_ID not in touched, \
             f"面板关掉后不该出现 panel_body（任何通道）：{touched}"
 
-        # ⑫ **回复锚点必须透传** + 发实体卡必须带**确定性 uuid**（第十二路审计实测：
+        # ②d **装饰批量失败时，标死范围要尽量收窄**（R5，真机实测支撑）：批级返回码能反映坏 id，
+        #    而且 **msg 会点名它**（`--lanes` 实测 `code=300313`、
+        #    `msg='ErrMsg: not find elementID : <id>; '`）⇒ 解析得出就只标那一个，
+        #    其余装饰下一帧照常写；解析不出才退回「整批标死」（R2 审计第 3 条的保守处置）。
+        calls, client = _mk_fake(fail_batch=True, fail_batch_code=300313,
+                                 fail_batch_msg="ErrMsg: not find elementID : footer; ")
+        raw2d = _make()
+        raw2d._client = client
+        adapter.configure(native_transport="cardkit", unified_panel=True)
+        assert _run(raw2d.send_stream_frame("", chat_id="oc_ck2d", turn_id="t-2d"))
+        adapter._log_ck_decor_write_failed_once._at = 0.0
+        with _LogCapture("larkdeck") as records:
+            assert _run(raw2d.send_stream_frame("正文", chat_id="oc_ck2d", turn_id="t-2d")), \
+                "装饰失败不能让整帧失败"
+        assert any("只标死它" in r.getMessage() for r in records), \
+            f"msg 点名了坏元素时必须如实说「只标死它」：{[r.getMessage() for r in records]}"
+        state2d = raw2d._ld_stream_get("oc_ck2d:t-2d") or {}
+        assert state2d.get("ck_dead") == {"footer"}, \
+            f"只该标死被点名的 footer，panel_body 必须留着：{state2d.get('ck_dead')}"
+        # ⚠️ 光看 `ck_dead` 不够：还要证明**面板下一帧真的又被写了**（否则「只标一个」只是状态好看）
+        calls["batch"].clear()
+        assert _run(raw2d.send_stream_frame("正文二", chat_id="oc_ck2d", turn_id="t-2d"))
+        assert [[a["params"]["element_id"] for a in b[0]] for b in calls["batch"]] == [["panel_body"]], \
+            f"被点名的 footer 死了，但 panel_body 必须继续写：{calls['batch']}"
+
+        # ⑫ **回复锚点必须透传** + 发实体卡必须带**确定性 uuid**（第十二轮审计实测：
         #    锚点被整个丢掉、且两条 uuid 一个都没填）。
         #    核心每次调 `send_stream_frame` 都带 `reply_to`（生产上恒有值）——丢了它，
         #    patch 传输会「引用回复你的消息」而 cardkit 变成一条顶层新消息：用户可见的
@@ -1501,7 +1599,7 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         # ⚠️ 失败点必须落在**序号 > 1** 的地方：第一版让它失败在第 1 号，于是「把序号写死成 1」
         #    这条变异**行为等价**（W5 全绿）。改成第 3 号（前两号已经成功）才逼出判别力。
         # 第 4 次写入 = 第二帧的**正文**（第 3 次是装饰 batch；装饰失败在新语义下不让帧失败）
-        calls, client = _mk_fake(fail_at=4)
+        calls, client = _mk_fake(fail_at=4, fail_at_code=230099)
         raw15 = _make()
         raw15._client = client
         # ⚠️ 必须**显式**写 `unified_panel=True`：这一段跑在前面那些用例之后，而 ⑥ 把
@@ -1697,15 +1795,21 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             assert len(answers) == 2, f"正文元素应被写两次（一次限流 + 一次重试成功）：{len(answers)}"
 
             # ⑧b **结构性码不重试**：300309（流式会话已关闭）原样重发不可能成功，
-            #     立刻回落，不许白等三轮退避
+            #     立刻放弃重试、不许白等三轮退避。
+            #     ⚠️ R5 起「这一帧返回什么」**有意**变了：300309 是**卡级死法** ⇒ 走 `DEGRADE`
+            #     车道用整卡 patch 续写同一张卡 ⇒ 帧返回 **True**。所以这条用例钉的是**重试次数**
+            #     （恰好 1 次），帧的返回值与「不另建卡」由 ②e 专门钉。
             calls, client = _mk_fake(answer_codes=[300309])
             raw8 = _make()
             raw8._client = client
             adapter.configure(native_transport="cardkit")
             assert _run(raw8.send_stream_frame("", chat_id="oc_ck8", turn_id="t-8"))
-            assert not _run(raw8.send_stream_frame("正文", chat_id="oc_ck8", turn_id="t-8"))
+            adapter._log_ck_degrade_once._at = 0.0
+            assert _run(raw8.send_stream_frame("正文", chat_id="oc_ck8", turn_id="t-8")), \
+                "卡级死法应当降级续写同一张卡（不是 fail-open）"
             answers = [c for c in calls["content"] if c[0] == "answer"]
             assert len(answers) == 1, f"300309 是结构性状态，不该重试（实际写了 {len(answers)} 次）"
+            assert calls["patch"] == 1, f"降级那一帧必须 patch 出去：{calls['patch']}"
 
             # ⑧c 一直限流 ⇒ 试满 `len(_TRANSIENT_BACKOFF)+1` 次后 fail-open（不吞、不无限重试）
             calls, client = _mk_fake(answer_codes=[230020])
@@ -1789,6 +1893,37 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)
         adapter._apply_metrics_config()
+
+
+def test_card_tracking_cache_has_a_hard_bound():
+    """追踪表**必须有容量上界**（R5 的第 ④ 项）：网关是长驻进程，无界缓存 = 慢性内存泄漏。
+
+    上界的**淘汰策略**也要对：按「最近活动」而不是「创建时刻」淘汰 —— 长回合的卡创建得早
+    但仍在被编辑，按 t0 淘汰会把它们踢出去，之后 `edit_message` 找不到追踪项就回落内置实现，
+    而内置走 `message.update`、对 interactive 卡会被飞书拒（卡片永久冻结，见 `_ld_track` 注释）。
+    """
+    assert adapter._MAX_TRACKED == 512, f"上界是显式决定，别顺手改：{adapter._MAX_TRACKED}"
+    raw = _make()
+    # 灌到超过上界：最新的必须还在，最早的必须已被淘汰
+    for i in range(adapter._MAX_TRACKED + 20):
+        raw._ld_track(f"om_{i}", "oc_bound")
+    tracked = raw._ld_state
+    assert len(tracked) <= adapter._MAX_TRACKED, f"追踪表没有上界：{len(tracked)}"
+    assert f"om_{adapter._MAX_TRACKED + 19}" in tracked, "最新的那张卡不能被淘汰"
+    assert "om_0" not in tracked, "最早的（且不再活动的）卡应当被淘汰掉"
+    # 淘汰策略必须是**最近活动**、不是**创建时刻**（长回合的卡创建得早但一直在被编辑）：
+    # 填满到上界 → 把**最早那张**标成「刚刚还在编辑」→ 再塞一张触发淘汰 ⇒
+    # 被刷过的老卡必须活下来，而它旁边**没被刷过**的老卡必须被淘汰。
+    raw2 = _make()
+    for i in range(adapter._MAX_TRACKED):
+        raw2._ld_track(f"om_lru_{i}", "oc_lru")
+    assert raw2._ld_known("om_lru_0") is not None, "前提：填满之后最早那张还在"
+    raw2._ld_known("om_lru_0")                   # 刷成「刚刚活动过」
+    raw2._ld_track("om_trigger", "oc_lru")       # 触发一次淘汰
+    assert raw2._ld_known("om_lru_0") is not None, \
+        "正在被编辑的老卡不能被淘汰（按创建时刻淘汰会让长回合的卡永久冻结）"
+    evicted = [i for i in range(1, adapter._MAX_TRACKED) if f"om_lru_{i}" not in raw2._ld_state]
+    assert evicted, "触发淘汰后应当有卡被清掉（否则这条断言恒真、证明不了淘汰真的发生）"
 
 
 def test_native_streaming_frame_lifecycle():

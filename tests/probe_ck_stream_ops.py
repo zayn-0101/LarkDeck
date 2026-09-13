@@ -21,6 +21,7 @@ python3 tests/probe_ck_stream_ops.py --visual    # 出一张「看得见」的�
 python3 tests/probe_ck_stream_ops.py --batching  # R0：一次 batch 带多元素 / 序号账本语义（自动删卡）
 python3 tests/probe_ck_stream_ops.py --withdrawn # R0：消息被撤回/删除后写卡回什么码（自动删卡）
 python3 tests/probe_ck_stream_ops.py --element-limits  # R0：create 能带几个元素 / 运行时新增算不算进 200
+python3 tests/probe_ck_stream_ops.py --lanes   # R5：batch 坏 id 的返回码口径 / 整卡 patch 能否覆盖实体卡（自动删卡）
 ```
 
 `--visual` 那张卡是给**人的眼睛**看的：正文 → 流式期间新增元素 → 面板边框改黄 →
@@ -151,6 +152,21 @@ class _Card:
                                                  "content": content}], ensure_ascii=False))
                           .sequence(self._next()).uuid(f"p-{self.card_id}-add").build()).build())
         return self._code(r), self.write("element.create 之后", "after-create")
+
+    def op_element_create_inside(self, content: str = "面板里的新元素",
+                                 target: str = PANEL_BODY_ID, kind: str = "insert_after",
+                                 element_id: str = "added_in_panel") -> tuple:
+        """把新元素插到**面板内部**（R3 的 P5 问题）：`insert_after(panel_body)` 与 `append(panel)`
+        哪个真的落在面板**里面** —— 接口收下（`code=0`）不能回答这个，只有眼睛能。
+        """
+        r = self.client.cardkit.v1.card_element.create(
+            CreateCardElementRequest.builder().card_id(self.card_id)
+            .request_body(CreateCardElementRequestBody.builder()
+                          .type(kind).target_element_id(target)
+                          .elements(json.dumps([{"tag": "markdown", "element_id": element_id,
+                                                 "content": content}], ensure_ascii=False))
+                          .sequence(self._next()).uuid(f"p-{self.card_id}-in-{element_id}").build()).build())
+        return self._code(r), self.write("面板内新增之后", f"after-{element_id}")
 
     def op_element_update(self) -> tuple:
         r = self.client.cardkit.v1.card_element.update(
@@ -513,8 +529,18 @@ def probe_visual(keep: bool) -> int:
                            "同时卡片的**结构**也在变。"), 1):
         card.write(t * 2, f"frame{i}")
         time.sleep(0.6)
-    code, alive = card.op_element_create("🧩 **这一行是流式期间插入的新元素**")
+    code, alive = card.op_element_create("🧩 **A：`insert_after(answer)` 插的新元素**（应当在面板**外面**，"
+                                        "正文与面板之间）")
     print(f"   新增元素 code={code} · 之后还能写={alive}")
+    # R3 的 P5：往**面板里面**插元素的两种写法（哪个真的落在面板里只有眼睛能判）
+    code_a, alive_a = card.op_element_create_inside(
+        "🧩 **B：`insert_after(panel_body)` 插的元素**（展开面板时若看得见 ⇒ 落在面板**里面**）",
+        element_id="added_p5_a")
+    print(f"   B(insert_after panel_body) code={code_a} · 之后还能写={alive_a}")
+    code_b, alive_b = card.op_element_create_inside(
+        "🧩 **C：`append(panel)` 插的元素**（同上判据）",
+        target=PANEL_ID, kind="append", element_id="added_p5_b")
+    print(f"   C(append panel) code={code_b} · 之后还能写={alive_b}")
     r = client.cardkit.v1.card_element.patch(
         PatchCardElementRequest.builder().card_id(card.card_id).element_id(PANEL_ID)
         .request_body(PatchCardElementRequestBody.builder()
@@ -535,16 +561,85 @@ def probe_visual(keep: bool) -> int:
     print(f"   收尾（只关流式）code={code}")
     if keep:
         print(f"\n📌 卡片留在 DM 里给你看：message_id={card.message_id}")
-        print("   请确认：① 正文之后有没有那一行「🧩 …新增元素」；② 面板「执行详情」是不是黄边；"
-              "③ 展开后面板里是不是「面板也在流式期间更新了…」。")
+        print("   请按这四条看，逐条回我（这决定 R3 的面板结构化怎么做）：")
+        print("   ① 正文之后有没有那一行「🧩 A：insert_after(answer)…」，它在**面板外面**还是里面？")
+        print("   ② 面板「执行详情」**收起**时，能不能看到 B / C 两行？（能看到 ⇒ 它们落在面板外面）")
+        print("   ③ 点开面板：B（insert_after panel_body）与 C（append panel）在不在面板**里面**？")
+        print("      哪个在、哪个不在，直接决定 R3 用哪种写法。")
+        print("   ④ 面板的标题行「执行详情」是在它内容的**上面**还是**下面**？边框是不是黄色的？")
     else:
         card.delete()
+    return 0
+
+
+def probe_lanes() -> int:
+    """R5 真机探针：两条**必须实测**的语义（决定 R5 的两条车道怎么实现）。
+
+    ① **`batch_update` 的返回码是卡级的还是按动作的**？一批里混一个**卡里不存在的 id**：
+       如果返回码非 0 ⇒ 卡级判据是对的（R2 的「整批标死」也就有了实测依据）；
+       如果返回码 0 ⇒ 说明服务端**不校验**坏 id，那么「整批标死」与「只标坏的那个」都不成立，
+       真正的处置要重写（这条直接决定附录 A 的 DEAD 那一格该怎么写）。
+    ② **整卡 patch 能不能覆盖一张 CardKit 实体卡的消息**？这决定 `DEGRADE` 车道
+       （卡级死法 ⇒ 转 patch 传输续写**同一张卡**）到底做不做得出来。
+       注意：`code=0` 只证明服务端收下了，不证明客户端真的换了卡 —— 但**返回码非 0**
+       足以证伪这条车道（那就是「做不到」，不能再假设）。
+    两张卡都自动删。
+    """
+    from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
+    client, chat = _connect()
+    print("—— ① batch_update 混一个坏 id，返回码是卡级还是按动作？——")
+    card = _Card(client, chat)
+    if not card.open(answer="（基线）", panel="面板：基线"):
+        return 1
+    card.write("基线帧", "lane1-base")
+
+    def _action(eid: str, content: str) -> dict:
+        return {"action": "partial_update_element",
+                "params": {"element_id": eid, "partial_element": {"content": content}}}
+
+    r = client.cardkit.v1.card.batch_update(
+        BatchUpdateCardRequest.builder().card_id(card.card_id)
+        .request_body(BatchUpdateCardRequestBody.builder()
+                      .actions(json.dumps([_action("ghost_missing_element", "坏 id（卡里没有它）"),
+                                           _action(PANEL_BODY_ID, "面板：这一格和坏 id 同一批")],
+                                          ensure_ascii=False))
+                      .sequence(card._next()).uuid(f"p-{card.card_id}-lane1").build()).build())
+    code_bad = card._code(r)
+    print(f"   ① batch(坏 id + 好 id) → code={code_bad} · msg={str(getattr(r, 'msg', ''))[:80]!r}")
+    alive = card.write("坏 id 那一批之后，正文还能写吗", "lane1-after")
+    print(f"      之后还能写正文 = {alive}（会话没被关 ⇒ 坏 id 不是卡级死法）")
+    card.delete()
+
+    print("\n—— ② 整卡 patch 能不能覆盖一张 CardKit 实体卡的消息？——")
+    card2 = _Card(client, chat)
+    if not card2.open(answer="（实体卡基线）", panel="面板：实体卡"):
+        return 1
+    card2.write("实体卡基线帧", "lane2-base")
+    plain = lark_cards.reply_card(
+        "**如果你看到这一行**，说明整卡 patch 覆盖了这张实体卡的消息。",
+        streaming=False, footer="R5 探针：patch-on-entity")
+    r2 = client.im.v1.message.patch(
+        PatchMessageRequest.builder().message_id(card2.message_id)
+        .request_body(PatchMessageRequestBody.builder()
+                      .content(json.dumps(plain, ensure_ascii=False)).build()).build())
+    code_patch = card2._code(r2)
+    print(f"   ② 对实体卡消息做 message.patch → code={code_patch} "
+          f"· msg={str(getattr(r2, 'msg', ''))[:80]!r}")
+    alive2 = card2.write("patch 覆盖之后，还能写元素吗", "lane2-after-patch")
+    print(f"      之后还能写元素 = {alive2}")
+    card2.delete()
+    print("\n结论怎么写：① 非 0 ⇒ 卡级判据成立（R2 的整批标死有实测依据）；"
+          "0 ⇒ 服务端不校验坏 id，附录 A 的 DEAD 要重写。")
+    print("             ② 0 ⇒ DEGRADE 车道可做；非 0（含 230001/230099）⇒ 做不到，"
+          "只能 fail-open 交核心回落，并把这条写进附录 A。")
     return 0
 
 
 def main(argv) -> int:
     if "--visual" in argv:
         return probe_visual(keep="--delete" not in argv)
+    if "--lanes" in argv:
+        return probe_lanes()
     if "--batching" in argv:
         return probe_batching()
     if "--withdrawn" in argv:

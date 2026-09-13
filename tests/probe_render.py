@@ -849,17 +849,19 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
     adapter._client.im.v1.message.create = _count_msg_create
 
     async def _spy_write(card_id, element_id, content, sequence):
-        ok = await original_write(card_id, element_id, content, sequence)
-        calls["content"].append((element_id, sequence, ok, content))
-        return ok
+        # ⚠️ 生产返回的是 `_CkResult`（R5 起，带码与 msg）—— 探针必须**原样转发**，
+        # 不能在这里 `bool(...)`：那会把 R5 的降级车道判据抹掉（探针自己造的假象）。
+        res = await original_write(card_id, element_id, content, sequence)
+        calls["content"].append((element_id, sequence, res.ok, content))
+        return res
 
     async def _spy_batch(card_id, ops, sequence):
-        ok = await original_batch(card_id, ops, sequence)
+        res = await original_batch(card_id, ops, sequence)
         # 记下**每个元素被写进去的内容**（不只是 id）：`R2` 要断言「首帧写出的页脚 == 那一刻
         # `_ld_footer()`」，只记 id 的话这条断言写不出来（R2 审计的「探针只会 print」之痛）。
         contents = {op.element_id: op.content for op in ops}
-        calls["batch"].append(([op.element_id for op in ops], sequence, ok, contents))
-        return ok
+        calls["batch"].append(([op.element_id for op in ops], sequence, res.ok, contents))
+        return res
 
     async def _spy_update(chat_id, message_id, card):
         calls["patch"] += 1
@@ -1014,6 +1016,139 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
     else:
         print("❌ 生产路径的 CardKit 传输有问题（见上面的 code / 计数）")
     return 0 if ok else 1
+
+
+def probe_degrade_lane(client, chat: str, cards) -> int:
+    """R5 真机端到端：元素通道拿到**卡级死法**时，生产路径必须**降级续写同一张卡**。
+
+    做法（不碰生产状态机之外的任何东西）：用生产路径起一个 cardkit 回合 → **手工把流式会话
+    关掉**（`card.settings(streaming_mode=false)`，等价于「元素通道死了」）→ 再发一帧：
+    这一帧的元素写入必然拿到 `300309` ⇒ 必须走 `DEGRADE`（整卡 patch 打在**同一张卡**上）。
+    断言：这一帧返回 **True**（不是 fail-open）、patch 计数 +1、`card.create` 仍是 1
+    （**没有第二张卡**）、状态里记着 `ck_degrade` 且 `card_id` 被清空；再发一帧确认后续仍走 patch。
+    卡按 message_id 精确删（**不按时间窗**）。
+    """
+    import asyncio
+    from lark_oapi.api.im.v1 import DeleteMessageRequest
+    from lark_oapi.api.cardkit.v1 import (SettingsCardRequest, SettingsCardRequestBody)
+    _load, adapter, _panel = _load_adapter_for_probe(chat)
+    if adapter is None:
+        return 1
+    calls = {"create": 0, "send": 0, "patch": 0, "content": 0, "batch": 0}
+    original_update = adapter._ld_update_card
+    original_write = adapter._ld_ck_write
+    original_batch = adapter._ld_ck_batch
+    _orig_card_create = adapter._client.cardkit.v1.card.create
+    _orig_msg_create = adapter._client.im.v1.message.create
+
+    def _count_card_create(request):
+        calls["create"] += 1
+        return _orig_card_create(request)
+
+    def _count_msg_create(request):
+        calls["send"] += 1
+        return _orig_msg_create(request)
+
+    async def _spy_write(*a, **k):
+        calls["content"] += 1
+        return await original_write(*a, **k)
+
+    async def _spy_batch(*a, **k):
+        calls["batch"] += 1
+        return await original_batch(*a, **k)
+
+    async def _spy_update(*a, **k):
+        calls["patch"] += 1
+        return await original_update(*a, **k)
+
+    adapter._client.cardkit.v1.card.create = _count_card_create
+    adapter._client.im.v1.message.create = _count_msg_create
+    adapter._ld_ck_write = _spy_write
+    adapter._ld_ck_batch = _spy_batch
+    adapter._ld_update_card = _spy_update
+    tid = f"ckd-{int(time.time())}"
+    message_id = ""
+    try:
+        loop = asyncio.new_event_loop()
+        try:
+            assert loop.run_until_complete(adapter.send_stream_frame(
+                "", chat_id=chat, turn_id=tid)), "seed 帧必须成功（否则这条探针没意义）"
+            state = None
+            for item in list(adapter._ld_streams.values()):
+                state = item
+            card_id = (state or {}).get("card_id") if isinstance(state, dict) else None
+            message_id = (state or {}).get("message_id") if isinstance(state, dict) else ""
+            print(f"   实体 card_id = {card_id} · message_id = {message_id}")
+            ok1 = loop.run_until_complete(adapter.send_stream_frame(
+                "降级前的一帧", chat_id=chat, turn_id=tid))
+            print(f"   降级前那一帧 = {ok1}（元素写入 {calls['content']} 次 / batch {calls['batch']} 次）")
+            # 手工关掉流式会话 —— 与「元素通道拿到 300309」等价，且**不需要真出故障**。
+            # ⚠️ 序号必须取**当前**状态：第一帧跑完之后 `ck_seq` 已经不是 seed 那一刻的值了，
+            #    拿旧值会得 `300317`（序号冲突）—— 探针第一版就是这么失败的，而它看起来
+            #    像是「关会话失败」，其实是探针自己拿错了号。
+            now_state = None
+            for item in list(adapter._ld_streams.values()):
+                now_state = item
+            seq_now = int((now_state or {}).get("ck_seq") or 0)
+            closed = adapter._client.cardkit.v1.card.settings(
+                SettingsCardRequest.builder().card_id(card_id)
+                .request_body(SettingsCardRequestBody.builder()
+                              .settings(json.dumps({"config": {"streaming_mode": False}}))
+                              .sequence(seq_now + 1)
+                              .uuid(f"ld-probe-close-{card_id}").build()).build())
+            print(f"   手工关流式会话 code={getattr(closed, 'code', None)}"
+                  f"（用序号 {seq_now + 1}）")
+            if int(getattr(closed, "code", -1) or 0) != 0:
+                print("   ❌ 关会话失败 ⇒ 这一帧不会拿到 300309，探针无法继续（不当成通过）")
+            time.sleep(0.4)
+            ok2 = loop.run_until_complete(adapter.send_stream_frame(
+                "这一帧必须降级", chat_id=chat, turn_id=tid))
+            state2 = None
+            for item in list(adapter._ld_streams.values()):
+                state2 = item
+            degrade = (state2 or {}).get("ck_degrade") if isinstance(state2, dict) else None
+            print(f"   降级那一帧 = {ok2} · ck_degrade={degrade} · "
+                  f"card_id={((state2 or {}).get('card_id') if isinstance(state2, dict) else None)!r}"
+                  f" · patch {calls['patch']} 次 · card.create {calls['create']} 次")
+            # 降级那一帧**会**尝试一次元素写入（正是它拿到 300309 才发现通道死了）——
+            # 所以基线要取在**这一帧之后**：之后不该再有任何元素写入。
+            content_after_degrade = calls["content"]
+            ok3 = loop.run_until_complete(adapter.send_stream_frame(
+                "降级后的第二帧", chat_id=chat, turn_id=tid))
+            print(f"   降级后的下一帧 = {ok3} · patch {calls['patch']} 次 · "
+                  f"元素写入 {calls['content']} 次（降级后应当**不再增长**）")
+            ok_fin = loop.run_until_complete(adapter.send_stream_frame(
+                "收尾", finalize=True, chat_id=chat, turn_id=tid))
+            print(f"   收尾帧 = {ok_fin}")
+        finally:
+            loop.close()
+        ok = (ok1 and ok2 and ok3 and degrade == 300309
+              and calls["create"] == 1 and calls["send"] == 1
+              and calls["patch"] >= 3 and calls["content"] == content_after_degrade)
+        print("✅ 降级车道真机通过：卡级死法 ⇒ 整卡 patch 续写同一张卡，没有第二张卡"
+              if ok else "❌ 降级车道有问题（见上面的计数与状态）")
+        return 0 if ok else 1
+    finally:
+        adapter._ld_ck_write = original_write
+        adapter._ld_ck_batch = original_batch
+        adapter._ld_update_card = original_update
+        adapter._client.cardkit.v1.card.create = _orig_card_create
+        adapter._client.im.v1.message.create = _orig_msg_create
+        if message_id:
+            d = _client_delete(adapter, message_id)
+            print(f"   清理这张探针卡（按 message_id）→ code={d}")
+
+
+def _client_delete(adapter, message_id: str) -> int:
+    """按 message_id 删一条自己发的消息（**绝不按时间窗**）。"""
+    try:
+        from lark_oapi.api.im.v1 import DeleteMessageRequest
+        resp = adapter._client.im.v1.message.delete(
+            DeleteMessageRequest.builder().message_id(message_id).build())
+        return int(getattr(resp, "code", -1))
+    except Exception as exc:      # noqa: BLE001
+        print(f"   ⚠️ 删卡失败（{exc!r}）")
+        return -1
 
 
 def _probe_context_module():
@@ -1342,6 +1477,8 @@ def main(argv: list) -> int:
         return probe_cardkit(client, chat, cards)
     if "--cardkit-prod" in argv:
         return probe_cardkit_transport(client, chat, cards)
+    if "--degrade-lane" in argv:
+        return probe_degrade_lane(client, chat, cards)
 
     cases = (build_cases(cards) + build_bilingual_cases(cards) + build_footer_cases(cards)
              + build_dialect_probe_cards(cards))
