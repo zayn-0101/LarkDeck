@@ -178,6 +178,14 @@ python3 tests/mutate_check.py      # 变异验证器：撤掉每条修复必须�
   正文超预算但发得出去时 `/stop` 必须真的把卡重绘成中止色，断言**载荷里有颜色**；
   **两条路径都跑** —— 非 native 与真 native 流式）、
   `--clean-only` / `--no-clean`（清理控制）。
+- **`tests/probe_ck_stream_ops.py`（独立探针）**：回答「CardKit **流式会话进行中**做元素级/批量写入
+  会不会关会话」。每个操作之后紧跟一次 `card_element.content` 写，**以返回码为判据**
+  （`0` = 没关，`300309` = 关了）。实测结论：关会话的只有**整卡替换**与**显式关流式**；
+  `card_element.patch` / `card_element.create` / `card_element.update` / `card.batch_update`
+  在流式期间**可用且不关会话**（更正了「任何结构性写入都关」那句旧话）。
+  `--visual` 出**一张给人看的卡**（流式期间新增元素 + 面板边框改黄 + 面板内容更新）——
+  「接口收下了」与「客户端画出来了」是两件事，后者只有眼睛能判（2026-09-13 已确认过一次）。
+  默认自动删卡，`--visual --delete` 同样不留下卡片。
   ⚠️ 改 `cards.py` 的**降载档位**或状态色载体后，`--stop-redraw` 与默认模式都要跑一遍。
 
 ## 部署
