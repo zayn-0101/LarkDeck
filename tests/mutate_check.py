@@ -569,7 +569,7 @@ MUTATIONS = [
      '        display = _cards.sanitize_markdown(text)',
      "test_units"),
     ("R6a-2-改回「补一个 `**` 收尾」（把尾巴吞进加粗）", "core/cards.py",
-     '    for index in range(len(text) - 2, -1, -1):\n'
+     '    for index in range(0, len(text) - 1):\n'
      '        if text.startswith("**", index) and not any(start <= index < end\n'
      '                                                    for start, end in spans):\n'
      '            return text[:index] + text[index + 2:]\n'
@@ -586,6 +586,60 @@ MUTATIONS = [
      '    return _demote_headings(_drop_unpaired_bold(text))',
      '    return _drop_unpaired_bold(_demote_headings(text))',
      "test_units"),
+    # ---- R6a 审计收口（高-1 / 中-1..中-4 / 低-1..低-6，2026-09-14）-------------------- #
+    # 每条都是「把这次补上的修复撤掉」，并且**都实测过变红**（数字见交付说明）。
+    ('R6a-5-未闭合围栏不延伸到文末（核心的边界收尾会把代码内容改坏）', 'core/cards.py',
+     '    if fence_char:\n        # 未闭合：**一直到文末**都算代码区\n        spans.append((fence_start, size))',
+     '    if fence_char:\n        spans.append((fence_start, fence_start))',
+     'test_units'),
+    ('R6a-6-四反引号围栏不认（里层 ``` 被当成外层闭合 ⇒ 代码内容当正文）', 'core/cards.py',
+     '            if run >= 3 and (char != "`" or "`" not in after[run:]):',
+     '            if run == 3 and (char != "`" or "`" not in after[run:]):',
+     'test_units'),
+    ('R6a-7-`~~~` 围栏不认（波浪线围栏里的 #/** 被当成 markdown）', 'core/cards.py',
+     '        if indent < 4 and after[:1] in ("`", "~"):',
+     '        if indent < 4 and after[:1] == "`":',
+     'test_units'),
+    ('R6a-9-删最后一个游离 `**`（拆掉后文合法加粗对 ⇒ 整段被吞进加粗）', 'core/cards.py',
+     '    for index in range(0, len(text) - 1):',
+     '    for index in range(len(text) - 2, -1, -1):',
+     'test_units'),
+    ('R6a-10-`edit_message` 两条路径一起做卫生（中间帧前缀链断掉）', 'core/adapter.py',
+     '            if finalize:\n                content = _sanitize_for_send(content)',
+     '            content = _sanitize_for_send(content)',
+     'test_units'),
+    ('R6a-11-`send()` 不做卫生（同一段文本两条路径长得不一样）', 'core/adapter.py',
+     '            # 判据是「这份文本是不是**完整文本**」，不是「这是哪条路径」（见 cards.sanitize_markdown）。\n            content = _sanitize_for_send(content)',
+     '            # 判据是「这份文本是不是**完整文本**」，不是「这是哪条路径」（见 cards.sanitize_markdown）。\n            content = content',
+     'test_units'),
+    ('R6a-12-`/stop` 重绘不做卫生（中止的回合看不到任何卫生）', 'core/adapter.py',
+     '            card = self._ld_build_card(_sanitize_for_send(text) or " ", streaming=False,',
+     '            card = self._ld_build_card(text or " ", streaming=False,',
+     'test_units'),
+    ('R6a-13-不剥标题体的尾随闭合法 `#`（`# 标题 ####` 把 #### 露成可见噪声）', 'core/cards.py',
+     '        if not _HEADING_START_RE.match(match.group(2)):\n            body = _HEADING_CLOSING_RE.sub("", body)',
+     '        if False:\n            body = _HEADING_CLOSING_RE.sub("", body)',
+     'test_units'),
+    ('R6a-14-用 `str.strip()` 清标题体（吞掉正文里的全角空格）', 'core/cards.py',
+     r'        body = match.group(2).strip(" \t")',
+     '        body = match.group(2).strip()',
+     'test_units'),
+    ('R6a-15-卫生后不过字节闸门（超限的收尾卡被拒 ⇒ 整条回答掉成纯文本）', 'core/adapter.py',
+     '    if size > _cards.FEISHU_CARD_BYTE_LIMIT:\n        _log_sanitize_reverted_once(size)\n        return text',
+     '    if False:\n        _log_sanitize_reverted_once(size)\n        return text',
+     'test_units'),
+    ('R6a-17-行内代码的排除回到 O(围栏数 × 行内代码数)（收尾帧被拖慢）', 'core/cards.py',
+     '        while where < len(fences) and fences[where][1] <= at:\n            where += 1\n        if where < len(fences) and fences[where][0] <= at < fences[where][1]:',
+     '        if any(start <= at < end for start, end in fences):',
+     'test_units'),
+    ('R6a-20-`_code_spans` 退化成恒返回空列表（代码区判据整个失效）', 'core/cards.py',
+     '    merged = sorted(fences + spans)',
+     '    return []',
+     'test_units'),
+    ('R6a-18-进度表某行的「证据」列被掏空（记录空洞化却骗过旧门禁）', 'docs/plan-v1.md',
+     '| R6a markdown 卫生 | ✅ 完成（**写完整文本的每条路径**都卫生；删**第一个**游离 `**` 而不补、H1–H3 降级、代码区零改动（含未闭合/四反引号/`~~~` 围栏）、幂等、卫生后过同口径字节闸门）；对抗审计后收口 **1 高 + 4 中 + 4 低** | 单测 6 条 · 变异 `R6a-1..R6a-18` 共 **17 条全红** · 门禁 **162/162** + OVERRIDE/HOOKS/CLARIFY E2E 全绿 · 审计明细见「R6a 对抗审计」一节（表格降载**有意不做**，理由见上） |',
+     '| R6a markdown 卫生 | ✅ 完成（**写完整文本的每条路径**都卫生；删**第一个**游离 `**` 而不补、H1–H3 降级、代码区零改动（含未闭合/四反引号/`~~~` 围栏）、幂等、卫生后过同口径字节闸门）；对抗审计后收口 **1 高 + 4 中 + 4 低** |   |',
+     'test_units'),
     ("R7-3-缺数据编成 0（页脚显示「⚡ 0%」这种假读数）", "core/adapter.py",
      '                cache=snap.get("cache_pct") if mode in ("basic", "full") else None,',
      '                cache=(snap.get("cache_pct") or 0) if mode in ("basic", "full") else None,',
@@ -732,19 +786,16 @@ MUTATIONS = [
      "test_units"),
     # ⚠️ R4 起「超上限」分两半（切得开就切卡、切不开才 fail-open），这条变异钉的是**后半**：
     #    把闸门整个拆掉 ⇒ 一帧超大的增量会直接往元素里写（必被飞书拒）
-    # ⚠️ 这条变异的锚点**换过两次**，每次都踩了同一个坑（记下来）：
-    #   ① 原本钉的是「正文超过硬上限时 fail-open」那道闸门；R4 引入切卡后它变成**死代码**
-    #      （切卡判据已经把两种情况收口 ⇒ 恒假），于是这条变异在整棵树上 🟢 —— 死代码让
-    #      「撤掉修复必须变红」这条纪律失效（R8 收口那一轮实测发现）。
-    #   ② 现在对准**真正**那道闸门：切不开时（一帧的增量连新卡都装不下）必须早返回 fail-open。
     ("CK23-一帧塞不下时不再 fail-open（往一张新卡里硬写超上限的增量）", "core/adapter.py",
-     '                if split_state is None:\n'
-     '                    # 切不开 ⇒ 这一帧只能回落。**字节数照旧打出来**（运维第一眼要的就是数字），\n'
-     '                    # 复用另一条闸门的那句日志（同一件事：正文超过单卡能装下的量）。\n'
-     '                    _log_ck_over_budget_once(_card_body_bytes(visible))\n'
-     '                    return self._ld_stream_fail("正文超过单卡硬上限且这一帧切不出新卡")',
-     '                if split_state is None:\n'
-     '                    pass',
+     '            body_bytes = _card_body_bytes(visible)\n'
+     '            if body_bytes > _cards.FEISHU_CARD_BYTE_LIMIT:\n'
+     '                # 走到这里说明「一张**全新的卡**也装不下这一帧的增量」—— 切卡帮不上忙\n'
+     '                # （切点判据 ② 会拒绝），只能 fail-open 交核心回落。与切卡前的差别是：\n'
+     '                # 这条路上卡里已经有前面几万字的正文，回落后核心只补发**剩余部分**。\n'
+     '                _log_ck_over_budget_once(body_bytes)\n'
+     '                return self._ld_stream_fail("CardKit 正文超过硬上限")\n'
+     '            elems = self._ld_ck_elems(state)',
+     '            elems = self._ld_ck_elems(state)',
      "test_units"),
     ("CK18-超预算告警不再限流", "core/adapter.py",
      '    if now - getattr(_log_ck_over_budget_once, "_at", 0.0) < 60.0:\n        return',
@@ -991,6 +1042,10 @@ CONTROLS = [
      '            fields = {"ck_summary_dead": True, "ck_summary_at": now}\n'
      '            _log_ck_summary_failed_once(res.code)',
      ""),
+    # 进度表的**合法改写**：阶段名后面加全角括号，信息一个字都没少 —— 旧门禁把
+    # `"| R5 "`（含半角空格）当字面量比对，于是这里会**假红**（审计低-6 实测）。
+    ("C-对照：进度表阶段名后加全角括号（信息等价，旧门禁在这里假红）", "docs/plan-v1.md",
+     '| R5 健壮性 |', '| R5（健壮性） |', ""),
     ("C-对照：纯注释改动", "core/adapter.py",
      "#: 卡片按钮 value 里的动作键；只认自己这一个，其余一律回落给内置实现。",
      "#: 卡片按钮 value 里的动作键；只认自己这一个，其余一律回落给内置实现。（注释改动）", ""),

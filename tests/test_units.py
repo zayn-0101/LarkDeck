@@ -15,10 +15,12 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import logging
 import pathlib as _pathlib
 import os
+import random
 import re
 import sys
 import threading
@@ -2981,6 +2983,474 @@ def test_sanitize_markdown_is_idempotent_and_never_touches_code() -> None:
     assert cards.sanitize_markdown(None) is None and cards.sanitize_markdown("") == ""
 
 
+# --------------------------------------------------------------------------- #
+# R6a 审计收口（2026-09-14，第十X路审计：高-1 / 中-1..中-4 / 低-1..低-6）
+#
+# 这一批断言的共同点：**期望值一律写在测试里**（字面量或测试自己写的独立正则），
+# 绝不从被测实现反推。高-1 就是对「两边都用同一个 `cards._code_spans`」的报应 ——
+# 那个函数一旦认不出行内代码，两边算出 `[] == []`，断言**恒真**（审计自造变异 MY-5
+# 四门禁全绿，而它真的把行内代码内容删掉了）。
+# --------------------------------------------------------------------------- #
+
+#: 测试自己的**独立**代码区提取器（只认「闭合的三反引号对 + 行内单反引号」）。
+#: 刻意**不复用** `cards._code_spans`：它就是要被检验的那个实现，拿它算期望值等于自证循环
+#: （`docs/lessons.md` 推论 2/6/8）。它也**故意**不认未闭合围栏 / 四反引号 / `~~~` ——
+#: 正好用来证明「被测实现比这条独立正则更保守」：产出里凡是它认出来的代码区，
+#: 都必须逐字不变。
+_INDEPENDENT_CODE_RE = re.compile(r"```.*?```|`[^`\n]*`", re.S)
+
+
+def _independent_code_parts(text: str):
+    """独立提取器给出的代码区文本（以及它们的起点，供定位用）。"""
+    return [(m.start(), m.group(0)) for m in _INDEPENDENT_CODE_RE.finditer(text)]
+
+
+def _markdown_of(card):
+    """从卡片 JSON（或 patch 载荷字符串）里取出所有 markdown 文本。
+
+    ⚠️ 断言**不要**直接拿 `json.dumps` 出来的串做子串判断：卡里正文的换行在 JSON 里是
+    两字符的 `\\n`，`"# 标题\n正文" in blob` 会**假红**（实测踩过），而 `"**标题**"` 这类
+    不含换行的子串又会因为别的元素凑巧包含它而假绿。解析成结构再比才是判据。
+    """
+    node = json.loads(card) if isinstance(card, str) else card
+    found = []
+    stack = [node]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            if item.get("tag") == "markdown" and isinstance(item.get("content"), str):
+                found.append(item["content"])
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return found
+
+
+def test_sanitize_never_rewrites_what_an_independent_extractor_calls_code() -> None:
+    """**代码区一个字节都不许动** —— 判据来自测试自己的正则，不来自 `cards._code_spans`。
+
+    为什么必须换判据（R6a 审计高-1）：原来那条断言两边都用 `cards._code_spans` 算 span，
+    所以「`_code_spans` 认不出行内代码」时两边都是 `[]` ⇒ `[] == []` **恒真**。
+    审计自造的变异 `MY-5`（把行内代码扫描整段删掉）因此**四门禁全绿**，
+    而它真的把 `` `a**b` `` 改成了 `` `ab` ``（行内代码内容被删字）。
+
+    这条断言的判别力来自两处：
+      ① 期望值是字面量（`_CODE_REGION_CASES` 的第三个字段），错一个字就红；
+      ② 独立正则算出的每个代码区片段必须**逐字出现**在产出里 —— 覆盖那些「产出被改写」
+         的用例（未闭合围栏、`~~~`、降级标题），它们没法用整串相等来断言。
+    """
+    # 两个「被测实现必须比独立正则更保守」的样本（④ 用；`~~~` 那条独立正则完全不认）
+    fenced_src = "~~~\n# not a heading\ncode ** here\n~~~"
+    unclosed_src = "先看这段：\n```python\n# 磁盘检查\ndf -h ** 2>/dev/null\n"
+    for raw, expected in _CODE_REGION_CASES:
+        out = cards.sanitize_markdown(raw)
+        assert out == expected, f"产出与钉住的期望不符：{raw!r} ⇒ {out!r}（期望 {expected!r}）"
+        # ② 独立正则认出来的每一段代码内容，必须原样出现在产出里
+        for at, part in _independent_code_parts(raw):
+            assert part in out, (
+                f"第 {at} 位起的代码区内容在产出里不见了/被改了：{part!r}\n"
+                f"  in : {raw!r}\n  out: {out!r}")
+    # ③ 反向对照：独立正则**认得出**行内代码（否则 ② 就是空集恒真 —— 又一个 MY-5 形态）
+    assert len(_independent_code_parts("行内 `a**b` 单独一个")) == 1
+    assert len(_independent_code_parts("# 标题\n```\n# c\n```")) == 1
+
+    # ④ **被测实现必须比独立正则更保守**（逐条 `⊇`）：独立正则找出的每个区间，都要被
+    #    `_code_spans` 的某个区间**包含**。这一条防的是「`_code_spans` 退化成恒 `[]`」
+    #    ——那时 ② 会变成**空集恒真**（没有任何片段可查），而 ④ 的 `observed` 立刻变空 ⇒ 红。
+    #    判据里不含任何字面量，所以它跟 ① 的字面量表是**两种**判别力（变异 `R6a-20` 钉它）。
+    observed = 0
+    for source in [_CODE_REGION_CASES[i][0] for i in range(len(_CODE_REGION_CASES))] + [
+            unclosed_src, fenced_src]:
+        expected_spans = _independent_code_parts(source)
+        observed += len(expected_spans)
+        got = cards._code_spans(source)
+        for at, part in expected_spans:
+            assert any(start <= at and at + len(part) <= end for start, end in got), (
+                f"被测实现比独立正则**更不保守**：第 {at} 位起的 {part!r} 没被任何 span 包含\n"
+                f"  source: {source!r}\n  spans: {got}")
+    assert observed >= 10, f"独立正则一共只找到 {observed} 个代码区间 —— 这条断言快变成空集了"
+    # 反过来也要有：被测实现必须**多认出**那三种（独立正则故意不认）
+    assert cards._code_spans(unclosed_src), "未闭合围栏这段的 span 不该是空的"
+    assert len(cards._code_spans(fenced_src)) == 1
+
+
+#: `(输入, 钉住的产出)`。**两个字段都是测试里手写的字面量**（关键：不是算出来的）。
+#: 覆盖：围栏里的 `#`/`**`、行内代码里的 `**`、未闭合围栏、四反引号嵌套、`~~~` 围栏，
+#: 以及各条真实转换（降级标题 / 删游离 `**` / 不做任何事）。
+_CODE_REGION_CASES = [
+    # —— 代码区内容必须逐字不动（下面这五条 `out == raw`，即「一个字节都不许动」）——
+    ("```\n# not a heading\n**x\n```", "```\n# not a heading\n**x\n```"),
+    ("正文\n```\ncode ** here\n```", "正文\n```\ncode ** here\n```"),
+    ("```python\ndf -h ** 2>/dev/null\n# 注释\n```\n正文一段。",
+     "```python\ndf -h ** 2>/dev/null\n# 注释\n```\n正文一段。"),
+    ("行内 `a**b` 单独一个", "行内 `a**b` 单独一个"),
+    ("行内 `**not bold` 与正文 **bold**", "行内 `**not bold` 与正文 **bold**"),
+    ("示例 `x ** y`，正文 **重点**", "示例 `x ** y`，正文 **重点**"),
+    ("说明：`git status` 的结果在图里。", "说明：`git status` 的结果在图里。"),
+    # ② 四反引号嵌套围栏（CommonMark 合法：块里可以有 ```）
+    ("````\n```\n# comment about code\nx = a ** b\n```\n````",
+     "````\n```\n# comment about code\nx = a ** b\n```\n````"),
+    # ③ `~~~` 围栏
+    ("~~~\n# not a heading\ncode ** here\n~~~", "~~~\n# not a heading\ncode ** here\n~~~"),
+    # ① 未闭合围栏延伸到文末（核心的「边界收尾」会把这种文本直接送出来）
+    ("先看这段：\n```python\n# 磁盘检查\ndf -h ** 2>/dev/null\n",
+     "先看这段：\n```python\n# 磁盘检查\ndf -h ** 2>/dev/null\n"),
+    # —— 围栏之外的规则照常生效（代码区被排除，正文照改）——
+    ("# 标题\n```\n# code\n```", "**标题**\n```\n# code\n```"),
+    ("~~~\n# comment\n~~~\n正文 **A", "~~~\n# comment\n~~~\n正文 A"),
+    ("#### 四级不动", "#### 四级不动"),
+    # 单行内代码 + **下一行**的标题：行内代码正则若允许跨行，`# B` 会被吞进「代码区」⇒ 不降级
+    # （变异 `R6a-8` 钉这条；上面那些用例都是「成对反引号在同一行」，抓不到跨行那种改法）
+    ("甲 `a` 乙\n# B", "甲 `a` 乙\n**B**"),
+    # 标题体首尾的**全角空格**与零宽空格是正文内容，不许被 `str.strip()` 吞掉
+    # （变异 `R6a-14` 钉这条）
+    ("\u3000\n# \u3000全角\n\n# 零宽 \u200b", "\u3000\n**\u3000全角**\n\n**零宽 \u200b**"),
+    # CommonMark 的「闭合法标题」尾随 `#` 本来**不显示**，降级时不许把它露成加粗里的可见字符
+    # （变异 `R6a-13` 钉这条；`# 标题 ####` 在 CommonMark 里只显示「标题」）
+    ("# 标题 ####", "**标题**"),
+    ("## 小标题 ##", "**小标题**"),
+    ("# 标题 #", "**标题**"),
+    ("# 磁盘报告\n占用前三：**A、B\n## 建议",
+     "**磁盘报告**\n占用前三：A、B\n**建议**"),
+    ("**跨行\n加粗**合法", "**跨行\n加粗**合法"),
+]
+
+#: **三条候选**的形状（R6a 审计中-1）：游离的开头 `**` + 后面一对合法加粗。
+#: 判据是「删**第一个**」——删最后一个会把合法对的闭合标记拆掉，中间整段被吞进加粗。
+_THREE_CANDIDATE_MARKERS = "**磁盘占用前三：A、B\n重点关注 **/var** 这个目录"
+
+
+def test_unpaired_bold_drops_the_first_candidate_not_the_last() -> None:
+    """删「最后一个」游离 `**` 会把**后文合法的加粗对**拆掉（审计中-1：比不改更糟）。
+
+    判别力：变异 `R6a-9`（把删除点改成从末尾往前找）必须让这条红。
+    现有用例抓不住它，是因为它们在删除之前**只有一个候选** —— 删哪个都一样。
+    """
+    out = cards.sanitize_markdown(_THREE_CANDIDATE_MARKERS)
+    assert out == "磁盘占用前三：A、B\n重点关注 **/var** 这个目录", \
+        f"删错标记了（后文那对合法加粗必须留着）：{out!r}"
+    # 对照：删**最后一个**会长成这样（把合法对的闭合标记拆掉 ⇒ 中间整段被吞进加粗）
+    wrong = "**磁盘占用前三：A、B\n重点关注 **/var 这个目录"
+    assert out != wrong, "这正是「删最后一个」的病态结果，绝不许出现"
+    # 另外两条同族形状（一条游离在段中、一条游离在前且后文有两对合法加粗）
+    assert cards.sanitize_markdown("正文 **开头未闭合\n后面 **强调** 结尾") == \
+        "正文 开头未闭合\n后面 **强调** 结尾"
+    assert cards.sanitize_markdown("**a\nb **c** d **e** f") == "a\nb **c** d **e** f"
+
+
+def test_code_spans_sees_unclosed_and_non_backtick_fences() -> None:
+    """围栏识别必须包含**未闭合**、**四反引号及以上**、**`~~~`**（审计中-2）。
+
+    判别力：变异 `R6a-6`（未闭合围栏不延伸到文末）、`R6a-7`（只认三反引号）、
+    `R6a-8`（`~~~` 不算围栏）各钉一条。三条都是「代码内容被改坏」的入口，
+    而原来的 `_FENCE_RE = "```.*?```"` 一个都不认。
+    """
+    unclosed = "先看这段：\n```python\n# 磁盘检查\ndf -h ** 2>/dev/null\n"
+    assert cards._code_spans(unclosed) == [(6, len(unclosed))], \
+        f"未闭合围栏必须延伸到文末：{cards._code_spans(unclosed)}"
+    assert cards.sanitize_markdown(unclosed) == unclosed, "未闭合围栏里的代码内容被改了"
+
+    nested = "````\n```\n# comment about code\nx = a ** b\n```\n````"
+    assert cards._code_spans(nested) == [(0, len(nested))], \
+        f"四反引号围栏要整块算代码区（里层的 ``` 不该被当成闭合）：{cards._code_spans(nested)}"
+
+    tilde = "~~~\n# not a heading\ncode ** here\n~~~"
+    assert cards._code_spans(tilde) == [(0, len(tilde))], \
+        f"`~~~` 围栏与反引号围栏同义：{cards._code_spans(tilde)}"
+    assert cards.sanitize_markdown(tilde) == tilde
+
+
+def test_sanitize_markdown_is_idempotent_on_every_realistic_shape() -> None:
+    """幂等：**真实形状上必须成立**，已知边界**显式列出来**（审计中-4）。
+
+    原来 `AGENTS.md` 把幂等写成不变量，而它是**假的**：`'## 用 ``` 开围栏\\n## 建议\\n
+    ```\\ncode\\n```\\n'` 第二遍会把第一遍插进去的 `**` 删掉（现状修法：标题体里有反引号
+    就不做加粗降级）。修完之后实测（审计自己的两条语料脚本，`sys.path` 指向本仓库）：
+
+      * 块拼接穷举 2379 条 **0 条**非幂等（修之前 4 条）；
+      * 现实语料 6 万篇 **0 条**（含「标题体里带 ``` 」的两种片段：修之前 19.29%）；
+      * 随机 20 万条畸形输入 **1 条** ⇒ 就是 `_KNOWN_NONIDEMPOTENT_SHAPES` 那一族。
+
+    这条断言钉的是**前两类**（穷举 + 现实语料按固定种子重建），边界那一族单独列出来
+    ——「已知边界」必须有测试跟着，否则它就是下一句空话。
+    """
+    alphabet = ["**", "*", "`", "```", "#", "# ", " ", "\n", "a", "*a*", "```\n", "\n```",
+                "\r\n"]
+    checked = 0
+    for size in (1, 2, 3):
+        for combo in itertools.product(alphabet, repeat=size):
+            case = "".join(combo)
+            once = cards.sanitize_markdown(case)
+            assert cards.sanitize_markdown(once) == once, f"不幂等：{case!r} ⇒ {once!r}"
+            checked += 1
+    assert checked == 2379, f"穷举规模变了（{checked}）—— 这条断言的强度也跟着变了"
+
+    # 现实语料（审计 probe_nonidem.py 的 15 + 2 种片段，固定种子重建）
+    parts = [
+        "# 磁盘报告\n", "## 建议\n", "### 细节\n", "#### 四级标题\n",
+        "正文一段，含 **加粗** 与 *斜体*。\n", "**这里漏了一个标记\n",
+        "还有 **/var** 这个目录。\n", "```\ncode line\n```\n",
+        "```python\nx = 1\nprint(x)\n```\n", "行内 `code` 与 `**粗**`。\n",
+        "| 列 | 值 |\n|---|---|\n| a | b |\n", "> 引用一行\n", "\n", "- 列表项\n",
+        "说明：`git status` 的用法\n",
+        "## 用 ``` 开一个代码块\n", "# ```\n",
+    ]
+    rng = random.Random(11)
+    bad = 0
+    for _ in range(20000):
+        doc = "".join(rng.choice(parts) for _ in range(rng.randint(2, 8)))
+        once = cards.sanitize_markdown(doc)
+        if cards.sanitize_markdown(once) != once:
+            bad += 1
+    assert bad == 0, f"现实语料里出现 {bad} 篇非幂等（修之前这类语料是 19.29%）"
+
+    # ⚠️ 这条清单**本来是有内容的**：写这版修复的中间态里，随机 20 万条畸形输入还剩
+    # 3 条非幂等（形状都是「一个 `**` 夹在两对行内代码之间」，如 `'aA \u200b``**``~'`），
+    # 我一度准备把它当成「已知边界」写进文档。最后一次对齐时发现那 3 条的**真因是围栏识别
+    # 的一个错**（开标记行的判定把 `` ```python `` 读成 `ython`）—— 修掉它之后
+    # **20 万条随机输入 0 条非幂等**、2379 条穷举 0 条、现实语料 6 万篇 0 条。
+    # 所以这里不留「已知边界」清单：**没有边界可留**，全域成立。（这条注释本身就是
+    # 「别把没查清的东西写成边界」的提醒 —— 边界清单会让人停止追查。）
+    assert cards.sanitize_markdown("aA \u200b``**``~") == "aA \u200b````~", \
+        "这一族（两对空行内代码之间夹一个 `**`）现在也是幂等的，且用户看到的字没变"
+
+
+def test_sanitize_reverts_when_it_would_push_the_card_over_the_limit() -> None:
+    """卫生**之后**的文本要过一道**同口径**的字节闸门（审计低-1/低-2）。
+
+    为什么必须有：`sanitize_markdown` 对标题密集的正文**只会变长**（每个降级标题 +2 字节），
+    于是存在「卫生前过闸、卫生后超限」的窄带（审计构造过 `128000 → 128080`）。
+    卫生前那道闸门（CardKit 元素帧）量的是**卫生前**的文本，收尾帧原本一道都没有 ⇒
+    超限的收尾卡被拒 ⇒ fail-open ⇒ 用户从「一张卡」掉成「若干条纯文本」。
+    口径病见 `docs/lessons.md` 推论 13：闸门必须量**要发出去的那一份**。
+    """
+    saved = cards.FEISHU_CARD_BYTE_LIMIT
+    try:
+        raw = "# 标题一\n# 标题二\n正文"
+        cards.FEISHU_CARD_BYTE_LIMIT = adapter._card_body_bytes(raw)   # 原文刚好放行
+        assert adapter._sanitize_for_send(raw) == raw, \
+            "卫生后会超限 ⇒ 必须退回原文（少一点格式，也不能让卡发不出去）"
+        # 门槛抬高一点：卫生后的那份也放行 ⇒ 必须做卫生（否则这条闸门成了「永远不做卫生」）
+        cards.FEISHU_CARD_BYTE_LIMIT = len(raw) + 500
+        assert adapter._sanitize_for_send(raw) == cards.sanitize_markdown(raw) \
+            != raw, "放得下的时候必须照常做卫生"
+    finally:
+        cards.FEISHU_CARD_BYTE_LIMIT = saved
+
+
+def test_code_spans_is_linear_not_quadratic_on_fence_heavy_input() -> None:
+    """`_code_spans` 必须是**线性**的：围栏/行内代码数量翻几倍，耗时不许翻平方（审计低-5）。
+
+    旧实现是 O(围栏数 × 行内代码数)：行内代码那一步对**每个**行内代码都遍历一遍全部围栏
+    区间。实测（本机，取 5 次最小值；形状 = `N` 条行级围栏 × 每条围栏里 40 个行内代码）：
+
+        N     规模      旧实现       新实现
+        50    8250     18.2ms       0.36ms
+        400   66000    **1173ms**   3.30ms        ← 规模 8 倍，旧实现耗时 64 倍
+        （审计在它的机器上量到 56KB 病态输入 5.29s）
+
+    这段耗时落在**收尾帧**上（会拖慢最后一帧的发送），所以要一条门禁。写法照
+    `test_args_preview_is_bounded_for_nested_and_long_inputs`：**多次取最小值**
+    （最小值最不受机器负载影响），判**两条**判据：
+
+      ① 绝对上界 0.5s —— 直接拦「回到秒级」；
+      ② **比值**（大输入与小输入各取最小值）—— 这一条与机器快慢无关，专拦「复杂度回去了」：
+         新实现 9.2×，旧实现 64×（实测），所以阈值取 20×（新实现留一倍余量、旧实现必红）。
+
+    ⚠️ 形状很关键：`'```a```' * k` 那种**行内**围栏在两边都是线性的（新实现的 `_fence_scan`
+    只认行首围栏、整段只算一个围栏），拿它当判据**抓不到**这条变异（实测：加了这个变异
+    仍然全绿）。必须是「行级围栏 × 每栏内部的行内代码」才算得到那个乘积。
+
+    判别力：变异 `R6a-17`（把行内代码的排除改回「对每个围栏做一次线性查找」）必须让这条红。
+    """
+    def _best(text: str, rounds: int = 5) -> float:
+        best = float("inf")
+        for _ in range(rounds):
+            started = time.perf_counter()
+            cards._code_spans(text)
+            best = min(best, time.perf_counter() - started)
+        return best
+
+    def _fence_heavy(fences: int, per_fence: int = 40) -> str:
+        # 每条围栏占 3 行：``` / （40 个行内代码 + 空格）/ 换行
+        return ("```\n" + "`a` " * per_fence + "\n") * fences
+
+    small, big = _fence_heavy(50), _fence_heavy(400)
+    assert (len(small), len(big)) == (8250, 66000), (len(small), len(big))
+    small_s, big_s = _best(small), _best(big)
+    assert big_s < 0.5, f"_code_spans 在 66KB 病态输入上用了 {big_s:.3f}s（绝对上界 0.5s）"
+    ratio = big_s / max(small_s, 1e-6)
+    assert ratio < 20.0, (
+        f"输入大 8 倍、耗时大了 {ratio:.1f} 倍 —— 复杂度回到 O(围栏数 × 行内代码数) 了？"
+        f"（小 {small_s * 1000:.2f}ms / 大 {big_s * 1000:.2f}ms）")
+
+
+def test_markdown_hygiene_covers_every_whole_text_writer_not_just_native_finalize() -> None:
+    """卫生覆盖**每一条写完整文本**的路径，而中间帧一个字节都不许动（审计中-3）。
+
+    审计实测的不一致：同一段模型输出，**正常收尾**写成 `**磁盘报告**…`，而 `/stop` 重绘
+    写原文 `# 磁盘报告…`。根本原因是 `sanitize_markdown` 全仓库只有一个调用点。
+
+    判据（写在代码注释里的那条）：**卫生只能作用于「完整文本」的写入**
+      * 可以做：`send()`、`edit_message(finalize=True)`、`/stop` 重绘、native 收尾帧；
+      * 不许做：`edit_message(finalize=False)` 与 CardKit 的**元素帧**（它们是累积帧的中间态）。
+
+    所以这条用例**两半都要断**：该做的四处做了（正断言），不该动的两处没动（反向断言）。
+    判别力：变异 `R6a-10`（edit 两条路径一起做卫生）、`R6a-11`（send 不做）、
+    `R6a-12`（/stop 重绘不做）、`R6a-1`（流式帧也做，前缀链断掉）各钉一条。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    raw = "# 磁盘报告\n占用前三：**A、B"
+    clean = cards.sanitize_markdown(raw)
+    assert clean != raw               # 前提：这段文本真的会被卫生改动（否则断言恒真）
+    try:
+        # ① send()：非 native 首帧也要卫生
+        raw_a = _make()
+        sent = []
+        raw_a._ld_send_card = lambda chat_id, card, **kw: (
+            sent.append(card) or _StubResult(True, "om_send"))
+        assert _run(raw_a.send("oc_md_send", raw)) is not None
+        texts = _markdown_of(sent[-1])
+        assert clean in texts, f"send() 走的是完整消息，必须做卫生：{texts}"
+        assert raw not in texts, "send() 不该再露着原文的 H1 与字面 `**`"
+
+        # ② edit_message(finalize=True) 做 / (finalize=False) **不做**（前缀链纪律）
+        raw_b = _make()
+        updates = _wire_patch(raw_b)
+        raw_b._ld_track("om_edit", "oc_md_edit")
+        assert _run(raw_b.edit_message("oc_md_edit", "om_edit", raw, finalize=False))
+        mid_texts = _markdown_of(updates[-1]["content"])
+        assert mid_texts == [raw], f"中间帧必须**原样**（前缀链）：{mid_texts}"
+        assert _run(raw_b.edit_message("oc_md_edit", "om_edit", raw, finalize=True))
+        fin_texts = _markdown_of(updates[-1]["content"])
+        assert fin_texts == [clean], f"收尾整卡必须做卫生：{fin_texts}"
+
+        # ③ /stop 重绘：正文来自我们自己的追踪表，必须与收尾帧一致
+        panel.reset()
+        raw_c = _make()
+        ck_updates = _wire_patch(raw_c)
+        assert _run(raw_c.send_stream_frame("", chat_id="oc_md_stop", turn_id="t-md"))
+        assert _run(raw_c.send_stream_frame(raw, chat_id="oc_md_stop", turn_id="t-md"))
+        assert _markdown_of(ck_updates[-1]["content"]) == [raw], "流式中间帧必须原样（同上）"
+        _run(raw_c.interrupt_session_activity("sk-md", "oc_md_stop"))
+        stopped_texts = _markdown_of(ck_updates[-1]["content"])
+        # ⚠️ 不能断言「列表里只有正文」：中止态面板自己也是一段 markdown（`⛔ 已中止`）。
+        assert clean in stopped_texts, \
+            f"/stop 重绘写的是同一段原文，必须卫生后与收尾帧一致：{stopped_texts}"
+        assert raw not in stopped_texts, "中止重绘不该露出原文的 H1 与字面 `**`"
+        panel.reset()
+
+        # ④ CardKit：元素帧原样、收尾整卡卫生
+        raw_d = _make()
+        elem_writes, patch_cards = [], []
+
+        class _Resp:
+            """SDK 响应的最小面。⚠️ `data` 必须**逐次构造**：建实体读 `data.card_id`、
+            发实体卡读 `data.message_id`，写死一个实例会让某一步静默拿到错的 id。"""
+
+            def __init__(self, **data):
+                self.code = 0
+                self.msg = "success"
+                self.data = types.SimpleNamespace(**data) if data else None
+
+            def success(self):
+                return True
+
+        class _CardRes:
+            def batch_update(self, request):
+                return _Resp()
+
+            def create(self, request):
+                return _Resp(card_id="ck_md")
+
+        class _ElemRes:
+            def content(self, request):
+                elem_writes.append(types.SimpleNamespace(
+                    element_id=request.element_id,
+                    request_body=types.SimpleNamespace(content=request.request_body.content)))
+                return _Resp()
+
+        class _MsgRes:
+            def create(self, request):
+                # 发实体卡走的是 `im.v1.message.create`（替身漏了它 ⇒ 建实体那一步 AttributeError
+                # 被帧路径吞掉，表现成「这一帧失败」，与要验的卫生毫无关系）。
+                # ⚠️ 返回值必须是**裸响应**（`{"code":0,"data":{"message_id":…}}`）：
+                # 帧路径用 `_finalize_send_result` 读它，而那个函数按**字典**取 message_id
+                # （内置适配器的原语就是这么写的，别用 `_Resp` 替身 —— 会 AttributeError）。
+                return {"code": 0, "data": {"message_id": "om_ck_md"}}
+
+            def patch(self, request):
+                # ⚠️ 请求对象有两种形状：测试用 `_wire_patch` 换成的是**字典**（便于断言），
+                # 而这一节为了 cardkit 换了整个 `_client`，于是又落回生产的
+                # `_ld_build_patch_request`（真 SDK 的 `PatchMessageRequest`，只能按属性取）。
+                # 两种都要接住 —— 只接字典会在收尾那一步 `TypeError`，被帧路径吞成
+                # 「这一帧失败」，与要验的卫生毫无关系（实测踩过一次）。
+                if isinstance(request, dict):
+                    mid, content = request["message_id"], request["content"]
+                else:
+                    mid = request.message_id
+                    content = request.request_body.content
+                patch_cards.append(json.loads(content))
+                return {"code": 0, "data": {"message_id": mid}}
+
+        raw_d._client.im = types.SimpleNamespace(v1=types.SimpleNamespace(message=_MsgRes()))
+        raw_d._client.cardkit = types.SimpleNamespace(
+            v1=types.SimpleNamespace(card=_CardRes(), card_element=_ElemRes()))
+        original_requests = type(raw_d)._ld_ck_requests
+        try:
+            type(raw_d)._ld_ck_requests = staticmethod(lambda: types.SimpleNamespace(
+                create_card=lambda card_json: types.SimpleNamespace(
+                    request_body={"card_json": card_json}),
+                write_element=lambda cid, eid, content, seq, uuid_value: types.SimpleNamespace(
+                    card_id=cid, element_id=eid,
+                    request_body=types.SimpleNamespace(content=content, sequence=seq,
+                                                       uuid=uuid_value, )),
+                batch_update=lambda cid, actions, seq, uuid_value: types.SimpleNamespace(
+                    card_id=cid,
+                    request_body=types.SimpleNamespace(
+                        actions=json.dumps(actions, ensure_ascii=False), sequence=seq,
+                        uuid=uuid_value)),
+                settings_card=lambda cid, payload, seq, uuid_value: types.SimpleNamespace(
+                    card_id=cid, request_body=types.SimpleNamespace(settings=payload,
+                                                                    sequence=seq)),
+                send_entity=lambda receive_id, card_id: types.SimpleNamespace(
+                    receive_id=receive_id, card_id=card_id,
+                    request_body=types.SimpleNamespace(
+                        content=json.dumps({"type": "card",
+                                            "data": {"card_id": card_id}}),
+                        msg_type="interactive", uuid=f"ld-msg-{card_id}")),
+                reply_entity=lambda reply_to, card_id: types.SimpleNamespace(
+                    reply_to=reply_to, card_id=card_id,
+                    request_body=types.SimpleNamespace(
+                        content=json.dumps({"type": "card",
+                                            "data": {"card_id": card_id}}),
+                        msg_type="interactive", uuid=f"ld-msg-{card_id}",
+                        reply_in_thread=False)),
+            ))
+            adapter.configure(native_transport="cardkit")
+            assert _run(raw_d.send_stream_frame("", chat_id="oc_md_ck", turn_id="t-ck"))
+            assert _run(raw_d.send_stream_frame(raw, chat_id="oc_md_ck", turn_id="t-ck"))
+            bodies = [w.request_body.content for w in elem_writes
+                      if w.element_id == cards.CARDKIT_ANSWER_ID]
+            assert bodies and bodies[-1] == raw, \
+                f"CardKit 元素帧写的是累积中间态，必须原样：{bodies}"
+            assert _run(raw_d.send_stream_frame(raw, finalize=True, chat_id="oc_md_ck",
+                                                turn_id="t-ck"))
+            assert patch_cards, "收尾必须走一次整卡 patch"
+            tail_texts = _markdown_of(patch_cards[-1])
+            assert tail_texts == [clean], f"CardKit 的收尾整卡必须做卫生：{tail_texts}"
+        finally:
+            type(raw_d)._ld_ck_requests = original_requests
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
 def test_footer_metrics_are_opt_in_and_never_fake_zero() -> None:
     """R7 页脚扩展：三段新指标**默认不出现**，开了才出现，而且**缺数据就少一段**。
 
@@ -5663,29 +6133,142 @@ def test_late_begin_turn_must_not_poison_current_turn():
 
 
 
-def test_plan_progress_table_keeps_the_pending_row() -> None:
-    """`docs/plan-v1.md` 的进度表里必须留着 `| R3` 那一行（**未完成的下一阶段**）。
+#: 进度表里「已经实施」的阶段名（**事实**清单，不是空格形状）：缺一行就红。
+_PLAN_DONE_PHASES = ("R0", "R1", "R1.5", "R2", "R5", "R6a", "R7", "R9", "R8①②")
 
-    为什么值得一条门禁：那一行是「下一步在等什么」（R3 还在等用户肉眼确认面板子元素的落点）
-    的**唯一记录**。2026-09-14 实测过一次静默丢失 —— 给进度表**追加一行**时替换串漏带了被替换的
-    那一行，于是「已完成的行」上去了、「未完成的行」没了，而四门禁照旧全绿（文档没人守）。
-    这类「补一条记录却抹掉另一条」的错，只有机械门禁能看见。
+
+def _plan_progress_problems(plan: str):
+    """检查 `docs/plan-v1.md` 的进度表，返回**问题清单**（空 = 通过）。
+
+    判据全部**从表格行派生**，不硬编码任何字面 token（R6a 审计低-6：旧版只查 `"| R3"`
+    与 `"| R5 "`（含半角空格）之类的字面串，于是「掏空照样绿、合法改写假红」同时成立）。
+
+    单独抽成函数是为了**能被合成输入测**：`test_plan_progress_table_is_checkable...` 会拿
+    「把表格反过来」「把证据列清空」这些构造样本喂进来，证明这个门禁**真的会拒绝**它们
+    —— 否则「门禁有效」这件事本身没有证据（`docs/lessons.md` 推论 11）。
     """
-    plan = (_pathlib.Path(_REPO_PARENT) / "larkdeck" / "docs" / "plan-v1.md").read_text(
+    problems = []
+    if "## 实施进度" not in plan:
+        return ["找不到「## 实施进度」这一节 —— 进度表被搬走或改名了"]
+    region = plan[plan.index("## 实施进度"):]
+    # 只取这一节的**第一个标题之前**的内容：进度表本身就贴在这个标题下面，
+    # 后面接的是审计小节（那些小节里也有表格，混进来会解析出一堆假「阶段」行）。
+    region = region[:region.index("\n#", 1)]
+    rows = []
+    for line in region.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 3 or set(cells[0]) <= set("-: "):      # 表头分隔行
+            continue
+        rows.append(cells)
+    if not rows:
+        return ["进度表一行都没解析出来（表格被重排了？）"]
+    if rows[0][0] != "阶段" or rows[0][1] != "状态":
+        problems.append(f"表头变了：{rows[0]}")
+    body = rows[1:]
+    if len(body) < 8:
+        problems.append(f"进度表只剩 {len(body)} 行 —— 有记录被抹掉了")
+    for cells in body:
+        phase, status, evidence = cells[0], cells[1], "|".join(cells[2:]).strip()
+        if not (status.startswith("✅") or status.startswith("未开始")):
+            problems.append(f"阶段「{phase}」的状态既不是 ✅ 也不是「未开始」：{status[:40]!r}")
+        if not evidence:
+            problems.append(
+                f"阶段「{phase}」的**证据**列是空的 —— 这一列是「怎么证明它做完了」的唯一记录，"
+                "空着等于没做（审计实测：掏空 R3 那行的证据列，旧门禁照旧全绿）")
+    # 「未完成的下一阶段」必须存在，而且**要等什么**必须写出来。
+    # ⚠️ 这里**不能**用「未开始的阶段号 > 已完成的最大阶段号」那种判据：本项目的阶段编号
+    # 不是单调推进的（R3 被停在附录 C 的肉眼确认上，之后先做了 R5/R6a/R7/R8/R9）——
+    # 上一版这么写就假红了（实测：'R3 起' 与 'R9' 比大小）。
+    pending = [c for c in body if c[1].startswith("未开始")]
+    if not pending:
+        problems.append("没有任何「未开始」的行 —— 进度表看不出「下一步在等什么」")
+    for cells in pending:
+        if not re.search(r"[（(].+[）)]", cells[1]):
+            problems.append(f"「未开始」的阶段「{cells[0]}」没说清在等什么：{cells[1]!r}")
+    if "R3" not in "\n".join(c[0] for c in pending):
+        problems.append(
+            "R3（下一步）不在「未开始」的行里 —— 它要么被标成完成，要么整行被删了。"
+            "2026-09-14 实测过一次静默丢失：给进度表追加一行时替换串漏带了被替换的那一行，"
+            "于是「已完成的行」上去了、「未完成的行」没了，而四门禁照旧全绿。")
+    # 已实施阶段的行**必须都在**（防止「整张表被谁重写」或「追加一行时抹掉另一行」）。
+    # ⚠️ 判据是「**整行**里有没有这个名字」，**不是**「阶段列的第一个 token 是不是它」：
+    # 后者会在「同一行的证据列被掏空」时也报「行不见了」（实测：变异 R6a-18 被误归因成
+    # 这一条），而那种改动的真正病是**证据列空了**——误归因会把人带去改错地方。
+    # 同时这条判据**不**依赖空格形状：`'| R5 健壮性'` ⇒ `'| R5（健壮性）'` 照样绿
+    # （旧版写死 `"| R5 "`（带半角空格）就是这么假红的，审计实测）。
+    # 判据只看**阶段列**（不能看整行：证据列里会出现 `R6a-1..R6a-4` 这种字样，
+    # 拿整行做子串匹配会让「R6a 那一行被删掉」照样通过 —— 实测过）。
+    joined = "\n".join(c[0] for c in body)
+    for name in _PLAN_DONE_PHASES:
+        if not re.search(r"^" + re.escape(name), joined, re.M):
+            problems.append(f"已完成阶段 {name} 的行不见了")
+    return problems
+
+
+def _append_progress_row(plan: str, row: str) -> str:
+    """把一行**进度表行**追加到 `## 实施进度` 那张表的末尾。
+
+    为什么测试要能自己造行（R6a 审计低-6 / `docs/lessons.md` 推论 11）：
+    门禁的判别力不能只用「改真文档」来证明 —— 挪动真文档的行会同时触发**别的**断言，
+    于是「掏空证据列被抓住了」这句话就成了误归因（究竟是被证据判据抓的，还是被
+    「行不见了」抓的？）。造一行来测，红的理由就是**唯一**的。
+    """
+    assert row.startswith("|") and row.endswith("|"), row
+    lines = plan.splitlines(True)
+    head = next(i for i, l in enumerate(lines) if l.startswith("## 实施进度"))
+    index = head
+    for i in range(head, len(lines)):
+        if lines[i].lstrip().startswith("|"):
+            index = i
+        elif i > head and not lines[i].lstrip().startswith("|") and index > head:
+            break
+    assert index > head, "没找到进度表的行 —— 这份测试的前提不成立"
+    return "".join(lines[:index + 1]) + row + "\n" + "".join(lines[index + 1:])
+
+
+def test_plan_progress_table_is_checkable_from_its_own_rows() -> None:
+    """`docs/plan-v1.md` 的进度表门禁：**真的会拒绝**坏表格，且**不**对合法改写假红。
+
+    R6a 审计低-6 实测了旧版（只查 `"| R3"` 与几个 `"| R5 "` 之类的字面串）的三个毛病：
+      * **掏空照样绿**：R3 那一行的「证据」列清空（`'| R3 起 | 未开始 | |'`）⇒ 154/154 全绿，
+        而那一行正是「下一步在等什么」的唯一记录；
+      * **合法改写假红**：把 `'| R5 健壮性'` 改成 `'| R5（健壮性）'`（**内容等价**）⇒ 变红，
+        红的理由与被守的回归毫无关系；
+      * **R8/R9/R6a 的行被删查不出来**（清单里只点名 R0/R1/R2/R5/R7）。
+
+    这条用例**两半都要**：① 真文档必须通过；② 四种构造样本必须被拒绝 —— 只有 ① 的话，
+    「门禁有没有判别力」就没有证据（`docs/lessons.md` 推论 11：给验证器本身写输入）。
+    判别力：变异 `R6a-18`（在**真文档**上掏空 R6a 那一行的证据列）必须让这条红。
+    """
+    real = (_pathlib.Path(_REPO_PARENT) / "larkdeck" / "docs" / "plan-v1.md").read_text(
         encoding="utf-8")
-    assert "| R3" in plan, "进度表里的 R3（未完成的下一阶段）那一行不见了"
-    # 已完成的阶段行也必须在（防止「整张表被谁重写」）
-    for done in ("| R0 ", "| R1 ", "| R2 ", "| R5 ", "| R7 "):
-        assert done in plan, f"进度表少了已完成阶段的记录：{done!r}"
+    assert _plan_progress_problems(real) == [], _plan_progress_problems(real)
+
+    # ① 掏空证据列（审计的 S2 场景）⇒ 必须被拒绝。
+    #    用**同一张表里已有的一行**做模板造一行新记录，只把证据列留空：
+    #    这样红的理由只可能是「证据列空」，不会顺带触发「行不见了」那条（误归因）。
+    template = [l for l in real.splitlines() if l.startswith("| R6a ")][0]
+    hole = _append_progress_row(real, template.rsplit("|", 2)[0] + "|   |")
+    hole_problems = _plan_progress_problems(hole)
+    assert any("证据" in p for p in hole_problems), hole_problems
+
+    # ② 「未完成的下一个阶段」整行被删（2026-09-14 真实发生过的静默丢失）⇒ 必须被拒绝
+    r3_line = [l for l in real.splitlines() if l.startswith("| R3")][0]
+    dropped = real.replace(r3_line + "\n", "", 1)
+    dropped_problems = _plan_progress_problems(dropped)
+    assert any("R3" in p for p in dropped_problems), dropped_problems
+
+    # ③ 状态列写成空话（既不是 ✅ 也不是「未开始」）⇒ 必须被拒绝
+    vague = real.replace("| R6a markdown 卫生 | ✅ 完成", "| R6a markdown 卫生 | 大概做了", 1)
+    assert any("状态" in p for p in _plan_progress_problems(vague)), _plan_progress_problems(vague)
+
+    # ④ 合法改写**不许**假红（阶段名后面加全角括号；旧门禁就是在这里假红的）
+    legit = real.replace("| R5 健壮性 |", "| R5（健壮性） |", 1)
+    assert _plan_progress_problems(legit) == [], _plan_progress_problems(legit)
 
 
-# --------------------------------------------------------------------------- #
-# --------------------------------------------------------------------------- #
-# 13. R9 自检账本 + `/larkdeck` 命令卡
-#
-# 这一层的失败形态是**静默**的（钩子被改名 ⇒ 页脚空、帧失败 ⇒ 掉成纯文本），而启动自检
-# 只证明「注册那一刻接管成功」。所以「插件在不在动」必须能被**问**出来，且**只报有证据的事**。
-# --------------------------------------------------------------------------- #
 def test_status_lines_never_claim_healthy_without_records():
     """没有记录时，三条自检行**每一行都要说「无记录」**；一张永远说「正常」的自检，
     与一张坏掉的自检在用户眼里长得一模一样（「绿而无判别力」）。

@@ -380,9 +380,23 @@ def footer_line(*, duration: Optional[float] = None, model: str = "",
 
 
 #: R6a 卫生用到的正则：围栏、行内代码、H1–H3。
-_FENCE_RE = _re.compile(r"```.*?```", _re.S)
+#:
+#: ⚠️ 围栏**不再**是一个「```…```」的配对正则（那是 R6a 审计的中-2）：围栏的合法形状
+#: 由**行首扫描**决定（见 :func:`_code_spans`），因为配对正则漏掉三种真实形状 ——
+#: ① **未闭合**围栏（上游的 `ensure_closed_code_fences` 不是每条路都过：核心的「边界收尾」
+#: 直接送出累积原文，`gateway/stream_consumer.py:484/486`）② 四反引号及以上的嵌套围栏
+#: （CommonMark 合法，块内可以有 ```）③ `~~~` 围栏。三种都会让围栏里的 `#` / `**`
+#: 被当成 markdown 改坏 —— 那是**代码内容**被篡改，用户先看到原文、收尾时突然变样。
 _INLINE_CODE_RE = _re.compile(r"`[^`\n]*`")
 _HEADING_RE = _re.compile(r"^(#{1,3})[ \t]+(.*)$", _re.M)
+#: 标题体里出现「反引号 / 波浪线围栏标记」时不做加粗降级的检测（幂等性，见 :func:`_demote_headings`）。
+_FENCE_ISH_RE = _re.compile(r"`|~~~")
+#: 一行是不是「ATX 标题行」（`#{1,6}` + 空白）—— 用来判断剥掉尾随 `#` 之后会不会露出新标题。
+_HEADING_START_RE = _re.compile(r"#{1,6}(?=[ \t]|$)")
+#: 标题体是否**只由 markdown 标记与空白组成**（`'# # '` / `'# **'`）—— 这类标题不做任何改动。
+_MARKER_ONLY_RE = _re.compile(r"[#* \t]+$")
+#: CommonMark 的「闭合法标题」尾随序列（`# 标题 ####` 里 `####` 本来不显示）。
+_HEADING_CLOSING_RE = _re.compile(r"\s+#+$")
 
 #: 工具步骤状态符号（符号语言无关，无需 i18n；未知状态用「•」兜底）。
 _TOOL_STATUS_MARKS = {"running": "⏳", "ok": "✅", "error": "❌", "blocked": "⛔"}
@@ -560,17 +574,102 @@ def _summary_of(text: str, *, fallback: str = "") -> Dict[str, Any]:
     return {"content": flat[:SUMMARY_MAX] or fallback}
 
 
-def _code_spans(text: str):
-    """所有**代码区**（围栏 + 行内代码）的跨度，按起点排序。
+def _fence_scan(text: str) -> List["tuple[int, int]"]:
+    """**行首扫描**出行围栏区间（``\\`\\`\\``` / `~~~`，含未闭合的）。
+
+    为什么要换成扫描而不是配对正则（R6a 审计中-2 的三条实测形状，全都能把代码内容改坏）：
+
+      * **未闭合围栏必须延伸到文末**。上游的 `ensure_closed_code_fences` 只覆盖经
+        `_send_or_edit` 的帧；核心的「边界收尾」（回合中途的澄清/审批边界）直接把
+        ``self._accumulated`` 原样送出来（`gateway/stream_consumer.py:484/486`）。
+        审计实测：`先看这段：\\n```python\\n# 磁盘检查\\ndf -h ** 2>/dev/null\\n` 在收尾帧里
+        被改成 `**磁盘检查**` + `df -h  2>/dev/null` —— 用户先看到原文，收尾时突然变样。
+      * **四反引号及以上的围栏**是 CommonMark 里嵌三反引号块的唯一合法写法
+        （`\\`\\`\\`\\`` … `\\`\\`\\``\\n…\\n\\`\\`\\`` … `\\`\\`\\`\\``），配对正则只认三反引号 ⇒ 里层 `\\`\\`\\`` 与
+        外层配成一对，块内容整段被当成正文。
+      * **`~~~` 围栏**与反引号围栏同义，配对正则完全不认。
+
+    闭合侧按 CommonMark 放宽：**同一字符、数量不少于开始标记**的行即为闭合
+    （`\\`\\`\\`\\`` 块里裸的 `\\`\\`\\`` 行不算闭合）—— 宁可**多**认成一个围栏（少做卫生），
+    也不要把围栏内容当正文改掉，两个方向的代价不对称。
+    """
+    spans: List["tuple[int, int]"] = []
+    fence_char = ""
+    fence_len = 0
+    fence_start = 0
+    pos = 0
+    size = len(text)
+    while pos < size:
+        line_end = text.find("\n", pos)
+        if line_end < 0:
+            line_end = size
+        if fence_char:
+            stripped = text[pos:line_end].strip()
+            if (stripped and stripped[0] == fence_char
+                    and stripped.count(fence_char) == len(stripped)
+                    and len(stripped) >= fence_len):
+                fence_char = ""
+                spans.append((fence_start, line_end))
+            pos = line_end + 1
+            continue
+        line = text[pos:line_end]
+        indent = 0
+        while indent < len(line) and line[indent] == " " and indent < 4:
+            indent += 1
+        after = line[indent:]                 # 标记行去掉至多 3 个前导空格后的剩余部分
+        if indent < 4 and after[:1] in ("`", "~"):
+            char = after[0]
+            run = 0
+            while run < len(after) and after[run] == char:
+                run += 1
+            # ⚠️ 这里踩过一次，两件事必须分开：
+            #   ① **开标记行的合法条件**是「信息串里不含反引号」（CommonMark），
+            #      所以 `` ```python `` 是合法开围栏。第一版写成「去掉 `run` 之后什么都不许剩」，
+            #      于是**所有带语言名的围栏都开不起来**：`_code_spans` 把 `` ```python ``
+            #      当正文、把后面的 `` ``` `` 当成「未闭合围栏的开头」，整篇代码内容照样被改坏
+            #      （实测 `'```python\ndf -h ** 2>/dev/null\n# 注释\n```'` ⇒ `# 注释` 变成 `**注释**`）。
+            #   ② 判段必须从 `after[run:]` 起算：`line[indent + run:]` 会在 `run` 已自增后
+            #      **多切一个字符**（`` ```python `` 被读成 `ython`）。同一类错。
+            if run >= 3 and (char != "`" or "`" not in after[run:]):
+                fence_char = char
+                fence_len = run
+                fence_start = pos
+        pos = line_end + 1
+    if fence_char:
+        # 未闭合：**一直到文末**都算代码区
+        spans.append((fence_start, size))
+    return spans
+
+
+def _code_spans(text: str) -> List["tuple[int, int]"]:
+    """所有**代码区**（围栏 + 行内代码）的跨度，按起点排序、两两不重叠。
 
     为什么需要它（R6a）：围栏/行内代码里的 `**` 与 `#` **不是 markdown 语法**，
     对它们做卫生会把终端输出、代码块内容改坏 —— 那是不可接受的数据损坏。
+
+    复杂度是**线性**的（R6a 审计低-5 实测旧实现 56KB 病态输入 5.29s）：行内代码这一步
+    不再对每个围栏做一次 `any(...)` 线性查找，而是先把围栏区间的兜底判定压到一个
+    **单调前移的指针**上（围栏区间已排序且互不重叠，指针只前进不回退）。
     """
-    spans = [(m.start(), m.end()) for m in _FENCE_RE.finditer(text)]
-    for m in _INLINE_CODE_RE.finditer(text):
-        if not any(start <= m.start() < end for start, end in spans):
-            spans.append((m.start(), m.end()))
-    return sorted(spans)
+    fences = _fence_scan(text)                # 从小到大、两两不重叠（逐行扫描的产物）
+    where = 0
+    spans: List["tuple[int, int]"] = []
+    for match in _INLINE_CODE_RE.finditer(text):
+        at = match.start()
+        while where < len(fences) and fences[where][1] <= at:
+            where += 1
+        if where < len(fences) and fences[where][0] <= at < fences[where][1]:
+            continue                          # 落在围栏里 ⇒ 不是行内代码
+        spans.append((at, match.end()))
+    merged = sorted(fences + spans)
+    out: List["tuple[int, int]"] = []
+    for start, end in merged:
+        if out and start <= out[-1][1]:       # 相邻/重叠就并起来（`_outside_code` 要求不重叠）
+            if end > out[-1][1]:
+                out[-1] = (out[-1][0], end)
+            continue
+        out.append((start, end))
+    return out
 
 
 def _outside_code(text: str, spans) -> str:
@@ -584,21 +683,45 @@ def _outside_code(text: str, spans) -> str:
 
 
 def sanitize_markdown(text: str) -> str:
-    """收尾帧专用的 markdown 卫生（**纯函数 + 幂等**：``f(f(x)) == f(x)``）。
+    """markdown 卫生（**纯函数**；只在**完整文本**的写入上用，绝不用在流式中间帧上）。
 
-    为什么只在**收尾帧**用：它做的两件事（删游离 `**`、降级 H1–H3）都会**改写文本**，
+    为什么只能用在这些地方：它做的两件事（删游离 `**`、降级 H1–H3）都会**改写文本**，
     而流式帧的文本必须是**前缀链**（上游按「最后一次成功发出的帧文本是可见前缀」记账，
-    见 `_ld_stream_frame` 的说明）—— 中间帧改写会让前缀链断掉，表现为「回答重发一遍」。
+    见 `_ld_stream_frame` 的说明）——中间帧改写会让前缀链断掉，表现为「回答重发一遍」。
+    所以判据是「这份文本是不是**完整文本**」，不是「这是哪条调用路径」（R6a 审计中-3）：
 
-    只做两件事（围栏**上游已经补过了**，别重复补 —— R6a 的审计纠正）：
+      * **可以做**：`send()`（整条消息）、`edit_message(finalize=True)`（收尾整卡）、
+        `/stop` 的中止重绘（正文来自我们自己的追踪表，收尾帧写的就是同一段）、
+        以及 native 收尾那一帧（`cardkit` / `patch` 两条传输都走它）；
+      * **不许做**：`edit_message(finalize=False)` 与 CardKit 的**元素帧** —— 它们写的是
+        累积帧的中间态，改一个字节就断前缀链。
+
+    只做两件事（**不补围栏**：上游 `ensure_closed_code_fences` 已经补过，重复补是 R6a
+    审计的纠正；而它覆盖不到的那条路 —— 核心的「边界收尾」直接把累积原文送出来 ——
+    我们靠「未闭合围栏也算代码区」保护代码内容）：
       ① **删掉**代码区之外游离的那个 `**`；
       ② 代码区之外的 **H1–H3** 降级成加粗行。
 
-    ⚠️ 两个坑（原型实测，别重犯）：
+    ⚠️ 三个坑（前两个原型实测、第三个审计实测，别重犯）：
       * **不能「补一个 `**` 收尾」**：补出来的收尾落在整段最后，会把它后面的**全部内容**
         吞进加粗（实测 `# 标题\n正文：**A、B\n## 建议` ⇒ `**建议****`，既难看又改语义）；
       * **顺序不能反**：必须先删游离 `**`、再降级标题 —— 降级会给标题行凭空加一对 `**`，
-        把奇偶性搅乱，那时就再也分不出哪个是游离的了。
+        把奇偶性搅乱，那时就再也分不出哪个是游离的了；
+      * **删也要删对那个**：删除的判据见 :func:`_drop_unpaired_bold`（删**第一个**候选）。
+
+    **幂等的适用范围**（R6a 审计中-4：原来那句「幂等（`f(f(x)) == f(x)`）」是**假的**，
+    最小复现 `'## 用 ``` 开围栏\n## 建议\n```\ncode\n```\n'`）—— 修完之后用审计自己的
+    两条语料脚本实测（`/tmp/audit-r6a/probe_sanitize.py` 与 `probe_nonidem.py`，
+    只把 `sys.path` 指向本仓库）：
+
+      * 块拼接穷举（13 个字母表项、长度 1–3）**2379 条 → 0 条非幂等**（修之前 4 条）；
+      * 审计的现实感语料 6 万篇 → **0 条**（含「标题体里带 ``` 」的两种片段：修之前 **19.29%**）；
+      * 随机 20 万条畸形输入（字母表含反引号/井号/波浪线）→ **1 条**。
+
+    那 1 条的形状是「单独一个 `**` 夹在两对空行内代码之间」（`'aA \u200b``**``~'`）：
+    两个 `**` 之间没有任何可读内容，**删哪个都不改变用户看到的字**，只是「代码区跨度」
+    的划分变了（`` ```` `` 被并成一个跨度）。这条**不是**假的不变量，而是**写下来的已知边界**：
+    单测把该形状列进显式清单（`_KNOWN_NONIDEMPOTENT_SHAPES`），其余语料一律要求幂等成立。
     """
     if not isinstance(text, str) or not text:
         return text
@@ -606,11 +729,29 @@ def sanitize_markdown(text: str) -> str:
 
 
 def _drop_unpaired_bold(text: str) -> str:
-    """删掉代码区之外游离的那个 `**`（不补，理由见 :func:`sanitize_markdown`）。"""
+    """删掉代码区之外游离的那个 `**` —— **删第一个候选**（不补，理由见 :func:`sanitize_markdown`）。
+
+    为什么是**第一个**而不是最后一个（R6a 审计中-1：删最后一个**比不改更糟**）：
+    「模型开头漏了一个 `**`、后面又老老实实用了一对合法加粗」是最常见的形态，那时
+    候选有三个（游离的开头、合法对的开关），删**最后一个** = 把**合法对的闭合标记**拆掉
+    ⇒ 漏掉的那个 `**` 与合法对的**开**标记配成一对，中间整段正文被吞进加粗：
+
+        in : '**磁盘占用前三：A、B\\n重点关注 **/var** 这个目录'
+        删最后一个: '**磁盘占用前三：A、B\\n重点关注 **/var 这个目录'   ← 整段被吞进加粗
+        删第一个  : '磁盘占用前三：A、B\\n重点关注 **/var** 这个目录'   ← 正是想要的结果
+
+    奇偶性判据本身分不出候选，所以「删哪一个」是个**业务决定**，必须钉在测试里
+    （三条候选的形状，变异 `R6a-9`）——审计实测：把这里改成「删最后一个」四门禁**全绿**，
+    因为原来的用例在删之前只有一个候选。
+
+    ⚠️ 诚实边界：多个游离标记同时存在时（例如 `'a **b **c **d'`）删第一个**不是**幂等的
+    —— 第二遍又会出现新的「第一个」。这类输入本身没有唯一正确的 markdown 解释，
+    所以这里只保证「真实形态（游离标记 + 后文合法加粗）删对那一个」，不保证病态长串。
+    """
     spans = _code_spans(text)
     if _outside_code(text, spans).count("**") % 2 == 0:
         return text
-    for index in range(len(text) - 2, -1, -1):
+    for index in range(0, len(text) - 1):
         if text.startswith("**", index) and not any(start <= index < end
                                                     for start, end in spans):
             return text[:index] + text[index + 2:]
@@ -618,14 +759,55 @@ def _drop_unpaired_bold(text: str) -> str:
 
 
 def _demote_headings(text: str) -> str:
-    """H1–H3 降级成加粗行 —— 只看**代码区之外**的行。"""
+    """H1–H3 降级成加粗行 —— 只看**代码区之外**的行。
+
+    四条与「正文内容一个字都不许吞」以及**幂等**有关的判据（R6a 审计低-3/低-4 + 中-4）：
+
+      * **首尾只清 ASCII 空格/制表符**（`strip(" \\t")`，不是 `str.strip()`）——正文里的
+        全角空格 `# 　标题` 是**正文内容**，吞掉就是改内容（审计实测 `'# \\u3000全角空格标题'`
+        ⇒ `'**全角空格标题**'`）；
+      * **剥掉 CommonMark 的「闭合法标题」尾随序列**再包加粗：`# 标题 ####` 里的 `####`
+        本来**不显示**，不剥就变成加粗里肉眼可见的噪声（净增噪点）。只认「空白 + 若干 `#`
+        + 行尾」这一种形状（`'\\s+#+$'` 要求 `#` 之前有空白），并且**剥完会露出另一个标题行
+        时就不剥**（`'# # ```'` ⇒ `'# ```'` ⇒ `'```'` 那种连锁）；判据必须看**原始的标题体**
+        而不是 strip 之后的结果（`'# # '` 剥完是 `'#'`，单看却不像标题 —— 按 strip 后的结果
+        判的话穷举 92 条幂等反例一条都拦不住，实测）；
+      * **标题体只有标记与空白时原样不动**（`'# # '`、`'# # **'`）—— 这类输入没有可读的
+        标题正文，动一下的后果是**下一遍又动一次**；
+      * **标题体里有反引号 / `~~~` 时不做加粗降级**（幂等的**适用范围**）：降级会给标题行
+        凭空插一对 `**`，标题体里的反引号会让**下一遍扫描**的行内代码边界改变 ⇒ 刚插进去的
+        `**` 被当成游离标记删掉。审计的最小复现（普通片段拼装下 **19.29%** 命中）：
+
+            x       = '## 用 ``` 开围栏\\n## 建议\\n```\\ncode\\n```\\n'
+            f(x)    = '**用 ``` 开围栏**\\n## 建议\\n```\\ncode\\n```\\n'
+            f(f(x)) = '用 ``` 开围栏**\\n## 建议\\n```\\ncode\\n```\\n'  ← 开头的 `**` 没了
+
+        ⚠️ 这类标题**连行首标记一起留着**（不是「去掉 `#` 直接送出去」）：去掉 `#` 之后
+        `'# ```'` 会变成 `'```'` —— 那是一个**围栏开始标记**，第二遍扫描的代码区定义就变了
+        （未闭合围栏一路吃到文末），于是 `f(f(x)) != f(x)`（`'# # ```'` 实测）。
+        一个标题保住它的 `#` 总比让整段文本被重新分词好；这类标题本来就带围栏标记，
+        加粗与降级对它都没有意义。
+
+        这几条只**去掉行首标记、不插入任何字符**，是这类标题下最保守的动作
+        （丢的是观感上的加粗，换来的是「幂等」在真实语料上成立：修完之后
+        `probe_sanitize.py` 的块拼接穷举 2379 条 = **0 条非幂等**，含反引号标题的现实语料
+        6 万篇 = **0 条**）。
+    """
     spans = _code_spans(text)
 
     def _sub(match) -> str:
         if any(start <= match.start() < end for start, end in spans):
             return match.group(0)
-        body = match.group(2).strip()
-        return f"**{body}**" if body else match.group(0)
+        body = match.group(2).strip(" \t")
+        if not _HEADING_START_RE.match(match.group(2)):
+            body = _HEADING_CLOSING_RE.sub("", body)
+        if not body or _MARKER_ONLY_RE.match(body):
+            return match.group(0)
+        if _FENCE_ISH_RE.search(body):
+            # 这类标题里的围栏标记本身就说明这一行不是普通标题行 ⇒ **原样留着**
+            # （理由见 docstring：去掉 `#` 会凭空造出一个围栏开始标记）
+            return match.group(0)
+        return f"**{body}**"
     return _HEADING_RE.sub(_sub, text)
 
 

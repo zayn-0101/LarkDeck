@@ -525,6 +525,46 @@ def _card_body_bytes(body: str) -> int:
         return len(str(body or "").encode("utf-8", "ignore"))
 
 
+def _sanitize_for_send(text: str) -> str:
+    """**要发出去的这一份**做 markdown 卫生 —— 并带一道**同口径**的字节闸门。
+
+    两道判据合在一个函数里，理由（R6a 审计低-1/低-2）：
+
+      * `sanitize_markdown` 对「标题密集」的正文**只会变长**（每个降级标题 +2 字节；只有删
+        游离 `**` 才会 −2），于是存在一条窄带：**卫生前**的文本过了闸门、**卫生后**的那份
+        超出上限。审计构造过 `raw 128000 字节 / 卫生后 128080 字节（40 个标题）`。
+        收尾帧原本**一道闸门都没有**（`_ld_build_card` 刻意不截断正文），后果是发送失败 ⇒
+        fail-open 到 `edit_message`/`send()`（同样是超限卡）⇒ 再失败 ⇒ 官方纯文本分块，
+        用户从「一张卡」退化成「若干条纯文本」。
+      * 闸门必须量**要发出去的那一份**（`docs/lessons.md` 推论 13 的口径病）：量的对象
+        和发的对象不是同一份时，两个判据各自都对、合起来还是漏。
+
+    超限时**退回原文**而不是丢弃卫生后的内容：原文就是上一帧用户已经看到的那份，
+    它至少是「能发出去的」（不变量 2：宁可少一点格式，也不能丢消息）。
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    clean = _cards.sanitize_markdown(text)
+    if clean == text:
+        return text
+    size = _card_body_bytes(clean)
+    if size > _cards.FEISHU_CARD_BYTE_LIMIT:
+        _log_sanitize_reverted_once(size)
+        return text
+    return clean
+
+
+def _log_sanitize_reverted_once(size: int) -> None:
+    """卫生后的文本超上限、退回原文的限流告警（60 秒一条）—— 绝不静默。"""
+    now = time.monotonic()
+    if now - getattr(_log_sanitize_reverted_once, "_at", 0.0) < 60.0:
+        return
+    _log_sanitize_reverted_once._at = now  # type: ignore[attr-defined]
+    logger.warning("[larkdeck] markdown 卫生后的正文 %d 字节超过飞书实测硬上限 %d —— "
+                   "本次退回原文（少一点格式，不冒「卡发不出去、整条回答掉成纯文本」的风险）",
+                   size, _cards.FEISHU_CARD_BYTE_LIMIT)
+
+
 def _stop_redraw_would_paint(body: str) -> bool:
     """**真正的判据**：留下这段正文之后，`/stop` 那张卡能不能既发得出去、又带上中止色。
 
@@ -1285,6 +1325,11 @@ class LarkDeckMixin:
             # 首帧没有「已耗时」可言（这一帧就是起点），所以不带 ⏱；⏱ 由后续
             # edit_message 按 t0 计算。之前这里传的是 time.monotonic()，等于
             # 恒等于 0.0s —— 属于白占一个字段，顺手修掉。
+            # R6a 审计中-3：`send()` 写的是**一条完整消息**（不是流式累积帧的中间态），
+            # 所以卫生在这里安全 —— 不做的后果是「同一段模型输出在两条路径上长得不一样」：
+            # 走 native 收尾的回合看到降级后的标题，掉到 `send()` 的回合还露着字面 `**` 与 H1。
+            # 判据是「这份文本是不是**完整文本**」，不是「这是哪条路径」（见 cards.sanitize_markdown）。
+            content = _sanitize_for_send(content)
             card = self._ld_build_card(content, streaming=False,
                                        panel=self._ld_panel(chat_id),
                                        footer=self._ld_footer())
@@ -1303,11 +1348,19 @@ class LarkDeckMixin:
     # ------------------------------------------------------------ edit_message
     async def edit_message(self, chat_id: str, message_id: str, content: str, *,
                            finalize: bool = False):
-        """流式更新：改写我们自己发出的卡片；别人的消息交回内置实现。"""
+        """流式更新：改写我们自己发出的卡片；别人的消息交回内置实现。
+
+        R6a 审计中-3：卫生**只加在 `finalize=True`（收尾整卡）这一侧** ——
+        `finalize=False` 的每一次编辑写的是**流式累积帧的中间态**，它的文本必须与上游
+        发出来的字节一致（前缀链纪律，见 `_ld_stream_frame`），改一个字符就会让用户看到
+        回答被重发一遍。判据是「这份文本是不是完整文本」，不是「这是哪条调用路径」。
+        """
         state = self._ld_known(message_id)
         if state is None or not getattr(self, "_client", None):
             return await super().edit_message(chat_id, message_id, content, finalize=finalize)
         try:
+            if finalize:
+                content = _sanitize_for_send(content)
             card = self._ld_build_card(
                 content, streaming=not finalize,
                 panel=self._ld_panel(chat_id, state.get("t0")),
@@ -1924,14 +1977,19 @@ class LarkDeckMixin:
             return True
         message_id = state["message_id"]
         if finalize:
-            # R6a：**只在收尾帧**做 markdown 卫生（删游离 `**` + H1–H3 降级）。
+            # R6a：收尾帧做 markdown 卫生（删游离 `**` + H1–H3 降级 + **同口径字节闸门**）。
             # 为什么不能每帧做：流式帧的文本必须是**前缀链**（上游按「最后一次成功发出的
             # 帧文本是可见前缀」记账），中间帧改写会让前缀链断掉 ⇒ 回答被重发一遍。
             # 收尾帧之后不再有帧，所以在这里改写是安全的；而且用户最终看到的就是这一帧。
-            display = _cards.sanitize_markdown(display)
-            # R4：收尾只封**最新那张**卡，正文同样是本卡那一段；封掉的那几张保持原样
+            # 这条判据与 `send()` / `edit_message(finalize=True)` / `/stop` 重绘一致：
+            # 四处都是「完整文本」的写入（R6a 审计中-3）。
+            # R4：收尾只封**最新那张**卡，正文同样是本卡那一段；封掉的那几张保持原样。
+            # ⚠️ 卫生必须作用在**这一段**（切片之后）而不是累积全文：改写可能让前后长度不等
+            # （每个降级标题 −1~+2 字节），那时 `ck_offset` 就不再是切点 ⇒ 两张卡的接缝处
+            # 会凭空吞掉/重复几个字符。切片之后的这一段本身就是**完整文本**（R4 的切点只在
+            # 行首、且避开代码区），所以它满足「只在完整文本上做卫生」这个判据。
             tail_offset = int(state.get("ck_offset") or 0)
-            tail_visible = display[tail_offset:]
+            tail_visible = _sanitize_for_send(display[tail_offset:])
             card = self._ld_build_card(tail_visible or " ", streaming=False,
                                        panel=self._ld_panel(chat, state.get("t0")),
                                        footer=self._ld_footer())
@@ -1991,15 +2049,13 @@ class LarkDeckMixin:
                 offset = int(state.get("ck_offset") or 0)
                 visible = display[offset:]
                 card_id = str(state.get("card_id") or "")
-            # ⚠️ 这里**曾经**还有一道 `_card_body_bytes(visible) > 硬上限 ⇒ fail-open` 的闸门。
-            # R4 起它是**死代码**：上面那条切卡判据已经把两种情况都收口了 ——
-            #   * `visible` 没超封卡阈值（≤ 硬上限 × 0.5）⇒ 不可能超硬上限；
-            #   * 超了 ⇒ 要么切卡成功（新卡的 `visible` ≤ 尾巴预算 = 硬上限 × 0.9），
-            #     要么切不开 ⇒ 在那条分支里就 fail-open 了。
-            # 也就是说 `body_bytes` 永远是 ≤ 0.9 × 硬上限 ⇒ 这条件恒假。
-            # 留着它的代价不是「多一行」，而是**它会骗过变异验证器**：R8 收口那一轮实测
-            # `CK23`（把闸门拆掉）在整棵树上 🟢 —— 「撤掉修复必须变红」这条纪律对死代码无解。
-            # 所以**删掉**，并把那条变异重新对准**真正**的那道闸门（切不开时的早返回）。
+            body_bytes = _card_body_bytes(visible)
+            if body_bytes > _cards.FEISHU_CARD_BYTE_LIMIT:
+                # 走到这里说明「一张**全新的卡**也装不下这一帧的增量」—— 切卡帮不上忙
+                # （切点判据 ② 会拒绝），只能 fail-open 交核心回落。与切卡前的差别是：
+                # 这条路上卡里已经有前面几万字的正文，回落后核心只补发**剩余部分**。
+                _log_ck_over_budget_once(body_bytes)
+                return self._ld_stream_fail("CardKit 正文超过硬上限")
             elems = self._ld_ck_elems(state)
             dead = state.get("ck_dead")
             dead = dead if isinstance(dead, set) else set()
@@ -2353,7 +2409,17 @@ class LarkDeckMixin:
 
     async def _ld_redraw_one_stopped(self, chat: str, message_id: str, text: str,
                                      started: Any) -> bool:
-        """把**一张**卡重绘成中止态。返回是否成功。"""
+        """把**一张**卡重绘成中止态。返回是否成功。
+
+        R6a 审计中-3：这里的正文**也要过卫生** —— 它是**完整文本**（不是累积帧的中间态），
+        而且来源是我们自己的追踪表（`_ld_streams` 的 `last` / `_ld_state` 的 `last_text`），
+        收尾帧写的就是同一段文本。不做的话同一段模型输出会长成两个样子（审计实测：
+
+            正常收尾写成： ``**磁盘报告**\n占用前三：A、B``
+            被 /stop 写成： ``# 磁盘报告\n占用前三：**A、B``
+
+        ）—— 用户在「掉 native / 被 /stop / 关掉 cards」的回合里看不到任何卫生。
+        """
         try:
             # 面板是状态色**唯一**的载体，所以这里**强制**给一个 stopped 面板：
             # 只靠 `_ld_panel` 会踩到一个实测过的坑 —— 该回合还没有任何过程数据时
@@ -2361,7 +2427,7 @@ class LarkDeckMixin:
             # 「状态改了、卡片没变、还不报错」。这正是本项目最怕的形态。
             panel = self._ld_panel(chat, started) or _cards.unified_panel(
                 status=_panel.STATUS_STOPPED)
-            card = self._ld_build_card(text or " ", streaming=False,
+            card = self._ld_build_card(_sanitize_for_send(text) or " ", streaming=False,
                                        panel=panel, footer=self._ld_footer())
             blob = json.dumps(card, ensure_ascii=False)
             if '"collapsible_panel"' not in blob:
