@@ -828,7 +828,7 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
 
     async def _spy_write(card_id, element_id, content, sequence):
         ok = await original_write(card_id, element_id, content, sequence)
-        calls["content"].append((element_id, sequence, ok))
+        calls["content"].append((element_id, sequence, ok, content))
         return ok
 
     async def _spy_update(chat_id, message_id, card):
@@ -837,6 +837,30 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
 
     adapter._ld_ck_write = _spy_write
     adapter._ld_update_card = _spy_update
+    # ② 给面板**灌真实数据**（推理轮 + 工具步骤）—— 只验「正文元素」不够：
+    #    卡片的第二个元素是面板内容，必须证明它真的收到过有内容的 markdown。
+    try:
+        _panel_mod = None
+        for _name in ("hermes_plugins.larkdeck.core.panel", "larkdeck.core.panel"):
+            if _name in sys.modules:
+                _panel_mod = sys.modules[_name]
+                break
+        if _panel_mod is None:
+            import importlib as _il
+            _panel_mod = _il.import_module("hermes_plugins.larkdeck.core.panel")
+        _sid, _tid = f"probe-ck-{int(time.time())}", "probe-turn"
+        _panel_mod.reset()
+        _panel_mod.bind_chat_session(chat, _sid)
+        _panel_mod.begin_turn(_sid, _tid)
+        _panel_mod.record_reasoning(_sid, _tid, "先想一下这个问题该怎么拆。")
+        _panel_mod.record_answer_delta(_sid, _tid)          # 正文开始 ⇒ 切断第 1 轮
+        _panel_mod.record_reasoning(_sid, _tid, "再看一眼工具。")
+        _panel_mod.record_tool_started(_sid, _tid, "terminal", args={"command": "ls"})
+        _panel_mod.record_tool_finished(_sid, _tid, "terminal", duration_ms=42, status="ok")
+        print("   已灌面板数据（1 个工具 + 2 轮推理）")
+    except Exception as exc:
+        print(f"   ⚠️ 面板数据灌不进去（{exc!r}）—— 面板元素会只有占位空格")
+
     text = ("这是**生产路径**的 CardKit 传输验证：正文会逐字往外冒。") * 3
     try:
         _set_probe_config(adapter, native_transport="cardkit")
@@ -866,10 +890,14 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
         _set_probe_config(adapter, native_transport="patch")
 
     writes = [c for c in calls["content"]]
-    print(f"   元素写入 {len(writes)} 次：{writes}")
+    print(f"   元素写入 {len(writes)} 次：{[(w[0], w[1], w[2]) for w in writes]}")
+    panels = [w for w in writes if w[0] == "panel_body" and w[2]]
+    print(f"   面板元素成功写入 {len(panels)} 次（必须 ≥1，否则面板内容根本没上卡）")
+    if panels:
+        print(f"   面板最后一次内容预览：{panels[-1][3][:70]!r}")
     print(f"   收尾 patch {calls['patch']} 次")
     ok = (bool(state) and card_id and writes and calls["patch"] == 1
-          and all(w[2] for w in writes))
+          and all(w[2] for w in writes) and bool(panels))
     if ok:
         print("✅ 生产路径的 CardKit 传输真机通过（建实体 + 元素写入 + patch 收尾）")
         print("   ⚠️ 这些卡的 id 没进账本（收尾后 stream state 已清）—— 看够了就叫我删。")
