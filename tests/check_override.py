@@ -201,6 +201,23 @@ else:
     print(f"probe_report(bare) missing_reactions={_bare_report.get('missing_reactions')!r} "
           f"missing_signal={_bare_report.get('missing_signal')!r}")
 
+# ⚠️ 启动自检那行日志要**自报传输**（`native 传输 cardkit|patch`）。这条断言放在这儿而不是单测里，
+# 因为它要看的是**真加载器 + 真配置桥接**跑完之后的 `SELFCHECK` —— 那正是运维在日志里读到的那句
+# 话。没有它，「默认翻了但没重启」「进程还在跑旧传输」这两件事都只能靠猜。
+_admin_mod = sys.modules.get("hermes_plugins.larkdeck.core.adapter")
+if _admin_mod is None:
+    problems.append("拿不到 hermes_plugins.larkdeck.core.adapter（加载器命名空间变了？）")
+else:
+    _selfcheck = getattr(_admin_mod, "SELFCHECK", None) or {}
+    _detail = str(_selfcheck.get("detail") or "")
+    _declared = str((getattr(_admin_mod, "_DEFAULTS", None) or {}).get("native_transport"))
+    print(f"启动自检 detail: {_detail}")
+    if _selfcheck.get("ok") is not True:
+        problems.append(f"启动自检没通过：ok={_selfcheck.get('ok')!r} detail={_detail!r}")
+    if f"native 传输 {_declared}" not in _detail:
+        problems.append(f"启动自检没有自报传输：期望含 'native 传输 {_declared}'，"
+                        f"实得 {_detail!r}")
+
 if problems:
     for p in problems:
         print("FAIL:", p)

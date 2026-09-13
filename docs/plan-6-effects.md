@@ -477,7 +477,7 @@ seed 占位 → 面板出现 → 占位消失 → 收尾绿边且关 streaming_m
 | # | 效果 | 实现位置 | 默认 | 验证到 |
 |---|---|---|---|---|
 | 1a | 即时响应（首帧早于首个 token） | native seed 帧（核心契约，`stream_frame("")` 建卡）+ 等待期占位文案 | 开 | **A** + **E**（seed 帧必须带占位且 `streaming_mode: true`）+ 真机 `code=0`（探针 ⓪ 号卡） |
-| 1b | 打字机（**逐字**） | `native_transport: "cardkit"` → CardKit 实体（`card.create` + 发实体卡）+ 每帧 `card_element.content` 写正文与面板两个元素；收尾用 `message.patch` 整卡替换 | **开（`cardkit` 是默认**，2026-09-13 翻的；想回旧路径配 `patch`） | **B**（整链真机 `code=0`）+ **C ✅**（**用户肉眼判定**：甲「几个字几个字地跳」、乙「一个字一个字往外冒」⇒ 逐字必须走 CardKit）+ **D**（`--cardkit-prod` 走**生产代码路径**真机通过：建实体 + 4 次元素写入 + 1 次 patch 收尾） |
+| 1b | 打字机（**逐字**） | `native_transport: "cardkit"` → CardKit 实体（`card.create` + 发实体卡）+ 每帧 `card_element.content` 写正文与面板两个元素；收尾用 `message.patch` 整卡替换 | **开（`cardkit` 是默认**，2026-09-13 翻的；想回旧路径配 `patch`） | **B**（整链真机 `code=0`）+ **C ✅**（**用户肉眼判定**：甲「几个字几个字地跳」、乙「一个字一个字往外冒」⇒ 逐字必须走 CardKit）+ **D**（`--cardkit-prod` 走**生产代码路径**真机通过：建实体 1 次 + 发实体卡 1 次 + 元素写入 6 次（3 帧 × 正文/面板两个元素）+ patch 收尾 1 次） |
 | 1c | 无输入提示 | 覆盖 `_reactions_enabled()`（配置 `reactions`，默认保持 Hermes 行为） | 保持 | **A**（覆盖逻辑 + **尊重父类** + 私有名已登记进 `compat.REACTION_ADAPTER_ATTRS` 并在启动自检里上报；此前「父类缺失」那条路无门禁，第六路审计指出后已补） |
 | 2 | 完成态绿色面板 | `on_session_end` → `panel.record_turn_end` → `cards.border_for_status` | 开 | **A** + **B**（三种状态色的探针卡都被飞书接受）+ **D**（超预算档也保住颜色：`--stop-redraw` 真机实测载荷里有色、`code=0`）+ **E**（收尾帧必须绿边、必须关 `streaming_mode`、不许带占位） |
 | 3 | 中止黄边 / 报错红边 | 同上 + 覆盖 `interrupt_session_activity` 自己重绘 | 开 | **A**（含「空回合也要画出黄边」「必须落在绑定会话」）+ **B** + **D**（**60000 字节正文**的卡：正文留住 + 载荷带黄边 + 飞书 `code=0`，真机端到端；见第十四轮）+ **E**（`/stop` 之后至少一次写入且载荷含中止色） |
@@ -580,7 +580,7 @@ seed 占位 → 面板出现 → 占位消失 → 收尾绿边且关 streaming_m
 
 ---
 
-## 阶段 9（**已实现，默认仍 `patch`**）：CardKit 实体传输 —— 只为「打字机」这一项
+## 阶段 9（**已实现，且已是默认传输**）：CardKit 实体传输 —— 只为「打字机」这一项
 
 > **状态更正（2026-09-13）**：本节下面写的是它**决策时**的样子（原始推理与设计边界，
 > 原样保留）。它**已经实现**了 —— 实施记录、真机结果、第十一路审计与「翻默认」的前提
@@ -699,7 +699,7 @@ CardKit 就是纯粹多余的复杂度**（多一条传输、多一套失败模�
 乙是一个字一个字往外冒的」。甲 = 普通卡 + `message.patch`，乙 = CardKit 实体 +
 `card_element.content`。**逐字只有 CardKit 给得了**，所以这一阶段必须做。
 
-**实现**（commit `8ebd8fc`）：配置 `native_transport: "patch" | "cardkit"`，**默认仍是 `patch`**。
+**实现**（commit `8ebd8fc`，默认值于 `72a78a3` 翻成 `cardkit`）：配置 `native_transport: "patch" | "cardkit"`。
 只换 native 流式帧的传输，`send` / `edit_message`（非 native 路径）、澄清卡、探针都不动。
 `cards.cardkit_entity_card` 建结构（正文元素 + 折叠面板内一个 markdown 子元素），
 `_ld_ck_create` / `_ld_ck_write` / `_ld_stream_frame` 走三步：建实体 → 每帧按 `element_id`

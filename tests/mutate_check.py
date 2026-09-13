@@ -333,6 +333,11 @@ MUTATIONS = [
      '        return "cardkit" if str(_cfg_raw("native_transport") or "").strip() == "cardkit" else "patch"',
      '        return "patch"',
      "test_units"),
+    # 启动自检那行日志是「这个进程到底在跑哪条传输」的唯一自证手段（真机上没有别的办法看见）。
+    ("CK10-启动自检不再自报 native 传输", "core/adapter.py",
+     '        detail += f" · native 传输 {LarkDeckMixin._ld_transport()}"',
+     '        pass',
+     "check_override"),
     # ---- 第十一路审计：CardKit 的三条「门禁说绿、真机说 300301」----------------- #
     ("M30-两个元素 id 撞车", "core/cards.py",
      'CARDKIT_ANSWER_ID = "answer"\nCARDKIT_PANEL_ID = "panel"\nCARDKIT_PANEL_BODY_ID = "panel_body"',

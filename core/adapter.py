@@ -1847,6 +1847,10 @@ def register(ctx: Any) -> None:
     if ours:
         hooks_ok = [name for name, ok in HOOKS.items() if ok]
         detail = f"Hermes {_compat.hermes_version()} · feishu 平台已由 larkdeck 接管"
+        # 传输必须自报：默认值翻了之后，「这个进程到底在跑哪条传输」在真机上**没有别的自证手段**
+        # （探针验的是它自己那个进程；卡片长得像不像逐字只有眼睛能判）。这一行让日志能直接回答
+        # 「现在生效的是 patch 还是 cardkit」，也让「翻了默认却没重启」当场看得出来。
+        detail += f" · native 传输 {LarkDeckMixin._ld_transport()}"
         detail += (f" · 钩子 {'/'.join(hooks_ok)}" if hooks_ok
                    else " · 未订阅到钩子（页脚缺模型/上下文用量）")
         _remember_selfcheck(True, detail)
