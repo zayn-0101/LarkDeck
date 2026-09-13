@@ -1331,10 +1331,31 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         old_interval = adapter._STREAM_MIN_INTERVAL
         adapter._STREAM_MIN_INTERVAL = 0.0        # 帧节流窗口：测试里连发两帧要都能过
         adapter.LarkDeckMixin._ld_ck_requests = staticmethod(_fake_requests)
+        # ── R9 自检账本在这条**默认传输（cardkit）**的真机主路径上必须自证（审计高-1）。
+        #    审计实测：把 seed 处或元素写成功分支的 `note_frame_ok()` 换成 `pass`，**四门禁全绿** ——
+        #    而代价是 `/larkdeck status` 永远说「最近写卡：无记录 · 累计 0 次」，用户眼前却躺着
+        #    一张逐字往外冒的卡。下面这几条**硬编码**的数字就是为此钉的。
+        #    ⚠️ 数字全部**写死**（不许用 `len(calls[...]) + 2` 这类由被测代码推出的期望值 ——
+        #    那就是自证循环：变异把记账撤掉，期望值跟着掉，断言照样绿）。推导过程：
+        #      seed 建实体 = 1（`card.create` + 发实体卡两次网络调用算**一帧**，见 context 的口径）
+        #      四帧正文   = 4（每帧只写元素，不经 `_ld_update_card`）
+        #      收尾 patch = 1（走 `_ld_update_card`）
+        #    合计 6。
+        #    ⚠️ 断言位置：**必须放在本用例中途那次 `context.reset()` 之前**（它在 ⑱ 段的
+        #    「量 footer 之前先把采集数据清掉」那几行）。选择「提前断言」而不是「在 reset 后重新
+        #    灌一遍计数」：后者要手工调 `note_frame_ok()` 造数，那验的就是我自己造的账、
+        #    不是这次跑出来的账（lessons 推论 19 的第三形态）。所以这里逐段钉，顺带给出
+        #    「哪一段漏记」的直接证据。
+        context.reset()
         assert _run(raw.send_stream_frame("", chat_id="oc_ck", turn_id="t-ck"))
+        assert context.status_snapshot()["frame_ok_count"] == 1, \
+            f"cardkit 的 seed 建实体没记账（默认传输下这一帧等于不存在）：" \
+            f"{context.status_snapshot()}"
         assert calls["create"] == 1 and calls["send"] == 1, calls
         assert _run(raw.send_stream_frame("正文一", chat_id="oc_ck", turn_id="t-ck"))
         assert _run(raw.send_stream_frame("正文一，正文二", chat_id="oc_ck", turn_id="t-ck"))
+        assert context.status_snapshot()["frame_ok_count"] == 3, \
+            f"cardkit 的元素写帧没记账（真机主路径）：{context.status_snapshot()}"
         # ── 下面两帧专门验 R2 的「**未变化不重写**」：装饰只在内容真的变了时才发那一次 batch。
         #    驱动用的是**真的数据层**（页脚走 `context`、面板走 `panel`），不是替身 ——
         #    这条规则唯一的失败形态是「装饰静默冻结」，只有在真数据层上才验得出来。
@@ -1352,6 +1373,8 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         assert raw._ld_panel_markdown("oc_ck", None), "⑱ 前提：面板到这一帧必须有内容"
         assert _run(raw.send_stream_frame("正文一，正文二，正文三，正文四",
                                           chat_id="oc_ck", turn_id="t-ck"))
+        assert context.status_snapshot()["frame_ok_count"] == 5, \
+            f"四帧正文后应是 1(seed) + 4(元素写) = 5 帧：{context.status_snapshot()}"
         ids = [c[0] for c in calls["content"]]
         seqs = [c[2] for c in calls["content"]]
         batch_ids = [[a["params"]["element_id"] for a in b[0]] for b in calls["batch"]]
@@ -1390,6 +1413,12 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         # 写入预算的**观测量**（附录 B 的第二条断言）：预算里的数字是算出来的，而这里是
         # 「真跑四帧、数一数 API 调用」——只锁算式的话，「每帧多写一次」这种实现照样全绿。
         assert calls["writes"] == 7, f"四帧一共 7 次写：{calls['writes']}"
+        # ⚠️ 这个 7 是**跨源等式的一半**（R9 审计中-5 的「自证」教训）：上面那条账本断言
+        # （四帧后 = 5）用的是「seed 1 + 元素帧 4」这个**写死**的推导，而这里独立地数
+        # 「SDK 边界上到底发生了几次写」。两者一个来自我们的账面、一个来自调用账本 ——
+        # 只有两个来源**都**成立，那条等式才不是「拿账本核账本」。
+        assert calls["writes"] == 1 + 3 + 3, \
+            f"四帧的写入构成（首帧 batch 2 元素 + content，中间帧各一次 content）：{calls['writes']}"
         assert calls["writes"] <= adapter._CK_WRITES_PER_FRAME * 4, \
             f"每帧写入次数不得超过预算 {adapter._CK_WRITES_PER_FRAME}：{calls['writes']}/4 帧"
         # 收尾帧走的是 `_ld_update_card`（= 普通 patch）—— 这里打桩记录，因为单测环境没有 SDK，
@@ -1405,6 +1434,10 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                                           chat_id="oc_ck", turn_id="t-ck"))
         assert len(finalized) == 1 and finalized[0][1] == "om_ck_1", finalized
         assert calls["patch"] == 0, "收尾不该写元素（应整卡替换）"
+        # 收尾这一帧也要记账 —— 但这里把 `_ld_update_card` 换成了**录音替身**（见上），
+        # 所以底层的收口点没跑：这一条**不能**在这里断言（会验成「替身记没记账」）。
+        # 收尾帧的记账由 `test_ledger_counts_send_edit_stop_and_never_double_counts`
+        # 用**真原语** + 真 patch 边界单独钉住（lessons 推论 19 的第三形态：别断言替身）。
 
         # ② 写**正文**元素失败（面板那条仍成功）⇒ 这一帧必须返回 False
         #    （核心据此停用 native 并回落 edit/send）。这一条专门堵「吞掉正文失败」那种变异：
@@ -6283,7 +6316,13 @@ def test_status_lines_never_claim_healthy_without_records():
     assert "正常" not in "".join(lines), "没有任何证据却给自己发了张健康证明"
     # ⚠️ **累计次数**必须一起显示：只有「最近一次是什么时候」的话，刚重启的进程与
     # 「跑了三天、一次没失败」看起来完全一样。
-    assert lines[0].endswith("累计 0 条消息") and lines[1].endswith("累计 0 次"), lines
+    # ⚠️ 写卡那行的尾巴在 R9 审计中-5 之后**故意**变长了（多一句口径说明）：
+    # 它数的是**帧数**，不是 API 调用次数（cardkit 一帧最多 3 次逻辑写、seed 是 2 次网络调用、
+    # 撞限流一次逻辑写最多 4 次 HTTP，全都只 +1）⇒ 断言跟着**改口径**，不是放松：
+    # 仍然要求「字面量 `累计 0`」+ 仍然要求出现「帧」这个单位词（含糊写「次」会让用户以为
+    # 它数的是写动作，而 patch 车道恰好一比一，纯属巧合 —— 审计中-5 指出的病）。
+    assert lines[0].endswith("累计 0 条消息"), lines
+    assert "累计 0 帧真的有写出" in lines[1], lines
 
 
 def test_status_lines_report_real_records_with_time_and_count():
@@ -6295,8 +6334,37 @@ def test_status_lines_report_real_records_with_time_and_count():
     context.note_frame_fail("收尾帧失败（boom）")
     inbound, written, failed = context.status_lines()
     assert re.match(r"^入站心跳：\d\d-\d\d \d\d:\d\d:\d\d · 累计 2 条消息$", inbound), inbound
-    assert re.match(r"^最近写卡：\d\d-\d\d \d\d:\d\d:\d\d · 累计 1 次$", written), written
+    # 写卡行：时刻 + **帧数**（口径见中-5）+ 单位说明。用「累计 1 帧」而不是「累计 1 次」，
+    # 这样「把帧说成 API 调用次数」那种文案退化会当场红。
+    assert re.match(r"^最近写卡：\d\d-\d\d \d\d:\d\d:\d\d · 累计 1 帧真的有写出"
+                    r"（帧数，不是 API 调用次数）$", written), written
     assert "累计 1 次" in failed and "收尾帧失败（boom）" in failed, failed
+    # 失败行也要写清口径（中-2）：它只算**我们发起且失败**的写，不含「没活跃流可收尾」
+    # 那种按契约返回 False 的正常路径 —— 不写的话用户会拿它当「核心收到几个 False」的证据。
+    assert "只算我们发出且失败的写" in failed, failed
+
+
+def test_when_rejects_dirty_timestamps_below_the_epoch_floor():
+    """`_when` 的判据是「在一个**真实运行时刻的合理范围内**」，不是「正数」（R9 审计低-3）。
+
+    修之前只判 `ts > 0`，于是 `1e-6` 会渲染成 `01-01 08:00:00`（本地时区下的 1970-01-01）——
+    一个**看起来像真时刻**的脏值。用户会以为插件刚刚写过卡 / 刚收到过消息，
+    而正确处置是「无记录」（与「读不到就说读不到」同一条纪律）。
+    ⚠️ 这条必须**直接打 `_when`**：账本里写入的时刻都来自 `time.time()`（≈1.7e9），
+    脏值只可能从别处（手工写入 / 反序列化 / 未来某个新的写入点）进来 ——
+    只经 `status_lines()` 是**永远碰不到**这条判据的（第一版断言就是这样，变异 R9-19 全绿）。
+    """
+    real = time.time()
+    # 真实时刻附近必须**照常**格式化（别把闸门收得过紧）
+    assert re.match(r"^\d\d-\d\d \d\d:\d\d:\d\d$", context._when(real)), context._when(real)
+    assert re.match(r"^\d\d-\d\d \d\d:\d\d:\d\d$", context._when(real - 0.5))
+    for dirty in (0, 0.0, 1e-6, -1, float("nan"), float("inf"), float("-inf"),
+                  True, "1700000000", None):
+        assert context._when(dirty) == "无记录", \
+            f"脏时刻 {dirty!r} 被渲染成了「{context._when(dirty)}」—— 它看着像真时刻，必须写「无记录」"
+    # 边界：正好在闸门上（`_EPOCH_FLOOR` = 1e9）**算有效**，早一秒就无效 —— 判据是 `<` 不是 `<=`。
+    assert context._when(context._EPOCH_FLOOR) != "无记录", "闸门本身应当被接受（判据是 `<`）"
+    assert context._when(context._EPOCH_FLOOR - 1) == "无记录"
 
 
 def test_status_reason_is_collapsed_and_bounded():
@@ -6324,6 +6392,82 @@ def test_inbound_heartbeat_is_recorded_by_the_real_hook_callback():
         event=types.SimpleNamespace(source=types.SimpleNamespace(chat_id="oc_probe")),
         session_store=object())          # 归属查不到（缺 peek_session_id）
     assert context.status_snapshot()["inbound_count"] == 1
+
+
+def test_inbound_heartbeat_is_the_first_statement_of_the_callback():
+    """R9 审计中-3 的正题：心跳必须**记在回调第一行**，不能被兄弟调用的异常吞掉。
+
+    修之前的形态：`note_inbound()` 是同一个 `try` 块的**最后一条语句**，前面还有
+    `_compat.lookup_session_id` 与 `_panel.bind_chat_session`（**另外两个模块**的代码）。
+    审计 `work/xhb6.py` 用真加载器 + 真钩子派发器实测：绑定正常 ⇒ `inbound_count=1`、
+    绑定抛异常 ⇒ **0**（心跳被同一个 `except Exception` 吞掉）。而心跳正是用来回答
+    「消息到底到没到插件」的唯一凭据 —— 那一次归因会把用户带到**错误方向**
+    （README 旧措辞直接写着「心跳不动 ⇒ 消息根本没到插件」）。
+
+    这里用两半钉住它（都不依赖任何替身指标）：
+      ① 归属绑定**真的抛** ⇒ 心跳仍然要记（这是审计的最小复现）；
+      ② 载荷缺 `source` / `chat_id` 时**提前 return** ⇒ 心跳更要在 return 之前记下
+         （否则那类消息会让用户以为插件整个没收到消息）。
+    """
+    context.reset()
+    # ⚠️ **打桩要打在钩子真正读的那个模块对象上**（`hooks._context`），不是测试文件里那个
+    # `context` 名字上：两者**通常是**同一个模块，但一旦不是（双模块对象 —— 见
+    # `docs/lessons.md` 里「用加载器那份 context」那条），打在 `context` 上的桩就完全看不见，
+    # 断言会读一个永远不变的计数而**假绿**（这条实测踩到过：变异 R9-17 因此四门禁全绿）。
+    # 所以下面既断言身份、又直接在 `hooks._context` 上打桩。
+    assert hooks._context is context, \
+        "钩子读的 context 与测试读的不是同一个模块对象 —— 下面的打桩会看不见"
+    real_bind = panel.bind_chat_session
+    try:
+        def _boom(chat_id, session_id):
+            raise RuntimeError("bind boom（另一个模块的 bug，与心跳无关）")
+
+        panel.bind_chat_session = _boom
+        hooks._on_pre_gateway_dispatch(
+            event=types.SimpleNamespace(source=types.SimpleNamespace(chat_id="oc_hb")),
+            session_store=object())
+        assert context.status_snapshot()["inbound_count"] == 1, \
+            "归属绑定抛异常把心跳一起吞掉了（心跳必须记在它之前）"
+    finally:
+        panel.bind_chat_session = real_bind
+
+    # ② 载荷不全（三个早退分支）时心跳更要在 return **之前**记下：那类消息**确实到了
+    #    插件的钩子回调**，而「心跳动不动」正是判「消息到没到插件」的唯一凭据。
+    #    ⚠️ 判据用的是「**归属绑定有没有被调用**」而不是心跳计数（第二轮实测教训）：
+    #    计数断言会随「心跳记在哪个位置」变化 —— 把心跳挪到早退分支之前，计数照样对；
+    #    而「拿不到 chat_id 就不该去绑归属」是这三个分支的**行为事实**，
+    #    任何「在绑归属之前就 return」的改动都会让它变红（变异 `R9-17` 就是这么验的）。
+    # ⚠️ **这条判据第一版写错了，留在这里免得下一个人重踩**：我先断言的是「拿不到
+    #    `chat_id` 就不该去绑归属」（`panel.bind_chat_session` 不被调用）。实测把那三个
+    #    早退分支整个删掉它**照样全绿** —— 因为 `chat_id` 为空时 `session_key_for_source()`
+    #    算出的键是空串，`lookup_session_id("")` 直接返回 `""`，于是 bind **本来就不会被调用**。
+    #    那条断言守的是一件**恒真**的事（lessons 推论 6/19 的形态）。
+    #    正确观测点是**心跳本身**：它是这三个分支唯一的副作用。
+    calls = []
+    target = hooks._context                    # ⚠️ 必须打在钩子真正读的那个模块对象上
+    assert target is context, \
+        "钩子读的 context 与测试读的不是同一个模块对象 —— 打在 context 上的桩会看不见"
+    real_note = target.note_inbound
+    try:
+        def _count():
+            calls.append(1)
+            return real_note()
+
+        target.note_inbound = _count
+        # 先自证桩**真的生效**（否则下面的「没被调用」是假的 —— 打错了对象就是这种形状）
+        hooks._on_pre_gateway_dispatch(event=types.SimpleNamespace(
+            source=types.SimpleNamespace(chat_id="oc_probe2")), session_store=object())
+        assert len(calls) == 1, "打桩自证失败：桩没被钩子调用到（打错对象了？）"
+        calls.clear()
+        for bad in ({"event": None, "session_store": object()},
+                    {"event": types.SimpleNamespace(source=None), "session_store": object()},
+                    {"event": types.SimpleNamespace(source=types.SimpleNamespace(chat_id="")),
+                     "session_store": object()}):
+            hooks._on_pre_gateway_dispatch(**bad)
+        assert len(calls) == 3, \
+            f"载荷不全的入站消息没记心跳（{len(calls)}/3：它确实到了插件的钩子回调）"
+    finally:
+        target.note_inbound = real_note
 
 
 def test_frame_ledger_counts_only_real_card_writes():
@@ -6363,6 +6507,221 @@ def test_frame_ledger_counts_only_real_card_writes():
         adapter._STREAM_MIN_INTERVAL = old_interval
         context.reset()
         panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_ledger_counts_send_edit_stop_clarify_and_never_double_counts():
+    """R9 审计中-1：**每一次真的写卡**都要记，而且**同一帧只能记一次**。
+
+    背景（审计 `work/ledger_probe.py` A 段实测）：修之前账本的 7 个调用点全在
+    ``_ld_stream_frame`` 里，于是非 native 的官方卡片路径 —— ``send()`` 首发、
+    ``edit_message()`` 非流式帧、``send_clarify`` 澄清卡、``/stop`` 的中止重绘 ——
+    **真的写了卡却一个数都不加**：`send()` 成功那一刻，状态卡照样说三行全「无记录」，
+    而用户 DM 里明明躺着一张卡（README 当时还写着「建卡（首发 / 建实体）…都算」）。
+    修法是**把记账下移到低层写卡收口点**（``_ld_send_card`` / ``_ld_update_card``）：
+    由构造保证「一次写一笔」，而不是靠「记得在调用方也加一句」。
+
+    判别力：突变 `R9-9`（`_ld_send_card` 成功却不记）/ `R9-10`（`_ld_update_card` 成功却不记）
+    必须让这条红。**反向**也要钉住：同一帧不能记两笔（`R9-12`）。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    context.reset()
+    try:
+        # ── ① `send()` 首发：这是「非 native 或掉回非 native」时用户看到的那张卡
+        raw = _make()
+        _wire_patch(raw)
+        assert _run(raw.send("oc_1", "回答正文")) is not None
+        assert context.status_snapshot()["frame_ok_count"] == 1, \
+            f"`send()` 真的发出了一张卡却没记账（审计的实测形态）：{context.status_snapshot()}"
+        # 反面对偶：**发失败回落纯文本**不许记（那时一个字节都没写出去）—— 否则
+        # 「写卡」这一行会在卡片全坏的情况下照样往上涨。
+        refused = _make()
+        refused._fail_cards = True
+        assert _run(refused.send("oc_2", "回答正文")) is not None      # 回落 super() 的纯文本
+        assert context.status_snapshot()["frame_ok_count"] == 1, \
+            "卡没发出去（回落纯文本）却记成了「写卡」"
+
+        # ── ② 同一次写不许记两笔：`_ld_send_card` 与调用方都在记就会变成 +2
+        #    （这正是「把记账挪到低层」最容易引入的新病）
+        assert context.status_snapshot()["frame_ok_count"] == 1, \
+            f"同一次发送被记了不止一笔：{context.status_snapshot()}"
+
+        # ── ③ 非流式 `edit_message()`：我们自己发的卡被改写（非 native 流式的每一帧都走它）
+        _wire_patch(raw)
+        assert _run(raw.edit_message("oc_1", "om_card_1", "改过的正文")) is not None
+        assert context.status_snapshot()["frame_ok_count"] == 2, \
+            f"非流式 `edit_message` 改写了卡却没记账：{context.status_snapshot()}"
+
+        # ── ④ `/stop` 的中止重绘：真的 patch 出去了一张中止色的卡
+        assert _run(raw.interrupt_session_activity("sess-1", "oc_1")) is None
+        assert context.status_snapshot()["frame_ok_count"] == 3, \
+            f"`/stop` 的中止重绘写了卡却没记账：{context.status_snapshot()}"
+
+        # ── ⑤ 澄清卡 `send_clarify` 也是一张真的发出去了的卡
+        _fake_clarify_gateway([])
+        try:
+            assert _run(raw.send_clarify("oc_3", "选一个？", ["A", "B"], "c1", "sess-1")) is not None
+        finally:
+            _drop_fake_clarify_gateway()
+        assert context.status_snapshot()["frame_ok_count"] == 4, \
+            f"澄清卡发出去了却没记账：{context.status_snapshot()}"
+
+        # ── ⑥ **同一帧绝不记两次**（R9 审计中-1 最要紧的那半）：
+        #    `DEGRADE` 车道那一帧**既写了元素、又整卡 patch 了一次**；
+        #    以及 cardkit 的 seed 帧 = `card.create` + 发实体卡**两次网络调用**。
+        #    两种都只能 +1（账本数的是「帧」，不是写动作次数 —— 口径见中-5）。
+        def _degrade_requests():
+            return types.SimpleNamespace(
+                create_card=lambda card_json: types.SimpleNamespace(
+                    request_body={"card_json": card_json}),
+                write_element=lambda cid, eid, content, seq, uuid_value: types.SimpleNamespace(
+                    card_id=cid, element_id=eid,
+                    request_body=types.SimpleNamespace(content=content, sequence=seq,
+                                                       uuid=uuid_value)),
+                batch_update=lambda cid, actions, seq, uuid_value: types.SimpleNamespace(
+                    card_id=cid,
+                    request_body=types.SimpleNamespace(actions=json.dumps(actions),
+                                                       sequence=seq, uuid=uuid_value)),
+                settings_card=lambda cid, payload, seq, uuid_value: types.SimpleNamespace(
+                    card_id=cid,
+                    request_body=types.SimpleNamespace(settings=payload, sequence=seq,
+                                                       uuid=uuid_value)),
+                send_entity=lambda receive_id, card_id: types.SimpleNamespace(
+                    receive_id=receive_id, card_id=card_id,
+                    request_body=types.SimpleNamespace(
+                        content=json.dumps({"type": "card", "data": {"card_id": card_id}}),
+                        msg_type="interactive", uuid=f"ld-msg-{card_id}")),
+                reply_entity=lambda reply_to, card_id: types.SimpleNamespace(
+                    reply_to=reply_to, card_id=card_id,
+                    request_body=types.SimpleNamespace(
+                        content=json.dumps({"type": "card", "data": {"card_id": card_id}}),
+                        msg_type="interactive", uuid=f"ld-msg-{card_id}",
+                        reply_in_thread=False)),
+            )
+
+        class _Resp:
+            def __init__(self, code=0, msg=None, **data):
+                self.code = code
+                self.msg = msg if msg is not None else ("success" if code == 0 else "boom")
+                self.data = types.SimpleNamespace(**data) if data else None
+
+            def success(self):
+                return self.code == 0
+
+        calls = {"create": 0, "send": 0, "content": 0, "batch": 0, "patch": 0}
+
+        class _Card:
+            def create(self, request):
+                calls["create"] += 1
+                return _Resp(0, card_id="ck_d1")
+
+            def batch_update(self, request):
+                calls["batch"] += 1
+                # 装饰批量拿到**卡级死法**（会话已被关掉）⇒ 这一帧走 DEGRADE 车道
+                return _Resp(300309)
+
+            def settings(self, request):
+                return _Resp(0)
+
+        class _Elem:
+            def content(self, request):
+                calls["content"] += 1
+                return _Resp(0)          # 正文照常写成功
+
+        class _Msg:
+            def create(self, request):
+                calls["send"] += 1
+                return {"code": 0, "data": {"message_id": "om_d1"}}
+
+            def reply(self, request):
+                calls["send"] += 1
+                return {"code": 0, "data": {"message_id": "om_d1"}}
+
+            def patch(self, request):
+                calls["patch"] += 1
+                return {"code": 0, "data": {"message_id": "om_d1"}}
+
+        rawd = _make()
+        rawd._client = types.SimpleNamespace(
+            cardkit=types.SimpleNamespace(v1=types.SimpleNamespace(card=_Card(),
+                                                                   card_element=_Elem())),
+            im=types.SimpleNamespace(v1=types.SimpleNamespace(message=_Msg())))
+        adapter.configure(native_transport="cardkit", unified_panel=True)
+        old_reqs2 = adapter.LarkDeckMixin._ld_ck_requests
+        old_interval2 = adapter._STREAM_MIN_INTERVAL
+        # ⚠️ 帧节流窗口必须归零：默认 0.25s 下第二帧会被当成「窗口内的中间帧」跳过
+        # （实测：不归零时下面的 patch 断言红，而失败原因与记账毫无关系 —— lessons 推论 19
+        # 的第一形态：断言被另一个**更早的失败**顺带满足/挡住）。
+        adapter._STREAM_MIN_INTERVAL = 0.0
+        adapter.LarkDeckMixin._ld_ck_requests = staticmethod(_degrade_requests)
+        try:
+            context.reset()
+            assert _run(rawd.send_stream_frame("", chat_id="oc_d", turn_id="t-d"))
+            after_seed = context.status_snapshot()["frame_ok_count"]
+            assert after_seed == 1, \
+                (f"cardkit 的 seed 帧是两次网络调用（建实体 + 发实体卡）但只是**一帧**，"
+                 f"应当 +1，实得 {after_seed}（`card.create`={calls['create']} "
+                 f"`message.create`={calls['send']}）")
+            # 装饰批量拿到**卡级死法**（`300309`：会话已被关掉）⇒ 这一帧走的是
+            # `ok and degrade_code`（正文已经写成功、降级决定落进状态，**本帧不 patch**）。
+            # 这一帧=帧路径里那句 `note_frame_ok()` 唯一守着的地方之一，而且它**只写元素**
+            # （不经 `_ld_update_card`）—— 撤掉它，下面这个 2 就变成 1。
+            assert _run(rawd.send_stream_frame("正文", chat_id="oc_d", turn_id="t-d")), \
+                "装饰拿到卡级死法时这一帧仍算成功（正文已落盘）"
+            assert calls["content"] == 1 and calls["patch"] == 0, calls
+            assert (rawd._ld_stream_get("oc_d:t-d") or {}).get("ck_degrade") == 300309, \
+                "前提：这一帧必须真的进了降级分支，否则下面的计数断言守的是别的路径"
+            after_element = context.status_snapshot()["frame_ok_count"]
+            assert after_element == 2, \
+                (f"cardkit 的元素写帧（**不经** `_ld_update_card`）应当 +1（1 → 2），"
+                 f"实得 {after_element}（patch {calls['patch']} 次）")
+            # 下一帧才是 DEGRADE 的**真 patch**（后续帧走整卡替换）—— 那一帧也只能 +1
+            assert _run(rawd.send_stream_frame("正文二", chat_id="oc_d", turn_id="t-d"))
+            assert calls["patch"] == 1, calls
+            after_degrade = context.status_snapshot()["frame_ok_count"]
+            assert after_degrade == 3, \
+                (f"降级之后那一帧只做了一次整卡 patch，应当 +1（2 → 3）—— 变成 4 说明"
+                 f"**同一帧被记了两次**（帧路径与底层原语都在记，这正是把记账下移最容易引入的病）："
+                 f"实得 {after_degrade}")
+        finally:
+            adapter.LarkDeckMixin._ld_ck_requests = old_reqs2
+            adapter._STREAM_MIN_INTERVAL = old_interval2
+    finally:
+        context.reset()
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_finalize_without_active_stream_returns_false_but_is_not_a_write_failure():
+    """**口径钉死**（R9 审计中-2）：`state is None and finalize` 返回 False **不进失败账本**。
+
+    这一支是**正常路径**：没有活跃流可收尾 ⇒ 按官方契约把控制权交还核心，核心回落
+    edit/send 把消息正常发出去（一个写请求都没发）。而 `_ld_stream_fail` 记的是
+    「**我们真的发起过一次写、而它失败了**」。两者都返回 False，但语义不同：
+      * 返回值是给**核心**的信号（False ⇒ 停用本回合 native）；
+      * 账本里的「写卡失败」是给**用户排障**的事实。
+    合并口径的代价是：一个健康回合会在排障卡上显示一条指向不存在写卡动作的失败原因
+    （审计指出 `/stop` 重绘成功后内核若再送 finalize 帧正落这一支）。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    context.reset()
+    try:
+        raw = _make()
+        _wire_patch(raw)
+        assert _run(raw.send_stream_frame("正文", finalize=True, chat_id="oc_9",
+                                          turn_id="没有这个回合")) is False, \
+            "没有活跃流可收尾时必须返回 False（核心据此回落 edit/send）"
+        snap = context.status_snapshot()
+        assert snap["frame_fail_count"] == 0, \
+            f"「没有活跃流可收尾」是正常返回，不该被记成写卡失败：{snap}"
+        assert snap["frame_ok_count"] == 0, \
+            f"它当然也不该被记成写卡成功（一个字节都没写）：{snap}"
+    finally:
+        context.reset()
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)
         adapter._apply_metrics_config()
@@ -6418,6 +6777,11 @@ def test_command_card_reports_version_transport_and_three_records():
         assert f"larkdeck v{version}" in text, text
         assert f"传输 {adapter.LarkDeckMixin._ld_transport()}" in text, text
         assert f"钩子 1/{len(hooks.SUBSCRIPTIONS)} 已挂" in text, text
+        # R9 审计中-4：**进程级口径必须在卡上**。账本与页脚指标一样是模块级全局
+        # （`context._STATUS`），多会话并发时「累计 N 条消息 / N 帧写卡」里可能大部分
+        # 来自**别的会话** —— 不写清楚，用户会拿别人的失败原因去查自己的卡。
+        # 判据落在**卡片的文本**上（不是落在 i18n 表上）：写在表里但没拼进卡等于没说。
+        assert "进程级" in text, f"卡片没写明这些数字是进程级累计（含全部会话）：{text!r}"
         for line in context.status_lines():
             assert line in text, f"少了自检行：{line!r}"
         # 没参数与显式 `status` 必须**同一张卡**（不然 `help` 里写的默认值就是假的）
@@ -6428,13 +6792,41 @@ def test_command_card_reports_version_transport_and_three_records():
         adapter.HOOKS.update(saved_hooks)
 
 
-def test_command_card_help_states_the_idle_only_caveat():
-    """help 必须写明**只支持空闲态**：命令派发挂在核心的 idle 路径上（不是我们的选择），
-    生成中敲命令会被当成普通输入排队 —— 不写清楚，用户只会觉得「命令没反应」。"""
+def test_command_card_says_so_when_the_version_is_unreadable():
+    """版本读不到时必须**说出来**（R9 审计低-2）。
+
+    修之前的形态：`_ld_plugin_version()` 读不到清单就返回 `""`，而卡片里
+    `f" v{version}" if version else ""` 会让版本段**整段消失** —— 卡片看起来跟一切正常
+    一模一样（审计 `work/version_probe.py` 实测：挪走 `plugin.yaml` 后首行只剩
+    `🃏 larkdeck · 传输 cardkit …`）。这与本卡片的头号纪律（**没记录就写「无记录」**）
+    是同一条：「读不到」和「没有这一段」在用户眼里必须能分辨。
+    """
+    saved = adapter._PLUGIN_MANIFEST
+    try:
+        adapter._PLUGIN_MANIFEST = "/nonexistent-dir/plugin.yaml"      # 读不到清单
+        assert adapter._ld_plugin_version() == "", "读不到清单时不许编一个版本号"
+        text = adapter._ld_command_card("")
+        assert "版本读不到" in text, f"版本读不到却什么都没说（静默消失）：{text!r}"
+    finally:
+        adapter._PLUGIN_MANIFEST = saved
+    # 对偶：清单读得到时**不许**出现「版本读不到」（否则这句话会变成一句噪音）
+    assert "版本读不到" not in adapter._ld_command_card("")
+
+
+def test_command_card_help_states_the_queue_caveat():
+    """help 必须写明**飞书网关里生成期间命令会被排队**（命令派发只挂核心的 idle 路径）。
+
+    ⚠️ R9 审计低-1 修正了措辞：旧文案是一句绝对断言「仅空闲态可用」，而它在 **CLI / TUI 里
+    不成立** —— 那两条路径（`cli.py::_run_plugin_slash_command`、
+    `tui_gateway/methods_tools.py`）**直接调处理器**，没有忙碌概念。正确的说法要同时说清两半：
+    网关里会被排队、CLI/TUI 里可直接执行。断言也照着两半写（只留「排队」会放过「CLI 那半
+    被删掉」，用户又会被误导一次）。
+    """
     help_text = adapter._ld_command_card("help")
-    assert "仅空闲态" in help_text and "status" in help_text, help_text
+    assert "排队" in help_text and "CLI" in help_text, help_text
+    assert "仅空闲态" not in help_text, f"旧的绝对措辞还在（CLI/TUI 里不成立）：{help_text!r}"
     unknown = adapter._ld_command_card("wat")
-    assert "wat" in unknown and "仅空闲态" in unknown, unknown
+    assert "wat" in unknown and "排队" in unknown, unknown
 
 
 def test_command_card_never_raises_even_when_state_read_fails():
@@ -6449,6 +6841,28 @@ def test_command_card_never_raises_even_when_state_read_fails():
     out = adapter._ld_command_card(_Boom())
     assert isinstance(out, str) and out, "处理器没返回任何文本"
     assert "状态读取失败" in out and "boom" in out, out
+
+
+def test_command_card_never_raises_even_when_the_error_itself_is_unprintable():
+    """兜底里的兜底（R9 审计低-4）：**连 `str(异常)` 都抛**时也不许穿透。
+
+    修之前的形态：`except Exception as exc` 里直接 `_i18n.t("cmd.failed", error=str(exc))`，
+    而 `str(raw_args)` 抛出的那个异常对象如果自己的 `__str__` 也抛，兜底就**再抛一次** ——
+    穿透到核心，用户看到的是「什么反应都没有」（核心只记一条 WARNING，又是静默）。
+    这条断言直接打在「穿透」这件事上：任何返回值都必须存在，而且要是给人看的话。
+    """
+    class _Unprintable(Exception):
+        def __str__(self):
+            raise RuntimeError("连 __str__ 都炸")
+
+    class _Arg:
+        def __str__(self):
+            raise _Unprintable()
+
+    out = adapter._ld_command_card(_Arg())
+    assert isinstance(out, str) and out, "处理器抛穿到调用方了（用户什么也看不到）"
+    assert "状态读取失败" in out, out
+    assert "读不出失败原因" in out, f"读不出原因时必须如实说读不出，不许装成别的：{out!r}"
 
 
 

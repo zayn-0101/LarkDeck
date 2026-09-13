@@ -861,9 +861,11 @@ MUTATIONS = [
      '            handle_cmd = None',
      "check_override"),
     ("R9-2-没有记录时写「正常」（一张永远说健康的自检卡）", "core/context.py",
-     '    if not isinstance(ts, (int, float)) or isinstance(ts, bool) or ts <= 0:\n'
+     '    if (not isinstance(ts, (int, float)) or isinstance(ts, bool)\n'
+     '            or ts < _EPOCH_FLOOR):      # 含负数与 0：`_EPOCH_FLOOR` 见上面的理由（低-3）\n'
      '        return _i18n.t("status.none")',
-     '    if not isinstance(ts, (int, float)) or isinstance(ts, bool) or ts <= 0:\n'
+     '    if (not isinstance(ts, (int, float)) or isinstance(ts, bool)\n'
+     '            or ts < _EPOCH_FLOOR):\n'
      '        return "正常"',
      "test_units"),
     ("R9-3-入站心跳不再记账（心跳永远「无记录」）", "core/hooks.py",
@@ -871,12 +873,16 @@ MUTATIONS = [
      '        pass',
      "test_units"),
     ("R9-4-首发建卡不记账（短回答的回合会被报成「一次都没写」）", "core/adapter.py",
-     '            _context.note_frame_ok()          # R9：首发建卡也是一次真的写卡',
-     '            pass',
+     '        if getattr(result, "success", False) and getattr(result, "message_id", ""):\n'
+     '            _context.note_frame_ok()\n'
+     '        return result',
+     '        if False:\n'
+     '            _context.note_frame_ok()\n'
+     '        return result',
      "test_units"),
-    ("R9-5-patch 传输的成功帧不记账", "core/adapter.py",
-     '        _context.note_frame_ok()              # R9：patch 传输这一帧写成功',
-     '        pass',
+    ("R9-5-`send()` 报「成功」但没拿到 message_id 时也算写卡（卡在飞书侧没有落点）", "core/adapter.py",
+     '        if getattr(result, "success", False) and getattr(result, "message_id", ""):',
+     '        if getattr(result, "success", False) or True:',
      "test_units"),
     ("R9-6-帧失败不记账（用户问「为什么掉纯文本」时答不出来）", "core/adapter.py",
      '        _context.note_frame_fail(reason)',
@@ -891,6 +897,107 @@ MUTATIONS = [
      '            return "\\n".join([_i18n.t("cmd.unknown", arg=arg), _i18n.t("cmd.help")])',
      '        if False:\n'
      '            return "\\n".join([_i18n.t("cmd.unknown", arg=arg), _i18n.t("cmd.help")])',
+     "test_units"),
+    # ---- R9 对抗审计（2026-09-14）收口：两条**零门禁**的记账 + 心跳位置 + 口径 ------------- #
+    # 这一批的来由：审计把下面 R9-9 / R9-12 两处记账换成 `pass`，**四个门禁全绿** ——
+    # 而默认传输（cardkit）下那意味着 `/larkdeck status` 永远说「最近写卡：无记录」，
+    # 用户眼前却躺着一张逐字卡片。所以每条记账点都必须有自己的变异。
+    ("R9-9-cardkit 的 seed 建实体不记账（默认传输下首发帧等于不存在）", "core/adapter.py",
+     '                _context.note_frame_ok()      # R9：建实体 + 发实体卡 = 这一帧真的有东西发出去了',
+     '                pass',
+     "test_units"),
+    ("R9-10-cardkit 的元素写那一帧不记账（真机主路径不记，状态卡永远说「无记录」）", "core/adapter.py",
+     '                _context.note_frame_ok()          # R9：元素通道这一帧真的写出去了',
+     '                pass',
+     "test_units"),
+    ("R9-11-元素写成功但装饰拿到卡级死法那一帧不记账（降级决定落地的那一帧）", "core/adapter.py",
+     '                _context.note_frame_ok()          # R9：正文元素写成功、降级决定已落地',
+     '                pass',
+     "test_units"),
+    ("R9-12-`_ld_update_card` 成功却不记账（patch 帧 / 收尾 / 降级补写 / 非流式 edit 全丢）", "core/adapter.py",
+     '            if getattr(result, "success", False):\n'
+     '                # 重试次数**不**进账本：账本记的是「这一次真的写出去了」，不是「发了几次 HTTP」\n'
+     '                # （口径见 `context.note_frame_ok` 与 README「写卡帧数」一条）。\n'
+     '                _context.note_frame_ok()',
+     '            if getattr(result, "success", False):\n'
+     '                pass',
+     "test_units"),
+    ("R9-13-帧路径**又**记一笔（同一帧记两次：账本虚高，正是把记账下移后最容易引入的病）", "core/adapter.py",
+     '                self._ld_stream_put(key, {**live_state, "ck_degrade": degrade_code, "card_id": "",\n'
+     '                                          "last": text, "last_at": now, "ck_seq": seq_after,\n'
+     '                                          "frames": int(state.get("frames") or 0) + 1})\n'
+     '                # 正文元素**已经写成功**（`ok` 为真），所以这一帧确实有东西到了飞书；',
+     '                self._ld_stream_put(key, {**live_state, "ck_degrade": degrade_code, "card_id": "",\n'
+     '                                          "last": text, "last_at": now, "ck_seq": seq_after,\n'
+     '                                          "frames": int(state.get("frames") or 0) + 1})\n'
+     '                _context.note_frame_ok()\n'
+     '                # 正文元素**已经写成功**（`ok` 为真），所以这一帧确实有东西到了飞书；',
+     "test_units"),
+    ("R9-14-`/stop` 的中止重绘自己再记一笔（同一帧被记两次：用户可见的那次重绘虚高）", "core/adapter.py",
+     '            result = await self._ld_update_card(chat, message_id, card)\n'
+     '            if result is None or not getattr(result, "success", False):\n'
+     '                logger.warning("[larkdeck] 中止态卡片更新未成功（%s）",',
+     '            _context.note_frame_ok()\n'
+     '            result = await self._ld_update_card(chat, message_id, card)\n'
+     '            if result is None or not getattr(result, "success", False):\n'
+     '                logger.warning("[larkdeck] 中止态卡片更新未成功（%s）",',
+     "test_units"),
+    ("R9-15-「没有活跃流可收尾」被记成写卡失败（正常返回被染成故障）", "core/adapter.py",
+     '        if state is None:\n'
+     '            if finalize:\n'
+     '                # 没有活跃流可收尾：交核心回落（send/edit 会正常发出）。这是**正常路径**',
+     '        if state is None:\n'
+     '            if finalize:\n'
+     '                _context.note_frame_fail("没有活跃流可收尾（交核心回落）")\n'
+     '                # 没有活跃流可收尾：交核心回落（send/edit 会正常发出）。这是**正常路径**',
+     "test_units"),
+    ("R9-16-心跳退回「回调最后一行」（兄弟模块抛异常就被吞掉）", "core/hooks.py",
+     '    try:\n        _context.note_inbound()\n        source = getattr(payload.get("event"), "source", None)',
+     '    try:\n        source = getattr(payload.get("event"), "source", None)',
+     "test_units"),
+    ("R9-17-心跳加回 `chat_id` 前置条件（载荷不全的消息不再计入心跳）", "core/hooks.py",
+     '    try:\n'
+     '        _context.note_inbound()\n'
+     '        source = getattr(payload.get("event"), "source", None)\n'
+     '        store = payload.get("session_store")',
+     '    try:\n'
+     '        source = getattr(payload.get("event"), "source", None)\n'
+     '        if not str(getattr(source, "chat_id", "") or ""):\n'
+     '            return\n'
+     '        _context.note_inbound()\n'
+     '        store = payload.get("session_store")',
+     "test_units"),
+    ("R9-18-版本读不到时静默消失（卡片看起来跟一切正常一样）", "core/adapter.py",
+     '        name = "🃏 larkdeck v" + (version or _i18n.t("cmd.version_unknown"))',
+     '        name = "🃏 larkdeck" + (f" v{version}" if version else "")',
+     "test_units"),
+    ("R9-19-`_when` 的判据退回 `ts > 0`（脏的小正数渲染成一个看着像真时刻的 1970 年日期）", "core/context.py",
+     '    if (not isinstance(ts, (int, float)) or isinstance(ts, bool)\n'
+     '            or ts < _EPOCH_FLOOR):      # 含负数与 0：`_EPOCH_FLOOR` 见上面的理由（低-3）',
+     '    if not isinstance(ts, (int, float)) or isinstance(ts, bool) or ts <= 0:',
+     "test_units"),
+    ("R9-20-卡片不再说清数字是进程级累计（用户拿别人会话的失败原因查自己的卡）", "core/adapter.py",
+     '        return "\\n".join([header, _i18n.t("cmd.scope")] + _context.status_lines())',
+     '        return "\\n".join([header] + _context.status_lines())',
+     "check_override"),
+    ("R9-21-启动自检硬编码「命令已注册」（不看真实注册结果，而运维会信这句话）", "core/adapter.py",
+     '        _cmd_registered = bool(COMMAND.get("registered"))',
+     '        _cmd_registered = True',
+     "check_override"),
+    ("R9-22-兜底里的 `str(原因)` 自己抛（病态异常穿透处理器，用户什么也看不到）", "core/adapter.py",
+     '        try:\n'
+     '            reason = str(exc)\n'
+     '        except Exception:  # pragma: no cover - 只有病态异常对象会走到\n'
+     '            reason = _i18n.t("cmd.failed_no_reason")',
+     '        reason = str(exc)',
+     "test_units"),
+    ("R9-23-help 退回绝对措辞「仅空闲态可用」（CLI / TUI 里不成立，用户会以为敲了没用）", "core/i18n.py",
+     '"⚠️ 在飞书网关里，**生成回答期间**发的命令会被当成普通输入排队到回合结束"',
+     '"⚠️ 仅空闲态可用。不在飞书网关里也一样。"',
+     "test_units"),
+    ("R9-24-写卡文案退回「累计 N 次」（把**帧数**说成 API 调用次数）", "core/i18n.py",
+     '"status.frame_ok":    {ZH: "最近写卡：{when} · 累计 {n} 帧真的有写出（帧数，不是 API 调用次数）",',
+     '"status.frame_ok":    {ZH: "最近写卡：{when} · 累计 {n} 次",',
      "test_units"),
     # ---- R8①② 点击路径：内联换卡的能力探测 + 失败态只弹 toast -------------------------- #
     # 这一层跑在 SDK 回调线程上：抛一次就炸掉「别人的卡」的点击；而「失败态换卡」会让一次
@@ -940,9 +1047,11 @@ MUTATIONS = [
      '    if False:\n'
      '        return None',
      "test_units"),
+    # ⚠️ 锚点在 R9/ R6a 收口后改过一次：收尾帧现在先过 `_sanitize_for_send`（卫生 + 卫生后
+    # 的字节闸门）再取本卡那一段 ⇒ 变异要落在**取段**那一步上，而不是卫生那一步。
     ("R4-4-收尾帧重放整段", "core/adapter.py",
-     '            tail_visible = display[tail_offset:]',
-     '            tail_visible = display',
+     '            tail_visible = _sanitize_for_send(display[tail_offset:])',
+     '            tail_visible = _sanitize_for_send(display)',
      "test_units"),
     ("R4-5-切点不避开代码围栏（两张卡的 markdown 各自残缺）", "core/adapter.py",
      '        if text[index - 1] != "\\n" or _inside(index):',

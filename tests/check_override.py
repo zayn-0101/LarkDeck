@@ -372,13 +372,76 @@ else:
                     problems.append(f"`/larkdeck status` 少了「{_need}」这一段：{_cmd_text!r}")
             if _effective not in _cmd_text:
                 problems.append(f"`/larkdeck status` 没报出生效传输 {_effective!r}：{_cmd_text!r}")
+            # ⚠️ **口径说明必须在卡上**（R9 审计中-4）：账本与页脚指标一样是**进程级全局**，
+            # 多会话并发时那些数字里含**别的会话**。没有这句话，用户会拿别人的失败原因去查自己的卡
+            # —— 而这一整条纪律（页脚）早就写在 README/AGENTS 里了，账本这条此前一个字都没有。
+            if "进程级" not in _cmd_text:
+                problems.append(f"`/larkdeck status` 没说清数字是进程级累计（含全部会话）："
+                                f"{_cmd_text!r}")
         _help_text = _run_cmd("help")
-        if "仅空闲态" not in str(_help_text):
-            problems.append(f"`/larkdeck help` 没写明「仅空闲态可用」：{_help_text!r}")
+        # ⚠️ 判据是「**排队这条提醒还在**」，不是某个字面短语（R9 审计低-1 之后改的）：
+        # 旧文案「仅空闲态可用」在 **CLI / TUI 里不成立**（那边由 `cli.py::_run_plugin_slash_command`
+        # / `tui_gateway/methods_tools.py` **直接调处理器**，没有忙碌概念），所以措辞改成
+        # 「网关里生成期间会被排队 + CLI/TUI 可直接执行」。判据跟着**改语义、不改强弱**：
+        # 它守的仍然是「用户必须知道生成中敲命令不会立刻回卡」这条事实。
+        _queue_words = ("排队", "queued")
+        if not any(_w in str(_help_text) for _w in _queue_words):
+            problems.append(f"`/larkdeck help` 没写明「生成期间会被排队」：{_help_text!r}")
+        if "CLI" not in str(_help_text):
+            problems.append(f"`/larkdeck help` 没写明 CLI / TUI 里可直接执行"
+                            f"（旧措辞「仅空闲态可用」会误导）：{_help_text!r}")
         # 不认识的参数必须**说清楚 + 给用法**，不许静默当成 status（那会让用户以为参数生效了）
         _unknown_text = str(_run_cmd("wat"))
-        if "wat" not in _unknown_text or "仅空闲态" not in _unknown_text:
+        if "wat" not in _unknown_text or not any(_w in _unknown_text for _w in _queue_words):
             problems.append(f"`/larkdeck wat` 没有明确拒绝并给出用法：{_unknown_text!r}")
+
+
+# ⚠️ **启动自检那句「命令已注册」必须与核心注册表一致**（R9 审计中-6）。
+# 它读的是我们自己的标志位 `COMMAND["registered"]`，而「我们记的」与「核心注册表里真的有没有」
+# 是**两件事**。审计指出：把它硬编码成 `True`，四个门禁全绿。
+#
+# 这条**分两半**，因为它们抓的是两种不同的病（第一版只做了前半，实测抓不住「硬编码」）：
+#   ① **一致性**：日志说的与实际的核心注册表一致 —— 抓「注册真的失败了、日志却说成功」
+#      （注册被拒 / 名字撞内置命令 / `register_command` 不存在）；
+#   ② **判据的来源**：那句自报**必须读 `COMMAND`**（`COMMAND.get("registered")`），
+#      不许写死一个字面量 —— 抓「把判据换成常量」。为什么非要做这半步：一致性断言是
+#      **相对的**（我既不知道、也不该规定「这个环境里命令一定会注册成功」），
+#      所以 `COMMAND` 一旦恒为真，它就没有任何可观测量了。来源断言把「自报必须来自
+#      真实注册结果」这件事**直接钉在源码上** —— 硬编码形态当场红（变异 `R9-21`）。
+#      这是本项目里少见的「断言源码形状」的场合，理由写在这里，别当成泛泛的洁癖。
+_selfcheck_mod = sys.modules.get("hermes_plugins.larkdeck.core.adapter")
+if _selfcheck_mod is None:
+    problems.append("拿不到 adapter 模块，启动自检「命令已注册」这条对拍失效")
+else:
+    try:
+        from hermes_cli.plugins import get_plugin_command_handler as _get_cmd   # noqa: E402
+    except Exception as _exc:      # noqa: BLE001
+        problems.append(f"拿不到插件命令注册表，启动自检「命令已注册」这条对拍失效：{_exc!r}")
+    else:
+        _detail_now = str((getattr(_selfcheck_mod, "SELFCHECK", None) or {}).get("detail") or "")
+        _says_ok = "命令已注册" in _detail_now
+        _says_no = "命令未注册" in _detail_now
+        _really = _get_cmd("larkdeck") is not None
+        print(f"启动自检的命令自报：detail 说 "
+              f"{'已注册' if _says_ok else ('未注册' if _says_no else '？')}"
+              f" · 核心注册表实际 {'有' if _really else '没有'}处理器")
+        # ② 判据来源：自报必须读 `COMMAND.get("registered")`（源码里必须出现这个表达式）
+        try:
+            import inspect as _inspect                                     # noqa: E402
+            _reg_src = _inspect.getsource(_selfcheck_mod.register)
+        except Exception as _exc:      # noqa: BLE001
+            problems.append(f"读不到 register() 的源码，自报判据来源这条断言失效：{_exc!r}")
+        else:
+            if 'COMMAND.get("registered")' not in _reg_src:
+                problems.append("启动自检的命令注册状态**不是**从 `COMMAND.get(\"registered\")` "
+                                "读出来的（被换成了字面量？）—— 那句自报会变成永远成立")
+        if _says_ok == _says_no:
+
+            problems.append(f"启动自检没有明确自报命令注册状态：{_detail_now!r}")
+        elif _says_ok != _really:
+            problems.append(f"启动自检的自报与核心注册表**不一致**：日志说「命令已注册」"
+                            f"（= {_says_ok}），而 get_plugin_command_handler('larkdeck') "
+                            f"{'有' if _really else '没有'}处理器 —— 运维会信错这句话")
 
 
 if problems:

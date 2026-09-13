@@ -863,8 +863,15 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
         calls["batch"].append(([op.element_id for op in ops], sequence, res.ok, contents))
         return res
 
+    # ⚠️ `_frame_writes` 是**独立于账本**的一份观测：生产 `_ld_update_card` 真的被调用过几次
+    #   （收尾那一帧走的就是它）。R9 的跨源等式要用它（见下面 `_expected_frames` 的说明）——
+    #   注意探针**必须转发**给 `original_update`：底层收口点才是记账的地方，
+    #   把 `_ld_update_card` 整个换成不调原实现的东西会让账本永远是 0（探针自己造的假象）。
+    _frame_writes: list = []
+
     async def _spy_update(chat_id, message_id, card):
         calls["patch"] += 1
+        _frame_writes.append(message_id)
         return await original_update(chat_id, message_id, card)
 
     adapter._ld_ck_write = _spy_write
@@ -999,18 +1006,34 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
     # ★ 页脚那一路**写的是当前内容**吗（R2 审计指出：探针进程页脚恒为空串时只能证明「写成功」）
     # ★ R9 自检账本：这一回合**必须**在账本上留下痕迹，否则 `/larkdeck status` 在真机上
     #   永远说「无记录」—— 而那张卡存在的唯一理由就是回答「插件在不在动」。
-    #   判据是**精确等式**（不是「>0」）：写卡次数 = 正文元素写入 + seed 建实体 + 收尾 patch，
-    #   多一次或少一次都说明账本记的不是真的写卡动作。
+    #
+    #   ⚠️ **旧写法是自证的**（R9 审计中-5）：`_expected_writes = len(writes) + 2`，
+    #   而 `writes` 是本探针在 `_ld_ck_write` 上打的桩、`+2` 是照着实现对出来的 ⇒
+    #   等号两边来自**同一个证据源**，它只能发现「某帧漏记」，发现不了「一次逻辑写其实
+    #   一个字节都没到飞书」。现在改成**跨源的等价式**（每一侧都是独立观测）：
+    #     ① `len(writes)` —— `_ld_ck_write` 上桩到的**元素写**次数（= 4，场景是脚本写死的）；
+    #     ② `calls["create"]` —— 真 SDK 的 `cardkit.v1.card.create` 调用账本（= 1，建实体）；
+    #     ③ `_frame_writes` —— 生产 `_ld_update_card` 被真的调用过几次（= 1，收尾整卡替换）。
+    #   ①+②+③ 就是「这个回合用户看到的每个帧各自是否写过东西」的**分帧证据**，
+    #   账本 `frame_ok_count` 必须等于它。等式两边来源不同，才有判别力。
+    #   ⚠️ 口径（中-5）：账本数的是**帧**，不是网络调用 —— seed 建实体是
+    #   `card.create` + 发实体卡**两次**网络调用，但只算**一帧**（所以下面用
+    #   `int(calls["create"] > 0)` 而不是 `calls["create"]` 参与求和，把这个口径写死在算式里）。
     _snap: dict = {}
     try:
         _snap = dict(_probe_context_module().status_snapshot() or {})
     except Exception as exc:      # noqa: BLE001
         print(f"   ⚠️ 读不到 R9 自检账本：{exc!r}")
-    _expected_writes = len(writes) + 2      # + seed 建实体 + 收尾 patch
-    _ledger_ok = (int(_snap.get("frame_ok_count") or 0) == _expected_writes
+    _expected_frames = len(writes) + int(calls["create"] > 0) + len(_frame_writes)
+    _ledger_ok = (int(_snap.get("frame_ok_count") or 0) == _expected_frames
+                  # 场景是脚本写死的四帧正文 + 一次建实体 + 一次收尾 ⇒ 帧数必须是 5。
+                  # 这一条**不依赖**任何桩：它把「探针脚本到底跑了几帧」写成了字面量。
+                  and _expected_frames == 5
                   and int(_snap.get("frame_fail_count") or 0) == 0)
-    print(f"   R9 自检账本：写卡 {_snap.get('frame_ok_count')} 次（期望 {_expected_writes}）· "
-          f"失败 {_snap.get('frame_fail_count')} 次 {_snap.get('frame_fail_reason')!r}")
+    print(f"   R9 自检账本：写卡 {_snap.get('frame_ok_count')} 帧（期望 {_expected_frames} = "
+          f"元素写 {len(writes)} + 建实体 {int(calls['create'] > 0)} + 整卡 patch {len(_frame_writes)}；"
+          f"脚本场景固定 5）· 失败 {_snap.get('frame_fail_count')} 次 "
+          f"{_snap.get('frame_fail_reason')!r}")
     footer_written = [b[3].get("footer") for b in batches]
     footer_is_current = bool(footer_at_start) and footer_written[0] == footer_at_start
     print(f"   首帧写出的页脚 = {footer_written[0]!r} · 那一刻 `_ld_footer()` = {footer_at_start!r}"

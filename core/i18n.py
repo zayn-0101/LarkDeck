@@ -92,23 +92,42 @@ _STRINGS: Dict[str, Dict[str, str]] = {
                            EN: "larkdeck status: version / transport / hooks / heartbeats"},
     "cmd.header":         {ZH: "{name} · 传输 {transport} · 钩子 {wired}/{total} 已挂",
                            EN: "{name} · transport {transport} · hooks {wired}/{total} wired"},
+    # ⚠️ 版本读不到时**必须看得出来**（R9 审计低-2）：以前版本段整段消失，卡片看起来跟一切正常一样。
+    "cmd.version_unknown": {ZH: "版本读不到", EN: "version unreadable"},
+    # ⚠️ 口径说明（R9 审计中-4）：三条记录是**进程级**全局，与页脚指标同源。
+    # 不写清楚，多会话并发时用户会拿**别人会话**的失败原因来查自己的卡。
+    "cmd.scope":          {ZH: "（下面的数字是**进程级累计**：含本进程上全部会话，不只你这一条对话）",
+                           EN: "(the counters below are process-wide: every conversation in this process, not just yours)"},
     "cmd.help":           {ZH: "用法：/larkdeck [status|help]\n"
                                "· status（默认）：本卡 —— 版本 / 生效传输 / 钩子 / 三条心跳记录\n"
                                "· help：这段说明\n"
-                               "⚠️ 仅空闲态可用：正在生成回答时发的命令会被当成普通输入排队。",
+                               "⚠️ 在飞书网关里，**生成回答期间**发的命令会被当成普通输入排队到回合结束"
+                               "（命令派发只挂在核心的 idle 路径上）；CLI / TUI 里可以直接执行。",
                            EN: "Usage: /larkdeck [status|help]\n"
                                "· status (default): this card — version / active transport / hooks / three heartbeat records\n"
                                "· help: this text\n"
-                               "⚠️ Idle state only: a command sent while a reply is streaming is queued as plain input."},
+                               "⚠️ In the Feishu gateway, a command sent **while a reply is streaming** is queued as plain "
+                               "input until the turn ends (dispatch only runs on the core's idle path); in the CLI / TUI "
+                               "it runs right away."},
     "cmd.unknown":        {ZH: "不认识的参数：{arg}（可用：status / help）",
                            EN: "Unknown argument: {arg} (available: status / help)"},
     "cmd.failed":         {ZH: "状态读取失败：{error}", EN: "Status read failed: {error}"},
+    # 兜底里的兜底（R9 审计低-4）：连 `str(异常)` 都抛时用它，绝不把「读不出原因」装成成功。
+    "cmd.failed_no_reason": {ZH: "（读不出失败原因）", EN: "(reason unreadable)"},
     "status.inbound":     {ZH: "入站心跳：{when} · 累计 {n} 条消息",
                            EN: "Inbound heartbeat: {when} · {n} messages"},
-    "status.frame_ok":    {ZH: "最近写卡：{when} · 累计 {n} 次",
-                           EN: "Last card write: {when} · {n} writes"},
-    "status.frame_fail":  {ZH: "最近写卡失败：{when} · 累计 {n} 次 · {reason}",
-                           EN: "Last write failure: {when} · {n} · {reason}"},
+    # ⚠️ 口径（R9 审计中-5）：数的是「有多少帧**真的有东西写出去**」，不是 API 调用次数 ——
+    #    cardkit 一帧最多 3 次逻辑写（装饰 batch + 正文 content + 限频的会话预览）、
+    #    seed 帧是 2 次网络调用、一次逻辑写撞限流最多重发 4 次 HTTP，全都只 +1。
+    #    写成「写卡：累计 N 次」会让人以为它数的是写动作（而 patch 车道恰好一比一，纯属巧合）。
+    #    （正文里不加 `**`：文案走 `i18n.t()` 是**纯文本**，星号会原样显示给用户。）
+    "status.frame_ok":    {ZH: "最近写卡：{when} · 累计 {n} 帧真的有写出（帧数，不是 API 调用次数）",
+                           EN: "Last card write: {when} · {n} frames actually wrote (frames, not API calls)"},
+    # ⚠️ 同样写死口径（R9 审计中-2）：「写卡失败」只统计**我们真的发起过写、而它失败了**的帧；
+    #    不含「没有活跃流可收尾 ⇒ 按契约返回 False 交核心回落」这种**正常**返回
+    #    （那时一个写请求都没发，核心的 edit/send 会把消息正常发出去）。
+    "status.frame_fail":  {ZH: "最近写卡失败：{when} · 累计 {n} 次（只算我们发出且失败的写）· {reason}",
+                           EN: "Last write failure: {when} · {n} (only writes we sent and that failed) · {reason}"},
     "status.frame_fail_none": {ZH: "最近写卡失败：无记录（累计 0 次）",
                                EN: "Last write failure: no record (0)"},
     "status.none":        {ZH: "无记录", EN: "no record"},

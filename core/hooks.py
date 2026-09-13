@@ -127,8 +127,22 @@ def _on_pre_gateway_dispatch(**payload: Any) -> None:
     ⚠️ **必须恒返回 None**：这是个能干预分发的钩子（返回 ``{"action": "skip"}`` 会丢消息、
     ``"rewrite"`` 会改文本），我们只观察。它在 **auth 之前**、每条入站消息都会跑，
     所以只做「只读查一次 store + 写一次内存」，不做任何 I/O、不改任何东西。
+
+    ⚠️ **心跳必须是回调的第一条语句**（R9 审计中-3，2026-09-14 修正）：以前它写在归属绑定
+    **之后**、而且还在**同一个 try 块的最后一行**上。于是 `_compat.lookup_session_id` 或
+    `_panel.bind_chat_session`（**另外两个模块**的代码）抛一次异常，就被同一个
+    `except Exception` 连心跳一起吞掉 —— 审计 `work/xhb6.py`（真加载器 + 真钩子派发器）实测：
+    「绑定正常 ⇒ `inbound_count=1`；绑定抛 ⇒ **0**」。而心跳存在的理由就是回答「消息到底到没到
+    插件」，那一次归因会**指错方向**（README 的旧措辞正是「心跳不动 ⇒ 消息根本没到插件」）。
+    `note_inbound()` 自己异常自吞、只加锁写一次内存，放第一行就不可能被兄弟调用的异常挡住。
+    代价（**有意接受**）：`source` / `chat_id` 缺失的载荷现在也记一笔心跳 —— 那类消息**确实到了
+    插件的钩子回调**，这正是心跳要回答的问题；「归属有没有绑上」是另一件事，它有自己更精确的
+    信号（面板/状态色的归属，见 `panel.py`），不该混进这一条。
     """
+    # 放在**第一行**（在 try 里、但在任何可能抛的逻辑之前）：位置本身就是这条纪律的实现，
+    # 靠的不是「记得把归属绑定放在后面」这种会在下一次重构里失守的约定。
     try:
+        _context.note_inbound()
         source = getattr(payload.get("event"), "source", None)
         store = payload.get("session_store")
         if source is None or store is None:
@@ -141,9 +155,6 @@ def _on_pre_gateway_dispatch(**payload: Any) -> None:
             store, _compat.session_key_for_source(source, store))
         if session_id:
             _panel.bind_chat_session(chat_id, session_id)
-        # R9 心跳：**记在「有 chat_id」之后**（更早的 return 是载荷不全，不算心跳）。
-        # 它与归属绑定分开写：归属可能查不到（store 里还没这个会话），而心跳必须照记。
-        _context.note_inbound()
     except Exception:  # pragma: no cover - 防御性：钩子绝不能抛
         logger.debug("[larkdeck] 会话归属观察忽略了一次异常", exc_info=True)
 
