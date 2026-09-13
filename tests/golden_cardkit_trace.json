@@ -1,0 +1,40 @@
+{
+ "entity_card": [
+  "{\"schema\": \"2.0\", \"config\": {\"streaming_mode\": true, \"update_multi\": true, \"summary\": {\"content\": \"Hermes\"}}, \"body\": {\"elements\": [{\"tag\": \"markdown\", \"element_id\": \"answer\", \"content\": \"⏳ 正在生成…\"}, {\"tag\": \"collapsible_panel\", \"element_id\": \"panel\", \"expanded\": false, \"header\": {\"title\": {\"tag\": \"plain_text\", \"content\": \"执行详情\", \"i18n_content\": {\"zh_cn\": \"执行详情\", \"en_us\": \"Run details\"}}, \"vertical_align\": \"center\", \"icon\": {\"tag\": \"standard_icon\", \"token\": \"down-small-ccm_outlined\", \"size\": \"16px 16px\"}, \"icon_position\": \"right\", \"icon_expanded_angle\": -180}, \"border\": {\"color\": \"grey\", \"corner_radius\": \"8px\"}, \"padding\": \"8px 8px 8px 8px\", \"elements\": [{\"tag\": \"markdown\", \"element_id\": \"panel_body\", \"content\": \" \"}]}]}}"
+ ],
+ "element_writes": [
+  [
+   "answer",
+   "第一段",
+   1,
+   "ld-ck_golden-answer-1"
+  ],
+  [
+   "panel_body",
+   " ",
+   2,
+   "ld-ck_golden-panel_body-2"
+  ],
+  [
+   "answer",
+   "第一段，第二段。",
+   3,
+   "ld-ck_golden-answer-3"
+  ],
+  [
+   "panel_body",
+   " ",
+   4,
+   "ld-ck_golden-panel_body-4"
+  ]
+ ],
+ "final_patch": [
+  "{\"schema\": \"2.0\", \"config\": {\"wide_screen_mode\": true, \"update_multi\": true, \"streaming_mode\": false, \"summary\": {\"content\": \"第一段，第二段。\"}}, \"body\": {\"elements\": [{\"tag\": \"markdown\", \"content\": \"第一段，第二段。\"}]}}"
+ ],
+ "returns": [
+  true,
+  true,
+  true,
+  true
+ ]
+}

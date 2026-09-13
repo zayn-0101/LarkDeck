@@ -339,6 +339,15 @@ MUTATIONS = [
      '        pass',
      "check_override"),
     # 第十二路审计（可行性那一路）实测的**现网回归**：手写清单漏字段 = 静默关掉能力。
+    # R1 的地基：golden trace 夹具必须能抓到「写入形状的任何漂移」。
+    ("CK25-写入请求的 uuid 形状变了（golden trace 必须抓到）", "core/adapter.py",
+     '                                       f"ld-{card_id}-{element_id}-{sequence}"),',
+     '                                       f"ld-{card_id}-{element_id}"),',
+     "test_units"),
+    ("CK26-正文与面板的写入顺序对调（golden trace 必须抓到）", "core/adapter.py",
+     '            if not await self._ld_ck_write(card_id, _cards.CARDKIT_ANSWER_ID, display, seq + 1):',
+     '            if not await self._ld_ck_write(card_id, _cards.CARDKIT_PANEL_BODY_ID, " ", seq + 1):',
+     "test_units"),
     ("CK24-平台 entry 透传退回手写清单（丢掉 standalone_sender_fn 等）", "core/adapter.py",
      '        if field.name in _IDENTITY_ENTRY_FIELDS:',
      '        if field.name not in ("validate_config", "required_env", "install_hint"):',

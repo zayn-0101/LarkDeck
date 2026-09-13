@@ -804,6 +804,121 @@ def test_declared_defaults_are_an_explicit_decision():
         adapter._CONFIG.update(saved)
 
 
+def _golden_trace() -> dict:
+    """跑一遍**固定场景**，把「真正会发到飞书的东西」逐字记下来（golden trace）。
+
+    为什么需要它（第十二路审计的要求）：R1 要重构 CardKit 的写入路径，声称「行为逐字节不变」——
+    而「事后拍个快照跟自己对」是**自证循环**。所以先在重构**之前**把行为冻成夹具，
+    重构后必须逐字节相等；夹具本身有变更时，diff 就是「这次改动到底改了什么行为」的显式声明。
+
+    记录四类事实：建实体卡的 JSON、每次元素写入的 (元素, 内容, 序号, uuid)、
+    收尾整卡 patch 的 JSON、每一帧的返回值。
+    """
+    calls = {"content": [], "patch": [], "entity": []}
+
+    class _Resp:
+        def __init__(self, code=0, **data):
+            self.code = code
+            self.msg = "success" if code == 0 else "boom"
+            self.data = types.SimpleNamespace(**data) if data else None
+
+        def success(self):
+            return self.code == 0
+
+    class _Card:
+        def create(self, request):
+            calls["entity"].append(request.request_body["card_json"])
+            return _Resp(0, card_id="ck_golden")
+
+    class _Elem:
+        def content(self, request):
+            calls["content"].append([request.element_id, request.request_body.content,
+                                     request.request_body.sequence, request.request_body.uuid])
+            return _Resp(0)
+
+    class _Msg:
+        def create(self, request):
+            return {"code": 0, "data": {"message_id": "om_golden"}}
+
+        def reply(self, request):
+            return {"code": 0, "data": {"message_id": "om_golden"}}
+
+        def patch(self, request):
+            calls["patch"].append(request.request_body.content)
+            return _Resp(0)
+
+    client = types.SimpleNamespace(
+        cardkit=types.SimpleNamespace(v1=types.SimpleNamespace(card=_Card(), card_element=_Elem())),
+        im=types.SimpleNamespace(v1=types.SimpleNamespace(message=_Msg())))
+
+    def _reqs():
+        return types.SimpleNamespace(
+            create_card=lambda card_json: types.SimpleNamespace(
+                request_body={"card_json": card_json}),
+            send_entity=lambda receive_id, card_id: types.SimpleNamespace(
+                receive_id=receive_id, card_id=card_id,
+                request_body=types.SimpleNamespace(content="{}", msg_type="interactive",
+                                                   uuid=f"ld-msg-{card_id}")),
+            reply_entity=lambda reply_to, card_id: types.SimpleNamespace(
+                reply_to=reply_to, card_id=card_id,
+                request_body=types.SimpleNamespace(content="{}", msg_type="interactive",
+                                                   uuid=f"ld-msg-{card_id}",
+                                                   reply_in_thread=False)),
+            write_element=lambda cid, eid, content, seq, uuid_value: types.SimpleNamespace(
+                card_id=cid, element_id=eid,
+                request_body=types.SimpleNamespace(content=content, sequence=seq, uuid=uuid_value)),
+        )
+
+    raw = _make()
+    raw._client = client
+    old_reqs = adapter.LarkDeckMixin._ld_ck_requests
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    adapter.LarkDeckMixin._ld_ck_requests = staticmethod(_reqs)
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    returns = []
+    try:
+        adapter.configure(native_transport="cardkit")
+        returns.append(_run(raw.send_stream_frame("", chat_id="oc_golden", turn_id="t-golden")))
+        returns.append(_run(raw.send_stream_frame("第一段", chat_id="oc_golden", turn_id="t-golden")))
+        returns.append(_run(raw.send_stream_frame("第一段，第二段。", chat_id="oc_golden",
+                                                  turn_id="t-golden")))
+        finalized = []
+
+        async def _record_update(chat_id, mid, card):
+            finalized.append((chat_id, mid, json.dumps(card, ensure_ascii=False)))
+            return _StubResult(True, mid)
+
+        raw._ld_update_card = _record_update
+        returns.append(_run(raw.send_stream_frame("第一段，第二段。", finalize=True,
+                                                  chat_id="oc_golden", turn_id="t-golden")))
+    finally:
+        adapter.LarkDeckMixin._ld_ck_requests = old_reqs
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        adapter._CONFIG.clear()
+    return {"entity_card": calls["entity"], "element_writes": calls["content"],
+            "final_patch": [c for _, _, c in finalized], "returns": returns}
+
+
+def test_cardkit_golden_trace_is_frozen():
+    """R1 的地基：**重构前**把 CardKit 写入路径的行为冻成夹具，重构后必须逐字节不变。
+
+    夹具在 `tests/golden_cardkit_trace.json`（生成方式见文件头的 `_write_golden_trace()`）。
+    ⚠️ 夹具**故意**是字面量文件而不是「跑一遍再跟自己对」：后者是自证循环，
+    它永远绿，也就永远抓不到「重构悄悄改了行为」。
+    """
+    trace = _golden_trace()
+    path = _pathlib.Path(__file__).with_name("golden_cardkit_trace.json")
+    assert path.exists(), f"缺少 golden trace 夹具：{path}（先跑 `--write-golden` 生成）"
+    want = json.loads(path.read_text(encoding="utf-8"))
+    got = json.loads(json.dumps(trace, ensure_ascii=False))
+    assert got == want, (
+        "CardKit 写路径的行为变了（golden trace 不相等）。"
+        "若这是**有意**的行为变更，请在同一提交里更新夹具并说明改了什么；"
+        "若不是，说明重构破坏了既有行为。\n"
+        f"  期望：{json.dumps(want, ensure_ascii=False)[:400]}\n"
+        f"  实得：{json.dumps(got, ensure_ascii=False)[:400]}")
+
+
 def test_cardkit_transport_writes_elements_and_falls_open():
     """阶段 9：`native_transport: "cardkit"` 的帧序列 + **任何一步失败都回落**。
 
