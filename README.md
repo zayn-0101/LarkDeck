@@ -105,7 +105,7 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 | 页脚：上下文用量（模型/耗时已并入面板标题） | ✅ 真机渲染已确认 |
 | 上下文用量三样式（纯文字 / 图形条 / 数字+条） | ✅ 真机渲染已确认 |
 | 推理文本 / 工具结果上限 + 元素溢出保护 | ✅ |
-| 打字机逐字显示 | ⏳ **字段已带上、动画未确证**（另一条传输 CardKit 实测整链 `code=0`，两条传输的公平对照见 `--cardkit`）：`streaming_print_ms`（默认 15）把 `streaming_config` 带在流式帧上，飞书 create/patch 都是 `code=0`；但「客户端会不会逐字打」是纯客户端行为，**API 返回码看不到**。证据倾向「`message.patch` 拿不到这个动画」（见「已知限制」里打字机那条），自测用 `tests/probe_render.py --typing` |
+| 打字机逐字显示 | ✅ **已实现并可开**：`native_transport: cardkit` —— 真机 + **用户肉眼**双重确认（普通卡 `message.patch` 只是「几个字几个字」地跳，CardKit 的 `card_element.content` 才是一个字一个字往外冒；`--cardkit-prod` 走生产路径实测建实体 + 元素写入 + patch 收尾全 `code=0`）。**默认仍是 `patch`**，因为翻默认要先让单测替身学会这条传输（8 条既有断言会被牵动），那是下一步的独立改动：`streaming_print_ms`（默认 15）把 `streaming_config` 带在流式帧上，飞书 create/patch 都是 `code=0`；但「客户端会不会逐字打」是纯客户端行为，**API 返回码看不到**。证据倾向「`message.patch` 拿不到这个动画」（见「已知限制」里打字机那条），自测用 `tests/probe_render.py --typing` |
 
 > 每项效果**验证到什么程度**（本地门禁 / 真机 API / 肉眼）见
 > [`docs/plan-6-effects.md`](docs/plan-6-effects.md) 的「6 项效果的实施完成度」表 ——
@@ -158,6 +158,7 @@ plugins:
         native_streaming: true   # 一回合一张卡（工具进度合入同卡）；关掉退回逐段新消息
         clarify_cards: true      # 澄清用交互卡
         clarify_dialect: "2.0"   # 澄清卡方言：2.0 下拉+输入框（默认，真机点击已验证）/ 1.0 按钮（旧路径，仍然可用）
+        native_transport: patch  # 流式帧传输：patch（默认，字是几个几个跳）/ cardkit（**真逐字打字机**，已真机验证，想要就改成 cardkit）
         unified_panel: true      # 推理 + 工具合并为一个底部面板
         panel_expanded: false    # 面板默认展开（默认收起）
         streaming_print_ms: 15   # 客户端打字机的逐字间隔（毫秒，只对流式帧有效）；0 = 关闭；超出 [1,2000] 退默认并留 WARNING

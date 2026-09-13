@@ -782,6 +782,82 @@ def _round_title(index: int, elapsed_ms: Any) -> str:
     return base
 
 
+#: CardKit 实体卡的**固定元素 id**（结构在建实体时定死，之后只按 id 写内容）。
+#: 见 docs/plan-6-effects.md「阶段 9」：**任何结构性写入都会关闭流式会话**
+#: （真机实测 `300309`），所以结构不能边流边改。
+CARDKIT_ANSWER_ID = "answer"
+CARDKIT_PANEL_ID = "panel"
+CARDKIT_PANEL_BODY_ID = "panel_body"
+
+
+def panel_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
+                   tools: Sequence[str] = (),
+                   max_reasoning_chars: int = MAX_REASONING_CHARS,
+                   max_tool_chars: int = MAX_TOOL_RESULT_CHARS,
+                   max_steps: int = MAX_PANEL_STEPS) -> str:
+    """面板内容的 **markdown 文本**（CardKit 流式写入用）。
+
+    为什么需要它：CardKit 只能按 ``element_id`` 往元素里**写文本**，不能边流边改结构，
+    所以那个「折叠面板」里的内容必须是一个 markdown 子元素的字符串。这里复用与
+    :func:`unified_panel` 同样的截断/收轮规则（`_cap` + `truncate` + `_round_title`），
+    保证两条路径**看到的内容一致**，只是载体不同（多个元素 vs 一个 markdown）。
+    """
+    max_reasoning_chars = _cap(max_reasoning_chars, MAX_REASONING_CHARS)
+    max_tool_chars = _cap(max_tool_chars, MAX_TOOL_RESULT_CHARS)
+    max_steps = _cap(max_steps, MAX_PANEL_STEPS)
+    lines: List[str] = []
+    round_list = [item for item in rounds if isinstance(item, dict) and str(item.get("text") or "")]
+    if round_list:
+        keep = max(1, min(len(round_list), max_reasoning_chars // _MIN_ROUND_CHARS))
+        share = max(_MIN_ROUND_CHARS, max_reasoning_chars // keep)
+        dropped = len(round_list) - keep
+        if dropped > 0:
+            lines.append(_i18n.t("panel.rounds_trimmed", n=dropped))
+        for index, item in enumerate(round_list[-keep:], start=dropped + 1):
+            body = truncate(str(item.get("text") or ""), share)
+            lines.append(f"**{_round_title(index, item.get('elapsed_ms'))}**\n\n{body}")
+    elif reasoning:
+        lines.append(truncate(reasoning, max_reasoning_chars))
+    steps = [str(item) for item in tools]
+    if steps and len(steps) > max_steps:
+        lines.append(_i18n.t("panel.trimmed", n=len(steps) - max_steps))
+        steps = steps[-max_steps:]
+    for item in steps:
+        lines.append(truncate(item, max_tool_chars))
+    return "\n\n".join(lines)
+
+
+def cardkit_entity_card(answer: str, panel_text: str, *, streaming: bool = True,
+                        status: Any = None) -> Dict[str, Any]:
+    """**CardKit 实体卡**的 JSON（结构固定：一个正文元素 + 一个折叠面板，面板里一个 markdown）。
+
+    结构固定是有原因的（真机实测）：`card_element.content` 只能按 id 写内容；而
+    `message.patch` / `card.update` 这类**结构性写入会关闭流式会话**（再写元素得 `300309`）。
+    所以：流式期间只写这两个元素，收尾才用 patch 整卡替换（那一刻流式本来也结束了）。
+
+    面板的边框色按状态给（收尾帧会连面板一起换成带色的完整卡，这里只是建实体时的初始值）。
+    """
+    return {
+        "schema": SCHEMA,
+        "config": {"streaming_mode": bool(streaming), "update_multi": True,
+                   "summary": _summary_of(answer, fallback=DEFAULT_TITLE)},
+        "body": {"elements": [
+            {"tag": "markdown", "element_id": CARDKIT_ANSWER_ID,
+             "content": answer_or_pending(answer, streaming)},
+            {"tag": "collapsible_panel", "element_id": CARDKIT_PANEL_ID, "expanded": False,
+             "header": {"title": _i18n.i18n_text("panel.title"),
+                        "vertical_align": "center",
+                        "icon": {"tag": "standard_icon", "token": "down-small-ccm_outlined",
+                                 "size": "16px 16px"},
+                        "icon_position": "right", "icon_expanded_angle": -180},
+             "border": {"color": border_for_status(status), "corner_radius": "8px"},
+             "padding": "8px 8px 8px 8px",
+             "elements": [{"tag": "markdown", "element_id": CARDKIT_PANEL_BODY_ID,
+                           "content": panel_text or " "}]},
+        ]},
+    }
+
+
 def unified_panel(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
                   tools: Sequence[str] = (),
                   expanded: bool = False,

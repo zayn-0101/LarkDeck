@@ -49,6 +49,7 @@ import logging
 import os
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 from . import cards as _cards
@@ -188,6 +189,15 @@ _DEFAULTS: Dict[str, Any] = {
     # 澄清卡方言：1.0（按钮 + 顶层 value，真机已跑通，**默认**）/ 2.0（下拉 + 输入框 +
     # 组件级 behaviors，需真机点击确证后再翻默认；见 AGENTS.md 不变量 5）
     "clarify_dialect": "2.0",
+    #: native 流式帧走哪条传输：``"cardkit"``（默认，**真打字机**）/ ``"patch"``（旧路径，稳定）。
+    #: 2026-09-13 真机实测 + **用户肉眼判定**：普通卡 + `message.patch` 只是「几个字几个字」地跳，
+    #: CardKit 实体 + `card_element.content` 才是一个字一个字往外冒。所以默认翻成 cardkit。
+    #: 任何一步失败（建实体 / 写元素 / 拿不到 SDK）都会 fail-open 返回 False，由核心回落
+    #: edit/send —— 不变量 2 照旧：宁可退回纯文本，也绝不丢消息。
+    #: ⚠️ **默认仍是 "patch"**：翻默认是一次独立改动 —— 单测的哑客户端还没有 cardkit 层，
+    #: 直接翻会让 8 条既有断言变红（它们覆盖的是别的不变量，不能为了翻默认去改弱）。
+    #: 想现在就享受逐字打字机：配 `native_transport: "cardkit"`（生产路径已真机验证过）。
+    "native_transport": "patch",
     # 「处理中」表情反应：Hermes 会在用户消息上打一个 Typing 表情、处理完撤掉 ——
     # 在飞书上这就相当于「输入提示」。流式卡片本身已是即时反馈，aiduPOP 把「无输入提示」
     # 列进了即时响应的观感。**默认保持 Hermes 的行为**（true）：它自己也并没有真的关
@@ -635,6 +645,38 @@ class LarkDeckMixin:
             return ""
 
     @classmethod
+    def _ld_panel_markdown(cls, chat_id: str = "", started: Optional[float] = None) -> str:
+        """面板内容的 **markdown 文本**（CardKit 路径用，见 :func:`cards.panel_markdown`）。
+
+        与 :meth:`_ld_panel` 取**同一份快照、同一套上限**，所以两条传输看到的内容一致；
+        差别只是载体（多个元素 vs 一个 markdown 字符串）。任何异常都退回空串（面板是装饰）。
+        """
+        try:
+            snap = _panel.snapshot(chat_id) or {}
+            steps = [
+                _cards.tool_step(
+                    str(t.get("name") or "tool"),
+                    status=str(t.get("status") or "ok"),
+                    duration_ms=t.get("duration_ms"),
+                    preview=str(t.get("preview") or ""),
+                )
+                for t in (snap.get("tools") or [])
+            ]
+            if not steps and not snap.get("rounds") and not snap.get("reasoning"):
+                return ""
+            return _cards.panel_markdown(
+                reasoning=str(snap.get("reasoning") or ""),
+                rounds=snap.get("rounds") or [],
+                tools=steps,
+                max_reasoning_chars=_cfg_int("max_reasoning_chars", _cards.MAX_REASONING_CHARS),
+                max_tool_chars=_cfg_int("max_tool_result_chars", _cards.MAX_TOOL_RESULT_CHARS),
+                max_steps=_cfg_int("max_panel_steps", _cards.MAX_PANEL_STEPS),
+            )
+        except Exception:
+            logger.debug("[larkdeck] 面板 markdown 渲染失败，跳过", exc_info=True)
+            return ""
+
+    @classmethod
     def _ld_panel(cls, chat_id: str = "", started: Optional[float] = None
                   ) -> Optional[Dict[str, Any]]:
         """底部折叠面板：推理过程 + 工具步骤 + 状态色（数据来自 :mod:`larkdeck.core.panel`）。
@@ -837,6 +879,82 @@ class LarkDeckMixin:
             logger.warning("[larkdeck] native 流式帧异常，交由核心回落", exc_info=True)
             return self._ld_stream_fail(f"帧处理异常：{exc}")
 
+    # ------------------------------------------------- CardKit 传输（阶段 9）
+    @staticmethod
+    def _ld_transport() -> str:
+        """本回合的 native 帧走哪条传输。认不出的值按 ``patch`` 处理（不猜、不抛）。"""
+        return "cardkit" if str(_cfg_raw("native_transport") or "").strip() == "cardkit" else "patch"
+
+    @staticmethod
+    def _ld_ck_requests() -> Any:
+        """懒取 CardKit 的请求构造（Hermes 环境里才有 ``lark_oapi``）。
+
+        **取不到就返回 None** ⇒ 调用方 fail-open 回落（单测环境正是这种情况：`test_units.py`
+        是零 Hermes 依赖的，所以这里绝不能把 SDK 变成模块级 import —— 那会让单测直接崩）。
+        """
+        try:
+            from lark_oapi.api.cardkit.v1 import (CreateCardRequest, CreateCardRequestBody,
+                                                  ContentCardElementRequest,
+                                                  ContentCardElementRequestBody)
+            from lark_oapi.api.im.v1 import (CreateMessageRequest, CreateMessageRequestBody)
+        except Exception:
+            return None
+        return SimpleNamespace(
+            create_card=lambda card_json: CreateCardRequest.builder().request_body(
+                CreateCardRequestBody.builder().type("card_json").data(card_json).build()
+            ).build(),
+            send_entity=lambda receive_id, card_id: CreateMessageRequest.builder()
+            .receive_id_type("chat_id").request_body(
+                CreateMessageRequestBody.builder().receive_id(receive_id)
+                .msg_type("interactive")
+                .content(json.dumps({"type": "card", "data": {"card_id": card_id}},
+                                    ensure_ascii=False)).build()).build(),
+            write_element=lambda card_id, element_id, content, sequence, uuid_value:
+            ContentCardElementRequest.builder().card_id(card_id).element_id(element_id)
+            .request_body(ContentCardElementRequestBody.builder().content(content)
+                          .sequence(sequence).uuid(uuid_value).build()).build(),
+        )
+
+    async def _ld_ck_create(self, chat: str, *, answer: str, panel_text: str) -> Any:
+        """建 CardKit 实体 + 发实体卡。返回 ``(message_id, card_id)`` 或 ``None``。
+
+        走的是官方三个接口（真机实测每一步都 ``code=0``，见 `docs/plan-6-effects.md` 阶段 9）：
+        ``cardkit.v1.card.create`` → ``im.v1.message.create``（content 是
+        ``{"type":"card","data":{"card_id":…}}``）。
+        """
+        reqs = self._ld_ck_requests()
+        if reqs is None:
+            return None                      # 没有 SDK ⇒ fail-open 回落（不猜、不抛）
+        card = _cards.cardkit_entity_card(answer, panel_text, streaming=True)
+        made = await self._run_blocking(
+            self._client.cardkit.v1.card.create,
+            reqs.create_card(json.dumps(card, ensure_ascii=False)))
+        card_id = getattr(getattr(made, "data", None), "card_id", None)
+        if _ld_response_code(made) != 0 or not card_id:
+            return None
+        sent = await self._run_blocking(
+            self._client.im.v1.message.create, reqs.send_entity(chat, card_id))
+        result = self._finalize_send_result(sent, "larkdeck cardkit send failed")
+        if not getattr(result, "success", False):
+            return None
+        return result, str(card_id)
+
+    async def _ld_ck_write(self, card_id: str, element_id: str, content: str,
+                           sequence: int) -> bool:
+        """往实体卡的某个元素里写文本（**这是打字机的写入通道**）。
+
+        ⚠️ 序号必须**单调递增**：用 ``settings`` 重开会话后序号没对齐会拿到
+        ``300317``（真机实测）。这里由调用方在 stream state 里维护一个计数器。
+        """
+        reqs = self._ld_ck_requests()
+        if reqs is None:
+            return False
+        resp = await self._run_blocking(
+            self._client.cardkit.v1.card_element.content,
+            reqs.write_element(card_id, element_id, content, int(sequence),
+                               f"ld-{card_id}-{element_id}-{sequence}"))
+        return _ld_response_code(resp) == 0
+
     async def _ld_stream_frame(self, text: str, *, finalize: bool, chat_id: Optional[str],
                                reply_to: Optional[str], turn_id: str) -> bool:
         chat = str(chat_id or "").strip()
@@ -854,6 +972,23 @@ class LarkDeckMixin:
                 # 没有活跃流可收尾：交核心回落（send/edit 会正常发出）。这是**正常路径**
                 # （native 没开、或本回合首帧就没建成卡），所以不告警。
                 return False
+            if self._ld_transport() == "cardkit":
+                # ---- CardKit 实体卡（真打字机）：结构建实体时定死，之后只按 id 写元素 ----
+                panel_text = self._ld_panel_markdown(chat, now)
+                made = await self._ld_ck_create(chat, answer=display, panel_text=panel_text)
+                if made is None:
+                    # 任何一步失败都交给核心回落（这是**契约**：帧失败 ⇒ 本回合改走 edit/send）
+                    return self._ld_stream_fail("CardKit 建实体/发实体卡失败")
+                result, card_id = made
+                message_id = getattr(result, "message_id", "") or ""
+                if not message_id:
+                    return self._ld_stream_fail("CardKit 建卡成功但没拿到 message_id")
+                self._ld_track(message_id, chat)
+                self._ld_stream_put(key, {"message_id": message_id, "chat_id": chat,
+                                          "t0": now, "last": text, "last_at": now,
+                                          "frames": 0, "skipped": 0,
+                                          "card_id": card_id, "ck_seq": 0})
+                return True
             card = self._ld_build_card(display, streaming=True,
                                        panel=self._ld_panel(chat, now),
                                        footer=self._ld_footer())
@@ -894,6 +1029,20 @@ class LarkDeckMixin:
                 and now - last_at < _STREAM_MIN_INTERVAL):
             # 节流窗口内的中间帧：跳过，等下个 tick（首帧不节流）
             self._ld_stream_put(key, {**state, "skipped": int(state.get("skipped") or 0) + 1})
+            return True
+        card_id = str(state.get("card_id") or "")
+        if card_id:
+            # ---- CardKit：只写元素内容（**不做任何结构性写入** —— 那会关闭流式会话）----
+            seq = int(state.get("ck_seq") or 0)
+            if not await self._ld_ck_write(card_id, _cards.CARDKIT_ANSWER_ID, display, seq + 1):
+                return self._ld_stream_fail("CardKit 写正文元素失败")
+            panel_text = self._ld_panel_markdown(chat, state.get("t0"))
+            if not await self._ld_ck_write(card_id, _cards.CARDKIT_PANEL_BODY_ID,
+                                           panel_text or " ", seq + 2):
+                return self._ld_stream_fail("CardKit 写面板元素失败")
+            self._ld_stream_put(key, {**state, "last": text, "last_at": now,
+                                      "ck_seq": seq + 2,
+                                      "frames": int(state.get("frames") or 0) + 1})
             return True
         card = self._ld_build_card(display, streaming=True,
                                    panel=self._ld_panel(chat, state.get("t0")),

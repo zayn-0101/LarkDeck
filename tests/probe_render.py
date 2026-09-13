@@ -807,6 +807,119 @@ def probe_cardkit(client, chat: str, cards) -> int:
     return 0
 
 
+def probe_cardkit_transport(client, chat: str, cards) -> int:
+    """**生产路径**的 CardKit 传输真机验证（阶段 9）。
+
+    与 `--cardkit`（我自己复刻的一条链）不同：这里把配置切到 `native_transport="cardkit"`，
+    然后对**真适配器**调 `send_stream_frame`（生产契约：text 是累积全文），
+    走的就是 `_ld_stream_frame` 里那段新代码。断言：
+      * seed 帧建起实体卡（`card.create` + 发实体卡都 `code=0`）；
+      * 后续帧写的是**两个元素**（正文 + 面板），序号单调递增；
+      * 收尾帧走 `message.patch`（那一刻流式本来就结束，patch 关掉会话正好）；
+      * 全程没有掉 native（掉 native = 卡会变成一条条纯文本）。
+    """
+    import asyncio
+    _load, adapter, _panel = _load_adapter_for_probe(chat)
+    if adapter is None:
+        return 1
+    calls = {"content": [], "patch": 0}
+    original_write = adapter._ld_ck_write
+    original_update = adapter._ld_update_card
+
+    async def _spy_write(card_id, element_id, content, sequence):
+        ok = await original_write(card_id, element_id, content, sequence)
+        calls["content"].append((element_id, sequence, ok))
+        return ok
+
+    async def _spy_update(chat_id, message_id, card):
+        calls["patch"] += 1
+        return await original_update(chat_id, message_id, card)
+
+    adapter._ld_ck_write = _spy_write
+    adapter._ld_update_card = _spy_update
+    text = ("这是**生产路径**的 CardKit 传输验证：正文会逐字往外冒。") * 3
+    try:
+        _set_probe_config(adapter, native_transport="cardkit")
+        loop = asyncio.new_event_loop()
+        try:
+            ok_seed = loop.run_until_complete(adapter.send_stream_frame(
+                "", chat_id=chat, turn_id=f"ckt-{int(time.time())}"))
+            print(f"   seed 帧（建实体） = {ok_seed}")
+            state = None
+            for item in list(adapter._ld_streams.values()):
+                state = item
+            card_id = (state or {}).get("card_id") if isinstance(state, dict) else None
+            print(f"   实体 card_id = {card_id}（必须有值，否则说明走的是 patch 传输）")
+            for cut in (20, 40, len(text)):
+                ok = loop.run_until_complete(adapter.send_stream_frame(
+                    text[:cut], chat_id=chat, turn_id=str((state or {}).get('turn') or "")))
+                print(f"   正文帧 {cut} 字 = {ok}")
+                time.sleep(0.4)
+            ok_fin = loop.run_until_complete(adapter.send_stream_frame(
+                text, finalize=True, chat_id=chat, turn_id=""))
+            print(f"   收尾帧 = {ok_fin}")
+        finally:
+            loop.close()
+    finally:
+        adapter._ld_ck_write = original_write
+        adapter._ld_update_card = original_update
+        _set_probe_config(adapter, native_transport="patch")
+
+    writes = [c for c in calls["content"]]
+    print(f"   元素写入 {len(writes)} 次：{writes}")
+    print(f"   收尾 patch {calls['patch']} 次")
+    ok = (bool(state) and card_id and writes and calls["patch"] == 1
+          and all(w[2] for w in writes))
+    if ok:
+        print("✅ 生产路径的 CardKit 传输真机通过（建实体 + 元素写入 + patch 收尾）")
+        print("   ⚠️ 这些卡的 id 没进账本（收尾后 stream state 已清）—— 看够了就叫我删。")
+    else:
+        print("❌ 生产路径的 CardKit 传输有问题（见上面的 code / 计数）")
+    return 0 if ok else 1
+
+
+def _load_adapter_for_probe(chat: str):
+    """给探针造一个**真适配器**（经 Hermes 插件加载器）并注入真客户端；顺带兜住 SDK 懒绑定。"""
+    import os as _os
+    import pathlib as _pl
+    home = _os.environ.get("HERMES_HOME") or str(_pl.Path.home() / ".hermes")
+    install = _pl.Path(home) / "hermes-agent"
+    _os.environ.setdefault("HERMES_HOME", home)
+    if str(install) not in sys.path:
+        sys.path.insert(0, str(install))
+    try:
+        from hermes_cli.plugins import discover_plugins
+        from gateway.platform_registry import platform_registry
+        from gateway.config import PlatformConfig
+    except Exception as exc:
+        print(f"⚠️ 需要 Hermes 环境（用 ~/.hermes/hermes-agent/venv/bin/python3 跑）：{exc!r}")
+        return None, None, None
+    discover_plugins()
+    factory = getattr(platform_registry.get("feishu"), "adapter_factory", None)
+    if factory is None:
+        print("⚠️ 注册表里没有 feishu 平台")
+        return None, None, None
+    adapter = factory(PlatformConfig(enabled=True, extra={}))
+    env = load_env(); cards = load_cards()
+    lark = __import__("lark_oapi", fromlist=["Client"])
+    client = (lark.Client.builder().app_id(env["FEISHU_APP_ID"])
+              .app_secret(env["FEISHU_APP_SECRET"])
+              .log_level(lark.LogLevel.ERROR).build())
+    adapter._client = client
+    base_mod = sys.modules.get("hermes_plugins.feishu_platform.adapter")
+    loader = getattr(base_mod, "_load_lark_oapi", None)
+    if loader:
+        loader()
+    return None, adapter, None
+
+
+def _set_probe_config(adapter, **kw) -> None:
+    """临时改探针进程里的配置（只影响这个进程，不动真 config.yaml）。"""
+    mod = sys.modules.get(type(adapter).__module__)
+    if mod is not None:
+        mod._CONFIG.update(kw)
+
+
 def probe_stop_redraw(client, chat: str, cards) -> int:
     """**中止重绘的真机端到端**（第七路审计那条阻断项的现场复现与回归）。
 
@@ -1066,6 +1179,8 @@ def main(argv: list) -> int:
         return probe_stop_redraw(client, chat, cards)
     if "--cardkit" in argv:
         return probe_cardkit(client, chat, cards)
+    if "--cardkit-prod" in argv:
+        return probe_cardkit_transport(client, chat, cards)
 
     cases = (build_cases(cards) + build_bilingual_cases(cards) + build_footer_cases(cards)
              + build_dialect_probe_cards(cards))

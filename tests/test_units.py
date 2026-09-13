@@ -760,6 +760,155 @@ def test_native_streaming_probe_and_seed():
         adapter._apply_metrics_config()
 
 
+def test_cardkit_transport_writes_elements_and_falls_open():
+    """阶段 9：`native_transport: "cardkit"` 的帧序列 + **任何一步失败都回落**。
+
+    真机实测确立的两条硬约束（`docs/plan-6-effects.md` 阶段 9）：
+      * **只能按 `element_id` 写内容**（`card_element.content`），结构在建实体时定死 ——
+        任何结构性写入（patch / card.update）都会**关闭流式会话**，之后再写元素得 `300309`；
+      * 序号必须**单调递增**（用 settings 重开会话后序号没对齐会拿到 `300317`）。
+    另外这是**新增的一条传输**，所以「失败必须回落」这条不变量（宁可退回纯文本也不丢消息）
+    必须在这里也成立 —— 这里逐条打桩验证。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    try:
+        def _mk_fake(*, fail_write_after=10 ** 9, create_ok=True, fail_answer_only=False):
+            calls = {"create": 0, "send": 0, "content": [], "patch": 0}
+
+            class _Resp:
+                def __init__(self, code=0, **data):
+                    self.code = code
+                    self.msg = "success" if code == 0 else "boom"
+                    self.data = types.SimpleNamespace(**data) if data else None
+
+                def success(self):
+                    return self.code == 0
+
+            class _CardRes:
+                def create(self, request):
+                    calls["create"] += 1
+                    return _Resp(0, card_id="ck_1") if create_ok else _Resp(300305)
+
+            class _ElemRes:
+                def content(self, request):
+                    calls["content"].append((request.element_id, request.request_body.content,
+                                             request.request_body.sequence))
+                    if fail_answer_only and request.element_id == cards.CARDKIT_ANSWER_ID:
+                        return _Resp(300309)
+                    if len(calls["content"]) > fail_write_after:
+                        return _Resp(300309)
+                    return _Resp(0)
+
+            class _MsgRes:
+                def create(self, request):
+                    calls["send"] += 1
+                    # ⚠️ 形状必须与替身适配器的 `_finalize_send_result` 一致（它读 dict）
+                    return {"code": 0, "data": {"message_id": "om_ck_1"}}
+
+                def patch(self, request):
+                    calls["patch"] += 1
+                    return _Resp(0)
+
+            client = types.SimpleNamespace(
+                cardkit=types.SimpleNamespace(v1=types.SimpleNamespace(
+                    card=_CardRes(), card_element=_ElemRes())),
+                im=types.SimpleNamespace(v1=types.SimpleNamespace(message=_MsgRes())))
+            return calls, client
+
+        # ⚠️ `test_units.py` 是**零 Hermes 依赖**的，所以 SDK 的请求构造必须可注入：
+        # 真环境用 `_ld_ck_requests()` 里的 SDK builder，这里换成等价的哑对象。
+        def _fake_requests():
+            return types.SimpleNamespace(
+                create_card=lambda card_json: types.SimpleNamespace(
+                    request_body={"card_json": card_json}),
+                send_entity=lambda receive_id, card_id: types.SimpleNamespace(
+                    receive_id=receive_id, card_id=card_id,
+                    request_body=types.SimpleNamespace(
+                        content=json.dumps({"type": "card", "data": {"card_id": card_id}}))),
+                write_element=lambda cid, eid, content, seq, uuid_value: types.SimpleNamespace(
+                    card_id=cid, element_id=eid,
+                    request_body=types.SimpleNamespace(content=content, sequence=seq,
+                                                       uuid=uuid_value)),
+            )
+
+        # ① 全链路成功：建实体 → 两次帧（各写正文+面板两个元素）→ 收尾走 patch
+        calls, client = _mk_fake()
+        raw = _make()
+        raw._client = client
+        raw._ld_send_card = lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("cardkit 模式不该走 _ld_send_card"))
+        adapter.configure(native_transport="cardkit")
+        old_reqs = adapter.LarkDeckMixin._ld_ck_requests
+        old_interval = adapter._STREAM_MIN_INTERVAL
+        adapter._STREAM_MIN_INTERVAL = 0.0        # 帧节流窗口：测试里连发两帧要都能过
+        adapter.LarkDeckMixin._ld_ck_requests = staticmethod(_fake_requests)
+        assert _run(raw.send_stream_frame("", chat_id="oc_ck", turn_id="t-ck"))
+        assert calls["create"] == 1 and calls["send"] == 1, calls
+        assert _run(raw.send_stream_frame("正文一", chat_id="oc_ck", turn_id="t-ck"))
+        assert _run(raw.send_stream_frame("正文一，正文二", chat_id="oc_ck", turn_id="t-ck"))
+        ids = [c[0] for c in calls["content"]]
+        seqs = [c[2] for c in calls["content"]]
+        assert ids == [cards.CARDKIT_ANSWER_ID, cards.CARDKIT_PANEL_BODY_ID] * 2, ids
+        assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs), seqs
+        # 收尾帧走的是 `_ld_update_card`（= 普通 patch）—— 这里打桩记录，因为单测环境没有 SDK，
+        # 而「收尾必须走 patch」正是 CardKit 设计的一部分（那一刻流式本来就结束）。
+        finalized = []
+
+        async def _record_update(chat_id, mid, card):
+            finalized.append((chat_id, mid, card))
+            return _StubResult(True, mid)
+
+        raw._ld_update_card = _record_update
+        assert _run(raw.send_stream_frame("正文一，正文二", finalize=True,
+                                          chat_id="oc_ck", turn_id="t-ck"))
+        assert len(finalized) == 1 and finalized[0][1] == "om_ck_1", finalized
+        assert calls["patch"] == 0, "收尾不该写元素（应整卡替换）"
+
+        # ② 写**正文**元素失败（面板那条仍成功）⇒ 这一帧必须返回 False
+        #    （核心据此停用 native 并回落 edit/send）。这一条专门堵「吞掉正文失败」那种变异：
+        #    如果两个元素都失败，面板那一层的失败会把它掩盖过去。
+        calls, client = _mk_fake(fail_answer_only=True)
+        raw2 = _make()
+        raw2._client = client
+        adapter.configure(native_transport="cardkit")
+        assert _run(raw2.send_stream_frame("", chat_id="oc_ck2", turn_id="t-2"))
+        assert not _run(raw2.send_stream_frame("正文", chat_id="oc_ck2", turn_id="t-2")), \
+            "写元素失败必须返回 False 让核心回落，绝不能吞掉"
+
+        # ③ 建实体失败 ⇒ seed 帧就返回 False（整回合回落，消息不会丢）
+        calls, client = _mk_fake(create_ok=False)
+        raw3 = _make()
+        raw3._client = client
+        adapter.configure(native_transport="cardkit")
+        assert not _run(raw3.send_stream_frame("", chat_id="oc_ck3", turn_id="t-3"))
+
+        # ④ 默认传输仍是 patch（这一条保证「翻默认」是个**显式决定**，不是顺手改坏）
+        adapter.configure(native_transport="patch")
+        assert adapter.LarkDeckMixin._ld_transport() == "patch"
+        adapter.configure(native_transport="cardkit")
+        assert adapter.LarkDeckMixin._ld_transport() == "cardkit"
+        adapter.configure(native_transport="???")
+        assert adapter.LarkDeckMixin._ld_transport() == "patch", "认不出的值按 patch（不猜）"
+
+        # ⑤ SDK 取不到（单测/裁剪环境）⇒ 建实体返回 None ⇒ **fail-open**，绝不抛
+        adapter.LarkDeckMixin._ld_ck_requests = staticmethod(lambda: None)
+        calls, client = _mk_fake()
+        raw4 = _make()
+        raw4._client = client
+        adapter.configure(native_transport="cardkit")
+        assert not _run(raw4.send_stream_frame("", chat_id="oc_ck4", turn_id="t-4")), \
+            "没有 SDK 时必须 fail-open 返回 False（让核心回落），不能抛"
+    finally:
+        try:
+            adapter.LarkDeckMixin._ld_ck_requests = old_reqs
+            adapter._STREAM_MIN_INTERVAL = old_interval
+        except NameError:
+            pass
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
 def test_native_streaming_frame_lifecycle():
     """普通帧原地更新 + 幂等去重；finalize 收尾并清状态。"""
     defaults = dict(adapter._DEFAULTS)

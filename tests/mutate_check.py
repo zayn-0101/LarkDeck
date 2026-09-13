@@ -297,6 +297,22 @@ MUTATIONS = [
      "FEISHU_CARD_BYTE_LIMIT = 128000",
      "FEISHU_CARD_BYTE_LIMIT = 128000\n_FEISHU_WALL_COPY = 128000",
      "test_units"),
+    # ---- 阶段 9：CardKit 传输（撤掉任何一条保证都必须变红）------------------- #
+    ("CK2-写正文元素失败被吞", "core/adapter.py",
+     "            if not await self._ld_ck_write(card_id, _cards.CARDKIT_ANSWER_ID, display, seq + 1):\n                return self._ld_stream_fail(\"CardKit 写正文元素失败\")",
+     "            await self._ld_ck_write(card_id, _cards.CARDKIT_ANSWER_ID, display, seq + 1)",
+     "test_units"),
+    ("CK3-序号不递增（复用同一号）", "core/adapter.py",
+     '                                      "ck_seq": seq + 2,',
+     '                                      "ck_seq": seq,',
+     "test_units"),
+    ("CK4-不写面板元素", "core/adapter.py",
+     "            if not await self._ld_ck_write(card_id, _cards.CARDKIT_PANEL_BODY_ID,\n                                           panel_text or \" \", seq + 2):\n                return self._ld_stream_fail(\"CardKit 写面板元素失败\")",
+     "            pass",
+     "test_units"),
+    ("CK6-默认传输被顺手改成 cardkit", "core/adapter.py",
+     '    "native_transport": "patch",', '    "native_transport": "cardkit",',
+     "test_units"),
     # ---- P6：黄金路径耗时 ---------------------------------------------------- #
     ("P6-轮耗时恒为 0", "core/panel.py",
      "    current[\"elapsed_ms\"] = max(0, int((now - float(current.get(\"started\") or now)) * 1000))",
@@ -308,6 +324,16 @@ MUTATIONS = [
 #: **对照项**：行为等价的改动（合法 YAML 变体等），期望四门禁**全绿**。
 #: 与 MUTATIONS 分开成两张表 —— 判断依据是它属于哪张表，不是名字里有没有某个字。
 CONTROLS = [
+    # 这两条「撤掉也全绿」是**结果等价**，不是门禁漏洞：外层的 try/fail-open 链
+    # （`send_stream_frame` 的 except → `_ld_stream_fail` → 返回 False）会把它们接住，
+    # 结果同样是「frame 返回 False、核心回落」—— 不变量 2（绝不丢消息）在两种形态下都成立。
+    ("C-对照：建实体失败仍当作成功（被 message_id 检查 + 外层 fail-open 接住）",
+     "core/adapter.py",
+     "                if made is None:\n                    # 任何一步失败都交给核心回落（这是**契约**：帧失败 ⇒ 本回合改走 edit/send）\n                    return self._ld_stream_fail(\"CardKit 建实体/发实体卡失败\")",
+     "                if made is None:\n                    made = (self._ld_send_card, \"\")", ""),
+    ("C-对照：没有 SDK 时不显式 fail-open（被外层 except 接住）", "core/adapter.py",
+     "        reqs = self._ld_ck_requests()\n        if reqs is None:\n            return None                      # 没有 SDK ⇒ fail-open 回落（不猜、不抛）",
+     "        reqs = self._ld_ck_requests()", ""),
     # 行为等价：真判据里那句字节上限检查其实被「卡里有没有面板」覆盖了 ——
     # `fit_reply_card` 装不下壳时会退回**裸卡**（没有面板），所以两种写法结果相同。
     # 第十路审计式的核对：这类「撤掉也全绿」的变异应当被承认为**等价**，而不是硬找门禁。
