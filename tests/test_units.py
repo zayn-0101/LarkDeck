@@ -817,8 +817,10 @@ def test_cardkit_transport_writes_elements_and_falls_open():
     defaults = dict(adapter._DEFAULTS)
     try:
         def _mk_fake(*, fail_write_after=10 ** 9, create_ok=True, fail_answer_only=False,
-                     fail_panel_only=False, create_empty_id=False):
-            calls = {"create": 0, "send": 0, "content": [], "patch": 0, "entity": []}
+                     fail_panel_only=False, create_empty_id=False,
+                     create_codes=None, answer_codes=None):
+            calls = {"create": 0, "send": 0, "reply": 0, "content": [], "patch": 0,
+                     "entity": [], "send_req": [], "reply_req": []}
 
             class _Resp:
                 def __init__(self, code=0, **data):
@@ -833,6 +835,10 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                 def create(self, request):
                     calls["create"] += 1
                     calls["entity"].append(request.request_body["card_json"])
+                    if create_codes:
+                        # 按脚本发码：列表用完后重复最后一个（模拟「一直限流」）
+                        code = create_codes[min(calls["create"] - 1, len(create_codes) - 1)]
+                        return _Resp(code, card_id="ck_1") if code == 0 else _Resp(code)
                     if create_empty_id:
                         # code=0 但 data.card_id 是空串：飞书没给实体 id
                         return _Resp(0, card_id="")
@@ -842,6 +848,10 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                 def content(self, request):
                     calls["content"].append((request.element_id, request.request_body.content,
                                              request.request_body.sequence))
+                    if answer_codes and request.element_id == cards.CARDKIT_ANSWER_ID:
+                        idx = sum(1 for c in calls["content"]
+                                  if c[0] == cards.CARDKIT_ANSWER_ID) - 1
+                        return _Resp(answer_codes[min(idx, len(answer_codes) - 1)])
                     if fail_answer_only and request.element_id == cards.CARDKIT_ANSWER_ID:
                         return _Resp(300309)
                     if fail_panel_only and request.element_id == cards.CARDKIT_PANEL_BODY_ID:
@@ -853,8 +863,14 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             class _MsgRes:
                 def create(self, request):
                     calls["send"] += 1
+                    calls["send_req"].append(request)
                     # ⚠️ 形状必须与替身适配器的 `_finalize_send_result` 一致（它读 dict）
                     return {"code": 0, "data": {"message_id": "om_ck_1"}}
+
+                def reply(self, request):
+                    calls["reply"] += 1
+                    calls["reply_req"].append(request)
+                    return {"code": 0, "data": {"message_id": "om_ck_r1"}}
 
                 def patch(self, request):
                     calls["patch"] += 1
@@ -872,14 +888,24 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             return types.SimpleNamespace(
                 create_card=lambda card_json: types.SimpleNamespace(
                     request_body={"card_json": card_json}),
-                send_entity=lambda receive_id, card_id: types.SimpleNamespace(
-                    receive_id=receive_id, card_id=card_id,
-                    request_body=types.SimpleNamespace(
-                        content=json.dumps({"type": "card", "data": {"card_id": card_id}}))),
                 write_element=lambda cid, eid, content, seq, uuid_value: types.SimpleNamespace(
                     card_id=cid, element_id=eid,
                     request_body=types.SimpleNamespace(content=content, sequence=seq,
                                                        uuid=uuid_value)),
+                # ⚠️ 锚点/去重键必须能被断言：替身以前**不记录** `reply_to`，于是
+                # 「cardkit 把回复锚点整个丢掉」（第十二路审计实测）四门禁全绿 ——
+                # 翻默认之后这意味着**每次回答都不再挂在提问下面**。
+                send_entity=lambda receive_id, card_id: types.SimpleNamespace(
+                    receive_id=receive_id, card_id=card_id,
+                    request_body=types.SimpleNamespace(
+                        content=json.dumps({"type": "card", "data": {"card_id": card_id}}),
+                        msg_type="interactive", uuid=f"ld-msg-{card_id}")),
+                reply_entity=lambda reply_to, card_id: types.SimpleNamespace(
+                    reply_to=reply_to, card_id=card_id,
+                    request_body=types.SimpleNamespace(
+                        content=json.dumps({"type": "card", "data": {"card_id": card_id}}),
+                        msg_type="interactive", uuid=f"ld-msg-{card_id}",
+                        reply_in_thread=False)),
             )
 
         # ① 全链路成功：建实体 → 两次帧（各写正文+面板两个元素）→ 收尾走 patch
@@ -980,6 +1006,11 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         # 建实体时发的 JSON 才是**结构**的唯一证据（之后只能按 id 写内容，改不了结构）
         assert calls["entity"], "⑥ 前提：建实体的请求必须被记录下来"
         entity = json.loads(calls["entity"][0])
+        # ⚠️ `streaming_mode` 是**打字机的总开关**，也是这次翻默认的**唯一理由** ——
+        # 而它此前零门禁（第十二路审计：改成 False / 删掉这个键，四门禁全绿）。
+        assert entity["config"]["streaming_mode"] is True, \
+            f"实体卡必须开流式会话，否则逐字打字机整个失效：{entity['config']!r}"
+        assert entity["config"].get("update_multi") is True, entity["config"]
         elem_ids = [e.get("element_id") for e in entity["body"]["elements"]]
         assert elem_ids == ["answer"], \
             f"unified_panel: false 时面板元素不该进卡（README 承诺两条传输下都关得掉）：{elem_ids}"
@@ -991,6 +1022,71 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         assert sent_seqs == [1, 2], sent_seqs
         assert all(cards.CARDKIT_PANEL_BODY_ID not in c[0] for c in calls["content"]), \
             "面板关掉后写 panel_body 会得 300313（元素不存在）⇒ 每帧失败、整回合打回纯文本"
+
+        # ⑫ **回复锚点必须透传** + 发实体卡必须带**确定性 uuid**（第十二路审计实测：
+        #    锚点被整个丢掉、且两条 uuid 一个都没填）。
+        #    核心每次调 `send_stream_frame` 都带 `reply_to`（生产上恒有值）——丢了它，
+        #    patch 传输会「引用回复你的消息」而 cardkit 变成一条顶层新消息：用户可见的
+        #    行为差异，且话题群里可能自成一条新话题。uuid 则是退避重试的去重键：
+        #    缺了它，「响应丢了但实际发成功」会让 DM 里多一张永远停在「正在生成…」的卡。
+        calls, client = _mk_fake()
+        raw12 = _make()
+        raw12._client = client
+        adapter.configure(native_transport="cardkit")
+        assert _run(raw12.send_stream_frame("", chat_id="oc_ck13", turn_id="t-13",
+                                            reply_to="om_user_msg")), "带锚点的 seed 帧必须成功"
+        assert calls["reply"] == 1 and calls["send"] == 0, \
+            f"有 reply_to 时必须走 message.reply（不能发顶层新消息）：{calls}"
+        assert calls["reply_req"][0].reply_to == "om_user_msg", calls["reply_req"][0]
+        _uuid = calls["reply_req"][0].request_body.uuid
+        assert _uuid, "发实体卡必须带 uuid（重试去重键）"
+        assert "ck_1" in _uuid, f"uuid 必须由 card_id 推出（同一次发送重试时不变）：{_uuid}"
+
+        # ⑫b 没有锚点时仍走顶层发送（不能为了锚点把「第一次回答」变成回复一条不存在的消息）
+        calls, client = _mk_fake()
+        raw13 = _make()
+        raw13._client = client
+        adapter.configure(native_transport="cardkit")
+        assert _run(raw13.send_stream_frame("", chat_id="oc_ck14", turn_id="t-14"))
+        assert calls["send"] == 1 and calls["reply"] == 0, calls
+
+        # ⑭ **正文长大之后也要守硬上限**（第十二路审计第 5 条）：建实体那道闸门守的是
+        #    **空正文**的 seed 帧（核心传 `""`），真正会长大的是后面每一帧的累积全文。
+        #    它自己超过整卡硬上限时这张卡不可能成立，必须当场 fail-open（而不是白花一次往返）。
+        calls, client = _mk_fake()
+        raw14 = _make()
+        raw14._client = client
+        adapter.configure(native_transport="cardkit")
+        assert _run(raw14.send_stream_frame("", chat_id="oc_ck15", turn_id="t-15"))
+        _huge = "汉" * ((cards.FEISHU_CARD_BYTE_LIMIT // 3) + 1000)
+        adapter._log_ck_over_budget_once._at = 0.0
+        with _LogCapture("larkdeck") as records:
+            assert not _run(raw14.send_stream_frame(_huge, chat_id="oc_ck15", turn_id="t-15")), \
+                "正文超过硬上限时必须 fail-open"
+        assert calls["content"] == [], \
+            f"超上限的正文不该再往元素里写（白花一次 API 往返）：{calls['content']}"
+        assert any("硬上限" in r.getMessage() for r in records), "超上限必须留痕"
+
+        # ⑬ **真 SDK 请求构造**要单独验（⑫ 断言的是**替身**给的 uuid —— 那是自比较：
+        #    把生产代码里的 `.uuid(...)` 删掉，替身照样给出 uuid，变异 CK21 曾经全绿）。
+        #    所以这里直接调生产的 `_ld_ck_requests()`（SDK 缺了就跳过，并**打印**跳过原因，
+        #    免得「没跑」被读成「通过」）。
+        # ⚠️ 必须用**开头存下的原函数**（`old_reqs`）：本用例中途把 `_ld_ck_requests`
+        #    换成了替身，直接取 `LarkDeckMixin._ld_ck_requests()` 拿到的是替身 ——
+        #    第一版就踩了这个坑（AttributeError，且如果替身恰好也带这些属性就会变成自比较）。
+        _real_reqs = old_reqs()
+        if _real_reqs is None:
+            print("   ⚠️ 跳过真 SDK 请求构造检查：这个解释器里没有 lark_oapi")
+        else:
+            _send = _real_reqs.send_entity("oc_real", "ck_9")
+            assert _send.request_body.uuid == "ld-msg-ck_9", \
+                f"发实体卡的去重键必须由 card_id 推出，实得 {_send.request_body.uuid!r}"
+            assert _send.request_body.msg_type == "interactive", _send.request_body
+            _reply = _real_reqs.reply_entity("om_real", "ck_9")
+            assert _reply.message_id == "om_real", _reply
+            assert _reply.request_body.uuid == "ld-msg-ck_9", _reply.request_body
+            assert _reply.request_body.reply_in_thread is False, _reply.request_body
+            assert _reply.request_body.msg_type == "interactive", _reply.request_body
 
         # ⑦ 建实体回 `code=0` 但 **card_id 是空串** ⇒ 必须当场 fail-open，
         #    **绝不能**拿这个空 id 去发一张实体卡（那会是一条指向不存在实体的消息，
@@ -1007,6 +1103,109 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             "card_id 为空时必须 fail-open 返回 False"
         assert calls["create"] == 1, "前提：建实体真的被调用了（否则下面的断言是被别的失败顺带满足的）"
         assert calls["send"] == 0, "card_id 为空时不该去发实体卡（飞书会拒，且查起来更远）"
+
+        # ⑧ **限流码要退避重试**（第十二路审计）：CardKit 的元素写入/建实体此前**一次都不重试**，
+        #    撞上一次限流整回合的 native 就被停用 —— 而 patch 路径的 `_ld_update_card` 早就有这层
+        #    退避，同一个错误码在两条传输上后果不同，是纯粹的不对称。
+        #    退避间隔在测试里压成 0（只验「重试了几次」，不验真实等待）。
+        old_backoff = adapter._TRANSIENT_BACKOFF
+        adapter._TRANSIENT_BACKOFF = (0.0, 0.0, 0.0)
+        try:
+            # ⑧a 写正文先撞一次限流（230020）、第二次成功 ⇒ 整帧必须成功
+            calls, client = _mk_fake(answer_codes=[230020, 0])
+            raw7 = _make()
+            raw7._client = client
+            adapter.configure(native_transport="cardkit")
+            assert _run(raw7.send_stream_frame("", chat_id="oc_ck7", turn_id="t-7"))
+            assert _run(raw7.send_stream_frame("正文", chat_id="oc_ck7", turn_id="t-7")), \
+                "限流后重试成功 ⇒ 这一帧必须成功（原来会当作定义性失败、整回合掉 native）"
+            answers = [c for c in calls["content"] if c[0] == "answer"]
+            assert len(answers) == 2, f"正文元素应被写两次（一次限流 + 一次重试成功）：{len(answers)}"
+
+            # ⑧b **结构性码不重试**：300309（流式会话已关闭）原样重发不可能成功，
+            #     立刻回落，不许白等三轮退避
+            calls, client = _mk_fake(answer_codes=[300309])
+            raw8 = _make()
+            raw8._client = client
+            adapter.configure(native_transport="cardkit")
+            assert _run(raw8.send_stream_frame("", chat_id="oc_ck8", turn_id="t-8"))
+            assert not _run(raw8.send_stream_frame("正文", chat_id="oc_ck8", turn_id="t-8"))
+            answers = [c for c in calls["content"] if c[0] == "answer"]
+            assert len(answers) == 1, f"300309 是结构性状态，不该重试（实际写了 {len(answers)} 次）"
+
+            # ⑧c 一直限流 ⇒ 试满 `len(_TRANSIENT_BACKOFF)+1` 次后 fail-open（不吞、不无限重试）
+            calls, client = _mk_fake(answer_codes=[230020])
+            raw9 = _make()
+            raw9._client = client
+            adapter.configure(native_transport="cardkit")
+            assert _run(raw9.send_stream_frame("", chat_id="oc_ck9", turn_id="t-9"))
+            assert not _run(raw9.send_stream_frame("正文", chat_id="oc_ck9", turn_id="t-9"))
+            answers = [c for c in calls["content"] if c[0] == "answer"]
+            assert len(answers) == len(adapter._TRANSIENT_BACKOFF) + 1, \
+                f"限流应重试到退避表用完为止：期望 {len(adapter._TRANSIENT_BACKOFF) + 1} 次，实得 {len(answers)}"
+
+            # ⑧d 建实体撞限流 ⇒ 同样要重试（一次限流 + 一次成功 = 建实体 2 次、发实体卡 1 次）
+            calls, client = _mk_fake(create_codes=[99991400, 0])
+            raw10 = _make()
+            raw10._client = client
+            adapter.configure(native_transport="cardkit")
+            assert _run(raw10.send_stream_frame("", chat_id="oc_ck10", turn_id="t-10")), \
+                "建实体撞限流后重试成功 ⇒ seed 帧必须成功"
+            assert calls["create"] == 2 and calls["send"] == 1, calls
+        finally:
+            adapter._TRANSIENT_BACKOFF = old_backoff
+
+        # ⑨ **硬上限闸门**（第十二路审计缺口 1）：cardkit 的结构在建实体时定死，
+        #    超硬上限就是整卡被飞书拒（`230099`）⇒ 这一帧什么都没有、还白建一个实体。
+        #    ⚠️ 造这条数据**不能用默认面板**：面板只有 ~4.4KB，永远进不了这个分支
+        #    （审计第一版探针就撞了这个坑：两态都是绿的）。正文直接顶到硬上限之上。
+        big = "汉" * ((cards.FEISHU_CARD_BYTE_LIMIT // 3) + 2000)   # 中文 3 字节/字
+        assert len(big.encode("utf-8")) > cards.FEISHU_CARD_BYTE_LIMIT, "前提：正文本身超硬上限"
+        calls, client = _mk_fake()
+        raw11 = _make()
+        raw11._client = client
+        adapter.configure(native_transport="cardkit")
+        # ⚠️ 告警是 60 秒限流的（进程全局），同一用例里前面调过一次就会把这次压掉 ——
+        #    所以断言「必须留痕」之前要把限流时间戳清零（`_at` 挂在函数对象上）。
+        adapter._log_ck_over_budget_once._at = 0.0
+        with _LogCapture("larkdeck") as records:
+            assert not _run(raw11.send_stream_frame(big, chat_id="oc_ck11", turn_id="t-11")), \
+                "超硬上限时建实体必然被拒 ⇒ 必须当场 fail-open，而不是把卡发出去"
+        assert calls["create"] == 0 and calls["send"] == 0, \
+            f"超预算时不该去建实体/发实体卡（会白留一张孤儿实体卡）：{calls}"
+        assert any("硬上限" in r.getMessage() for r in records), \
+            "超预算必须留痕（这是「这一帧怎么什么都没有」的唯一线索）"
+
+        # ⑩ **面板内容必须过用户配的三个上限**（第十二路审计缺口 2）：实体卡里的面板内容是
+        #    一个 markdown 字符串，走 `_cards.panel_markdown` 同一套截断规则。删掉那几个
+        #    kwarg 时四门禁曾经全绿 —— 而 README 把 `max_reasoning_chars` 当用户可配上限卖、
+        #    还承诺「两条传输下观感一致」。所以这里把「配了 100 字」与「真的 ≤ 一个量级」钉住。
+        _panel_mod = panel          # 顶部已 `from larkdeck.core import … panel`
+        _panel_mod.reset()
+        adapter.configure(native_transport="cardkit", unified_panel=True,
+                          max_reasoning_chars=100)
+        _panel_mod.record_reasoning("oc_ck12", "s-ck12", "推理" * 400)
+        _md = raw11._ld_panel_markdown("oc_ck12", None)
+        assert _md, "前提：面板得有内容（否则这条断言恒真）"
+        assert len(_md) <= 200, \
+            f"配了 max_reasoning_chars=100，cardkit 面板却有 {len(_md)} 字符（上限被忽略）"
+        _panel_mod.reset()
+        adapter.configure(max_reasoning_chars=adapter._DEFAULTS["max_reasoning_chars"])
+
+        # ⑪ 两条 CardKit 告警的**限流**本身要有门禁（第十二路审计缺口 3）：
+        #    `M07`/`CK4`/`CK8` 只打「失败被吞掉」的调用点，从没打过「60 秒一条」这件事。
+        #    限流失效的后果是每帧一条 WARNING 把日志刷爆（并掩盖真正的线索）；
+        #    反向（一条都不打）则回到「静默、无迹可寻」。
+        for _once, _args in ((adapter._log_ck_panel_write_failed_once, ()),
+                             (adapter._log_ck_over_budget_once, (200000,))):
+            _once._at = 0.0                                   # 清掉上一次调用的时间戳
+            with _LogCapture("larkdeck") as records:
+                _once(*_args)
+                _once(*_args)
+                _once(*_args)
+            hits = [r for r in records if r.levelno >= logging.WARNING]
+            assert len(hits) == 1, \
+                f"{_once.__name__} 应当 60 秒只打一条，实际打了 {len(hits)} 条"
     finally:
         try:
             adapter.LarkDeckMixin._ld_ck_requests = old_reqs

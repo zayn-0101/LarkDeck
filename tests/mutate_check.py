@@ -338,10 +338,90 @@ MUTATIONS = [
      '        detail += f" · native 传输 {LarkDeckMixin._ld_transport()}"',
      '        pass',
      "check_override"),
+    ("CK22-自报的传输与实际生效的不一致（日志说 patch，跑的却是 cardkit）", "core/adapter.py",
+     '        detail += f" · native 传输 {LarkDeckMixin._ld_transport()}"',
+     '        detail += " · native 传输 patch"',
+     "check_override"),
     # 空 card_id 的坏卡形态：撤掉这道闸门就会拿空 id 去发实体卡（第十一路审计的【低】项）。
     ("CK11-建实体拿到空 card_id 也照样发实体卡", "core/adapter.py",
      '        if _ld_response_code(made) != 0 or not card_id:\n            return None',
      '        if _ld_response_code(made) != 0:\n            return None',
+     "test_units"),
+    # ---- 第十二路审计：CardKit 写路径没有限流退避（patch 路径有）⇒ 不对称 ---------------- #
+    ("CK12-元素写入不再退避重试（撞一次限流整回合掉 native）", "core/adapter.py",
+     '''        resp = await self._ld_write_with_retry(
+            lambda: reqs.write_element(card_id, element_id, content, int(sequence),
+                                       f"ld-{card_id}-{element_id}-{sequence}"),
+            self._client.cardkit.v1.card_element.content,
+            f"写元素 {element_id}")''',
+     '''        resp = await self._run_blocking(
+            self._client.cardkit.v1.card_element.content,
+            reqs.write_element(card_id, element_id, content, int(sequence),
+                               f"ld-{card_id}-{element_id}-{sequence}"))''',
+     "test_units"),
+    ("CK13-限流退避表里混进结构性码（300309 白等三轮才回落）", "core/adapter.py",
+     '_WRITE_RETRY_CODES = frozenset({230020, 99991400})',
+     '_WRITE_RETRY_CODES = frozenset({230020, 99991400, 300309, 300317})',
+     "test_units"),
+    ("CK14-建实体不再退避重试（限流一次就没卡了）", "core/adapter.py",
+     '''        made = await self._ld_write_with_retry(
+            lambda: reqs.create_card(json.dumps(card, ensure_ascii=False)),
+            self._client.cardkit.v1.card.create, "建实体")''',
+     '''        made = await self._run_blocking(
+            self._client.cardkit.v1.card.create,
+            reqs.create_card(json.dumps(card, ensure_ascii=False)))''',
+     "test_units"),
+    # ---- 第十二路审计的三条门禁缺口（每条都实测过「撤掉修复四门禁全绿」）----------------- #
+    ("CK15-建实体不再守硬上限（144KB 的卡真的发出去）", "core/adapter.py",
+     '        if size > _cards.FEISHU_CARD_BYTE_LIMIT:',
+     '        if False:',
+     "test_units"),
+    # ⚠️ 锚点必须带上 `_cards.panel_markdown(` 那一行：这四行在 `adapter.py` 里出现**两次**
+    # （`_ld_panel` 与 `_ld_panel_markdown` 各一次），短锚点会改到另一处去 ——
+    # 这一条刚写出来时就被新加的唯一性守卫当场拦下（第十二路审计缺口 2）。
+    ("CK16-CardKit 面板无视用户的三个上限", "core/adapter.py",
+     '''            return _cards.panel_markdown(
+                reasoning=str(snap.get("reasoning") or ""),
+                rounds=snap.get("rounds") or [],
+                tools=steps,
+                max_reasoning_chars=_cfg_int("max_reasoning_chars", _cards.MAX_REASONING_CHARS),
+                max_tool_chars=_cfg_int("max_tool_result_chars", _cards.MAX_TOOL_RESULT_CHARS),
+                max_steps=_cfg_int("max_panel_steps", _cards.MAX_PANEL_STEPS),
+            )''',
+     '''            return _cards.panel_markdown(
+                reasoning=str(snap.get("reasoning") or ""),
+                rounds=snap.get("rounds") or [],
+                tools=steps,
+            )''',
+     "test_units"),
+    ("CK17-面板元素失败告警不再限流（每帧一条刷爆日志）", "core/adapter.py",
+     '    if now - getattr(_log_ck_panel_write_failed_once, "_at", 0.0) < 60.0:\n        return',
+     '    if False:\n        return',
+     "test_units"),
+    # ---- 第十二路审计（第二路）实测的三条：锚点被丢 / 打字机开关 / 去重键 ------------------ #
+    ("CK19-建实体时把回复锚点丢掉（回答不再挂在提问下面）", "core/adapter.py",
+     '        anchor = str(reply_to or "").strip()\n        if anchor:',
+     '        anchor = ""\n        if anchor:',
+     "test_units"),
+    ("CK20-实体卡不再开流式会话（逐字打字机的总开关）", "core/cards.py",
+     '        "config": {"streaming_mode": bool(streaming), "update_multi": True,',
+     '        "config": {"streaming_mode": False, "update_multi": True,',
+     "test_units"),
+    ("CK21-发实体卡不带 uuid（重试会多发一张冻结卡）", "core/adapter.py",
+     '                .msg_type("interactive").uuid(f"ld-msg-{card_id}")',
+     '                .msg_type("interactive")',
+     "test_units"),
+    ("CK23-正文长大之后不再守硬上限（往元素里写 135KB）", "core/adapter.py",
+     '            body_bytes = len(display.encode("utf-8"))\n'
+     '            if body_bytes > _cards.FEISHU_CARD_BYTE_LIMIT:\n'
+     '                _log_ck_over_budget_once(body_bytes)\n'
+     '                return self._ld_stream_fail("CardKit 正文超过硬上限")\n'
+     '            if not await self._ld_ck_write',
+     '            if not await self._ld_ck_write',
+     "test_units"),
+    ("CK18-超预算告警不再限流", "core/adapter.py",
+     '    if now - getattr(_log_ck_over_budget_once, "_at", 0.0) < 60.0:\n        return',
+     '    if False:\n        return',
      "test_units"),
     # ---- 第十一路审计：CardKit 的三条「门禁说绿、真机说 300301」----------------- #
     ("M30-两个元素 id 撞车", "core/cards.py",

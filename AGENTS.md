@@ -71,7 +71,7 @@ core/         插件本体（Hermes 加载器以 hermes_plugins.larkdeck.core.* 
   adapter.py    覆盖层：LarkDeckMixin（含 native streaming 契约）+ merged_class() + build_adapter() + register() + 启动自检
   cards.py      卡片 JSON 构造（纯函数、无 I/O）—— 两种方言的边界在这里；
                 也放 CardKit 实体卡与面板 markdown 的构造（`cardkit_entity_card` /
-                `panel_markdown`：结构固定，因为结构性写入会关闭流式会话）
+                `panel_markdown`：我们的实现是「结构建实体时定死 + 收尾整卡替换」）
   i18n.py       双语文案（飞书原生 i18n_content）
   compat.py     版本 / 能力探测 —— Hermes 私有名的唯一存放处
   context.py    运行时指标（钩子写入 → 页脚读取的进程内全局快照）
@@ -108,8 +108,12 @@ tests/        见「验证」
   * `patch`：普通卡 + `message.patch` 整卡替换。字是**几个几个跳**（用户实测语）。
   * `cardkit`：CardKit 实体（`card.create` + 发实体卡）+ 每帧 `card_element.content`
     写**两个元素**（正文 + 面板内的 markdown 子元素）⇒ **真逐字打字机**（用户实测语）。
-    硬约束（全部真机实测）：**结构必须在建实体时定死**，因为任何结构性写入
-    （`message.patch` / `card.update`）都会**关闭流式会话**（之后写元素得 `300309`）；
+    硬约束（全部真机实测）：**我们的实现**把结构在建实体时定死，因为**整卡替换**
+    （`message.patch` / `card.update`）会**关闭流式会话**（之后写元素得 `300309`）。
+    ⚠️ 2026-09-13 更正：**不是「任何结构性写入」都会关** —— CardKit 自己的元素级/批量接口
+    （`card_element.patch` / `card_element.create` / `card_element.update` /
+    `card.batch_update`）在流式期间**实测可用且不关会话**（见 `docs/plan-6-effects.md`
+    的「重大更正」一节）。想做「流式期间加元素/改面板/上状态色」时别被旧结论挡住；
     序号必须**单调递增**（重开会话后没对齐得 `300317`）；收尾那一帧才用 `message.patch`
     整卡替换（补面板与状态色 —— 那一刻流式本来就结束）。**任何一步失败都 fail-open**
     返回 `False`，交给核心回落 edit/send（不变量 2）。

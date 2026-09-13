@@ -783,7 +783,7 @@ def _round_title(index: int, elapsed_ms: Any) -> str:
 
 
 #: CardKit 实体卡的**固定元素 id**（结构在建实体时定死，之后只按 id 写内容）。
-#: 见 docs/plan-6-effects.md「阶段 9」：**任何结构性写入都会关闭流式会话**
+#: 见 docs/plan-6-effects.md「阶段 9」与 2026-09-13 的「重大更正」：**整卡替换**会关闭流式会话
 #: （真机实测 `300309`），所以结构不能边流边改。
 CARDKIT_ANSWER_ID = "answer"
 CARDKIT_PANEL_ID = "panel"
@@ -833,7 +833,8 @@ def cardkit_entity_card(answer: str, panel_text: str, *, streaming: bool = True,
     """**CardKit 实体卡**的 JSON（结构固定：一个正文元素 + 一个折叠面板，面板里一个 markdown）。
 
     结构固定是有原因的（真机实测）：`card_element.content` 只能按 id 写内容；而
-    `message.patch` / `card.update` 这类**结构性写入会关闭流式会话**（再写元素得 `300309`）。
+    `message.patch` / `card.update` 这类**整卡替换会关闭流式会话**（再写元素得 `300309`）——
+    注意**元素级**接口（`card_element.patch`/`create`/`update`、`card.batch_update`）不受此限。
     所以：流式期间只写这两个元素，收尾才用 patch 整卡替换（那一刻流式本来也结束了）。
 
     面板的边框色按状态给（收尾帧会连面板一起换成带色的完整卡，这里只是建实体时的初始值）。

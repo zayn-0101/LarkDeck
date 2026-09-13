@@ -214,9 +214,14 @@ else:
     print(f"启动自检 detail: {_detail}")
     if _selfcheck.get("ok") is not True:
         problems.append(f"启动自检没通过：ok={_selfcheck.get('ok')!r} detail={_detail!r}")
-    if f"native 传输 {_declared}" not in _detail:
-        problems.append(f"启动自检没有自报传输：期望含 'native 传输 {_declared}'，"
-                        f"实得 {_detail!r}")
+    # ⚠️ 断言「日志里的传输 == 这个进程**实际生效**的传输」，而**不是**与 `_DEFAULTS` 比：
+    # 子进程会继承开发者的环境变量（`LARKDECK_NATIVE_TRANSPORT=patch` 之类），拿声明值比会
+    # 得到一次**假红**（第十二路审计指出）。而「默认值到底是什么」由 `test_units.py` 的
+    # `test_declared_defaults_are_an_explicit_decision` 集中钉住，这里管的是「自报是否如实」。
+    _effective = _admin_mod.LarkDeckMixin._ld_transport()
+    if f"native 传输 {_effective}" not in _detail:
+        problems.append(f"启动自检没有如实自报传输：这个进程实际生效 {_effective!r}，"
+                        f"但日志是 {_detail!r}")
 
 if problems:
     for p in problems:

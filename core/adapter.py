@@ -144,11 +144,22 @@ _STREAM_MIN_INTERVAL = 0.25
 #:   * ``300309`` / ``300317`` —— **CardKit 专属码，当前路径上永远不会出现**（2026-09-13 真机实测：
 #:     `im.v1.message.patch` **不是**飞书意义上的流式会话 —— 收尾帧之后再 patch 照样 `code=0`，
 #:     所以这两个码在本插件的 patch 路径上没有触发条件）。它们的真实触发条件是
-#:     「对 CardKit 卡片做完结构性写入（patch / card.update）后再写元素」⇒ `300309`，
+#:     「对 CardKit 卡片做完**整卡替换**（patch / card.update）后再写元素」⇒ `300309`，
+#:     （2026-09-13 真机更正：**元素级**接口 `card_element.patch/create/update` 与
+#:     `card.batch_update` 在流式期间可用、不关会话 —— 别再写成「任何结构性写入」）
 #:     以及「用 settings 重开会话后序号没对齐」⇒ `300317`。
 #:     放在这里是为将来可能的 CardKit 传输（见 docs/plan-6-effects.md 阶段 9）预先收口 ——
 #:     多一个码只会多一次幂等重试，代价可接受。
 _TRANSIENT_CODES = frozenset({230020, 99991400, 300309, 300317})
+
+#: **写接口可以安全重试**的错误码：只有「服务端明确拒绝、什么都没执行」的频率限制类。
+#: 为什么必须与 `_TRANSIENT_CODES` 分开：`300309`（流式会话已关闭）与 `300317`（序号不匹配）
+#: 是**结构性状态**，把同一个请求原样重发**不可能成功** —— 重试只会白等 ~1 秒再 fail-open，
+#: 所以它们属于「立刻回落」的那一类。
+#: ⚠️ 上面那段注释写着这两个 CardKit 专属码是「为将来可能的 CardKit 传输预先收口」；
+#: 2026-09-13 CardKit 成了**默认传输**，那个「将来」到了 —— 而元素写入路径此前
+#: **一次都不重试**，等于那句收口一直是空的（第十二路审计）。
+_WRITE_RETRY_CODES = frozenset({230020, 99991400})
 
 #: 瞬态失败的退避间隔（秒）。**实测总代价约 1.0s**（0.101 + 0.302 + 0.602，四次调用）——
 #: 核心的帧 pump 是串行 await，所以最坏情况就是「用户看到首字晚 1 秒」；`/stop` 路径上的
@@ -931,9 +942,18 @@ class LarkDeckMixin:
             from lark_oapi.api.cardkit.v1 import (CreateCardRequest, CreateCardRequestBody,
                                                   ContentCardElementRequest,
                                                   ContentCardElementRequestBody)
-            from lark_oapi.api.im.v1 import (CreateMessageRequest, CreateMessageRequestBody)
+            from lark_oapi.api.im.v1 import (CreateMessageRequest, CreateMessageRequestBody,
+                                              ReplyMessageRequest, ReplyMessageRequestBody)
         except Exception:
             return None
+
+        def _entity_payload(card_id: str) -> str:
+            return json.dumps({"type": "card", "data": {"card_id": card_id}}, ensure_ascii=False)
+
+        # ⚠️ `uuid` 是**请求去重键**（官方发送路径一直在填）：我们这条路径的写调用会退避重试，
+        # 没有它的话「响应丢了但其实发成功了」会重发一次 ⇒ DM 里多一张实体卡，
+        # 而那张卡永远收不到元素写入、也没人收尾（永久停在「⏳ 正在生成…」）。
+        # 它的值必须由内容确定（同一次发送重试时不变），所以用 `ld-msg-<card_id>`。
         return SimpleNamespace(
             create_card=lambda card_json: CreateCardRequest.builder().request_body(
                 CreateCardRequestBody.builder().type("card_json").data(card_json).build()
@@ -941,16 +961,24 @@ class LarkDeckMixin:
             send_entity=lambda receive_id, card_id: CreateMessageRequest.builder()
             .receive_id_type("chat_id").request_body(
                 CreateMessageRequestBody.builder().receive_id(receive_id)
-                .msg_type("interactive")
-                .content(json.dumps({"type": "card", "data": {"card_id": card_id}},
-                                    ensure_ascii=False)).build()).build(),
+                .msg_type("interactive").uuid(f"ld-msg-{card_id}")
+                .content(_entity_payload(card_id)).build()).build(),
+            # 有回复锚点时走**回复**接口 —— 与 patch 传输同形（那边交给官方 `_send_raw_message`，
+            # 它在没有 thread 元数据时也是 `reply_in_thread=False`）。丢了锚点 = 回答不再挂在
+            # 提问下面；话题群里更糟，可能自成一条新话题（第十二路审计实测到锚点被整个丢掉）。
+            reply_entity=lambda reply_to, card_id: ReplyMessageRequest.builder()
+            .message_id(reply_to).request_body(
+                ReplyMessageRequestBody.builder().msg_type("interactive")
+                .reply_in_thread(False).uuid(f"ld-msg-{card_id}")
+                .content(_entity_payload(card_id)).build()).build(),
             write_element=lambda card_id, element_id, content, sequence, uuid_value:
             ContentCardElementRequest.builder().card_id(card_id).element_id(element_id)
             .request_body(ContentCardElementRequestBody.builder().content(content)
                           .sequence(sequence).uuid(uuid_value).build()).build(),
         )
 
-    async def _ld_ck_create(self, chat: str, *, answer: str, panel_text: str) -> Any:
+    async def _ld_ck_create(self, chat: str, *, answer: str, panel_text: str,
+                            reply_to: Optional[str] = None) -> Any:
         """建 CardKit 实体 + 发实体卡。返回 ``(message_id, card_id)`` 或 ``None``。
 
         走的是官方三个接口（真机实测每一步都 ``code=0``，见 `docs/plan-6-effects.md` 阶段 9）：
@@ -970,14 +998,21 @@ class LarkDeckMixin:
         if size > _cards.FEISHU_CARD_BYTE_LIMIT:
             _log_ck_over_budget_once(size)
             return None
-        made = await self._run_blocking(
-            self._client.cardkit.v1.card.create,
-            reqs.create_card(json.dumps(card, ensure_ascii=False)))
+        made = await self._ld_write_with_retry(
+            lambda: reqs.create_card(json.dumps(card, ensure_ascii=False)),
+            self._client.cardkit.v1.card.create, "建实体")
         card_id = getattr(getattr(made, "data", None), "card_id", None)
         if _ld_response_code(made) != 0 or not card_id:
             return None
-        sent = await self._run_blocking(
-            self._client.im.v1.message.create, reqs.send_entity(chat, card_id))
+        anchor = str(reply_to or "").strip()
+        if anchor:
+            sent = await self._ld_write_with_retry(
+                lambda: reqs.reply_entity(anchor, card_id),
+                self._client.im.v1.message.reply, "回复实体卡")
+        else:
+            sent = await self._ld_write_with_retry(
+                lambda: reqs.send_entity(chat, card_id),
+                self._client.im.v1.message.create, "发实体卡")
         result = self._finalize_send_result(sent, "larkdeck cardkit send failed")
         if not getattr(result, "success", False):
             return None
@@ -989,15 +1024,45 @@ class LarkDeckMixin:
 
         ⚠️ 序号必须**单调递增**：用 ``settings`` 重开会话后序号没对齐会拿到
         ``300317``（真机实测）。这里由调用方在 stream state 里维护一个计数器。
+
+        ⚠️ ``uuid`` 由 (卡, 元素, 序号) **确定性**推出 ⇒ 限流重试是**幂等**的：
+        同一个 uuid 再发一次，服务端认得出是同一次写入（`write_element` 的第五个参数）。
         """
         reqs = self._ld_ck_requests()
         if reqs is None:
             return False
-        resp = await self._run_blocking(
+        resp = await self._ld_write_with_retry(
+            lambda: reqs.write_element(card_id, element_id, content, int(sequence),
+                                       f"ld-{card_id}-{element_id}-{sequence}"),
             self._client.cardkit.v1.card_element.content,
-            reqs.write_element(card_id, element_id, content, int(sequence),
-                               f"ld-{card_id}-{element_id}-{sequence}"))
+            f"写元素 {element_id}")
         return _ld_response_code(resp) == 0
+
+    async def _ld_write_with_retry(self, make_request: Any, call: Any, what: str) -> Any:
+        """CardKit 写调用的**限流退避**（与 patch 路径的 `_ld_update_card` 同一层保护）。
+
+        为什么必须有（第十二路审计）：`_ld_update_card` 早就有这层退避，而 CardKit 的
+        元素写入 / 建实体 / 发实体卡**一次都不重试** —— 撞上一次限流，这一帧就返回 False，
+        内核随即**停用本回合的 native**：用户后面看到的就不再是逐字卡片了。
+        同一个错误码在两条传输上给出不同后果，是纯粹的不对称；而 `_TRANSIENT_CODES`
+        的注释里明明写着那两个 CardKit 码是「预先收口」，等于承诺了一件没做的事。
+
+        ⚠️ **只重试 `_WRITE_RETRY_CODES`**（频率限制类，服务端拒绝了这次请求 ⇒ 幂等安全）。
+        `300309`/`300317` 是结构性状态，原样重发不可能成功，立刻把响应交回调用方判失败。
+        ⚠️ 请求**每次都重建**（照抄 `_ld_update_card` 的写法）：SDK 的请求对象不保证可复用。
+        """
+        response: Any = None
+        for attempt in range(len(_TRANSIENT_BACKOFF) + 1):
+            response = await self._run_blocking(call, make_request())
+            code = _ld_response_code(response)
+            if code not in _WRITE_RETRY_CODES:
+                return response
+            if attempt < len(_TRANSIENT_BACKOFF):
+                delay = _TRANSIENT_BACKOFF[attempt]
+                logger.info("[larkdeck] CardKit %s 命中限流码 %s，%.1fs 后重试（第 %d 次）",
+                            what, code, delay, attempt + 1)
+                await asyncio.sleep(delay)
+        return response
 
     async def _ld_stream_frame(self, text: str, *, finalize: bool, chat_id: Optional[str],
                                reply_to: Optional[str], turn_id: str) -> bool:
@@ -1019,7 +1084,8 @@ class LarkDeckMixin:
             if self._ld_transport() == "cardkit":
                 # ---- CardKit 实体卡（真打字机）：结构建实体时定死，之后只按 id 写元素 ----
                 panel_text = self._ld_panel_markdown(chat, now)
-                made = await self._ld_ck_create(chat, answer=display, panel_text=panel_text)
+                made = await self._ld_ck_create(chat, answer=display, panel_text=panel_text,
+                                                reply_to=reply_to)
                 if made is None:
                     # 任何一步失败都交给核心回落（这是**契约**：帧失败 ⇒ 本回合改走 edit/send）
                     return self._ld_stream_fail("CardKit 建实体/发实体卡失败")
@@ -1079,8 +1145,17 @@ class LarkDeckMixin:
             return True
         card_id = str(state.get("card_id") or "")
         if card_id:
-            # ---- CardKit：只写元素内容（**不做任何结构性写入** —— 那会关闭流式会话）----
+            # ---- CardKit：本实现只写元素内容（**不做整卡替换** —— 那会关闭流式会话。
+            # 元素级/批量接口其实可以在流式期间用，见 docs/plan-6-effects.md 的「重大更正」）----
             seq = int(state.get("ck_seq") or 0)
+            # **正文的预算闸门**（与建实体那道同源）：元素内容是**累积全文**，它自己就超过
+            # 整卡硬上限时，这张卡无论怎么写都不可能成立 —— 与其白花一次往返等飞书拒，
+            # 不如当场 fail-open 交核心回落（第十二路审计：建实体那道闸门守的其实是**空正文**
+            # 的 seed 帧，真正会长大的这一步此前没有任何判断）。
+            body_bytes = len(display.encode("utf-8"))
+            if body_bytes > _cards.FEISHU_CARD_BYTE_LIMIT:
+                _log_ck_over_budget_once(body_bytes)
+                return self._ld_stream_fail("CardKit 正文超过硬上限")
             if not await self._ld_ck_write(card_id, _cards.CARDKIT_ANSWER_ID, display, seq + 1):
                 return self._ld_stream_fail("CardKit 写正文元素失败")
             if not state.get("ck_panel"):
