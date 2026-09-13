@@ -20,6 +20,7 @@ python3 tests/probe_ck_stream_ops.py             # 接口矩阵：逐个操作 +
 python3 tests/probe_ck_stream_ops.py --visual    # 出一张「看得见」的卡（默认保留，--delete 可删）
 python3 tests/probe_ck_stream_ops.py --batching  # R0：一次 batch 带多元素 / 序号账本语义（自动删卡）
 python3 tests/probe_ck_stream_ops.py --withdrawn # R0：消息被撤回/删除后写卡回什么码（自动删卡）
+python3 tests/probe_ck_stream_ops.py --element-limits  # R0：create 能带几个元素 / 运行时新增算不算进 200
 ```
 
 `--visual` 那张卡是给**人的眼睛**看的：正文 → 流式期间新增元素 → 面板边框改黄 →
@@ -327,6 +328,109 @@ def probe_batching() -> int:
     return 0
 
 
+def _nested_card(children: int) -> dict:
+    """造一张「面板里挂 N 个子元素」的实体卡（每个子元素都很小，用来逼近 200 的墙）。"""
+    card = lark_cards.cardkit_entity_card("正文", "面板", streaming=True, panel=True)
+    panel = card["body"]["elements"][1]
+    panel["elements"] = [{"tag": "markdown", "element_id": f"c{i}", "content": "x"}
+                         for i in range(children)]
+    return card
+
+
+def probe_element_limits() -> int:
+    """R0/P7：`card_element.create` 一次能带几个元素？**运行时新增的元素算不算进 200**？
+
+    这两条决定 R2/R3 的阈值能不能靠「估算」，还是必须用 `cards.count_elements` 真的数一遍。
+    判据是返回码：超限时飞书会给一个**确定性**的拒收码（`230099`/`300312` 一类），
+    而「元素不存在」是 `300313`、序号问题是 `300317` —— 三者要分清。
+    """
+    client, chat = _connect()
+
+    print("▶ Q1：一次 card_element.create 能带几个元素？")
+    for n in (1, 3, 10):
+        card = _Card(client, chat)
+        if not card.open():
+            return 1
+        card.write("基线", f"q1-{n}")
+        els = [{"tag": "markdown", "element_id": f"add{i}", "content": f"新增 {i}"}
+               for i in range(n)]
+        r = client.cardkit.v1.card_element.create(
+            CreateCardElementRequest.builder().card_id(card.card_id)
+            .request_body(CreateCardElementRequestBody.builder()
+                          .type("insert_after").target_element_id(ANSWER_ID)
+                          .elements(json.dumps(els, ensure_ascii=False))
+                          .sequence(card._next()).uuid(f"p-{card.card_id}-add{n}").build()).build())
+        code = card._code(r)
+        alive = card.write(f"{n} 个之后", f"q1b-{n}")
+        print(f"   带 {n} 个元素：code={code} · 之后还能写正文={alive}"
+              f"{'' if code == 0 else '   ← ' + str(getattr(r, 'msg', ''))[:60]}")
+        card.delete()
+
+    print("\n▶ Q2：面板里挂 N 个子元素时，**整卡建得起来吗**（找 200 的墙）")
+    for children in (190, 196, 200, 205):
+        card = _nested_card(children)
+        total = lark_cards.count_elements(card)
+        made = client.cardkit.v1.card.create(
+            CreateCardRequest.builder().request_body(
+                CreateCardRequestBody.builder().type("card_json")
+                .data(json.dumps(card, ensure_ascii=False)).build()).build())
+        code = getattr(made, "code", "?")
+        cid = getattr(getattr(made, "data", None), "card_id", None) or ""
+        print(f"   子元素 {children} 个（递归总数 {total}，{lark_cards.card_bytes(card)} 字节）"
+              f" ⇒ code={code}{'' if code == 0 else '   ← ' + str(getattr(made, 'msg', ''))[:60]}")
+        if code == 0 and cid:
+            # 顺手清理：建起来的实体卡对应一条消息才需要删；这里没发消息 ⇒ 只留着实体
+            pass
+
+    print("\n▶ Q3：已经贴着上限时，运行时 `create` 还能不能再加（**新增算不算进 200**）")
+    card = _Card(client, chat)
+    base = _nested_card(190)
+    # 用 _Card.open 的流程建不了自定义结构 ⇒ 手动建
+    made = client.cardkit.v1.card.create(
+        CreateCardRequest.builder().request_body(
+            CreateCardRequestBody.builder().type("card_json")
+            .data(json.dumps(base, ensure_ascii=False)).build()).build())
+    card.card_id = getattr(getattr(made, "data", None), "card_id", None) or ""
+    sent = client.im.v1.message.create(
+        CreateMessageRequest.builder().receive_id_type("chat_id")
+        .request_body(CreateMessageRequestBody.builder().receive_id(chat).msg_type("interactive")
+                      .uuid(f"ld-probe-{card.card_id}")
+                      .content(json.dumps({"type": "card", "data": {"card_id": card.card_id}}))
+                      .build()).build())
+    card.message_id = getattr(getattr(sent, "data", None), "message_id", None) or ""
+    card.seq = 0
+    print(f"   建卡 code={getattr(made, 'code', '?')}（递归总数 {lark_cards.count_elements(base)}）")
+    # ⚠️ 第一版这里每轮都从 `z0` 开始 ⇒ 第二轮撞上第一轮建过的 id，飞书回 `300315`
+    #    与 `Code 1001: Duplicate ID` —— **探针自己的 bug 冒充成了「元素上限」的答案**。
+    #    所以 id 必须**全局递增**（这正是本项目「探针会替你撒谎」那条教训的又一例）。
+    _next_id = {"n": 0}
+
+    def _fresh(n: int) -> list:
+        out = []
+        for _ in range(n):
+            out.append({"tag": "markdown", "element_id": f"z{_next_id['n']}", "content": "y"})
+            _next_id["n"] += 1
+        return out
+
+    for n in (5, 10):
+        els = _fresh(n)
+        r = client.cardkit.v1.card_element.create(
+            CreateCardElementRequest.builder().card_id(card.card_id)
+            .request_body(CreateCardElementRequestBody.builder()
+                          .type("insert_after").target_element_id(ANSWER_ID)
+                          .elements(json.dumps(els, ensure_ascii=False))
+                          .sequence(card._next()).uuid(f"p-{card.card_id}-z{n}").build()).build())
+        print(f"   +{n} 个 ⇒ code={card._code(r)}"
+              f"{'' if card._code(r) == 0 else '   ← ' + str(getattr(r, 'msg', ''))[:70]}")
+    card.delete()
+
+    print("\n—— 结论怎么用 ——")
+    print("   · 若「运行时新增」会被拒 ⇒ R3 的元素预算必须**在本地用 count_elements 真的数**，")
+    print("     不能估算（估算 = 撞墙时整帧失败 = 上游补 finalize + `_first_send` ⇒ DM 两张卡）")
+    print("   · 建实体时的 200 墙决定 R2/R3 的『初始结构能挂多少元素』")
+    return 0
+
+
 def probe_withdrawn() -> int:
     """R0/P4：**消息被撤回/删除之后写卡回什么码** —— 撤回守卫的码表必须实测，不许抄。
 
@@ -445,6 +549,8 @@ def main(argv) -> int:
         return probe_batching()
     if "--withdrawn" in argv:
         return probe_withdrawn()
+    if "--element-limits" in argv:
+        return probe_element_limits()
     return probe_matrix()
 
 
