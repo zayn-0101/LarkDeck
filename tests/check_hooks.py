@@ -545,6 +545,11 @@ else:
         adapter_obj = platform_registry.get("feishu").adapter_factory(
             PlatformConfig(enabled=True, extra={}))
         adapter_obj._client = fake_client
+        # ⚠️ 这一节验的是**传输无关**的可见帧语义（占位 / 面板出现 / 收尾绿边 / `/stop` 黄边），
+        # 而它造的是真适配器 ⇒ 会把当时的默认传输带进来。所以**显式钉住 patch**：
+        # 阶段 9 的新传输另有自己的门禁（单测的 cardkit 用例 + 真机 `--cardkit-prod`），
+        # 两件事不该互相牵动（翻默认时这里曾红过一次，就是这么发现的）。
+        _adm._CONFIG["native_transport"] = "patch"
 
         _panel.reset()
         turn_key = "seq-turn-1"

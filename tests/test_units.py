@@ -174,7 +174,12 @@ def _make(**cfg: Any):
     要测 cardkit：先 `_make()` 再 `adapter.configure(native_transport="cardkit")`。
     """
     cfg.setdefault("native_transport", "patch")
-    return adapter.build_adapter(StubAdapter, _StubConfig(**cfg))
+    obj = adapter.build_adapter(StubAdapter, _StubConfig(**cfg))
+    # ⚠️ 光把 cfg 传给 `_StubConfig` 是**不生效**的（`build_adapter` 不读它来落配置）——
+    # 这正是翻默认时那 10 条断言会红的原因之一。测试要走配置，只能经 `configure()`。
+    if cfg:
+        adapter.configure(**cfg)
+    return obj
 
 
 def _wire_patch(raw):
