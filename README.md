@@ -115,6 +115,19 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 
 ---
 
+## 版本与升级
+
+当前版本见 `plugin.yaml` 的 `version`（启动自检与页脚都能看到）。变更记录在
+[`CHANGELOG.md`](CHANGELOG.md)，**默认值与行为的变化**在那里单列。
+
+**首次安装**：见下一节。
+**升级**：Mac 上是软链安装 ⇒ `git -C <仓库> pull` 之后 **`hermes gateway restart`**
+（网关进程内加载的模块**不会热重载**，不重启就还在跑旧代码）。NAS 上是 `--copy` 安装 ⇒
+拉取后重跑 `install.sh --copy` 再重启。
+**回退**：`git checkout <tag>` 后重启；`v0.1.0` 是上一版的基线 tag。
+
+---
+
 ## 安装
 
 ```bash
