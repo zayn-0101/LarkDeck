@@ -527,6 +527,21 @@ MUTATIONS = [
      '            pass',
      "test_units"),
     # ---- 显示 chrome：核心的工具行默认不进正文（用户在真机上明确要求过） ---------------- #
+    # ---- R7：页脚扩展默认关、缺数据不许编 0 ------------------------------------------- #
+    ("R7-1-页脚指标无视配置（默认 off 也照 full 渲染）", "core/adapter.py",
+     '            mode = str(_cfg_raw("footer_metrics") or "off").strip().lower()',
+     '            mode = "full"',
+     "test_units"),
+    ("R7-2-认不出的取值当成 full（不猜却放大了）", "core/adapter.py",
+     '            if mode not in ("off", "basic", "full"):\n'
+     '                mode = "off"          # 认不出的值按 off（不猜、不放大）',
+     '            if mode not in ("off", "basic", "full"):\n'
+     '                mode = "full"',
+     "test_units"),
+    ("R7-3-缺数据编成 0（页脚显示「⚡ 0%」这种假读数）", "core/adapter.py",
+     '                cache=snap.get("cache_pct") if mode in ("basic", "full") else None,',
+     '                cache=(snap.get("cache_pct") or 0) if mode in ("basic", "full") else None,',
+     "test_units"),
     ("PL-1-无视配置一律转发父类（工具行又并进正文）", "core/adapter.py",
      '            if _cfg("progress_lines_in_body"):\n'
      '                return super().format_tool_event(\n'

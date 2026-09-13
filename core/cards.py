@@ -329,13 +329,23 @@ def format_elapsed(seconds: float) -> str:
 
 def footer_line(*, duration: Optional[float] = None, model: str = "",
                 tools: Optional[int] = None, rounds: Optional[int] = None,
-                context: str = "") -> Optional[str]:
+                context: str = "", cache: Optional[float] = None,
+                api: Optional[int] = None, ttfb: Optional[float] = None) -> Optional[str]:
     """「符号 + 数字 + 英文缩写」拼成的信息行 —— 天然无需翻译（不依赖 i18n）。
 
     两个调用点：**面板标题行**（``model + rounds + tools + duration``，决策 D2 把这些
-    从卡片级 header 搬进面板头）与**页脚**（只放 ``context``）。
+    从卡片级 header 搬进面板头）与**页脚**（``context`` + R7 的 ``cache`` / ``api`` / ``ttfb``）。
 
     各段之间用 ``·`` 分隔；一段都没有时返回 ``None``，调用方就不渲染。
+
+    R7 新增的三段（**都由调用方按配置决定要不要传**，这里只负责渲染）：
+      * ``cache`` —— 缓存命中率（百分比，来自 ``cache_read_tokens / prompt_tokens``）⇒ ``⚡ 75%``；
+      * ``api``   —— 本回合 API 请求次数 ⇒ ``🔁 7``；
+      * ``ttfb``  —— 首个流式分块的首字节延迟（**秒**）⇒ ``🐢 0.4s``。
+
+    ⚠️ **缺数据就少一段，绝不编 0**（`docs/lessons.md` 的口径病）：`None` 与 `0` 在这里是
+    两件事 —— `cache=0.0` 是「真的 0% 命中」（要显示），`cache=None` 是「不知道」（不显示）。
+    所以三段都按 `is None` 判，不用真值判。
     """
     parts: List[str] = []
     if model:
@@ -347,6 +357,17 @@ def footer_line(*, duration: Optional[float] = None, model: str = "",
         parts.append(f"🔧 {tools}")
     if context:
         parts.append(context)
+    if cache is not None and not isinstance(cache, bool):
+        try:
+            pct = max(0.0, min(100.0, float(cache)))
+        except (TypeError, ValueError):
+            pct = None
+        if pct is not None:
+            parts.append(f"⚡ {pct:.0f}%")
+    if isinstance(api, int) and not isinstance(api, bool) and api > 0:
+        parts.append(f"🔁 {api}")
+    if isinstance(ttfb, (int, float)) and not isinstance(ttfb, bool) and ttfb > 0:
+        parts.append(f"🐢 {format_elapsed(float(ttfb))}")
     if isinstance(duration, (int, float)) and duration >= 0.1:
         parts.append(f"⏱ {format_elapsed(float(duration))}")
     return " · ".join(parts) or None

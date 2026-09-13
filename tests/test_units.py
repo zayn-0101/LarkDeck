@@ -2561,6 +2561,70 @@ def test_context_store_snapshot_and_aliases() -> None:
     assert context.snapshot()["input_tokens"] is None
 
 
+def test_footer_metrics_are_opt_in_and_never_fake_zero() -> None:
+    """R7 页脚扩展：三段新指标**默认不出现**，开了才出现，而且**缺数据就少一段**。
+
+    这条断言的判别力在两个方向上：
+      * 关着（默认）⇒ 一个新段都不许有（否则等于偷偷改了所有人的观感）；
+      * 开着但数据缺 ⇒ 那一段**不许**以 0 的形式出现（`cache=0.0` 是「真的 0% 命中」、
+        `None` 是「不知道」—— 编 0 就是在骗人，见 `docs/lessons.md` 的口径病）。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    try:
+        adapter.configure(footer=True, context_style="text", footer_metrics="off")
+        context.reset()
+        context.record_api_call(model="m", api_call_count=7,
+                                usage={"input_tokens": 1000, "output_tokens": 5,
+                                       "prompt_tokens": 4000, "cache_read_tokens": 3000})
+        context.set_context_override(20000)
+        _off = adapter.LarkDeckMixin._ld_footer()
+        assert "ctx" in (_off or ""), f"上下文用量照旧必须在：{_off!r}"
+        for symbol in ("⚡", "🔁", "🐢"):
+            assert symbol not in (_off or ""), f"默认必须一个字都不加：{_off!r}"
+
+        adapter.configure(footer_metrics="basic")
+        _basic = adapter.LarkDeckMixin._ld_footer() or ""
+        assert "⚡ 75%" in _basic, f"缓存命中率 = 3000/4000：{_basic!r}"
+        assert "🔁 7" in _basic, f"API 次数：{_basic!r}"
+        assert "🐢" not in _basic, f"basic 不含 TTFB：{_basic!r}"
+
+        adapter.configure(footer_metrics="full")
+        context.record_api_call(model="m", api_call_count=8, api_duration=1.5,
+                                started_at=1000.0, first_chunk_at=1000.42,
+                                usage={"input_tokens": 1000, "output_tokens": 5,
+                                       "prompt_tokens": 4000, "cache_read_tokens": 3000})
+        _full = adapter.LarkDeckMixin._ld_footer() or ""
+        assert "🐢 0.4s" in _full, f"TTFB = 0.42s ⇒ 0.4s：{_full!r}"
+
+        # 缺数据：一段都不许编出来（尤其不许出现「⚡ 0%」这种假读数）
+        context.reset()
+        context.record_api_call(model="m", usage={"input_tokens": 1000, "output_tokens": 5})
+        context.set_context_override(20000)
+        _bare = adapter.LarkDeckMixin._ld_footer() or ""
+        assert "⚡" not in _bare and "🔁" not in _bare and "🐢" not in _bare, \
+            f"缺数据必须少一段，绝不编 0：{_bare!r}"
+
+        # 认不出的取值按 off（不猜、不放大）。⚠️ 这一格必须**带着完整数据**测：数据缺的时候
+        # 「按 off」与「按 full」渲染出来的东西**一模一样**（都是没有新段）⇒ 那种写法没有判别力
+        # （变异实测全绿）。
+        context.reset()
+        context.record_api_call(model="m", api_call_count=7, api_duration=1.5,
+                                started_at=1000.0, first_chunk_at=1000.42,
+                                usage={"input_tokens": 1000, "output_tokens": 5,
+                                       "prompt_tokens": 4000, "cache_read_tokens": 3000})
+        context.set_context_override(20000)
+        adapter.configure(footer_metrics="???")
+        _unknown = adapter.LarkDeckMixin._ld_footer() or ""
+        assert "⚡" not in _unknown and "🔁" not in _unknown and "🐢" not in _unknown, \
+            f"认不出的取值必须按 off（不猜、不放大）：{_unknown!r}"
+    finally:
+        context.set_context_override(None)
+        context.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
 def test_adapter_footer_wiring() -> None:
     """页脚 = **只有上下文用量**；模型名与耗时归面板标题（决策 D2，别又搬回页脚）。"""
     defaults = dict(adapter._DEFAULTS)

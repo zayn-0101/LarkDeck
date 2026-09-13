@@ -261,6 +261,10 @@ _DEFAULTS: Dict[str, Any] = {
     #: 核心的工具行要不要进**正文**。默认 False = **吃掉**：那些行（`⚙️ mem0_search: "…"`）
     #: 会被并进流式正文，而同一份信息我们已经在「执行详情」面板里结构化地给了一遍
     #: ⇒ 默认不重复、正文只有回答（用户 2026-09-13 明确要求）。想看核心那套就设 true。
+    #: 页脚在上下文用量之外**还要显示哪些指标**（R7）：
+    #: ``off``（默认，不改动现有观感）/ ``basic``（+ 缓存命中率 + 本回合 API 次数）/
+    #: ``full``（再 + 首字节延迟 TTFB）。**缺数据就少一段，绝不编 0**（见 `cards.footer_line`）。
+    "footer_metrics": "off",
     "progress_lines_in_body": False,
     "footer": True,           # 页脚：只放上下文用量（模型/耗时已并入面板标题行）
     "show_model": True,       # 面板标题行里显示模型名
@@ -954,10 +958,17 @@ class LarkDeckMixin:
 
     @classmethod
     def _ld_footer(cls) -> Optional[str]:
-        """页脚一行：只放**上下文用量**（``ctx 45.2k/200k · 23%``）。
+        """页脚一行：上下文用量（``ctx 45.2k/200k · 23%``）+ 可选的 R7 指标。
 
         模型名与耗时已经搬进面板标题行（决策 D2：卡片级 header 去掉了，信息压进面板头），
-        这里再写一遍就是同一屏里重复两行同样的信息。页脚留下的是面板头不显示的那一项。
+        这里再写一遍就是同一屏里重复两行同样的信息。页脚留下的是面板头不显示的那几项。
+
+        **R7 扩展**（配置 ``footer_metrics``，默认 ``off`` = 与从前一字不差）：
+          * ``basic`` —— 加缓存命中率（``⚡ 75%``）与本回合 API 次数（``🔁 7``）；
+          * ``full``  —— 再加首字节延迟（``🐢 0.4s``）。
+        这三个数**都能从载荷直接算**（``cache_read_tokens`` / ``api_call_count`` /
+        ``first_chunk_at - started_at``），**成本**那条在本项目里做不到实报（载荷没有成本字段），
+        所以**不做**（审计纠正：要做得引 ``agent.usage_pricing``，那是新的上游耦合）。
 
         数据来自官方钩子（见 :mod:`larkdeck.core.context`）：钩子还没触发时该段自然缺失，
         全缺就返回 ``None``（不渲染脚注元素）。**任何情况下不抛异常** —— 页脚是装饰，
@@ -966,7 +977,17 @@ class LarkDeckMixin:
         try:
             if not _cfg("footer"):
                 return None
-            return _cards.footer_line(context=cls._ld_context_segment())
+            mode = str(_cfg_raw("footer_metrics") or "off").strip().lower()
+            if mode not in ("off", "basic", "full"):
+                mode = "off"          # 认不出的值按 off（不猜、不放大）
+            snap = _context.snapshot() if mode != "off" else {}
+            return _cards.footer_line(
+                context=cls._ld_context_segment(snap or None),
+                cache=snap.get("cache_pct") if mode in ("basic", "full") else None,
+                api=snap.get("api_call_count") if mode in ("basic", "full") else None,
+                ttfb=(None if snap.get("ttfb_ms") is None else float(snap["ttfb_ms"]) / 1000.0)
+                if mode == "full" else None,
+            )
         except Exception:
             logger.debug("[larkdeck] 页脚渲染失败，跳过", exc_info=True)
             return None

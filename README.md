@@ -176,6 +176,7 @@ plugins:
         panel_expanded: false    # 面板默认展开（默认收起）
         streaming_print_ms: 15   # 客户端打字机的逐字间隔（毫秒，只对流式帧有效）；0 = 关闭；超出 [1,2000] 退默认并留 WARNING
         reactions: true          # 在用户消息上打「处理中」表情（飞书的「输入提示」）；关掉更接近 aiduPOP 的观感
+        footer_metrics: "off"    # 页脚附加指标：off（默认）/ basic（缓存命中率 ⚡ + API 次数 🔁）/ full（再 + 首字节延迟 🐢）
         progress_lines_in_body: false  # 核心的工具行不进正文（默认：正文只有回答，工具步骤收在面板里）
         footer: true             # 页脚（只放上下文用量）
         show_model: true         # 面板标题里显示模型名
@@ -345,6 +346,10 @@ LarkDeckFeishuAdapter → LarkDeckMixin → FeishuAdapter → BasePlatformAdapte
   带耗时与参数预览）⇒ 默认吃掉，正文只有回答；想恢复核心那套就把它设成 `true`。
   （掉出 native 的那些回合，核心还会自己发一条独立的「进度气泡」—— 那条走的是核心的路径，
   插件管不到，只能靠核心的 `display.*` 配置关。）
+  ⑤ 页脚**可以**再带上三个指标（`footer_metrics`，**默认 off**，不影响现有观感）：
+  `basic` = 缓存命中率 `⚡ 75%` + 本回合 API 次数 `🔁 7`；`full` 再加首字节延迟 `🐢 0.4s`。
+  三个数都是**载荷直接算出来的**；缺数据就少一段，**绝不编 0**（「不知道」与「真的 0%」是两件事）。
+  成本**不做**：`post_api_request` 的载荷里没有成本字段，只能估算，而估算值放进卡片是误导。
 - **建实体时同时守两道墙**：整卡 JSON 超过飞书硬上限（128000 字节）或**递归**元素数超过 200
   （真机实测：递归 200 收下、204 拒收，码 `300305`），当场放弃 CardKit 这一帧、回落给核心 ——
   因为结构建实体时就定死，超了就是整张卡被拒（不像 `patch` 路径那样能分级丢掉面板）。
