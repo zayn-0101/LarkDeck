@@ -338,6 +338,11 @@ MUTATIONS = [
      '        detail += f" · native 传输 {LarkDeckMixin._ld_transport()}"',
      '        pass',
      "check_override"),
+    # 空 card_id 的坏卡形态：撤掉这道闸门就会拿空 id 去发实体卡（第十一路审计的【低】项）。
+    ("CK11-建实体拿到空 card_id 也照样发实体卡", "core/adapter.py",
+     '        if _ld_response_code(made) != 0 or not card_id:\n            return None',
+     '        if _ld_response_code(made) != 0:\n            return None',
+     "test_units"),
     # ---- 第十一路审计：CardKit 的三条「门禁说绿、真机说 300301」----------------- #
     ("M30-两个元素 id 撞车", "core/cards.py",
      'CARDKIT_ANSWER_ID = "answer"\nCARDKIT_PANEL_ID = "panel"\nCARDKIT_PANEL_BODY_ID = "panel_body"',

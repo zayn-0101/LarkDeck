@@ -817,7 +817,7 @@ def test_cardkit_transport_writes_elements_and_falls_open():
     defaults = dict(adapter._DEFAULTS)
     try:
         def _mk_fake(*, fail_write_after=10 ** 9, create_ok=True, fail_answer_only=False,
-                     fail_panel_only=False):
+                     fail_panel_only=False, create_empty_id=False):
             calls = {"create": 0, "send": 0, "content": [], "patch": 0, "entity": []}
 
             class _Resp:
@@ -833,6 +833,9 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                 def create(self, request):
                     calls["create"] += 1
                     calls["entity"].append(request.request_body["card_json"])
+                    if create_empty_id:
+                        # code=0 但 data.card_id 是空串：飞书没给实体 id
+                        return _Resp(0, card_id="")
                     return _Resp(0, card_id="ck_1") if create_ok else _Resp(300305)
 
             class _ElemRes:
@@ -988,6 +991,22 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         assert sent_seqs == [1, 2], sent_seqs
         assert all(cards.CARDKIT_PANEL_BODY_ID not in c[0] for c in calls["content"]), \
             "面板关掉后写 panel_body 会得 300313（元素不存在）⇒ 每帧失败、整回合打回纯文本"
+
+        # ⑦ 建实体回 `code=0` 但 **card_id 是空串** ⇒ 必须当场 fail-open，
+        #    **绝不能**拿这个空 id 去发一张实体卡（那会是一条指向不存在实体的消息，
+        #    而且失败在更下游、更难查）。审计把它列为「低」，但它是「静默发出坏卡」的形态。
+        # ⚠️ 位置很关键：必须放在 ⑥ 之后 —— ⑤ 把 `_ld_ck_requests` 换成了「没有 SDK」，
+        #    把 ⑦ 放在它前面时，两个断言会被**更早的一个原因**顺带满足（帧因为没 SDK 就返回
+        #    False 了），于是这条用例**恒真**、变异 CK11 全绿。所以这里额外断言
+        #    「建实体这一步真的被调用到了」——它是这条用例的判别力来源。
+        calls, client = _mk_fake(create_empty_id=True)
+        raw6 = _make()
+        raw6._client = client
+        adapter.configure(native_transport="cardkit")
+        assert _run(raw6.send_stream_frame("", chat_id="oc_ck6", turn_id="t-6")) is False, \
+            "card_id 为空时必须 fail-open 返回 False"
+        assert calls["create"] == 1, "前提：建实体真的被调用了（否则下面的断言是被别的失败顺带满足的）"
+        assert calls["send"] == 0, "card_id 为空时不该去发实体卡（飞书会拒，且查起来更远）"
     finally:
         try:
             adapter.LarkDeckMixin._ld_ck_requests = old_reqs
