@@ -45,6 +45,14 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "clarify.pick_multi": {ZH: "可多选：点开勾选", EN: "Multi-select: tap to pick"},
     "clarify.other_hint": {ZH: "直接输入你的答案，回车提交", EN: "Type your answer, press Enter"},
     "clarify.multi_hint": {ZH: "可多选，回复编号用逗号隔开。", EN: "Multi-select — reply with numbers separated by commas."},
+    # 澄清点击的**瞬时提示**（toast）：失败态与「其他」提示态都**不动卡片** ——
+    # 动卡会让一次迟到的重复点击把「已确认」回退成「待答」，那是不可逆的用户可见错误。
+    "clarify.toast_failed": {ZH: "提交未生效：可能已被处理或过期，请重试",
+                             EN: "Could not submit: already handled or expired — please retry"},
+    "clarify.toast_rejected": {ZH: "这个答案没有被接受，请重试",
+                               EN: "That answer was not accepted — please retry"},
+    "clarify.toast_typing": {ZH: "请在输入框里输入答案（或直接回复文字）",
+                             EN: "Type your answer in the box (or just reply with text)"},
     # /larkdeck 自检卡（R9）。三条状态行由 context.status_lines() 组装；没记录写「无记录」，
     # **绝不写「正常」** —— 一个永远说「正常」的自检与一个坏掉的自检，用户分辨不出来。
     "cmd.description":    {ZH: "larkdeck 状态：版本 / 生效传输 / 钩子 / 心跳",

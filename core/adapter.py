@@ -2339,16 +2339,90 @@ class LarkDeckMixin:
             logger.warning("[larkdeck] 内置点击处理异常: %s", exc, exc_info=True)
             return self._ld_card_response_safe()
 
-    def _ld_card_response_safe(self) -> Any:
-        """构造「无卡片变更」的回调响应；连 ``_card_response`` 都缺时返回 None。"""
+    def _ld_card_response_safe(self, card_data: Optional[Dict[str, Any]] = None) -> Any:
+        """构造回调响应；给了 ``card_data`` 就**内联换卡**（省一次 API 调用）。
+
+        前提（官方源码）：内置 ``_card_response(card_data=None)`` 内部构造
+        ``CallBackCard(type="raw", data=card_data)`` ⇒ 回调响应里直接带上新卡，飞书客户端
+        就地重绘。它同时天然规避「方言混用」：回调响应只接受**一整张卡**。
+
+        三条纪律（缺一条都会变成用户可见的失灵）：
+          * **绝不抛**：这个函数跑在 SDK 回调线程上，抛出去就是把一次点击整条炸掉 ——
+            连「别人的卡」（审批卡）的点击都走这条路；
+          * **换卡能力要探测**（``compat.accepts_positional``）：不同版本的内置形参可能改名，
+            而我们是**位置传参**，真契约只是「能不能收下这张卡」；收不下就退回无参调用
+            （= 不改卡，但点击仍然正确生效）；
+          * **卡片构造在调用方完成**：这里只负责把已经算好的卡交出去，构造失败由调用方
+            兜住并退回无参调用。
+        """
         build = getattr(self, "_card_response", None)
         if not callable(build):
             return None
+        if card_data is not None:
+            if _compat.accepts_positional(build, 1):
+                try:
+                    return build(card_data)
+                except Exception as exc:
+                    # 兜一层：签名探测说是「能收」，实际却抛了（装饰器 / 内部 TypeError）。
+                    # 不把这次点击变成错误，退回「不改卡」的无参响应。
+                    logger.warning("[larkdeck] 内联换卡失败，退回无卡片变更: %s", exc)
+                    return self._ld_card_response_safe()
+            logger.warning("[larkdeck] 内置 _card_response 不接受卡片实参 ⇒ 本次点击不换卡"
+                           "（点击本身已生效，只是卡片没重绘）")
         try:
             return build()
-        except Exception:
-            logger.debug("[larkdeck] _card_response 失败", exc_info=True)
+        except Exception as exc:
+            logger.debug("[larkdeck] _card_response 失败: %s", exc, exc_info=True)
             return None
+
+    @staticmethod
+    def _ld_toast_classes() -> Any:
+        """``(P2CardActionTriggerResponse, CallBackToast)``；取不到就 ``(None, None)``。
+
+        ⚠️ 懒取 + **可注入**：``test_units.py`` 是零 Hermes 依赖的，绝不能让它 import
+        ``lark_oapi``（系统解释器上没有这个包 ⇒ 单测会以「与真实原因无关的失败」红掉）。
+        单测把这两个类换成哑对象，验的是**我们怎么填字段**，不是 SDK 能不能 import。
+        """
+        try:
+            from lark_oapi.event.callback.model.p2_card_action_trigger import (
+                CallBackToast, P2CardActionTriggerResponse)
+            return P2CardActionTriggerResponse, CallBackToast
+        except Exception:
+            return None, None
+
+    def _ld_toast_response(self, *, kind: str, text_key: str) -> Any:
+        """**只弹 toast、不动卡**的回调响应；构造不出来返回 ``None``（调用方退回无变更）。
+
+        为什么需要它：失败态与「其他」提示态都**必须保住用户眼前那张卡** ——
+        把卡换成别的东西，会让一次**迟到的重复点击**把「已确认」回退成「待答」，
+        而那个错误是不可逆的（用户看到自己确认过的卡又变回待答）。toast 正是飞书为这种
+        瞬时提示提供的原生机制（``CallBackToast{type, content, i18n}``）。
+        ``i18n`` 一起填，客户端按自己的语言挑一份 —— 与卡片文案同一套规则。
+        """
+        response_cls, toast_cls = self._ld_toast_classes()
+        if response_cls is None or toast_cls is None:
+            return None
+        try:
+            text = _i18n.i18n_text(text_key)
+            toast = toast_cls()
+            toast.type = str(kind or "info")
+            toast.content = str(text.get("content") or "")
+            locales = text.get("i18n_content")
+            if isinstance(locales, dict) and locales:
+                toast.i18n = dict(locales)
+            response = response_cls()
+            response.toast = toast
+            return response
+        except Exception as exc:      # pragma: no cover - 防御性
+            logger.debug("[larkdeck] toast 响应构造失败: %s", exc, exc_info=True)
+            return None
+
+    def _ld_toast_or_noop(self, *, kind: str, text_key: str) -> Any:
+        """优先「只弹 toast、不动卡」，构造不出来就退回「无变更」响应（**绝不抛**）。"""
+        response = self._ld_toast_response(kind=kind, text_key=text_key)
+        if response is not None:
+            return response
+        return self._ld_card_response_safe()
 
     @staticmethod
     def _ld_build_clarify_card(question: str, choices: List[str], *, clarify_id: str,
@@ -2480,9 +2554,12 @@ class LarkDeckMixin:
             if outcome != _compat.CLARIFY_TEXT_RESOLVED:
                 logger.warning("[larkdeck] 澄清输入框的内容没有被接受（%s · session=%s）"
                                "—— 卡片保持原样，用户可重试", outcome, session_key[:8])
-                return self._ld_card_response_safe()
+                # 卡片**保持原样**（用户还要在上面改答案重试），只弹一条提示让他知道
+                # 「东西收到了但没生效」—— 静默不动会让人以为点了没反应。
+                return self._ld_toast_or_noop(kind="error",
+                                              text_key="clarify.toast_rejected")
             user_name = self._get_cached_sender_name(open_id) or open_id or "?"
-            return self._card_response(
+            return self._ld_card_response_safe(
                 self._ld_build_resolved_card(question=question, answer=answer,
                                              user_name=user_name))
 
@@ -2505,14 +2582,20 @@ class LarkDeckMixin:
         if not committed:
             logger.warning("[larkdeck] 澄清提交未生效（clarify=%s）—— 该澄清可能已被处理或过期；"
                            "卡片保持原样，用户仍可重试", clarify_id)
-            return self._ld_card_response_safe()
+            # ⚠️ **只能弹 toast、绝不能换卡**：这一条最常见的触发者是「一次迟到的重复点击」
+            # （用户点了两下 / 网络重放）。那一瞬间卡片可能已经被前一次点击换成了「已确认」，
+            # 若这里回一张「待答 + 失败提示」，用户就会看到自己确认过的卡被退回待答 ——
+            # 而答案其实早已送达 agent。toast 既能告知失败，又不可能覆盖卡片状态。
+            return self._ld_toast_or_noop(kind="error", text_key="clarify.toast_failed")
 
         if is_other:
-            return self._ld_card_response_safe()
+            # 「其他」不提交答案，只把该澄清切成等待文字输入 —— 卡片保持不变（用户要在
+            # 卡片上继续输入），用 toast 告诉他下一步做什么。
+            return self._ld_toast_or_noop(kind="info", text_key="clarify.toast_typing")
 
         user_name = self._get_cached_sender_name(open_id) or open_id or "?"
         # 回填卡必须与待答卡同方言，否则飞书会**静默丢弃**这一帧（HFC 踩过）
-        return self._card_response(
+        return self._ld_card_response_safe(
             self._ld_build_resolved_card(question=question, answer=answer, user_name=user_name)
         )
 

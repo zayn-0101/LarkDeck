@@ -210,6 +210,26 @@ def accepts_keyword(fn: Any, name: str) -> bool:
     )
 
 
+def accepts_positional(fn: Any, count: int = 1) -> bool:
+    """``fn`` 能否接受 ``count`` 个**位置**实参（跨版本调用核心私有方法的判据）。
+
+    为什么不能只看关键字名：内置 ``_card_response(card_data=None)`` 的形参叫 `card_data`，
+    别的版本完全可能叫 `card` —— 我们**位置传参**，形参叫什么无关紧要，真契约只有
+    「能收几个位置实参」。签名取不到（C 函数 / 装饰器）时返回 True（乐观），
+    调用点再兜一层 ``TypeError``（两处都有，见 ``_ld_card_response_safe``）。
+    """
+    try:
+        parameters = list(inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        return True
+    if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in parameters):
+        return True
+    slots = sum(1 for p in parameters
+                if p.kind in (inspect.Parameter.POSITIONAL_ONLY,
+                              inspect.Parameter.POSITIONAL_OR_KEYWORD))
+    return slots >= int(count)
+
+
 # --------------------------------------------------------------------------- #
 # 澄清网关（``tools.clarify_gateway``）—— 卡片点击与「其他」待答状态直接依赖。
 # 私有名（_lock / _entries / entry.multi_select）只出现在本文件，升级时一处修。

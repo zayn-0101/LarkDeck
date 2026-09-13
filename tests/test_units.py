@@ -2532,8 +2532,12 @@ def test_clarify_click_that_did_not_commit_must_not_refill_card():
         out = raw._on_card_action_trigger(data)
         assert resolved == [("cid-dup", "B 方案")], "还是要尝试提交"
         assert out is not None, "但必须给回调一个响应"
-        assert raw.card_updates == [None], \
-            "提交没成功就不能回填「已答复」卡片，否则用户以为答案已送达"
+        # ⚠️ R8 起失败态改走 **toast 响应**（不再经过 `_card_response`），所以判据从
+        # 「记录里恰好一个 None」换成更强的一句：**任何一次响应里都不许出现卡片**。
+        assert all(card is None for card in raw.card_updates), \
+            f"提交没成功就不能回填「已答复」卡片：{raw.card_updates!r}"
+        assert getattr(out, "card", None) is None, \
+            f"响应里不许带卡（带卡就等于回填「已答复」）：{out!r}"
     finally:
         _drop_fake_clarify_gateway()
 
@@ -3855,7 +3859,14 @@ def test_clarify_free_text_only_commits_when_the_core_accepts_it():
     original = compat.clarify_text_answer
     # 这两处是**类属性/模块属性**的替换，必须在 finally 里还原 —— 忘了还原会让
     # 后面的测试拿着假实现跑（自证循环的一种，且症状与「测试顺序」耦合）。
-    original_builder = adapter.LarkDeckMixin._ld_build_resolved_card
+    #
+    # ⚠️⚠️ **必须从 `__dict__` 取 staticmethod 对象本身**（2026-09-14 实测的既存污染）：
+    # 写成 `adapter.LarkDeckMixin._ld_build_resolved_card` 拿到的是**解包后的函数**，
+    # 原样赋回去就变成了普通实例方法 ⇒ 之后所有 `self._ld_build_resolved_card(...)`
+    # 都会把 self 当第一个位置实参 ⇒ `TypeError: takes 0 positional arguments but 1 given`。
+    # 而那个异常被点击入口的兜底吞掉、表现成「点击走内置回落」，**与真实原因毫无关系**
+    # （R8 的新用例排到它后面，正是被这条咬住才发现的）。
+    original_builder = adapter.LarkDeckMixin.__dict__["_ld_build_resolved_card"]
     try:
         panel.reset()
         adapter.configure(clarify_cards=True, clarify_dialect="2.0")
@@ -5694,6 +5705,197 @@ def test_command_card_never_raises_even_when_state_read_fails():
     assert isinstance(out, str) and out, "处理器没返回任何文本"
     assert "状态读取失败" in out and "boom" in out, out
 
+
+
+# --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# 14. R8①② 点击路径：内联换卡（带能力探测）+ 失败态只弹 toast
+#
+# 这一层跑在 **SDK 回调线程**上：抛一次就是把「别人的卡」（审批卡等）的点击整条炸掉。
+# 所以每条都必须能在「核心那侧不支持 / SDK 缺东西」时**退回正确但朴素的行为**。
+# --------------------------------------------------------------------------- #
+def _clarify_click_data(**value: Any):
+    """造一次澄清点击载荷（默认是**已授权**的按钮点击）。"""
+    payload = {"larkdeck_action": "clarify", "clarify_id": "cid-r8", "answer": "B 方案",
+               "question": "选哪个？"}
+    payload.update(value)
+    return types.SimpleNamespace(
+        event=types.SimpleNamespace(
+            action=types.SimpleNamespace(value=payload, option=None, options=None,
+                                         input_value=None),
+            operator=types.SimpleNamespace(open_id="ou_ok")),
+    )
+
+
+def _fake_toast_classes(box: list):
+    """哑的 ``(P2CardActionTriggerResponse, CallBackToast)`` 替身。
+
+    ⚠️ 用它而不是真 SDK：单测**零 Hermes 依赖**（系统解释器上没有 ``lark_oapi``），
+    而这里要验的只是「我们把字段填对了吗」—— 不是 SDK 能不能 import。
+    """
+    class _Toast:
+        def __init__(self) -> None:
+            self.type: Any = None
+            self.content: Any = None
+            self.i18n: Any = None
+
+    class _Resp:
+        def __init__(self) -> None:
+            self.toast: Any = None
+            self.card: Any = None
+            box.append(self)
+
+    return _Resp, _Toast
+
+
+def _inject_toast_classes(raw: Any, box: list) -> None:
+    """把哑 toast 类**挂在实例上**（不是类上）。
+
+    ⚠️ 类级打补丁在别处会失效：适配器类是 ``merged_class()`` 造出来的**另一个类**
+    （基类是 ``LarkDeckMixin``），进程里一旦建过、就按 base_cls 缓存；打在 Mixin 上虽然
+    经 MRO 仍能被查到，但这条链上还有「实例属性 → 类属性」的其它覆盖点，曾经在整份套件里
+    排到后面时**静默失效**（点击走到内置回落、断言说「没有提示」）。挂实例上不可能歧义。
+    """
+    raw._ld_toast_classes = lambda: _fake_toast_classes(box)
+
+
+def test_clarify_failed_submit_toasts_but_never_swaps_the_card():
+    """提交未生效 ⇒ **只弹 toast、绝不换卡**。
+
+    为什么「绝不换卡」是硬要求：这一条最常见的触发者是**一次迟到的重复点击**
+    （用户点了两下 / 网络重放）。那一瞬间卡片可能已经被前一次点击换成了「已确认」——
+    若这里回一张「待答 + 失败」，用户就会看到自己确认过的卡被退回待答，而答案其实
+    早已送达 agent。toast 能告知失败，又不可能覆盖卡片状态。
+    """
+    raw = _make()
+    box: list = []
+    _inject_toast_classes(raw, box)
+    _fake_clarify_gateway([], commit=False)
+    try:
+        out = raw._on_card_action_trigger(_clarify_click_data())
+        assert all(card is None for card in raw.card_updates), \
+            f"失败态不许换卡（换卡会把已确认的卡退回待答）：{raw.card_updates!r}"
+        assert box[-1].card is None, "toast 响应里也不许夹带卡片"
+        assert out is not None and out != "SUPER_RESULT", \
+            f"必须是我们自己的响应（不是交回内置）：{out!r}"
+        assert box and box[-1].toast is not None, "失败必须留下提示（静默不动会被当成没反应）"
+        toast = box[-1].toast
+        assert toast.type == "error", f"失败提示应当是 error 类型：{toast.type!r}"
+        assert toast.content == i18n.t("clarify.toast_failed"), toast.content
+        # toast 也要双语文案（跟随客户端语言），且两种语言的文案必须真的不同
+        assert set(toast.i18n or {}) == {"zh_cn", "en_us"}, \
+            f"toast 缺 i18n 映射（非中文客户端会看到中文）：{toast.i18n!r}"
+        assert toast.i18n["en_us"] != toast.i18n["zh_cn"], "两语言文案一样等于没本地化"
+    finally:
+        _drop_fake_clarify_gateway()
+
+
+def test_clarify_other_toasts_and_keeps_the_card():
+    """「其他（我直接输入）」：卡片保持原样（用户要在它上面继续输入），用 toast 说下一步。"""
+    raw = _make()
+    box: list = []
+    _inject_toast_classes(raw, box)
+    _fake_clarify_gateway([])
+    try:
+        raw._on_card_action_trigger(_clarify_click_data(answer=cards.OTHER_VALUE))
+        assert all(card is None for card in raw.card_updates), "「其他」要保留输入卡，不许换掉"
+        assert box and box[-1].toast is not None, "要给出下一步提示"
+        assert box[-1].toast.type == "info", box[-1].toast.type
+        assert box[-1].toast.content == i18n.t("clarify.toast_typing"), box[-1].toast.content
+    finally:
+        _drop_fake_clarify_gateway()
+
+
+def test_clarify_rejected_text_toasts_and_keeps_the_card():
+    """输入框里的内容没被接受（NO_PENDING 等）⇒ 卡片保持原样 + 一条 error toast。"""
+    raw = _make()
+    box: list = []
+    _inject_toast_classes(raw, box)
+    _fake_clarify_gateway([])          # 网关注册表是空的 ⇒ 解析必返 NO_PENDING
+    try:
+        data = _clarify_click_data()
+        data.event.action.tag = "input"
+        data.event.action.input_value = "我想先观察一下"
+        raw._on_card_action_trigger(data)
+        assert all(card is None for card in raw.card_updates), "没被接受就不能回填「已答复」卡"
+        assert box and box[-1].toast is not None, "要给出提示"
+        assert box[-1].toast.type == "error", box[-1].toast.type
+        assert box[-1].toast.content == i18n.t("clarify.toast_rejected"), box[-1].toast.content
+    finally:
+        _drop_fake_clarify_gateway()
+
+
+def test_success_click_swaps_the_card_inline_and_still_resolves():
+    """成功那一击：**内联换卡**（省一次 API 调用）且澄清真的被解析掉。"""
+    raw = _make()
+    resolved: list = []
+    _fake_clarify_gateway(resolved)
+    try:
+        out = raw._on_card_action_trigger(_clarify_click_data())
+        assert resolved == [("cid-r8", "B 方案")], resolved
+        assert out is not None, "回调必须有响应"
+        assert len(raw.card_updates) == 1 and isinstance(raw.card_updates[0], dict), \
+            f"成功时要内联换卡（一张完整的卡）：{raw.card_updates!r}"
+        # 换上去的必须是**已答复**卡（方言不同文案不同，所以两种标记都认）
+        swapped = json.dumps(raw.card_updates[0], ensure_ascii=False)
+        assert "B 方案" in swapped and ("✅" in swapped or "已答复" in swapped), swapped
+    finally:
+        _drop_fake_clarify_gateway()
+
+
+def test_inline_swap_degrades_when_core_cannot_take_a_card():
+    """核心那侧的 ``_card_response`` 只接受无参调用时：**不换卡但点击仍然生效**，绝不抛。
+
+    判别力：变异 `R8-3`（去掉 `compat.accepts_positional` 探测、无条件带卡调用）⇒ 红。
+
+    ⚠️ **这条断言为什么盯日志**：两种实现（「先探测签名」vs「带卡调用 + 用 TypeError 兜」）
+    在**行为上等价**（都退回无参调用），差别在**是谁做的决定** —— 靠 TypeError 分诊会把
+    「卡片构造里冒出来的 TypeError」误读成「核心不认识这个实参」，于是诊断信息撒谎。
+    所以这里钉的是**走了哪条机制**，不是返回了什么。
+    """
+    raw = _make()
+    raw._card_response = lambda: {"toast": "ok"}      # 模拟另一个版本的核心签名
+    resolved: list = []
+    _fake_clarify_gateway(resolved)
+    try:
+        with _LogCapture("larkdeck") as records:
+            out = raw._on_card_action_trigger(_clarify_click_data())
+        assert resolved == [("cid-r8", "B 方案")], "答案照样要提交（不能因为不换卡就不解析）"
+        assert out == {"toast": "ok"}, f"必须退回无参调用：{out!r}"
+        text = "\n".join(r.getMessage() for r in records)
+        assert "不接受卡片实参" in text,             f"必须先探测签名、再决定带不带卡调用（不许靠 TypeError 分诊）：{text!r}"
+    finally:
+        _drop_fake_clarify_gateway()
+
+
+def test_toast_path_never_raises_without_the_sdk():
+    """拿不到 toast 类（系统解释器没有 ``lark_oapi``）⇒ 退回「无变更」响应，**绝不抛**。
+
+    这条同时钉住「绝不把点击交给内置实现」：内置实现对我们自己的 value 一无所知，
+    交回去等于这次点击没有任何效果。
+    """
+    raw = _make()
+    raw._ld_toast_classes = lambda: (None, None)
+    _fake_clarify_gateway([], commit=False)
+    try:
+        out = raw._on_card_action_trigger(_clarify_click_data())
+        assert out is not None and out != "SUPER_RESULT", f"必须是我们自己的响应：{out!r}"
+        assert all(card is None for card in raw.card_updates), "没有 toast 也不许换卡"
+    finally:
+        _drop_fake_clarify_gateway()
+
+
+def test_accepts_positional_is_the_real_contract():
+    """`compat.accepts_positional` 是「能不能吃下这张卡」的判据：**看位置实参个数**，不看形参名。
+
+    判别力：这条直接锁住跨版本判据本身（形参改名不该让换卡能力失效）。
+    """
+    assert compat.accepts_positional(lambda card_data=None: None, 1) is True
+    assert compat.accepts_positional(lambda card=None: None, 1) is True, "形参名无关"
+    assert compat.accepts_positional(lambda: None, 1) is False
+    assert compat.accepts_positional(lambda *a: None, 3) is True
+    assert compat.accepts_positional(lambda a, b: None, 2) is True
+    assert compat.accepts_positional(lambda a, b: None, 3) is False
 
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items())

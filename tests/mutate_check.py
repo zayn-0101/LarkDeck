@@ -831,6 +831,39 @@ MUTATIONS = [
      '        if False:\n'
      '            return "\\n".join([_i18n.t("cmd.unknown", arg=arg), _i18n.t("cmd.help")])',
      "test_units"),
+    # ---- R8①② 点击路径：内联换卡的能力探测 + 失败态只弹 toast -------------------------- #
+    # 这一层跑在 SDK 回调线程上：抛一次就炸掉「别人的卡」的点击；而「失败态换卡」会让一次
+    # 迟到的重复点击把已确认的卡退回待答（用户可见且不可逆）。
+    ("R8-1-失败态改成内联换卡（迟到点击会把已确认退回待答）", "core/adapter.py",
+     '            return self._ld_toast_or_noop(kind="error", text_key="clarify.toast_failed")',
+     '            return self._ld_card_response_safe({"schema": "2.0"})',
+     "test_units"),
+    ("R8-2-toast 类型不再区分（失败提示画成 info）", "core/adapter.py",
+     '            toast.type = str(kind or "info")',
+     '            toast.type = "info"',
+     "test_units"),
+    ("R8-3-不再探测核心能否收下卡片（老签名上直接 TypeError）", "core/adapter.py",
+     '            if _compat.accepts_positional(build, 1):',
+     '            if True:',
+     "test_units"),
+    ("R8-4-toast 只给 content 不给 i18n（非中文客户端看到中文）", "core/adapter.py",
+     '            if isinstance(locales, dict) and locales:\n'
+     '                toast.i18n = dict(locales)',
+     '            if False:\n'
+     '                toast.i18n = dict(locales)',
+     "test_units"),
+    ("R8-5-没有 toast 能力时不退回（点击响应变成空）", "core/adapter.py",
+     '        response = self._ld_toast_response(kind=kind, text_key=text_key)\n'
+     '        if response is not None:\n'
+     '            return response\n'
+     '        return self._ld_card_response_safe()',
+     '        return self._ld_toast_response(kind=kind, text_key=text_key)',
+     "test_units"),
+    ("R8-6-测试把 staticmethod 还原成普通函数（污染同一进程里后续所有用例）",
+     "tests/test_units.py",
+     '    original_builder = adapter.LarkDeckMixin.__dict__["_ld_build_resolved_card"]',
+     '    original_builder = adapter.LarkDeckMixin._ld_build_resolved_card.__func__',
+     "test_units"),
 ]
 
 
