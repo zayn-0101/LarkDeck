@@ -786,16 +786,22 @@ MUTATIONS = [
      "test_units"),
     # ⚠️ R4 起「超上限」分两半（切得开就切卡、切不开才 fail-open），这条变异钉的是**后半**：
     #    把闸门整个拆掉 ⇒ 一帧超大的增量会直接往元素里写（必被飞书拒）
+    # ⚠️ 这条变异的锚点**换过三次**，每次都踩了同一个坑（记下来）：
+    #   ① 原本钉的是「正文超过硬上限时 fail-open」那道闸门；R4 引入切卡后它变成**死代码**
+    #      （切卡判据已经把两种情况收口 ⇒ 恒假），于是这条变异在整棵树上 🟢 —— 死代码让
+    #      「撤掉修复必须变红」这条纪律失效（R8 收口那一轮实测发现）。
+    #   ② 对准**真正**那道闸门（切不开时的早返回）之后，它又一次变绿：R9 的补丁重基在更早的
+    #      提交上、`git apply --3way` 把死代码那一段判给了「theirs」，**静默回滚了删除**。
+    #   ③ 现在对准的是**切不开时那道闸门**，且死代码已删 —— 只要有人再把它加回来，
+    #      这条变异就会变绿（这就是它的守卫作用）。
     ("CK23-一帧塞不下时不再 fail-open（往一张新卡里硬写超上限的增量）", "core/adapter.py",
-     '            body_bytes = _card_body_bytes(visible)\n'
-     '            if body_bytes > _cards.FEISHU_CARD_BYTE_LIMIT:\n'
-     '                # 走到这里说明「一张**全新的卡**也装不下这一帧的增量」—— 切卡帮不上忙\n'
-     '                # （切点判据 ② 会拒绝），只能 fail-open 交核心回落。与切卡前的差别是：\n'
-     '                # 这条路上卡里已经有前面几万字的正文，回落后核心只补发**剩余部分**。\n'
-     '                _log_ck_over_budget_once(body_bytes)\n'
-     '                return self._ld_stream_fail("CardKit 正文超过硬上限")\n'
-     '            elems = self._ld_ck_elems(state)',
-     '            elems = self._ld_ck_elems(state)',
+     '                if split_state is None:\n'
+     '                    # 切不开 ⇒ 这一帧只能回落。**字节数照旧打出来**（运维第一眼要的就是数字），\n'
+     '                    # 复用另一条闸门的那句日志（同一件事：正文超过单卡能装下的量）。\n'
+     '                    _log_ck_over_budget_once(_card_body_bytes(visible))\n'
+     '                    return self._ld_stream_fail("正文超过单卡硬上限且这一帧切不出新卡")',
+     '                if split_state is None:\n'
+     '                    pass',
      "test_units"),
     ("CK18-超预算告警不再限流", "core/adapter.py",
      '    if now - getattr(_log_ck_over_budget_once, "_at", 0.0) < 60.0:\n        return',
