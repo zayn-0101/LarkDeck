@@ -1991,13 +1991,15 @@ class LarkDeckMixin:
                 offset = int(state.get("ck_offset") or 0)
                 visible = display[offset:]
                 card_id = str(state.get("card_id") or "")
-            body_bytes = _card_body_bytes(visible)
-            if body_bytes > _cards.FEISHU_CARD_BYTE_LIMIT:
-                # 走到这里说明「一张**全新的卡**也装不下这一帧的增量」—— 切卡帮不上忙
-                # （切点判据 ② 会拒绝），只能 fail-open 交核心回落。与切卡前的差别是：
-                # 这条路上卡里已经有前面几万字的正文，回落后核心只补发**剩余部分**。
-                _log_ck_over_budget_once(body_bytes)
-                return self._ld_stream_fail("CardKit 正文超过硬上限")
+            # ⚠️ 这里**曾经**还有一道 `_card_body_bytes(visible) > 硬上限 ⇒ fail-open` 的闸门。
+            # R4 起它是**死代码**：上面那条切卡判据已经把两种情况都收口了 ——
+            #   * `visible` 没超封卡阈值（≤ 硬上限 × 0.5）⇒ 不可能超硬上限；
+            #   * 超了 ⇒ 要么切卡成功（新卡的 `visible` ≤ 尾巴预算 = 硬上限 × 0.9），
+            #     要么切不开 ⇒ 在那条分支里就 fail-open 了。
+            # 也就是说 `body_bytes` 永远是 ≤ 0.9 × 硬上限 ⇒ 这条件恒假。
+            # 留着它的代价不是「多一行」，而是**它会骗过变异验证器**：R8 收口那一轮实测
+            # `CK23`（把闸门拆掉）在整棵树上 🟢 —— 「撤掉修复必须变红」这条纪律对死代码无解。
+            # 所以**删掉**，并把那条变异重新对准**真正**的那道闸门（切不开时的早返回）。
             elems = self._ld_ck_elems(state)
             dead = state.get("ck_dead")
             dead = dead if isinstance(dead, set) else set()
