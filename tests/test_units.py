@@ -3168,6 +3168,7 @@ def _parse_config_schema(yaml_text: str) -> "Dict[str, Any]":
     **直接失败**（宁可红，也不静默漏判），并把 `type:` 与代码默认值的类型一起核对。
     """
     import re
+    import re as _re2
 
     lines = yaml_text.split("config_schema:", 1)[1].splitlines()
     declared: Dict[str, Any] = {}
@@ -3318,6 +3319,17 @@ def test_config_schema_matches_defaults_exactly():
     assert set(declared) == set(adapter._DEFAULTS), (
         f"plugin.yaml 与 _DEFAULTS 的键不一致："
         f"只在一处有 {sorted(set(declared) ^ set(adapter._DEFAULTS))}")
+    # README 的样例配置块也列了全部键 —— 「三处同步」里的第三处，这里一并机械核对键集
+    readme_path = Path(__file__).resolve().parent.parent / "README.md"
+    if readme_path.is_file():
+        block = readme_path.read_text(encoding="utf-8").split("settings:", 1)[-1].split("```", 1)[0]
+        import re as _readme_re
+        readme_keys = set(_readme_re.findall(r"^\s{8}([a-z_]+):", block, _readme_re.M))
+        assert readme_keys == set(adapter._DEFAULTS), (
+            f"README 的配置样例与 _DEFAULTS 键集不一致："
+            f"README 缺 {sorted(set(adapter._DEFAULTS) - readme_keys)}、"
+            f"README 多 {sorted(readme_keys - set(adapter._DEFAULTS))}")
+
     for key, expected in adapter._DEFAULTS.items():
         got = declared[key]
         assert got == expected and type(got) is type(expected), (
