@@ -66,6 +66,23 @@ _ALIASES: Dict[str, str] = {}
 # --------------------------------------------------------------------------- #
 # 采集
 # --------------------------------------------------------------------------- #
+def _as_float(value: Any) -> Optional[float]:
+    """宽容地把钩子里的数字转成 float（秒/毫秒这类）；转不了返回 ``None``。
+
+    与 :func:`_as_int` 同一套纪律：**连 ``OverflowError`` 一起接住**（``float("inf")``
+    合法但没意义），并且绝不抛 —— 指标是装饰，不能因为它把钩子链搞坏。
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if number != number or number in (float("inf"), float("-inf")):   # NaN / ±Inf
+        return None
+    return number
+
+
 def _as_int(value: Any) -> Optional[int]:
     """宽容地把钩子里的数字转成 int；转不了就返回 None（不抛）。
 
@@ -129,6 +146,18 @@ def record_api_call(**payload: Any) -> None:
                 "cache_read_tokens": (cache_read if cache_read is not None
                                       else prev.get("cache_read_tokens")),
                 "api_call_count": _as_int(payload.get("api_call_count")),
+                # ---- R7 页脚扩展要用的字段（语义来自 Hermes 的 `_fire_post_api_request_hook`：
+                # `first_chunk_at` 是**首个流式分块的 epoch 秒**，官方注释写明
+                # TTFB = `first_chunk_at - started_at`；`api_duration` 是**本次**请求耗时，
+                # 不是回合耗时（回合耗时在面板标题里，两者别混）。----
+                "cache_write_tokens": _as_int(usage.get("cache_write_tokens")),
+                "reasoning_tokens": _as_int(usage.get("reasoning_tokens")),
+                "total_tokens": _as_int(usage.get("total_tokens")),
+                "api_duration": _as_float(payload.get("api_duration")),
+                "started_at": _as_float(payload.get("started_at")),
+                "first_chunk_at": _as_float(payload.get("first_chunk_at")),
+                "finish_reason": str(payload.get("finish_reason") or ""),
+                "message_count": _as_int(payload.get("message_count")),
                 "session_id": str(payload.get("session_id") or ""),
                 "platform": str(payload.get("platform") or ""),
                 "at": time.time(),
@@ -295,7 +324,37 @@ def snapshot() -> Dict[str, Any]:
         "context_pct": pct,
         "session_id": raw.get("session_id", ""),
         "age": (time.time() - raw["at"]) if raw.get("at") else None,
+        # ---- R7：页脚扩展用的派生值（**缺数据就是 None，绝不编 0**）----
+        "cache_write_tokens": raw.get("cache_write_tokens"),
+        "reasoning_tokens": raw.get("reasoning_tokens"),
+        "total_tokens": raw.get("total_tokens"),
+        "finish_reason": raw.get("finish_reason", ""),
+        "message_count": raw.get("message_count"),
+        # 缓存命中率 = 命中量 / 本次送进模型的输入量（prompt = input + 缓存读 + 缓存写）。
+        # 分母取 prompt_tokens 而不是 input_tokens：后者不含缓存部分，会把比例算高。
+        "cache_pct": _pct(raw.get("cache_read_tokens"), raw.get("prompt_tokens")),
+        # 首字延迟（TTFB）：官方注释给的定义就是 first_chunk_at - started_at。
+        "ttfb_ms": _diff_ms(raw.get("first_chunk_at"), raw.get("started_at")),
+        "api_duration_ms": (round(raw["api_duration"] * 1000)
+                            if isinstance(raw.get("api_duration"), float) else None),
     }
+
+
+def _pct(part: Any, whole: Any) -> Optional[float]:
+    """``part / whole`` 的百分比；任一侧不可用、或分母非正 ⇒ ``None``（**不编 0**）。"""
+    if not isinstance(part, int) or not isinstance(whole, int) or whole <= 0:
+        return None
+    return min(100.0, max(0.0, part / whole * 100.0))
+
+
+def _diff_ms(later: Any, earlier: Any) -> Optional[int]:
+    """两个 epoch 秒之间差多少**毫秒**；任一缺失或差为负 ⇒ ``None``。"""
+    if not isinstance(later, float) or not isinstance(earlier, float):
+        return None
+    delta = later - earlier
+    if delta < 0:
+        return None
+    return int(round(delta * 1000))
 
 
 def reset() -> None:

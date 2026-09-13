@@ -899,6 +899,53 @@ def _golden_trace() -> dict:
             "final_patch": [c for _, _, c in finalized], "returns": returns}
 
 
+def test_context_snapshot_exposes_r7_footer_fields():
+    """R7 页脚扩展的数据层：新字段必须**如实派生**，缺数据就是 `None`（不许编 0）。
+
+    语义来自 Hermes 的 `_fire_post_api_request_hook`：
+      * `first_chunk_at` 是首个流式分块的 epoch 秒，官方注释写明 TTFB = `first_chunk_at - started_at`；
+      * `api_duration` 是**本次请求**耗时（不是回合耗时 —— 那个在面板标题里）；
+      * `cache_read_tokens` / `cache_write_tokens` / `reasoning_tokens` / `total_tokens` 在 `usage` 里。
+    """
+    context.reset()
+    # ① 完整载荷：每个派生值都要对得上
+    context.record_api_call(
+        model="m-1", provider="p-1", base_url="", api_call_count=7, finish_reason="stop",
+        message_count=12, api_duration=1.5, started_at=1000.0, first_chunk_at=1000.42,
+        session_id="s-1", platform="feishu",
+        usage={"input_tokens": 100, "output_tokens": 50, "prompt_tokens": 400,
+               "cache_read_tokens": 300, "cache_write_tokens": 0,
+               "reasoning_tokens": 20, "total_tokens": 450})
+    snap = context.snapshot()
+    assert snap["input_tokens"] == 400, snap["input_tokens"]      # prompt 优先（含缓存）
+    assert snap["cache_write_tokens"] == 0 and snap["reasoning_tokens"] == 20
+    assert snap["total_tokens"] == 450 and snap["api_call_count"] == 7
+    assert snap["cache_pct"] == 75.0, f"300/400 = 75%：{snap['cache_pct']}"
+    assert snap["ttfb_ms"] == 420, f"1.00042-1.0 = 0.42s ⇒ 420ms：{snap['ttfb_ms']}"
+    assert snap["api_duration_ms"] == 1500, snap["api_duration_ms"]
+    assert snap["finish_reason"] == "stop" and snap["message_count"] == 12
+
+    # ② 缺字段：一律 None，**不是 0**（编 0 会让页脚显示「缓存命中 0%」这种假信息）
+    context.reset()
+    context.record_api_call(model="m-2", usage={"input_tokens": 10, "prompt_tokens": 10})
+    snap = context.snapshot()
+    assert snap["cache_pct"] is None, f"没有 cache_read ⇒ 必须 None：{snap['cache_pct']}"
+    assert snap["ttfb_ms"] is None and snap["api_duration_ms"] is None
+    assert snap["cache_write_tokens"] is None and snap["message_count"] is None
+    assert snap["finish_reason"] == ""
+
+    # ③ 坏值不抛：inf / NaN / 负数差 / 字符串
+    context.reset()
+    context.record_api_call(model="m-3", api_duration=float("inf"), started_at=2000.0,
+                            first_chunk_at=1000.0,          # 负差 ⇒ None
+                            usage={"prompt_tokens": 0, "cache_read_tokens": 5})
+    snap = context.snapshot()
+    assert snap["api_duration_ms"] is None, "inf 秒不能变成一个巨大的毫秒数"
+    assert snap["ttfb_ms"] is None, "负的首字延迟必须 None，不能是负数毫秒"
+    assert snap["cache_pct"] is None, "分母为 0 ⇒ None"
+    context.reset()
+
+
 def test_cardkit_golden_trace_is_frozen():
     """R1 的地基：**重构前**把 CardKit 写入路径的行为冻成夹具，重构后必须逐字节不变。
 

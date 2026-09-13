@@ -389,6 +389,17 @@ MUTATIONS = [
             self._client.cardkit.v1.card.create,
             reqs.create_card(json.dumps(card, ensure_ascii=False)))''',
      "test_units"),
+    # R7 数据层：派生值算错会让页脚显示假信息（比不显示更坏）。
+    ("R7-1-TTFB 的差值方向反了（负差被当成 None，页脚永远没有首字延迟）", "core/context.py",
+     '    delta = later - earlier',
+     '    delta = earlier - later',
+     "test_units"),
+    ("R7-2-`_as_float` 不再挡 inf（`round(inf)` 会抛 OverflowError 炸掉渲染）", "core/context.py",
+     '    if number != number or number in (float("inf"), float("-inf")):   # NaN / ±Inf\n'
+     '        return None\n'
+     '    return number',
+     '    return number',
+     "test_units"),
     # ---- 第十二路审计的三条门禁缺口（每条都实测过「撤掉修复四门禁全绿」）----------------- #
     ("CK15-建实体不再守硬上限（144KB 的卡真的发出去）", "core/adapter.py",
      '        if size > _cards.FEISHU_CARD_BYTE_LIMIT:',
