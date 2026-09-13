@@ -201,6 +201,51 @@ else:
     print(f"probe_report(bare) missing_reactions={_bare_report.get('missing_reactions')!r} "
           f"missing_signal={_bare_report.get('missing_signal')!r}")
 
+# ⚠️ **平台 entry 必须整条保真**：`register_platform` 是**整条替换** entry，不合并 ⇒
+# 少传一个字段不是「退回默认」而是**关掉一个能力**。第十二路审计实测漏过三个有害字段
+# （`standalone_sender_fn` ⇒ cron/send_message 进程外投递报错；`max_message_length=8000`
+# ⇒ 长回复不再分块；`apply_yaml_config_fn` ⇒ `feishu.allow_bots` YAML 静默失效）。
+# 判据 = **内置注册函数真给的字段** vs **我们注册后 entry 上的字段**，逐字段比对。
+# ⚠️ 不要用 `snapshot_registration` 的第二个返回值当「被替换的内置 entry」——
+# 它是**延迟加载器**（`_Loader`），不是 entry（这条我第一版就写错了，门禁当场自曝）。
+_CLS_MODULE = type(adapter).__mro__[1].__module__ if len(type(adapter).__mro__) > 1 else ""
+_builtin_mod = (sys.modules.get("hermes_plugins.feishu_platform.adapter")
+                or sys.modules.get(_CLS_MODULE))
+if _builtin_mod is None or not hasattr(_builtin_mod, "register"):
+    problems.append("找不到内置 feishu 的 register()（entry 保真检查跑不起来）")
+else:
+    _captured: dict = {}
+
+    class _RecordingCtx:                      # 只记录，不动真注册表
+        def register_platform(self, **kw):
+            _captured.update(kw)
+            return object()
+
+    try:
+        _builtin_mod.register(_RecordingCtx())
+    except Exception as exc:
+        problems.append(f"内置 register() 调不通，entry 保真检查失效：{exc!r}")
+    _IDENTITY = {"name", "label", "adapter_factory", "check_fn", "source", "plugin_name"}
+    _live = platform_registry.get("feishu")
+    if _live is None:
+        problems.append("注册后拿不到 feishu entry")
+    else:
+        _missing, _checked = [], 0
+        for _key, _want in _captured.items():
+            if _key in _IDENTITY:
+                continue
+            _checked += 1
+            _got = getattr(_live, _key, None)
+            # ⚠️ 判据要分两类：**可调用对象按身份比**（必须是同一个函数），
+            # 其余（列表/字符串/数字/布尔）按值比 —— 一律用 `is` 会把
+            # `required_env=["FEISHU_APP_ID", …]` 这种等值列表误报成「丢了」。
+            _same = (_got is _want) if (callable(_want) or callable(_got)) else (_got == _want)
+            if not _same:
+                _missing.append(f"{_key}: 内置={_want!r} → 我们={_got!r}")
+        print(f"entry 字段保真：内置给了 {_checked} 个非身份字段，丢失 {len(_missing)} 个")
+        if _missing:
+            problems.append("平台 entry 丢字段（等于静默关掉能力）：" + "；".join(_missing))
+
 # ⚠️ 启动自检那行日志要**自报传输**（`native 传输 cardkit|patch`）。这条断言放在这儿而不是单测里，
 # 因为它要看的是**真加载器 + 真配置桥接**跑完之后的 `SELFCHECK` —— 那正是运维在日志里读到的那句
 # 话。没有它，「默认翻了但没重启」「进程还在跑旧传输」这两件事都只能靠猜。

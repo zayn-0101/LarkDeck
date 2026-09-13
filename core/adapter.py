@@ -237,6 +237,13 @@ _CONFIG: Dict[str, Any] = dict(_DEFAULTS)
 #: 启动自检结论，供日志 / doctor 查看。
 SELFCHECK: Dict[str, Any] = {"ok": None, "detail": "not run"}
 
+#: `PlatformEntry` 里**不允许**从内置 entry 透传的字段：身份与我们自己的工厂/探测
+#: 必须由本插件给值，照抄会把「谁在提供这个平台」或「用哪个工厂」搞错。
+#: 其余字段（见 `gateway/platform_registry.py` 的 dataclass）**全部**照抄 ——
+#: `register_platform` 整条替换 entry，漏传一个就等于关掉一个能力（第十二路审计实测）。
+_IDENTITY_ENTRY_FIELDS = frozenset({"name", "label", "adapter_factory", "check_fn",
+                                     "source", "plugin_name"})
+
 #: 钩子订阅结论：``{钩子名: 是否成功}``；空 dict 表示还没跑过 register()。
 HOOKS: Dict[str, bool] = {}
 
@@ -1884,17 +1891,26 @@ def register(ctx: Any) -> None:
     def _factory(config: Any) -> Any:
         return build_adapter(base_factory, config)
 
-    # 3) 透传内置 entry 的依赖探测 / 安装 / 校验字段，行为与内置完全一致。
-    allowed = {f.name for f in _dc_fields(PlatformEntry)}
+    # 3) 透传内置 entry 的**全部**元数据字段 —— `register_platform` 是**整条替换** entry
+    #    （不合并），所以「少传一个字段」不是「退回默认值」，而是**把这个能力关掉**。
+    #    ⚠️ 这里以前是一份**手写 8 键清单**，实测漏了三个有害的（第十二路审计的可行性那一轮）：
+    #      * `standalone_sender_fn` ⇒ `tools/send_message_senders.py:319` 直接报
+    #        「plugin not registered or missing standalone_sender_fn」，**cron 在没有常驻网关
+    #        的进程里投递会失败**，`send_message` 工具同理；
+    #      * `max_message_length=8000` ⇒ `gateway/run_turn_runner.py:431` 读它做智能分块，
+    #        丢掉后长回复不再按 8000 切分；
+    #      * `apply_yaml_config_fn` ⇒ `feishu.allow_bots` 这类 YAML→env 桥**静默失效**。
+    #    所以键集改成**从 dataclass 字段派生**：只排除「身份/覆盖类」字段（那些必须由我们
+    #    自己给值），其余一律照抄。新增字段时自动跟随，不会再出现「升级后静默丢能力」。
+    #    门禁：`tests/check_override.py` 拿注册前后的 entry **逐字段比对**，漏一个即红。
     passthrough: Dict[str, Any] = {}
-    for key in ("validate_config", "required_env", "install_hint", "ensure_deps_fn",
-                "setup_fn", "emoji", "allowed_users_env", "platform_hint"):
-        if key not in allowed:
+    for field in _dc_fields(PlatformEntry):
+        if field.name in _IDENTITY_ENTRY_FIELDS:
             continue
-        value = getattr(builtin, key, None)
-        if value in (None, [], ""):
-            continue
-        passthrough[key] = value
+        value = getattr(builtin, field.name, None)
+        if value is None or value == [] or value == "":
+            continue                      # 内置也没设 ⇒ 不必显式传（传了也是默认值）
+        passthrough[field.name] = value
 
     handle = ctx.register_platform(
         name=PLATFORM_NAME, label=LABEL, adapter_factory=_factory,

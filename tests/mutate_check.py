@@ -338,6 +338,11 @@ MUTATIONS = [
      '        detail += f" · native 传输 {LarkDeckMixin._ld_transport()}"',
      '        pass',
      "check_override"),
+    # 第十二路审计（可行性那一路）实测的**现网回归**：手写清单漏字段 = 静默关掉能力。
+    ("CK24-平台 entry 透传退回手写清单（丢掉 standalone_sender_fn 等）", "core/adapter.py",
+     '        if field.name in _IDENTITY_ENTRY_FIELDS:',
+     '        if field.name not in ("validate_config", "required_env", "install_hint"):',
+     "check_override"),
     ("CK22-自报的传输与实际生效的不一致（日志说 patch，跑的却是 cardkit）", "core/adapter.py",
      '        detail += f" · native 传输 {LarkDeckMixin._ld_transport()}"',
      '        detail += " · native 传输 patch"',
