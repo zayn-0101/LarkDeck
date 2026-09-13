@@ -141,6 +141,9 @@ def _on_pre_gateway_dispatch(**payload: Any) -> None:
             store, _compat.session_key_for_source(source, store))
         if session_id:
             _panel.bind_chat_session(chat_id, session_id)
+        # R9 心跳：**记在「有 chat_id」之后**（更早的 return 是载荷不全，不算心跳）。
+        # 它与归属绑定分开写：归属可能查不到（store 里还没这个会话），而心跳必须照记。
+        _context.note_inbound()
     except Exception:  # pragma: no cover - 防御性：钩子绝不能抛
         logger.debug("[larkdeck] 会话归属观察忽略了一次异常", exc_info=True)
 

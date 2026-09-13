@@ -77,7 +77,8 @@ core/         插件本体（Hermes 加载器以 hermes_plugins.larkdeck.core.* 
                 `panel_markdown`：我们的实现是「结构建实体时定死 + 收尾整卡替换」）
   i18n.py       双语文案（飞书原生 i18n_content）
   compat.py     版本 / 能力探测 —— Hermes 私有名的唯一存放处
-  context.py    运行时指标（钩子写入 → 页脚读取的进程内全局快照）
+  context.py    运行时指标（钩子写入 → 页脚读取的进程内全局快照）；
+                R9 起还持有**自检账本**（入站心跳 / 写卡 / 写卡失败），由 `/larkdeck status` 读
   panel.py      面板数据层（推理轮 / 工具 / 回合结局写入 → 卡片面板读取；
                 按会话分桶 + chat_id→session_id 确定性归属，拿不到才退回「最近活跃」）
   hooks.py      官方钩子订阅（7 个观察型钩子，清单见 compat.OBSERVED_HOOKS）：
@@ -147,6 +148,13 @@ tests/        见「验证」
   ② **代码区内容一个字节不许动**（围栏 / 行内代码里的 `#`、`**` 都是正文）；③ 游离的 `**`
   **删掉而不是补齐**（补一个 `**` 会把后半段吞进加粗 —— 这是本阶段原型踩过的坑）。
   另：字节闸门量的是**变换后**要发出去的文本（口径病，见 `docs/lessons.md` 推论 13）。
+- **`/larkdeck status` 是自检的唯一入口**（`ctx.register_command`，公开 API）：报版本
+  （**现读 `plugin.yaml`，不复制常量** —— 抄一份就会漂）、生效传输、钩子挂载数，以及三条记录
+  （入站心跳 / 写卡 / 写卡失败）。两条纪律：
+  ① **没记录就写「无记录」，绝不写「正常」**（永远说健康的自检 = 绿而无判别力）；
+  ② **只统计真的写出去的动作** —— 节流跳过的帧与文本没变的去重帧不算（它们一个字节都没写）。
+  ⚠️ 命令派发只挂在核心的 **idle 路径**上 ⇒ **仅空闲态可用**（生成中敲的命令会被当成普通输入
+  排队）；注册不到不影响卡片功能，但启动自检必须**如实**写「命令未注册（原因）」。
 - 页脚指标是进程内全局（钩子记「最近一次 API 请求」），多会话并发共享同一快照；
   要按会话隔离得从钩子载荷的 `session_id` 分桶（未做）。
 - 面板数据策略与页脚不同：`panel.py` 按 `session_id` 分桶；归属优先用
@@ -183,8 +191,10 @@ python3 tests/mutate_check.py      # 变异验证器：撤掉每条修复必须�
 **结论正好写反**（真发生的是「变异没生效」）。所以 `count(old) != 1` 也一律算红，
 锚点要带足够上下文让它唯一。（2026-09-13 实测：`if panel:` 在 `cards.py` 里有两处。）
 
-没有 CI / lint / formatter，这五个脚本就是全部验证。系统 `python3` 跑不动时用 Hermes
-自带解释器 `/Users/Zayn/.hermes/hermes-agent/venv/bin/python3`。
+没有 CI / lint / formatter，这五个脚本就是全部验证。**一律用 Hermes 自带解释器**
+`/Users/Zayn/.hermes/hermes-agent/venv/bin/python3`（系统 `python3` 少了 Hermes 的依赖：
+`lark_oapi` 导不进来 ⇒ CardKit 那几条用例会**假红** —— 它们的前提断言（「拿不到 SDK 就
+fail-open」）被顺带满足，报出来的失败信息与真实原因无关。2026-09-14 实测踩过一次）。
 
 - `check_override.py` 是唯一能证明「注册表覆盖生效」的手段 —— 单测用替身，证明不了运行时行为。
   它还负责验证插件配置桥接：临时 config.yaml 里写 `plugins.entries.larkdeck.settings`，

@@ -790,6 +790,47 @@ MUTATIONS = [
      '        except Exception:\n'
      '            SettingsCardRequest = SettingsCardRequestBody = None       # type: ignore[assignment]',
      "check_override"),
+    # ---- R9：自检账本 + `/larkdeck` 命令卡 -------------------------------------------- #
+    # 这一层的失败形态是「静默」的（钩子被改名 / 帧失败掉纯文本），而它存在的唯一理由就是
+    # 让用户能**问**出来。所以每条都要能被门禁抓住 —— 尤其「自检自己失效」那两条。
+    ("R9-1-`/larkdeck` 命令不再注册（自检入口整条消失）", "core/adapter.py",
+     '            handle_cmd = register_command(\n'
+     '                LARKDECK_COMMAND, _ld_command_card,\n'
+     '                description=_i18n.t("cmd.description"), args_hint="[status|help]")',
+     '            handle_cmd = None',
+     "check_override"),
+    ("R9-2-没有记录时写「正常」（一张永远说健康的自检卡）", "core/context.py",
+     '    if not isinstance(ts, (int, float)) or isinstance(ts, bool) or ts <= 0:\n'
+     '        return _i18n.t("status.none")',
+     '    if not isinstance(ts, (int, float)) or isinstance(ts, bool) or ts <= 0:\n'
+     '        return "正常"',
+     "test_units"),
+    ("R9-3-入站心跳不再记账（心跳永远「无记录」）", "core/hooks.py",
+     '        _context.note_inbound()',
+     '        pass',
+     "test_units"),
+    ("R9-4-首发建卡不记账（短回答的回合会被报成「一次都没写」）", "core/adapter.py",
+     '            _context.note_frame_ok()          # R9：首发建卡也是一次真的写卡',
+     '            pass',
+     "test_units"),
+    ("R9-5-patch 传输的成功帧不记账", "core/adapter.py",
+     '        _context.note_frame_ok()              # R9：patch 传输这一帧写成功',
+     '        pass',
+     "test_units"),
+    ("R9-6-帧失败不记账（用户问「为什么掉纯文本」时答不出来）", "core/adapter.py",
+     '        _context.note_frame_fail(reason)',
+     '        pass',
+     "test_units"),
+    ("R9-7-版本号改成写死的常量（卡片自信地报一个错的版本）", "core/adapter.py",
+     '    match = _PLUGIN_VERSION_RE.search(text)',
+     '    match = re.match(r"(?P<v>\\d+\\.\\d+\\.\\d+)", "1.2.3")',
+     "test_units"),
+    ("R9-8-不认识的命令参数被静默当成 status（用户以为参数生效了）", "core/adapter.py",
+     '        if arg not in ("", "status"):\n'
+     '            return "\\n".join([_i18n.t("cmd.unknown", arg=arg), _i18n.t("cmd.help")])',
+     '        if False:\n'
+     '            return "\\n".join([_i18n.t("cmd.unknown", arg=arg), _i18n.t("cmd.help")])',
+     "test_units"),
 ]
 
 

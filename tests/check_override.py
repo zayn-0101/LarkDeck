@@ -339,6 +339,47 @@ else:
                 print(f"settings request: {_name}")
                 if "Settings" not in _name:
                     problems.append(f"`settings_card` 造出来的不是 SettingsCardRequest：{_name}")
+# `/larkdeck` 插件命令（R9）—— 必须用**真加载器 + 真命令注册表**核对：单测只能证明处理器
+# 本身写得出文本，证明不了「它真的注册进了核心、核心取得到」。判据是核心自己的公开 getter
+# `get_plugin_command_handler`，不是我们自己记的标志位。
+try:
+    from hermes_cli.plugins import get_plugin_command_handler       # noqa: E402
+except Exception as _exc:      # noqa: BLE001
+    problems.append(f"拿不到插件命令注册表，`/larkdeck` 这条断言失效：{_exc!r}")
+else:
+    _cmd_handler = get_plugin_command_handler("larkdeck")
+    if _cmd_handler is None:
+        problems.append("`/larkdeck` 没注册进核心（get_plugin_command_handler 取到 None）"
+                        "—— 用户敲了没反应，而且是静默的")
+    else:
+        def _run_cmd(_args):
+            _out = _cmd_handler(_args)
+            if _inspect.isawaitable(_out):
+                import asyncio
+                _out = asyncio.run(_out)
+            return _out
+
+        _cmd_text = _run_cmd("status")
+        _first = str(_cmd_text).splitlines()[0] if _cmd_text else "<empty>"
+        print(f"plugin command : {_first}")
+        if not isinstance(_cmd_text, str) or not _cmd_text.strip():
+            problems.append(f"`/larkdeck status` 没返回文本：{_cmd_text!r}")
+        else:
+            # 关键词取自**三条记录 + 传输自报**：少了任何一段，这张自检卡就答不了
+            # 「插件在不在动」这个问题（而它存在的唯一理由就是回答这个）。
+            for _need in ("传输", "入站心跳", "写卡"):
+                if _need not in _cmd_text:
+                    problems.append(f"`/larkdeck status` 少了「{_need}」这一段：{_cmd_text!r}")
+            if _effective not in _cmd_text:
+                problems.append(f"`/larkdeck status` 没报出生效传输 {_effective!r}：{_cmd_text!r}")
+        _help_text = _run_cmd("help")
+        if "仅空闲态" not in str(_help_text):
+            problems.append(f"`/larkdeck help` 没写明「仅空闲态可用」：{_help_text!r}")
+        # 不认识的参数必须**说清楚 + 给用法**，不许静默当成 status（那会让用户以为参数生效了）
+        _unknown_text = str(_run_cmd("wat"))
+        if "wat" not in _unknown_text or "仅空闲态" not in _unknown_text:
+            problems.append(f"`/larkdeck wat` 没有明确拒绝并给出用法：{_unknown_text!r}")
+
 
 if problems:
     for p in problems:

@@ -37,7 +37,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+
+from . import i18n as _i18n
 
 logger = logging.getLogger("larkdeck.context")
 
@@ -61,6 +63,27 @@ _MAX_OVERRIDE: Optional[int] = None
 
 #: 用户配置的模型别名：真名 -> 显示名。
 _ALIASES: Dict[str, str] = {}
+
+# --------------------------------------------------------------------------- #
+# R9 自检账本 ——「插件到底在不在动」的三条证据
+# --------------------------------------------------------------------------- #
+#: 三条记录：入站心跳 / 成功帧 / 失败帧（各带时刻与累计次数）。
+#:
+#: 为什么需要：启动自检只证明**注册那一刻**接管成功，此后插件是死是活没有任何证据 ——
+#: 而本项目的失败形态**全是静默的**（官方给钩子改名 ⇒ 页脚空、帧失败 ⇒ 掉成纯文本且
+#: 只在日志里限流留痕）。``/larkdeck status`` 就是「事后自证」的入口。
+#:
+#: ⚠️ 判据纪律：**没记录就写「无记录」**，绝不许把「没有数据」渲染成「正常」——
+#: 那正是「绿而无判别力」（docs/lessons.md 推论 6）：一个永远说「正常」的自检，
+#: 与一个坏掉的自检在用户眼里长得一模一样。
+_STATUS: Dict[str, Any] = {
+    "inbound_at": None, "inbound_count": 0,
+    "frame_ok_at": None, "frame_ok_count": 0,
+    "frame_fail_at": None, "frame_fail_count": 0, "frame_fail_reason": "",
+}
+
+#: 失败原因存进账本前截断到多少字符（原因来自异常字符串 / SDK 返回，长度不可控）。
+_STATUS_REASON_MAX = 120
 
 
 # --------------------------------------------------------------------------- #
@@ -357,6 +380,102 @@ def _diff_ms(later: Any, earlier: Any) -> Optional[int]:
     return int(round(delta * 1000))
 
 
+def note_inbound() -> None:
+    """入站心跳：``pre_gateway_dispatch`` 每收到一条入站消息记一次。
+
+    这个钩子在 **auth 之前**、每条消息都跑（纪律见 :mod:`larkdeck.core.hooks`），
+    所以这里只做一次加锁写、绝不做 IO、异常自吞。
+
+    它的价值在于**与卡片无关**，两种病因此可分辨：
+    ``心跳不动`` ⇒ 消息根本没到插件（换了进程 / 平台名被别的插件抢走）；
+    ``心跳在动而帧不动`` ⇒ 消息到了，但卡片没发出去（配置关了 / 帧全失败）。
+    """
+    try:
+        with _LOCK:
+            _STATUS["inbound_at"] = time.time()
+            _STATUS["inbound_count"] = int(_STATUS.get("inbound_count") or 0) + 1
+    except Exception:  # pragma: no cover - 防御性：钩子绝不能抛
+        logger.debug("[larkdeck] 入站心跳采集忽略了一次异常", exc_info=True)
+
+
+def note_frame_ok() -> None:
+    """一次**真的写卡**发生了：建卡（seed 首发 / 建实体）、正文元素写、降级后的整卡
+    替换、收尾替换，都算 —— 判据是「真的往飞书发了一次写」，不是「函数返回了 True」。
+
+    ⚠️ 两类**不算**（都返回 True 但一个字节都没写，见 ``_ld_stream_frame``）：
+    **节流跳过**的中间帧、以及**文本没变**的去重帧。把它们记成「写卡成功」会让这张卡
+    在长回合里自信地说「一直在写」，而实际什么都没发生 —— 假绿比没有数据更糟。
+    反过来，建卡与收尾**必须**算：一个短回答可能只写这两笔，不计的话状态卡会说
+    「无记录」，而用户明明看到了卡片。
+    """
+    try:
+        with _LOCK:
+            _STATUS["frame_ok_at"] = time.time()
+            _STATUS["frame_ok_count"] = int(_STATUS.get("frame_ok_count") or 0) + 1
+    except Exception:  # pragma: no cover - 防御性
+        logger.debug("[larkdeck] 成功帧记账忽略了一次异常", exc_info=True)
+
+
+def note_frame_fail(reason: str) -> None:
+    """一帧 native 流式失败（``reason`` 是原始原因，入库前折叠空白 + 截断）。"""
+    try:
+        text = " ".join(str(reason or "").split())[:_STATUS_REASON_MAX]
+        with _LOCK:
+            _STATUS["frame_fail_at"] = time.time()
+            _STATUS["frame_fail_count"] = int(_STATUS.get("frame_fail_count") or 0) + 1
+            _STATUS["frame_fail_reason"] = text
+    except Exception:  # pragma: no cover - 防御性
+        logger.debug("[larkdeck] 失败帧记账忽略了一次异常", exc_info=True)
+
+
+def status_snapshot() -> Dict[str, Any]:
+    """账本快照（测试 / 探针读它）。卡片**不读**它 —— 卡片要的是人读的行。"""
+    with _LOCK:
+        return dict(_STATUS)
+
+
+def _when(ts: Any) -> str:
+    """epoch 秒 → 本地 ``MM-DD HH:MM:SS``；没有记录 ⇒ i18n 的「无记录」。
+
+    ⚠️ 刻意**不做**「N 分钟前」这类相对描述：它要么引入单复数/语言分支，要么在跨天时
+    误导。绝对时间本身就是事实，也不需要判据。
+    """
+    if not isinstance(ts, (int, float)) or isinstance(ts, bool) or ts <= 0:
+        return _i18n.t("status.none")
+    try:
+        return time.strftime("%m-%d %H:%M:%S", time.localtime(float(ts)))
+    except (ValueError, OSError, OverflowError):  # pragma: no cover - 时钟异常值
+        return _i18n.t("status.none")
+
+
+def status_lines() -> List[str]:
+    """三条自检行（markdown 文本），给 ``/larkdeck status`` 卡片用。
+
+    每行都带**累计次数**：只有「最近一次是什么时候」的话，一个刚重启的进程会显示得
+    和「跑了三天一直没失败」一模一样；有了次数才能区分「从来没发生过」与「刚刚发生」。
+    """
+    snap = status_snapshot()
+    failures = int(snap.get("frame_fail_count") or 0)
+    return [
+        _i18n.t("status.inbound", when=_when(snap.get("inbound_at")),
+                n=int(snap.get("inbound_count") or 0)),
+        _i18n.t("status.frame_ok", when=_when(snap.get("frame_ok_at")),
+                n=int(snap.get("frame_ok_count") or 0)),
+        (_i18n.t("status.frame_fail", when=_when(snap.get("frame_fail_at")), n=failures,
+                 reason=str(snap.get("frame_fail_reason") or ""))
+         if failures else _i18n.t("status.frame_fail_none")),
+    ]
+
+
+def _clear_status_locked() -> None:
+    """把账本复位（调用方已持锁）。**就地 update**，不换新 dict（外部可能持有引用）。"""
+    _STATUS.update({
+        "inbound_at": None, "inbound_count": 0,
+        "frame_ok_at": None, "frame_ok_count": 0,
+        "frame_fail_at": None, "frame_fail_count": 0, "frame_fail_reason": "",
+    })
+
+
 def reset() -> None:
     """清空采集数据（最近快照 + 上下文上限缓存）。
 
@@ -370,3 +489,6 @@ def reset() -> None:
         # 表现为「怎么探测都不触发」。
         _RETRY_AFTER.clear()
         _INFLIGHT.clear()
+        # R9 账本同样是**运行时状态**（不是配置），跟着一起清 —— 否则测试之间、
+        # 探针之间会互相继承上一次的心跳/帧计数，断言就没有判别力了。
+        _clear_status_locked()

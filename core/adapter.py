@@ -57,6 +57,7 @@ from . import cards as _cards
 from . import compat as _compat
 from . import context as _context
 from . import hooks as _hooks
+from . import i18n as _i18n
 from . import panel as _panel
 
 logger = logging.getLogger("larkdeck")
@@ -294,6 +295,16 @@ _IDENTITY_ENTRY_FIELDS = frozenset({"name", "label", "adapter_factory", "check_f
 
 #: 钩子订阅结论：``{钩子名: 是否成功}``；空 dict 表示还没跑过 register()。
 HOOKS: Dict[str, bool] = {}
+
+#: 插件命令名（`/larkdeck status`）与注册结论；`register()` 填 `COMMAND`。
+LARKDECK_COMMAND = "larkdeck"
+COMMAND: Dict[str, Any] = {}
+
+#: ``plugin.yaml`` 的位置与版本行。版本**每次现读**，不复制成常量 —— 常量会漂
+#: （改了清单忘了改常量，卡片就会自信地报一个错的版本号）。
+_PLUGIN_MANIFEST = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plugin.yaml")
+_PLUGIN_VERSION_RE = re.compile(r"^version\s*:\s*([^\s#]+)", re.M)
 
 
 def _apply_metrics_config() -> None:
@@ -1757,6 +1768,7 @@ class LarkDeckMixin:
                                           # （限频窗口到点后才更新成真实进展）
                                           "ck_summary_at": now,
                                           "ck_summary": _cards.summary_text(display)})
+                _context.note_frame_ok()      # R9：建实体 + 发实体卡也是一次真的写卡
                 return True
             card = self._ld_build_card(display, streaming=True,
                                        panel=self._ld_panel(chat, now),
@@ -1772,6 +1784,7 @@ class LarkDeckMixin:
             self._ld_stream_put(key, {"message_id": message_id, "chat_id": chat,
                                       "t0": now, "last": text, "last_at": now,
                                       "frames": 0, "skipped": 0})
+            _context.note_frame_ok()          # R9：首发建卡也是一次真的写卡
             return True
         message_id = state["message_id"]
         if finalize:
@@ -1795,6 +1808,7 @@ class LarkDeckMixin:
             # 也是发现「悄悄退回纯文本」的唯一线索（docs/lessons.md 推论 1）。
             logger.info("[larkdeck] native 流式收尾：更新 %d 帧（跳过 %d 帧）",
                         int(state.get("frames") or 0) + 1, int(state.get("skipped") or 0))
+            _context.note_frame_ok()          # R9：收尾帧同样是一次真的写卡
             return True
         if text == state.get("last"):
             return True
@@ -1849,6 +1863,7 @@ class LarkDeckMixin:
                                           "ck_seq": seq_after,
                                           "frames": int(state.get("frames") or 0) + 1,
                                           **summary_extra})
+                _context.note_frame_ok()          # R9：这一帧真的写出去了
                 return True
             if ok and degrade_code:
                 # 这一帧**正文写成功了**，但同一帧的装饰批量拿到了卡级死法（会话是在两次调用
@@ -1859,6 +1874,7 @@ class LarkDeckMixin:
                 self._ld_stream_put(key, {**live_state, "ck_degrade": degrade_code, "card_id": "",
                                           "last": text, "last_at": now, "ck_seq": seq_after,
                                           "frames": int(state.get("frames") or 0) + 1})
+                _context.note_frame_ok()          # R9：正文写成功、降级决定已落地
                 return True
             if degrade_code:
                 # ── `DEGRADE`：元素通道死了，但**消息还在** ⇒ 用 `message.patch` 把同一张卡
@@ -1881,6 +1897,7 @@ class LarkDeckMixin:
                 self._ld_stream_put(key, {**live_state, "ck_degrade": degrade_code, "card_id": "",
                                           "ck_seq": seq_after, "last": text, "last_at": now,
                                           "frames": int(state.get("frames") or 0) + 1})
+                _context.note_frame_ok()          # R9：降级车道这一帧写成功
                 return True
             # 失败：**只把序号推进**（绝不回退，见 `_ld_ck_apply` 的说明），
             # 不动 `last`/`last_at` —— 让下一帧还能把同一段文本重试一次。
@@ -1904,6 +1921,7 @@ class LarkDeckMixin:
                 f"帧更新失败（{getattr(result, 'error', 'unknown')}）")
         self._ld_stream_put(key, {**state, "last": text, "last_at": now,
                                   "frames": int(state.get("frames") or 0) + 1})
+        _context.note_frame_ok()              # R9：patch 传输这一帧写成功
         return True
 
     def _ld_stream_fail(self, reason: str) -> bool:
@@ -1914,6 +1932,9 @@ class LarkDeckMixin:
         用户在飞书那侧只会觉得「卡片怎么变成一条条消息了」。限流：同一进程 30 秒一条，
         既留痕又不刷屏。
         """
+        # R9：失败**每一次都记**（不跟着日志限流）—— 用户问「刚才那回合为什么掉成纯文本」时，
+        # 卡片要答得出原因；日志只有 30 秒一条，且用户看不到日志。
+        _context.note_frame_fail(reason)
         now = time.monotonic()
         # 限流状态挂在**函数对象**上（不是 self）：本方法同名于类属性，裸名字在方法体里
         # 不在作用域内，必须经类名取 —— 写成 ``getattr(_ld_stream_fail, ...)`` 会
@@ -2626,6 +2647,51 @@ def build_adapter(base_factory: Any, config: Any) -> Any:
     return adapter
 
 
+def _ld_plugin_version() -> str:
+    """从 ``plugin.yaml`` **现读**版本号；读不到返回 ``""``（**不编一个**）。
+
+    为什么不用常量 / 不 import ``hermes_cli``：常量会与清单各自漂移；而这只是
+    用户敲 ``/larkdeck`` 时读一次小文件，代价可以忽略。读不到就少显示一段 ——
+    「少一段」永远比「报一个错的版本」好（报错的版本号会把排障带偏）。
+    """
+    try:
+        with open(_PLUGIN_MANIFEST, "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return ""
+    match = _PLUGIN_VERSION_RE.search(text)
+    return match.group(1) if match else ""
+
+
+def _ld_command_card(raw_args: str) -> str:
+    """``/larkdeck [status|help]`` 的处理器（**模块级函数**：命令 API 要的是可调用对象）。
+
+    返回值是 markdown 文本，由核心发回 —— 那条路径经过我们的 ``send()``，
+    所以它自动成一张卡；这里只管「写什么」，不碰卡片 JSON。
+
+    三条纪律：
+      * **绝不抛** —— 抛出去会把「查一次状态」变成用户侧的错误提示；读不到就如实写读不到；
+      * **只报有证据的事** —— 没记录就写「无记录」（见 :func:`larkdeck.core.context.status_lines`）；
+      * **写明只支持空闲态** —— 命令派发挂在核心的 idle 路径上，不是我们的选择。
+    """
+    try:
+        arg = str(raw_args or "").strip().lower()
+        if arg in ("help", "-h", "--help"):
+            return _i18n.t("cmd.help")
+        if arg not in ("", "status"):
+            return "\n".join([_i18n.t("cmd.unknown", arg=arg), _i18n.t("cmd.help")])
+        version = _ld_plugin_version()
+        name = "🃏 larkdeck" + (f" v{version}" if version else "")
+        wired = sum(1 for ok in HOOKS.values() if ok)
+        header = _i18n.t("cmd.header", name=name,
+                         transport=LarkDeckMixin._ld_transport(),
+                         wired=wired, total=len(_hooks.SUBSCRIPTIONS))
+        return "\n".join([header] + _context.status_lines())
+    except Exception as exc:  # pragma: no cover - 防御性：处理器绝不能抛
+        logger.warning("[larkdeck] `/larkdeck` 状态读取失败: %s", exc, exc_info=True)
+        return _i18n.t("cmd.failed", error=str(exc))
+
+
 def register(ctx: Any) -> None:
     """插件入口：抢占 ``feishu`` 平台名，并把卡片层叠到内置适配器上。"""
     try:
@@ -2692,6 +2758,33 @@ def register(ctx: Any) -> None:
     except Exception as exc:  # pragma: no cover - 防御性
         logger.warning("[larkdeck] 钩子订阅异常: %s", exc, exc_info=True)
 
+    # 3.6) 注册插件命令 `/larkdeck`（公开 API：`ctx.register_command`）。
+    #      它把「插件到底在不在动」变成用户自己**问得出来**的一件事 —— 启动自检只证明
+    #      「注册那一刻接管成功」，此后插件是死是活没有任何证据，而本项目的失败形态
+    #      全是静默的（钩子被改名 ⇒ 页脚空、帧失败 ⇒ 掉成纯文本）。账本见 context。
+    #      ⚠️ 命令派发只挂在核心的**空闲态**路径上（`gateway/run_inbound.py` 的 idle 分支），
+    #      生成中发的命令会被当成普通输入排队 —— 这不是我们的选择，help 里必须写明。
+    #      注册不到不是错误：卡片照常工作，只是少一个自检入口（所以不影响自检结论）。
+    try:
+        register_command = getattr(ctx, "register_command", None)
+        if not callable(register_command):
+            COMMAND.update({"registered": False,
+                            "why": "当前 Hermes 未提供 ctx.register_command()"})
+            logger.warning("[larkdeck] 当前 Hermes 未提供 ctx.register_command()，"
+                           "`/larkdeck status` 不可用（卡片功能不受影响）")
+        else:
+            handle_cmd = register_command(
+                LARKDECK_COMMAND, _ld_command_card,
+                description=_i18n.t("cmd.description"), args_hint="[status|help]")
+            COMMAND.update({"registered": bool(handle_cmd),
+                            "why": "" if handle_cmd else "同名命令已被占用或注册被拒"})
+            if not handle_cmd:
+                logger.warning("[larkdeck] `/larkdeck` 命令注册被拒"
+                               "（多半是与本机已有命令重名）")
+    except Exception as exc:  # pragma: no cover - 防御性
+        COMMAND.update({"registered": False, "why": f"注册异常：{exc}"})
+        logger.warning("[larkdeck] `/larkdeck` 命令注册异常: %s", exc, exc_info=True)
+
     # 4) 启动自检：确认解析出来的 feishu 工厂确实是我们这个。
     try:
         current = platform_registry.get(PLATFORM_NAME)
@@ -2707,6 +2800,11 @@ def register(ctx: Any) -> None:
         detail += f" · native 传输 {LarkDeckMixin._ld_transport()}"
         detail += (f" · 钩子 {'/'.join(hooks_ok)}" if hooks_ok
                    else " · 未订阅到钩子（页脚缺模型/上下文用量）")
+        # 命令注册必须**如实自报**：注册不到时要说得出来为什么，否则用户会以为
+        # `/larkdeck` 能用、敲了却没反应 —— 又一处静默失灵。
+        detail += (f" · /{LARKDECK_COMMAND} 命令已注册" if COMMAND.get("registered")
+                   else f" · /{LARKDECK_COMMAND} 命令未注册"
+                        f"（{COMMAND.get('why') or '未知原因'}）")
         _remember_selfcheck(True, detail)
     else:
         _remember_selfcheck(False, "注册表里 feishu 仍指向别处，卡片不会生效")

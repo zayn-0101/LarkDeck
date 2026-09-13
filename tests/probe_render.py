@@ -997,6 +997,20 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
     print(f"   序号账本（装饰 + 正文共用）= {ledger}")
     ledger_strictly_increasing = all(a < b for a, b in zip(ledger, ledger[1:]))
     # ★ 页脚那一路**写的是当前内容**吗（R2 审计指出：探针进程页脚恒为空串时只能证明「写成功」）
+    # ★ R9 自检账本：这一回合**必须**在账本上留下痕迹，否则 `/larkdeck status` 在真机上
+    #   永远说「无记录」—— 而那张卡存在的唯一理由就是回答「插件在不在动」。
+    #   判据是**精确等式**（不是「>0」）：写卡次数 = 正文元素写入 + seed 建实体 + 收尾 patch，
+    #   多一次或少一次都说明账本记的不是真的写卡动作。
+    _snap: dict = {}
+    try:
+        _snap = dict(_probe_context_module().status_snapshot() or {})
+    except Exception as exc:      # noqa: BLE001
+        print(f"   ⚠️ 读不到 R9 自检账本：{exc!r}")
+    _expected_writes = len(writes) + 2      # + seed 建实体 + 收尾 patch
+    _ledger_ok = (int(_snap.get("frame_ok_count") or 0) == _expected_writes
+                  and int(_snap.get("frame_fail_count") or 0) == 0)
+    print(f"   R9 自检账本：写卡 {_snap.get('frame_ok_count')} 次（期望 {_expected_writes}）· "
+          f"失败 {_snap.get('frame_fail_count')} 次 {_snap.get('frame_fail_reason')!r}")
     footer_written = [b[3].get("footer") for b in batches]
     footer_is_current = bool(footer_at_start) and footer_written[0] == footer_at_start
     print(f"   首帧写出的页脚 = {footer_written[0]!r} · 那一刻 `_ld_footer()` = {footer_at_start!r}"
@@ -1009,7 +1023,8 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
           and all(b[2] for b in batches)
           and ledger_strictly_increasing
           and ledger == list(range(1, len(ledger) + 1))
-          and footer_is_current)
+          and footer_is_current
+          and _ledger_ok)
     if ok:
         print("✅ 生产路径的 CardKit 传输真机通过（建实体 + 元素写入 + patch 收尾）")
         print("   ⚠️ 这些卡的 id 没进账本（收尾后 stream state 已清）—— 看够了就叫我删。")

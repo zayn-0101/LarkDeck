@@ -19,6 +19,7 @@ import json
 import logging
 import pathlib as _pathlib
 import os
+import re
 import sys
 import threading
 import time
@@ -30,7 +31,7 @@ _REPO_PARENT = os.path.dirname(os.path.dirname(_HERE))  # .../code —— 使 `i
 if _REPO_PARENT not in sys.path:
     sys.path.insert(0, _REPO_PARENT)
 
-from larkdeck.core import adapter, cards, compat, context, i18n, panel  # noqa: E402
+from larkdeck.core import adapter, cards, compat, context, hooks, i18n, panel  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -5503,6 +5504,196 @@ def test_plan_progress_table_keeps_the_pending_row() -> None:
     # 已完成的阶段行也必须在（防止「整张表被谁重写」）
     for done in ("| R0 ", "| R1 ", "| R2 ", "| R5 ", "| R7 "):
         assert done in plan, f"进度表少了已完成阶段的记录：{done!r}"
+
+
+# --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# 13. R9 自检账本 + `/larkdeck` 命令卡
+#
+# 这一层的失败形态是**静默**的（钩子被改名 ⇒ 页脚空、帧失败 ⇒ 掉成纯文本），而启动自检
+# 只证明「注册那一刻接管成功」。所以「插件在不在动」必须能被**问**出来，且**只报有证据的事**。
+# --------------------------------------------------------------------------- #
+def test_status_lines_never_claim_healthy_without_records():
+    """没有记录时，三条自检行**每一行都要说「无记录」**；一张永远说「正常」的自检，
+    与一张坏掉的自检在用户眼里长得一模一样（「绿而无判别力」）。
+
+    判别力：变异 `R9-2`（把「无记录」改成「正常」）必须让这条红。
+    """
+    context.reset()
+    lines = context.status_lines()
+    assert len(lines) == 3, lines
+    for line in lines:
+        assert "无记录" in line, f"没有记录却没说「无记录」：{line!r}"
+    assert "正常" not in "".join(lines), "没有任何证据却给自己发了张健康证明"
+    # ⚠️ **累计次数**必须一起显示：只有「最近一次是什么时候」的话，刚重启的进程与
+    # 「跑了三天、一次没失败」看起来完全一样。
+    assert lines[0].endswith("累计 0 条消息") and lines[1].endswith("累计 0 次"), lines
+
+
+def test_status_lines_report_real_records_with_time_and_count():
+    """有记录时三条行各自带上**时刻 + 累计次数 + 失败原因**（心跳/写卡/写卡失败）。"""
+    context.reset()
+    context.note_inbound()
+    context.note_inbound()
+    context.note_frame_ok()
+    context.note_frame_fail("收尾帧失败（boom）")
+    inbound, written, failed = context.status_lines()
+    assert re.match(r"^入站心跳：\d\d-\d\d \d\d:\d\d:\d\d · 累计 2 条消息$", inbound), inbound
+    assert re.match(r"^最近写卡：\d\d-\d\d \d\d:\d\d:\d\d · 累计 1 次$", written), written
+    assert "累计 1 次" in failed and "收尾帧失败（boom）" in failed, failed
+
+
+def test_status_reason_is_collapsed_and_bounded():
+    """失败原因来自异常字符串 / SDK 返回，长度与换行都不可控 ⇒ 入库前折叠 + 截断。
+
+    不截断的话，一次 `300313` 的长 ErrMsg 能把状态卡撑成一段乱码（还会把三条记录挤没）。
+    """
+    context.reset()
+    context.note_frame_fail("第一行\n第二行" + "x" * 500)
+    snap = context.status_snapshot()
+    assert snap["frame_fail_count"] == 1
+    assert "\n" not in snap["frame_fail_reason"], "换行没被折叠（卡片会出现断行）"
+    assert len(snap["frame_fail_reason"]) <= context._STATUS_REASON_MAX
+    assert snap["frame_fail_reason"].startswith("第一行 第二行")
+
+
+def test_inbound_heartbeat_is_recorded_by_the_real_hook_callback():
+    """心跳必须由**真钩子回调**记下（不是只有函数本身能写）。
+
+    这条还钉住一个语义：**归属查不到也要记心跳** —— `chat_id -> session_id` 查不到正是
+    「消息到了但没归到会话」的场景，那时面板可以退化成「最近活跃」，但心跳不能跟着丢。
+    """
+    context.reset()
+    hooks._on_pre_gateway_dispatch(
+        event=types.SimpleNamespace(source=types.SimpleNamespace(chat_id="oc_probe")),
+        session_store=object())          # 归属查不到（缺 peek_session_id）
+    assert context.status_snapshot()["inbound_count"] == 1
+
+
+def test_frame_ledger_counts_only_real_card_writes():
+    """账本跟着**真的写出去的**动作走：建卡 / 正文 / 收尾算，**节流跳过与去重不算**。
+
+    判据分两半：
+      ① 一次正常回合（seed 建卡 → 正文 → 去重 → 收尾）应记 3 次；
+      ② 窗口内的中间帧（`skipped`）**一次都不许记** —— 它一个字节都没写，
+         记成成功会让长回合里的状态卡自信地说「一直在写」。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    context.reset()
+    try:
+        raw = _make()
+        _wire_patch(raw)
+        adapter._STREAM_MIN_INTERVAL = 0.0
+        assert _run(raw.send_stream_frame("", finalize=False, chat_id="oc_1",
+                                          turn_id="t9")) is True      # seed 建卡
+        assert context.status_snapshot()["frame_ok_count"] == 1, "建卡没记账"
+        assert _run(raw.send_stream_frame("你好", finalize=False, chat_id="oc_1",
+                                          turn_id="t9")) is True
+        assert context.status_snapshot()["frame_ok_count"] == 2, "正文帧没记账"
+        assert _run(raw.send_stream_frame("你好", finalize=False, chat_id="oc_1",
+                                          turn_id="t9")) is True      # 文本没变 ⇒ 去重
+        assert context.status_snapshot()["frame_ok_count"] == 2, "去重帧（没写）被记成了写卡"
+        # 节流窗口内的中间帧：把窗口开到很大，再写一段**新**文本 ⇒ 走 skipped 分支
+        adapter._STREAM_MIN_INTERVAL = 3600.0
+        assert _run(raw.send_stream_frame("你好，世界", finalize=False, chat_id="oc_1",
+                                          turn_id="t9")) is True
+        assert context.status_snapshot()["frame_ok_count"] == 2, "被节流跳过（没写）却记了账"
+        adapter._STREAM_MIN_INTERVAL = 0.0
+        assert _run(raw.send_stream_frame("最终答案", finalize=True, chat_id="oc_1",
+                                          turn_id="t9")) is True      # 收尾替换
+        assert context.status_snapshot()["frame_ok_count"] == 3, "收尾帧没记账"
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        context.reset()
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_frame_failure_ledger_keeps_the_reason():
+    """帧失败必须**每一次都记账**（日志只有 30 秒一条、且用户看不到日志）。
+
+    用户问「刚才那回合为什么掉成纯文本」，能回答的只有这张状态卡。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    context.reset()
+    try:
+        refused = _make()
+        refused._fail_cards = True          # 建卡失败 ⇒ 走 _ld_stream_fail
+        assert _run(refused.send_stream_frame("", finalize=False, chat_id="oc_9",
+                                              turn_id="t9")) is False
+        snap = context.status_snapshot()
+        assert snap["frame_fail_count"] == 1, snap
+        assert snap["frame_fail_reason"], "失败原因没留下（状态卡会变成一句废话）"
+        assert "失败" in snap["frame_fail_reason"], snap
+    finally:
+        context.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def _manifest_version() -> str:
+    """**独立**解析 plugin.yaml 的版本行（不用被测代码那个正则 —— 那等于自己证自己）。"""
+    manifest = _pathlib.Path(_REPO_PARENT) / "larkdeck" / "plugin.yaml"
+    text = manifest.read_text(encoding="utf-8")
+    for line in text.splitlines():
+        if line.startswith("version:"):
+            return line.split(":", 1)[1].strip()
+    raise AssertionError("plugin.yaml 里没有 version 行")
+
+
+def test_command_card_reports_version_transport_and_three_records():
+    """`/larkdeck status`：版本**现读清单** + 传输自报 + 钩子 + 三条记录。
+
+    版本这条必须有判别力：把「读 plugin.yaml」换成写死常量（变异 `R9-6`）时，
+    这里与清单**独立解析**出来的值一比就红 —— 卡片报错版本号会把排障带偏。
+    """
+    context.reset()
+    saved_hooks = dict(adapter.HOOKS)
+    adapter.HOOKS.clear()
+    adapter.HOOKS.update({"post_api_request": True, "on_stream_start": False})
+    try:
+        text = adapter._ld_command_card("")
+        version = _manifest_version()
+        assert version and version in text, f"卡片没报出清单里的版本：{text!r}"
+        assert f"larkdeck v{version}" in text, text
+        assert f"传输 {adapter.LarkDeckMixin._ld_transport()}" in text, text
+        assert f"钩子 1/{len(hooks.SUBSCRIPTIONS)} 已挂" in text, text
+        for line in context.status_lines():
+            assert line in text, f"少了自检行：{line!r}"
+        # 没参数与显式 `status` 必须**同一张卡**（不然 `help` 里写的默认值就是假的）
+        assert adapter._ld_command_card("status") == text
+        assert adapter._ld_command_card(" STATUS ") == text
+    finally:
+        adapter.HOOKS.clear()
+        adapter.HOOKS.update(saved_hooks)
+
+
+def test_command_card_help_states_the_idle_only_caveat():
+    """help 必须写明**只支持空闲态**：命令派发挂在核心的 idle 路径上（不是我们的选择），
+    生成中敲命令会被当成普通输入排队 —— 不写清楚，用户只会觉得「命令没反应」。"""
+    help_text = adapter._ld_command_card("help")
+    assert "仅空闲态" in help_text and "status" in help_text, help_text
+    unknown = adapter._ld_command_card("wat")
+    assert "wat" in unknown and "仅空闲态" in unknown, unknown
+
+
+def test_command_card_never_raises_even_when_state_read_fails():
+    """处理器**绝不能抛**：抛出去会把「查一次状态」变成用户侧的错误提示。
+
+    用一个 `__str__` 会炸的对象造出真实的读取失败（第一条语句就挂）。
+    """
+    class _Boom:
+        def __str__(self):
+            raise RuntimeError("boom")
+
+    out = adapter._ld_command_card(_Boom())
+    assert isinstance(out, str) and out, "处理器没返回任何文本"
+    assert "状态读取失败" in out and "boom" in out, out
+
 
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items())

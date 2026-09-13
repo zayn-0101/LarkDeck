@@ -45,6 +45,32 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "clarify.pick_multi": {ZH: "可多选：点开勾选", EN: "Multi-select: tap to pick"},
     "clarify.other_hint": {ZH: "直接输入你的答案，回车提交", EN: "Type your answer, press Enter"},
     "clarify.multi_hint": {ZH: "可多选，回复编号用逗号隔开。", EN: "Multi-select — reply with numbers separated by commas."},
+    # /larkdeck 自检卡（R9）。三条状态行由 context.status_lines() 组装；没记录写「无记录」，
+    # **绝不写「正常」** —— 一个永远说「正常」的自检与一个坏掉的自检，用户分辨不出来。
+    "cmd.description":    {ZH: "larkdeck 状态：版本 / 生效传输 / 钩子 / 心跳",
+                           EN: "larkdeck status: version / transport / hooks / heartbeats"},
+    "cmd.header":         {ZH: "{name} · 传输 {transport} · 钩子 {wired}/{total} 已挂",
+                           EN: "{name} · transport {transport} · hooks {wired}/{total} wired"},
+    "cmd.help":           {ZH: "用法：/larkdeck [status|help]\n"
+                               "· status（默认）：本卡 —— 版本 / 生效传输 / 钩子 / 三条心跳记录\n"
+                               "· help：这段说明\n"
+                               "⚠️ 仅空闲态可用：正在生成回答时发的命令会被当成普通输入排队。",
+                           EN: "Usage: /larkdeck [status|help]\n"
+                               "· status (default): this card — version / active transport / hooks / three heartbeat records\n"
+                               "· help: this text\n"
+                               "⚠️ Idle state only: a command sent while a reply is streaming is queued as plain input."},
+    "cmd.unknown":        {ZH: "不认识的参数：{arg}（可用：status / help）",
+                           EN: "Unknown argument: {arg} (available: status / help)"},
+    "cmd.failed":         {ZH: "状态读取失败：{error}", EN: "Status read failed: {error}"},
+    "status.inbound":     {ZH: "入站心跳：{when} · 累计 {n} 条消息",
+                           EN: "Inbound heartbeat: {when} · {n} messages"},
+    "status.frame_ok":    {ZH: "最近写卡：{when} · 累计 {n} 次",
+                           EN: "Last card write: {when} · {n} writes"},
+    "status.frame_fail":  {ZH: "最近写卡失败：{when} · 累计 {n} 次 · {reason}",
+                           EN: "Last write failure: {when} · {n} · {reason}"},
+    "status.frame_fail_none": {ZH: "最近写卡失败：无记录（累计 0 次）",
+                               EN: "Last write failure: no record (0)"},
+    "status.none":        {ZH: "无记录", EN: "no record"},
 }
 
 
