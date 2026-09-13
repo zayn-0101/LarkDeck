@@ -304,6 +304,41 @@ else:
     finally:
         _admin_mod._CONFIG.clear()
         _admin_mod._CONFIG.update(_saved_cfg)
+# CardKit 的**请求构造器必须齐**（R7 审计的「仍未收口」第 3 条的另一面）：会话预览那两个模型
+# 曾经与其它 CardKit 模型在**同一个 import 块**里 —— 老 SDK 缺它们会让**整条 CardKit 传输**
+# 一起关掉（fail-open 回 patch，用户失去打字机），而他根本没开过预览。现在拆开单独 import，
+# 这里用**真 SDK** 证明六个构造器都在（缺任何一个都会让这条红）。
+# 变异：把 `settings_card=_settings_card` 从返回里删掉 / 把两个模型并回同一个 try。
+_caretaker = sys.modules.get("hermes_plugins.larkdeck.core.adapter")
+if _caretaker is None:
+    problems.append("拿不到 hermes_plugins.larkdeck.core.adapter，CardKit 构造器这条断言失效")
+else:
+    _reqs = None
+    try:
+        _reqs = _caretaker.LarkDeckMixin._ld_ck_requests()
+    except Exception as _exc:      # noqa: BLE001
+        problems.append(f"`_ld_ck_requests()` 在真 SDK 上抛了：{_exc!r}")
+    if _reqs is None:
+        problems.append("真 SDK 上 `_ld_ck_requests()` 返回 None —— CardKit 传输整条不可用")
+    else:
+        _need = ("create_card", "send_entity", "reply_entity", "write_element",
+                 "batch_update", "settings_card")
+        _have = sorted(k for k in vars(_reqs))
+        print(f"cardkit request builders: {_have}")
+        _miss = [k for k in _need if k not in vars(_reqs)]
+        if _miss:
+            problems.append(f"CardKit 请求构造器缺 {_miss}（缺一个就少一种能力）：{_have}")
+        else:
+            # 真造一次 `settings` 请求：那两个模型没 import 进来时这里会拿到 None / AttributeError
+            try:
+                _req = _reqs.settings_card("ck_probe", '{"config":{}}', 7, "ld-ck_probe-s7")
+            except Exception as _exc:      # noqa: BLE001
+                problems.append(f"`settings_card` 造不出请求（预览会静默失效）：{_exc!r}")
+            else:
+                _name = type(_req).__name__
+                print(f"settings request: {_name}")
+                if "Settings" not in _name:
+                    problems.append(f"`settings_card` 造出来的不是 SettingsCardRequest：{_name}")
 
 if problems:
     for p in problems:

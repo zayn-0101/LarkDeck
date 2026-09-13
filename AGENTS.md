@@ -109,12 +109,16 @@ tests/        见「验证」
 - native 流式是官方契约：`send_stream_frame(text, ...)` 的 `text` 是**累积全文**
   （不是增量），整卡替换到同一张卡；回合状态挂 `self._ld_streams`
   （key = `chat:turn_id`），帧间有节流（`_STREAM_MIN_INTERVAL`）。
-- **native 帧有两条传输**（配置 `native_transport`，默认 `patch`）：
+- **native 帧有两条传输**（配置 `native_transport`，**默认 `cardkit`** —— 2026-09-13 翻的，
+  前置是「一轮对抗审计 + 真机生产路径探针」；`tests/test_units.py` 的
+  `test_declared_defaults_are_an_explicit_decision` 钉住这个默认值）：
   * `patch`：普通卡 + `message.patch` 整卡替换。字是**几个几个跳**（用户实测语）。
   * `cardkit`：CardKit 实体（`card.create` + 发实体卡）+ 每帧 **至多一次 `card.batch_update`
     写装饰（面板 + 页脚）+ 一次 `card_element.content` 写正文** ⇒ **真逐字打字机**（用户实测语）。
-    每帧**逻辑写**预算 2 次（卡级上限 10 次/秒 × 帧窗口 0.25s，常量 `_CK_WRITES_PER_FRAME`；
-    ⚠️ 不是 HTTP 调用数：撞限流时同一请求退避重发最多 4 次 ⇒ 单帧最坏 8 次调用）；
+    每帧**元素写**预算 2 次（常量 `_CK_WRITES_PER_FRAME`；卡级上限 10 次/秒 × 帧窗口 0.25s）；
+    R7 起再加一次**会话预览**写（`card.settings`，`_CK_SUMMARY_INTERVAL = 5s` 限频 ⇒ 平均
+    ≈0.2 次/秒，且**不重试**）⇒ 折算 ≈8.2 逻辑写/秒 < 卡级上限 10 次/秒；
+    ⚠️ 不是 HTTP 调用数：元素写撞限流时同一请求退避重发最多 4 次 ⇒ **单帧最坏 12 次调用 / ≈3.0s**；
     **装饰内容没变就不发那次 batch**（稳态下每帧 1 次）；**正文最后写**（提交点在后）；
     装饰失败只标死 + 留痕（不 fail-open）；正文失败 fail-open —— **但有两条例外（R5）**：
     ① 元素通道拿到**卡级死法**（`300309`/`300313`/`300317`）⇒ **降级成整卡 `message.patch`

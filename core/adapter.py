@@ -1296,16 +1296,41 @@ class LarkDeckMixin:
                                                   ContentCardElementRequest,
                                                   ContentCardElementRequestBody,
                                                   BatchUpdateCardRequest,
-                                                  BatchUpdateCardRequestBody,
-                                                  SettingsCardRequest,
-                                                  SettingsCardRequestBody)
+                                                  BatchUpdateCardRequestBody)
             from lark_oapi.api.im.v1 import (CreateMessageRequest, CreateMessageRequestBody,
                                               ReplyMessageRequest, ReplyMessageRequestBody)
         except Exception:
             return None
+        # ⚠️ **会话预览的两个模型必须单独 import**（R7 审计的留白第 5 条）：它们与上面那几个
+        # 同属 CardKit 命名空间，但**能力等级完全不同** —— 缺了它们只该「关掉预览」，
+        # 而混在同一个 try 里会让**整条 CardKit 传输**（建实体 + 元素写 + batch）一起被关掉、
+        # fail-open 回 patch：用户失去打字机，而他根本没开过预览。
+        # 缺了就在 `settings_card` 上抛一个说得清的错误 ⇒ 被 `_ld_ck_maybe_summary` 的
+        # try/except 接住、只标死预览（这正是 H-1 那条修复的顺带收益）。
+        try:
+            from lark_oapi.api.cardkit.v1 import (SettingsCardRequest,
+                                                  SettingsCardRequestBody)
+        except Exception:
+            SettingsCardRequest = SettingsCardRequestBody = None       # type: ignore[assignment]
 
         def _entity_payload(card_id: str) -> str:
             return json.dumps({"type": "card", "data": {"card_id": card_id}}, ensure_ascii=False)
+
+        def _settings_card(card_id: str, payload: str, sequence: int,
+                           uuid_value: str) -> Any:
+            """`card.settings` 请求；老 SDK 缺这两个模型时**抛一个说得清的错误**。
+
+            为什么抛而不是返回 None：调用方（`_ld_ck_settings`）的契约是「拿到响应对象」，
+            返回 None 会让 `_ld_response_code(None)` 得到 0 —— 也就是**假成功**（预览静默不更新，
+            还没有任何日志）。抛出去会被 `_ld_ck_maybe_summary` 的 try/except 接住 ⇒ 只标死预览、
+            留下真实原因，整条 CardKit 传输不受影响。
+            """
+            if SettingsCardRequest is None or SettingsCardRequestBody is None:
+                raise RuntimeError("这个版本的 lark_oapi 没有 SettingsCardRequest"
+                                   "（会话预览不可用，其它 CardKit 能力不受影响）")
+            return SettingsCardRequest.builder().card_id(card_id).request_body(
+                SettingsCardRequestBody.builder().settings(payload)
+                .sequence(sequence).uuid(uuid_value).build()).build()
 
         # ⚠️ `uuid` 是**请求去重键**（官方发送路径一直在填）：我们这条路径的写调用会退避重试，
         # 没有它的话「响应丢了但其实发成功了」会重发一次 ⇒ DM 里多一张实体卡，
@@ -1334,11 +1359,10 @@ class LarkDeckMixin:
                 .actions(json.dumps(actions, ensure_ascii=False))
                 .sequence(sequence).uuid(uuid_value).build()).build(),
             # `card.settings`：改**卡级 config**（R7 用它更新会话列表预览）。
+            # ⚠️ 老 SDK 没有这两个模型时**只关预览**（抛错 → 被上层 try/except 接住 → 只标死），
+            # 绝不让它把整条 CardKit 传输拖下去 —— 见上面那段拆分的理由。
             # ⚠️ `summary` 必须是 **i18n 对象** `{"content": …}`：传裸字符串会被拒 `300122`（真机实测）。
-            settings_card=lambda card_id, payload, sequence, uuid_value:
-            SettingsCardRequest.builder().card_id(card_id).request_body(
-                SettingsCardRequestBody.builder().settings(payload)
-                .sequence(sequence).uuid(uuid_value).build()).build(),
+            settings_card=_settings_card,
             write_element=lambda card_id, element_id, content, sequence, uuid_value:
             ContentCardElementRequest.builder().card_id(card_id).element_id(element_id)
             .request_body(ContentCardElementRequestBody.builder().content(content)
@@ -1420,7 +1444,7 @@ class LarkDeckMixin:
                          str(getattr(resp, "msg", "") or ""))
 
     async def _ld_ck_settings(self, card_id: str, summary: Dict[str, Any],
-                              seq: int) -> "_CkResult":
+                              seq: int, *, retry: bool = True) -> "_CkResult":
         """写**卡级 config** 的 `summary`（R7 的「进展」：会话列表里那行预览文字）。
 
         真机实测的两条硬约束（`probe_ck_stream_ops.py --p3`）：
@@ -1432,9 +1456,17 @@ class LarkDeckMixin:
         if reqs is None:
             return _CkResult(False, 0, "没有 CardKit SDK")
         payload = json.dumps({"config": {"summary": summary}}, ensure_ascii=False)
-        resp = await self._ld_write_with_retry(
-            lambda: reqs.settings_card(card_id, payload, int(seq), f"ld-{card_id}-s{seq}"),
-            self._client.cardkit.v1.card.settings, "会话预览")
+        def make_request() -> Any:
+            return reqs.settings_card(card_id, payload, int(seq), f"ld-{card_id}-s{seq}")
+
+        if retry:
+            resp = await self._ld_write_with_retry(
+                make_request, self._client.cardkit.v1.card.settings, "会话预览")
+        else:
+            # ⚠️ `retry=False` 是**预览专用**（R7 审计低-7）：这次写排在**正文写之后**（提交点
+            # 之后），撞限流时退避重试只会给这一帧白加最多 ≈1.0s（0.1+0.3+0.6），而失败已经
+            # 只标死 ⇒ 重试的收益是**零**。元素写入与建实体照旧带重试：那些失败会让整帧失败。
+            resp = await self._run_blocking(self._client.cardkit.v1.card.settings, make_request())
         return _CkResult(_ld_response_code(resp) == 0, _ld_response_code(resp),
                          str(getattr(resp, "msg", "") or ""))
 
@@ -1593,17 +1625,29 @@ class LarkDeckMixin:
         """按限频更新**会话列表预览**（R7 的后半），返回 ``(新的序号, 要并进状态的字段)``。
 
         为什么这件事值得单开一条路：飞书的会话列表显示的是卡片的 `config.summary` ——
-        建卡时它是「⏳ 正在生成…」，收尾时是回答的开头。中间那几分钟里列表一直停在旧文字，
-        而**核心在流式期间不会替我们更新它**（它只管正文）。R7 把它做成「进展」。
+        建卡时它是 `Hermes`（`cards.DEFAULT_TITLE` 兜底；⚠️ R7 审计的 L-1 更正：本注释以前写的
+        「建卡时是 ⏳ 正在生成…」**是错的**，那是**正文**占位），收尾时是回答的开头。中间那
+        几分钟里列表一直停在旧文字，而**核心在流式期间不会替我们更新它**（它只管正文）。
 
         纪律（每一条都有理由，别简化）：
-          * **限频** `_CK_SUMMARY_INTERVAL`：`card.settings` 吃一个序号、算一次逻辑写，
-            而每帧预算只有 2 次 ⇒ 绝不许每帧发；
+          * **限频** `_CK_SUMMARY_INTERVAL`：`card.settings` 吃一个序号、算一次逻辑写
+            ⇒ 绝不许每帧发（窗口内的帧一次都不写；预算换算见附录 B）；
           * **失败只标死**（`ck_summary_dead`）+ 限流 WARNING：它坏了不影响卡片内容，
-            所以**绝不让这一帧失败**（fail-open 会让整回合掉成纯文本，代价与收益不成比例）；
+            所以**绝不让这一帧失败**（fail-open 会让整回合掉成纯文本，代价与收益不成比例）。
+            ⚠️ **「失败」包括抛异常**（R7 审计高-1，实测能绕开当时全部门禁）：官方
+            `_run_blocking` 是 `loop.run_in_executor(...)`，而 SDK 的 `Transport.execute` 里
+            `requests.request(...)` **一行 try 都没有** ⇒ 一次连接重置/超时就会把异常直穿到
+            `send_stream_frame` 的 except ⇒ 这一帧返回 False ⇒ 核心**停用本回合 native**，
+            用户从卡片掉成纯文本（卡已经在 DM 里了，于是还会多一条重复文本）。
+          * **不重试**（`retry=False`，R7 审计低-7）：失败既然只标死，重试就只剩白等；
           * **序号共用**：成功才 `seq += 1` 并把新序号交回调用方写进状态 —— 跳号/撞号都会被
-            服务端拒（`300317`）；
-          * **内容没变就不发**：预览文字与上次一样时省掉这次写。
+            服务端拒（`300317`）。**失败/异常时序号也已经消耗掉**（那次写真实发生了）⇒
+            调用方要把返回的序号无条件落账（与 `_ld_ck_apply` 的「只增不减」同一条规矩）；
+          * **内容没变就不发**：预览文字与上次一样时省掉这次写；
+          * **处置等级**（R7 审计中-4）：预览是**独立一档** —— 一律 DEAD、不看码表、也不置
+            `ck_degrade`。理由：`card.settings` 坏掉时元素通道通常也坏了，而**下一帧的元素写**
+            会自己拿到 `300309` 并走 `DEGRADE`；在预览这一路再判一遍码表就是同一件事两处真相
+            （附录 A 的表头已按这条改准）。
         """
         fields: Dict[str, Any] = {}
         if state_ref.get("ck_summary_dead"):
@@ -1616,7 +1660,12 @@ class LarkDeckMixin:
         if not text or text == state_ref.get("ck_summary"):
             return seq, fields
         seq += 1
-        res = await self._ld_ck_settings(card_id, {"content": text}, seq)
+        try:
+            res = await self._ld_ck_settings(card_id, {"content": text}, seq, retry=False)
+        except Exception as exc:
+            # 见 docstring 里那条纪律：**异常与返回码同等对待**，都只标死、绝不影响这一帧。
+            logger.debug("[larkdeck] 会话预览写入异常", exc_info=True)
+            res = _CkResult(False, 0, str(exc))
         if res.ok:
             fields = {"ck_summary": text, "ck_summary_at": now}
         else:

@@ -815,7 +815,7 @@ def _golden_trace() -> dict:
     记录四类事实：建实体卡的 JSON、每次元素写入的 (元素, 内容, 序号, uuid)、
     收尾整卡 patch 的 JSON、每一帧的返回值。
     """
-    calls = {"content": [], "patch": [], "entity": [], "batch": []}
+    calls = {"content": [], "patch": [], "entity": [], "batch": [], "settings": []}
 
     class _Resp:
         def __init__(self, code=0, **data):
@@ -834,6 +834,17 @@ def _golden_trace() -> dict:
         def batch_update(self, request):
             calls["batch"].append([json.loads(request.request_body.actions),
                                    request.request_body.sequence])
+            return _Resp(0)
+
+        def settings(self, request):
+            # ⚠️ **必须有这一臂**（R7 审计的「仍未收口」第 3 条）：替身缺 `settings_card` 时，
+            # `_CK_SUMMARY_INTERVAL=0` 让夹具变红的机制是 **AttributeError 崩帧**，而不是
+            # 「预览写进了夹具的定义域」这条语义 —— 以后有人为扩展定义域补上这个替身，
+            # 就会**静默失去**那条敏感度。补上之后，窗口一改，`settings` 这一列会如实出现在
+            # 冻结的 trace 里（默认窗口下它是空的，所以冻结值不变）。
+            calls["settings"].append([json.loads(request.request_body.settings),
+                                      request.request_body.sequence,
+                                      request.request_body.uuid])
             return _Resp(0)
 
     class _Elem:
@@ -877,6 +888,10 @@ def _golden_trace() -> dict:
                 card_id=cid,
                 request_body=types.SimpleNamespace(actions=json.dumps(actions, ensure_ascii=False),
                                                    sequence=seq, uuid=uuid_value)),
+            settings_card=lambda cid, payload, seq, uuid_value: types.SimpleNamespace(
+                card_id=cid,
+                request_body=types.SimpleNamespace(settings=payload, sequence=seq,
+                                                   uuid=uuid_value)),
         )
 
     raw = _make()
@@ -929,6 +944,9 @@ def _golden_trace() -> dict:
         panel.reset()
     return {"entity_card": calls["entity"], "element_writes": calls["content"],
             "decor_batches": calls["batch"],
+            # R7：会话预览也在夹具的**定义域**里（默认窗口下是空表；窗口一旦被改小，
+            # 这一列会如实变化 ⇒ 夹具红在语义上，而不是崩在 AttributeError 上）。
+            "summary_writes": calls["settings"],
             "final_patch": [c for _, _, c in finalized], "returns": returns}
 
 
@@ -1113,7 +1131,7 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                      create_codes=None, answer_codes=None, fail_first_only=False,
                      fail_at=None, fail_at_code=300309, fail_batch=False,
                      fail_batch_code=300309, fail_batch_msg=None, patch_code=0,
-                     settings_code=0, settings_msg=None):
+                     settings_code=0, settings_msg=None, settings_raises=False):
             calls = {"create": 0, "send": 0, "reply": 0, "content": [], "patch": 0,
                      "patch_mids": [], "settings": [],
                      "entity": [], "send_req": [], "reply_req": [], "batch": [],
@@ -1146,10 +1164,21 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                     return _Resp(0)
 
                 def settings(self, request):
-                    """`card.settings`（R7 的会话列表预览）——记下 payload 与序号。"""
+                    """`card.settings`（R7 的会话列表预览）——记下 payload 与序号。
+
+                    ⚠️ 这里**也必须计入 `calls["writes"]`**（R7 审计中-2）：这本账是
+                    「写入预算」的**观测量**（附录 B 断言②：真跑 N 帧、数一数调用次数）。
+                    不计的话，「预览每帧都写」这种实现从这本账上**看不见** —— 实测把
+                    「成功但不记账」那一行删掉，四门禁全绿，而限频被彻底废掉。
+                    """
+                    calls["writes"] += 1
                     calls["settings"].append((json.loads(request.request_body.settings),
                                               request.request_body.sequence,
                                               request.request_body.uuid))
+                    if settings_raises:
+                        # H-1：真机上这条路是 `run_in_executor` + `requests.request`（**一行
+                        # try 都没有**）⇒ 连接重置/超时就是这个形状。
+                        raise ConnectionError("settings boom")
                     if settings_code:
                         return _Resp(settings_code, msg=settings_msg)
                     return _Resp(0)
@@ -1588,7 +1617,13 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                 f"summary 必须是 i18n **对象**（裸字符串真机回 300122）：{payload}"
             assert isinstance(payload["config"]["summary"].get("content"), str), payload
             assert "第一段正文" in payload["config"]["summary"]["content"], payload
-            assert uuid_value, "settings 也必须带 uuid（重试去重键）"
+            # ⚠️ **必须断言 uuid 的确切形状**（R7 审计中-3 的第 ⑧ 条）：原来这里是
+            # `assert uuid_value` —— 而它来自 f-string，card_id 非空 ⇒ **近似恒真**，
+            # 判不出「每次写的去重键必须不同」。去重键退化（例如写成常量）会让服务端把
+            # 每一次新预览都当成重发 ⇒ 列表那行永远停在第一条。
+            _cid2i = (raw2i._ld_stream_get("oc_ck2i:t-2i") or {}).get("card_id")
+            assert uuid_value == f"ld-{_cid2i}-s{seq}", \
+                f"预览的去重键必须是 (卡, 序号) 的确定性函数：{uuid_value!r}"
             # 序号共用：这一帧的元素写入占 1、2；预览占 3
             assert seq == 3, f"预览必须与元素写入共用账本（这里该是 3）：{seq}"
             ledger = ([b[1] for b in calls["batch"]] + [c[2] for c in calls["content"]]
@@ -1632,6 +1667,65 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             assert len(calls["settings"]) == _before, "标死之后不许再试（省配额、也不再刷日志）"
         finally:
             adapter._CK_SUMMARY_INTERVAL = _saved_interval
+
+        # ⚠️ **窗口的取值本身也要钉住**（R7 审计的「仍未收口」第 2 条）：它是**预算决策**
+        # （5 秒 ⇒ 平均 ≈0.2 次/秒，见附录 B），而 5.0 → 1.0 这种改动四门禁原本全绿。
+        # 与 `test_declared_defaults_are_an_explicit_decision` 同一个理由：显式决定要显式钉住。
+        assert adapter._CK_SUMMARY_INTERVAL == 5.0, \
+            f"会话预览的限频窗口是显式预算决策（≈0.2 次/秒），改它要同时改附录 B：" \
+            f"{adapter._CK_SUMMARY_INTERVAL}"
+
+        # ㉓ **预览的三条硬纪律**（R7 审计的 H-1 / M-2 / L-7）—— 每一条都有一个「撤掉修复
+        #    四门禁全绿」的实测反例，所以逐条钉：
+        #      * 限频靠**记账**（`ck_summary_at`）生效；不记账 ⇒ 之后每帧都写（配额被吃掉）；
+        #      * 写调用**抛异常**时，这一帧**仍须成功**（否则核心停用本回合 native ⇒ 掉纯文本）；
+        #      * 限流码**不重试**（它排在提交点之后，失败只标死，重试只是白等 ≤1s）。
+        adapter._CK_SUMMARY_INTERVAL = 1.0
+        calls, client = _mk_fake()
+        raw2n = _make()
+        raw2n._client = client
+        adapter.configure(native_transport="cardkit", unified_panel=True)
+        assert _run(raw2n.send_stream_frame("", chat_id="oc_ck2n", turn_id="t-2n"))
+        # 建卡时 `ck_summary_at` 记成「刚刚」⇒ 第一帧不写（窗口没到）
+        assert calls["settings"] == [], "建卡那一刻刚写过 summary ⇒ 第一帧不该再写"
+        # 手动把窗口拨到过去（真机上是「过了 1 秒」），此后**只靠那个戳**决定要不要写
+        raw2n._ld_streams["oc_ck2n:t-2n"]["ck_summary_at"] = time.monotonic() - 2.0
+        for _t in ("一", "一，二", "一，二，三", "一，二，三，四", "一，二，三，四，五",
+                   "一，二，三，四，五，六", "一，二，三，四，五，六，七",
+                   "一，二，三，四，五，六，七，八"):
+            assert _run(raw2n.send_stream_frame(_t, chat_id="oc_ck2n", turn_id="t-2n")), _t
+        assert len(calls["settings"]) == 1, \
+            f"拨一次窗口 ⇒ 只能写一次预览（限频靠 ck_summary_at 记账）：{calls['settings']}"
+        assert calls["writes"] <= adapter._CK_WRITES_PER_FRAME * 8 + 1, \
+            f"八帧的写入总量不得超过「每帧预算 × 帧数 + 一次预览」：{calls['writes']}"
+
+        # 异常：这一帧必须成功 + 只标死 + **序号照样落账**（那次写真实发生过了）
+        calls, client = _mk_fake(settings_raises=True)
+        raw2o = _make()
+        raw2o._client = client
+        adapter.configure(native_transport="cardkit", unified_panel=True)
+        assert _run(raw2o.send_stream_frame("", chat_id="oc_ck2o", turn_id="t-2o"))
+        raw2o._ld_streams["oc_ck2o:t-2o"]["ck_summary_at"] = time.monotonic() - 2.0
+        assert _run(raw2o.send_stream_frame("正文", chat_id="oc_ck2o", turn_id="t-2o")), \
+            "预览写**抛异常**时这一帧也必须成功（否则核心停用 native ⇒ 用户掉成纯文本）"
+        state2o = raw2o._ld_stream_get("oc_ck2o:t-2o") or {}
+        assert state2o.get("ck_summary_dead") is True, f"异常同样只标死：{state2o}"
+        assert state2o.get("ck_seq") == 3, \
+            f"异常路径也要把序号落账（元素写 1、2 + 预览 3）：{state2o.get('ck_seq')}"
+
+        # 不重试：限流码只试一次（`_TRANSIENT_BACKOFF` 那是给元素写入的，不是给预览的）
+        calls, client = _mk_fake(settings_code=99991400)
+        raw2p = _make()
+        raw2p._client = client
+        adapter.configure(native_transport="cardkit", unified_panel=True)
+        assert _run(raw2p.send_stream_frame("", chat_id="oc_ck2p", turn_id="t-2p"))
+        raw2p._ld_streams["oc_ck2p:t-2p"]["ck_summary_at"] = time.monotonic() - 2.0
+        assert _run(raw2p.send_stream_frame("正文", chat_id="oc_ck2p", turn_id="t-2p")), \
+            "限流码同样不许让这一帧失败"
+        assert len(calls["settings"]) == 1, \
+            f"预览不重试（重试只是白等 ≤1s）：写了 {len(calls['settings'])} 次"
+        state2p = raw2p._ld_stream_get("oc_ck2p:t-2p") or {}
+        assert state2p.get("ck_summary_dead") is True, state2p
 
         # ⑤ SDK 取不到（单测/裁剪环境）⇒ 建实体返回 None ⇒ **fail-open**，绝不抛
         adapter.LarkDeckMixin._ld_ck_requests = staticmethod(lambda: None)
@@ -2683,6 +2777,30 @@ def test_footer_metrics_are_opt_in_and_never_fake_zero() -> None:
                                        "prompt_tokens": 4000, "cache_read_tokens": 3000})
         _full = adapter.LarkDeckMixin._ld_footer() or ""
         assert "🐢 0.4s" in _full, f"TTFB = 0.42s ⇒ 0.4s：{_full!r}"
+
+        # **真的 0% 命中**必须显示出来（`cache_read=0` 是「一次都没命中」，与「不知道」是
+        # 两件事）。判别力：变异 `R7-12`（把 0.0 当成缺失）⇒ 红。
+        context.reset()
+        context.record_api_call(model="m", api_call_count=3,
+                                usage={"input_tokens": 4000, "output_tokens": 5,
+                                       "prompt_tokens": 4000, "cache_read_tokens": 0})
+        context.set_context_override(20000)
+        _zero = adapter.LarkDeckMixin._ld_footer() or ""
+        assert "⚡ 0%" in _zero, f"真的 0% 命中必须显示（不许当成「缺数据」）：{_zero!r}"
+
+        # 反向：`api_call_count=0` / `ttfb=0.0` **不显示** —— 这是**有意的不对称**
+        # （L-2 的结论）：缓存命中率 0% 是真实读数，而「本回合 0 次 API 调用」和
+        # 「0.0 秒首字节」在渲染卡片的回合里不可能发生，出现 0 只会是脏数据。
+        context.reset()
+        context.record_api_call(model="m", api_call_count=0, api_duration=1.0,
+                               started_at=1000.0, first_chunk_at=1000.0,
+                               usage={"input_tokens": 1000, "output_tokens": 5,
+                                      "prompt_tokens": 4000, "cache_read_tokens": 3000})
+        context.set_context_override(20000)
+        _zeros = adapter.LarkDeckMixin._ld_footer() or ""
+        assert "🔁" not in _zeros and "🐢" not in _zeros, \
+            f"0 次调用 / 0.0s 首字节视为「无意义」，不许画成读数：{_zeros!r}"
+        assert "⚡ 75%" in _zeros, f"同一帧里真实读数照常显示：{_zeros!r}"
 
         # 缺数据：一段都不许编出来（尤其不许出现「⚡ 0%」这种假读数）
         context.reset()

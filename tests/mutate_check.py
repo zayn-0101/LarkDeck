@@ -539,8 +539,8 @@ MUTATIONS = [
      '                mode = "full"',
      "test_units"),
     ("R7-4-会话预览传裸字符串（真机回 300122，预览整条失效）", "core/adapter.py",
-     '        res = await self._ld_ck_settings(card_id, {"content": text}, seq)',
-     '        res = await self._ld_ck_settings(card_id, text, seq)',
+     '            res = await self._ld_ck_settings(card_id, {"content": text}, seq, retry=False)',
+     '            res = await self._ld_ck_settings(card_id, text, seq, retry=False)',
      "test_units"),
     ("R7-5-会话预览不限频（每帧都写 ⇒ 超每帧写入预算）", "core/adapter.py",
      '        if isinstance(last_at, (int, float)) and now - float(last_at) < interval:\n'
@@ -557,12 +557,42 @@ MUTATIONS = [
      "test_units"),
     ("R7-7-会话预览不占序号（与元素写入账本脱钩 ⇒ 真机撞号）", "core/adapter.py",
      '        seq += 1\n'
-     '        res = await self._ld_ck_settings(card_id, {"content": text}, seq)',
-     '        res = await self._ld_ck_settings(card_id, {"content": text}, seq)',
+     '        try:\n'
+     '            res = await self._ld_ck_settings(card_id, {"content": text}, seq, retry=False)',
+     '        try:\n'
+     '            res = await self._ld_ck_settings(card_id, {"content": text}, seq, retry=False)',
      "test_units"),
     ("R7-3-缺数据编成 0（页脚显示「⚡ 0%」这种假读数）", "core/adapter.py",
      '                cache=snap.get("cache_pct") if mode in ("basic", "full") else None,',
      '                cache=(snap.get("cache_pct") or 0) if mode in ("basic", "full") else None,',
+     "test_units"),
+    # R7 审计收口（中-2 / 中-3 / 高-1 / 低-7）：每条都实测过「撤掉之后四门禁全绿」。
+    ("R7-8-预览写的异常不再兜底（一次连接重置就把整帧拖红 ⇒ 掉纯文本）", "core/adapter.py",
+     '            res = _CkResult(False, 0, str(exc))',
+     '            raise',
+     "test_units"),
+    ("R7-9-预览写成功但不记账（限频被彻底废掉 ⇒ 之后每帧都写）", "core/adapter.py",
+     '            fields = {"ck_summary": text, "ck_summary_at": now}',
+     '            fields = {}',
+     "test_units"),
+    ("R7-10-预览写失败时把序号退回去（下一次写撞号 ⇒ 静默半更新）", "core/adapter.py",
+     '            fields = {"ck_summary_dead": True}\n'
+     '            _log_ck_summary_failed_once(res.code)',
+     '            seq -= 1\n'
+     '            fields = {"ck_summary_dead": True}\n'
+     '            _log_ck_summary_failed_once(res.code)',
+     "test_units"),
+    ("R7-11-预览写的去重键退化成常量（服务端当成重发 ⇒ 列表永远停在第一条）", "core/adapter.py",
+     '            return reqs.settings_card(card_id, payload, int(seq), f"ld-{card_id}-s{seq}")',
+     '            return reqs.settings_card(card_id, payload, int(seq), f"ld-{card_id}-s")',
+     "test_units"),
+    ("R7-12-页脚把「真的 0% 命中」当成缺数据（真实读数被吞掉）", "core/adapter.py",
+     '                cache=snap.get("cache_pct") if mode in ("basic", "full") else None,',
+     '                cache=(snap.get("cache_pct") or None) if mode in ("basic", "full") else None,',
+     "test_units"),
+    ("R7-13-预览也跟着退避重试（白白给这一帧加最多 ≈1 秒）", "core/adapter.py",
+     '            res = await self._ld_ck_settings(card_id, {"content": text}, seq, retry=False)',
+     '            res = await self._ld_ck_settings(card_id, {"content": text}, seq)',
      "test_units"),
     ("PL-1-无视配置一律转发父类（工具行又并进正文）", "core/adapter.py",
      '            if _cfg("progress_lines_in_body"):\n'
@@ -624,11 +654,13 @@ MUTATIONS = [
      '                                                       _cards.CARDKIT_PANEL_BODY_ID],',
      "test_units"),
     # R7 数据层：派生值算错会让页脚显示假信息（比不显示更坏）。
-    ("R7-1-TTFB 的差值方向反了（负差被当成 None，页脚永远没有首字延迟）", "core/context.py",
+    # ⚠️ 名字**不许**与 adapter 那两条 R7-1/R7-2 重名（R7 审计低-4）：`mutate_check.py -k R7-1`
+    # 会一次跑两条、报告里没法按名字唯一定位。数据层这两条统一加 `-D` 前缀。
+    ("R7-D1-TTFB 的差值方向反了（负差被当成 None，页脚永远没有首字延迟）", "core/context.py",
      '    delta = later - earlier',
      '    delta = earlier - later',
      "test_units"),
-    ("R7-2-`_as_float` 不再挡 inf（`round(inf)` 会抛 OverflowError 炸掉渲染）", "core/context.py",
+    ("R7-D2-`_as_float` 不再挡 inf（`round(inf)` 会抛 OverflowError 炸掉渲染）", "core/context.py",
      '    if number != number or number in (float("inf"), float("-inf")):   # NaN / ±Inf\n'
      '        return None\n'
      '    return number',
@@ -714,6 +746,27 @@ MUTATIONS = [
      "    current[\"elapsed_ms\"] = max(0, int((now - float(current.get(\"started\") or now)) * 1000))",
      "    current[\"elapsed_ms\"] = 0",
      "check_hooks"),
+    # R7 审计「仍未收口」的三项（每一项都实测过「撤掉之后四门禁全绿」）。
+    ("R7-14-预览限频窗口被改成 1 秒（写入预算随之翻倍，附录 B 失效）", "core/adapter.py",
+     '_CK_SUMMARY_INTERVAL = 5.0',
+     '_CK_SUMMARY_INTERVAL = 1.0',
+     "test_units"),
+    ("R7-15-CardKit 请求构造器少了 settings_card（预览整条静默失效）", "core/adapter.py",
+     '            settings_card=_settings_card,',
+     '',
+     "check_override"),
+    ("R7-16-会话预览的两个模型并回同一个 import 块（老 SDK 缺它会关掉整条传输）",
+     "core/adapter.py",
+     '        try:\n'
+     '            from lark_oapi.api.cardkit.v1 import (SettingsCardRequest,\n'
+     '                                                  SettingsCardRequestBody)\n'
+     '        except Exception:\n'
+     '            SettingsCardRequest = SettingsCardRequestBody = None       # type: ignore[assignment]',
+     '        try:\n'
+     '            from lark_oapi.api.cardkit.v1 import _never_used_name_  # noqa: F401\n'
+     '        except Exception:\n'
+     '            SettingsCardRequest = SettingsCardRequestBody = None       # type: ignore[assignment]',
+     "check_override"),
 ]
 
 
@@ -738,6 +791,20 @@ CONTROLS = [
      "        if False:\n            return False", ""),
     ("C-对照：default 加行内注释（合法 YAML）", "plugin.yaml",
      "    default: 15\n", "    default: 15  # 毫秒\n", ""),
+    # R7 审计中-3 的 ④：预览的「内容没变就不发」被撤掉 ⇒ 仍然全绿，因为限频窗口先挡住了
+    # （5 秒内最多多写一次同样内容）。结果等价，不是门禁漏洞 —— 但**写在这里**，
+    # 这样下一个人不用再花一轮实验去发现它。
+    ("C-对照：预览的内容去重被撤（限频先挡住了，结果等价）", "core/adapter.py",
+     '        if not text or text == state_ref.get("ck_summary"):',
+     '        if not text:',
+     ""),
+    # ⑦：失败时也顺手更新 `ck_summary_at` ⇒ 无害（`ck_summary_dead` 已经短路了后续一切尝试）。
+    ("C-对照：预览失败时也更新限频戳（dead 已短路，结果等价）", "core/adapter.py",
+     '            fields = {"ck_summary_dead": True}\n'
+     '            _log_ck_summary_failed_once(res.code)',
+     '            fields = {"ck_summary_dead": True, "ck_summary_at": now}\n'
+     '            _log_ck_summary_failed_once(res.code)',
+     ""),
     ("C-对照：纯注释改动", "core/adapter.py",
      "#: 卡片按钮 value 里的动作键；只认自己这一个，其余一律回落给内置实现。",
      "#: 卡片按钮 value 里的动作键；只认自己这一个，其余一律回落给内置实现。（注释改动）", ""),

@@ -41,6 +41,7 @@
    1
   ]
  ],
+ "summary_writes": [],
  "final_patch": [
   "{\"schema\": \"2.0\", \"config\": {\"wide_screen_mode\": true, \"update_multi\": true, \"streaming_mode\": false, \"summary\": {\"content\": \"第一段，第二段。\"}}, \"body\": {\"elements\": [{\"tag\": \"markdown\", \"content\": \"第一段，第二段。\"}, {\"tag\": \"collapsible_panel\", \"expanded\": false, \"header\": {\"title\": {\"tag\": \"plain_text\", \"content\": \"🧠 1\"}, \"vertical_align\": \"center\", \"icon\": {\"tag\": \"standard_icon\", \"token\": \"down-small-ccm_outlined\", \"size\": \"16px 16px\"}, \"icon_position\": \"right\", \"icon_expanded_angle\": -180}, \"border\": {\"color\": \"grey\", \"corner_radius\": \"8px\"}, \"padding\": \"8px 8px 8px 8px\", \"elements\": [{\"tag\": \"markdown\", \"content\": \"**第 1 轮**\\n\\n先想一下这个问题该怎么拆。\"}], \"element_id\": \"auxiliary_timeline\"}]}}"
  ],
