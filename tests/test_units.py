@@ -1112,9 +1112,10 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                      fail_panel_only=False, create_empty_id=False,
                      create_codes=None, answer_codes=None, fail_first_only=False,
                      fail_at=None, fail_at_code=300309, fail_batch=False,
-                     fail_batch_code=300309, fail_batch_msg=None, patch_code=0):
+                     fail_batch_code=300309, fail_batch_msg=None, patch_code=0,
+                     settings_code=0, settings_msg=None):
             calls = {"create": 0, "send": 0, "reply": 0, "content": [], "patch": 0,
-                     "patch_mids": [],
+                     "patch_mids": [], "settings": [],
                      "entity": [], "send_req": [], "reply_req": [], "batch": [],
                      "writes": 0}
 
@@ -1142,6 +1143,15 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                         return _Resp(fail_batch_code, msg=fail_batch_msg)
                     if fail_at is not None and calls["writes"] == fail_at:
                         return _Resp(fail_at_code)
+                    return _Resp(0)
+
+                def settings(self, request):
+                    """`card.settings`（R7 的会话列表预览）——记下 payload 与序号。"""
+                    calls["settings"].append((json.loads(request.request_body.settings),
+                                              request.request_body.sequence,
+                                              request.request_body.uuid))
+                    if settings_code:
+                        return _Resp(settings_code, msg=settings_msg)
                     return _Resp(0)
 
                 def create(self, request):
@@ -1232,6 +1242,12 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                     card_id=cid,
                     request_body=types.SimpleNamespace(actions=json.dumps(actions, ensure_ascii=False),
                                                        sequence=seq, uuid=uuid_value)),
+                # ⚠️ R7：帧路径会调 `card.settings`（会话列表预览）——替身少了这一个属性会
+                # AttributeError，被帧路径吞掉后表现为「这一帧失败」，与真实原因无关。
+                settings_card=lambda cid, payload, seq, uuid_value: types.SimpleNamespace(
+                    card_id=cid,
+                    request_body=types.SimpleNamespace(settings=payload, sequence=seq,
+                                                       uuid=uuid_value)),
                 # ⚠️ 锚点/去重键必须能被断言：替身以前**不记录** `reply_to`，于是
                 # 「cardkit 把回复锚点整个丢掉」（第十二路审计实测）四门禁全绿 ——
                 # 翻默认之后这意味着**每次回答都不再挂在提问下面**。
@@ -1305,6 +1321,10 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             f"装饰只在**内容变了**的元素上重写（顺序：变化的那一帧才发）：{batch_ids}"
         assert batch_seqs == [1, 4, 6], f"三次装饰 batch 的序号：{batch_seqs}"
         assert seqs == [2, 3, 5, 7], f"正文序号（装饰先、正文最后）：{seqs}"
+        # R7 的会话列表预览：**建卡时就是对的**（`⏳ 正在生成…`），限频窗口内一次都不该多发
+        # ——这条断言把「不许每帧刷 settings」钉在**四帧连续**的场景上（域见用例 ㉒）。
+        assert calls["settings"] == [], \
+            f"限频窗口内不该写预览（建卡时已经有了）：{calls['settings']}"
         # ⚠️ 这里**不许**再写「最后一帧页脚没变，所以 footer_written 最后一项是空列表」这种断言：
         #    同一件事已经由 `batch_ids` 精确钉住（最后一批只含 panel_body），那条断言是**空真**的
         #    —— R2 审计实测：删掉它 132/132 照样全绿，它只会给人一种「页脚去重被多条断言守住」的错觉。
@@ -1544,6 +1564,74 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             f"我们自己绝不补发（那会变成 DM 两张卡）：{calls}"
         assert calls["patch"] == 1, \
             f"撤回之后**不许再往这条 message_id 写**（一次 patch 都不该多）：{calls['patch']}"
+
+        # ㉒ **R7 的会话列表预览**（`card.settings`）：限频 + i18n 对象 + 共用序号 + 失败不致命。
+        #    这条路的纪律和元素写入**不一样**，所以必须单独钉：
+        #      * 它是**额外**的一次逻辑写 ⇒ 只能靠限频摊薄（我们直接把窗口设成 0 来逼它每帧发，
+        #        再用大窗口验「真的会跳过」）；
+        #      * `summary` 必须是 **i18n 对象**（传裸字符串真机回 `300122`）；
+        #      * 它**吃序号**（与元素写入共用账本），跳过时不许占号；
+        #      * 失败只标死 + 限流 WARNING，**绝不让这一帧失败**（fail-open 会让整回合掉纯文本）。
+        _saved_interval = adapter._CK_SUMMARY_INTERVAL
+        adapter._CK_SUMMARY_INTERVAL = 0.0
+        try:
+            calls, client = _mk_fake()
+            raw2i = _make()
+            raw2i._client = client
+            adapter.configure(native_transport="cardkit", unified_panel=True)
+            assert _run(raw2i.send_stream_frame("", chat_id="oc_ck2i", turn_id="t-2i"))
+            assert calls["settings"] == [], "建卡时已有 summary ⇒ 第一帧不该再写一次"
+            assert _run(raw2i.send_stream_frame("第一段正文", chat_id="oc_ck2i", turn_id="t-2i"))
+            assert len(calls["settings"]) == 1, f"窗口到了就该写一次预览：{calls['settings']}"
+            payload, seq, uuid_value = calls["settings"][0]
+            assert isinstance(payload.get("config", {}).get("summary"), dict), \
+                f"summary 必须是 i18n **对象**（裸字符串真机回 300122）：{payload}"
+            assert isinstance(payload["config"]["summary"].get("content"), str), payload
+            assert "第一段正文" in payload["config"]["summary"]["content"], payload
+            assert uuid_value, "settings 也必须带 uuid（重试去重键）"
+            # 序号共用：这一帧的元素写入占 1、2；预览占 3
+            assert seq == 3, f"预览必须与元素写入共用账本（这里该是 3）：{seq}"
+            ledger = ([b[1] for b in calls["batch"]] + [c[2] for c in calls["content"]]
+                      + [c[1] for c in calls["settings"]])
+            assert sorted(ledger) == [1, 2, 3], f"共用同一个严格递增账本：{sorted(ledger)}"
+            # 正文没变 ⇒ 不留痕、不重发（这一帧被文本去重挡在前面，属正常路径）
+            # 正文变了 ⇒ 再写一次，序号继续往上
+            assert _run(raw2i.send_stream_frame("第一段正文，第二段", chat_id="oc_ck2i", turn_id="t-2i"))
+            assert len(calls["settings"]) == 2, f"正文变了就该更新预览：{calls['settings']}"
+            assert calls["settings"][-1][1] > seq, "序号必须继续递增"
+
+            # 大窗口 ⇒ 一次都不写（限频真的生效；这条是 R7-5 变异的判据）
+            calls, client = _mk_fake()
+            raw2j = _make()
+            raw2j._client = client
+            adapter._CK_SUMMARY_INTERVAL = 3600.0
+            adapter.configure(native_transport="cardkit", unified_panel=True)
+            assert _run(raw2j.send_stream_frame("", chat_id="oc_ck2j", turn_id="t-2j"))
+            for _t in ("一", "一，二", "一，二，三"):
+                assert _run(raw2j.send_stream_frame(_t, chat_id="oc_ck2j", turn_id="t-2j"))
+            assert calls["settings"] == [], \
+                f"限频窗口没到就绝不许写预览（每帧写会超写入预算）：{calls['settings']}"
+
+            # 失败：只标死 + WARNING，**帧仍然成功**、后续不再重试
+            adapter._CK_SUMMARY_INTERVAL = 0.0
+            calls, client = _mk_fake(settings_code=300313)
+            raw2k = _make()
+            raw2k._client = client
+            adapter.configure(native_transport="cardkit", unified_panel=True)
+            assert _run(raw2k.send_stream_frame("", chat_id="oc_ck2k", turn_id="t-2k"))
+            adapter._log_ck_summary_failed_once._at = 0.0
+            with _LogCapture("larkdeck") as records:
+                assert _run(raw2k.send_stream_frame("正文", chat_id="oc_ck2k", turn_id="t-2k")), \
+                    "预览写失败**不许**让这一帧失败（fail-open 会让整回合掉成纯文本）"
+            assert any("会话预览" in r.getMessage() for r in records), \
+                f"预览失败必须留痕：{[r.getMessage() for r in records]}"
+            state2k = raw2k._ld_stream_get("oc_ck2k:t-2k") or {}
+            assert state2k.get("ck_summary_dead") is True, f"失败后必须标死：{state2k}"
+            _before = len(calls["settings"])
+            assert _run(raw2k.send_stream_frame("正文二", chat_id="oc_ck2k", turn_id="t-2k"))
+            assert len(calls["settings"]) == _before, "标死之后不许再试（省配额、也不再刷日志）"
+        finally:
+            adapter._CK_SUMMARY_INTERVAL = _saved_interval
 
         # ⑤ SDK 取不到（单测/裁剪环境）⇒ 建实体返回 None ⇒ **fail-open**，绝不抛
         adapter.LarkDeckMixin._ld_ck_requests = staticmethod(lambda: None)

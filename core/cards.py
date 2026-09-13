@@ -549,6 +549,15 @@ def _summary_of(text: str, *, fallback: str = "") -> Dict[str, Any]:
     return {"content": flat[:SUMMARY_MAX] or fallback}
 
 
+def summary_text(text: str) -> str:
+    """`config.summary` 的**内容**（会话列表里那行预览文字）—— 归一化 + 截断 + 空则给兜底。
+
+    与 :func:`_summary_of` 同一套口径（同一个常量、同一段 flatten），只是把「文本」单独暴露出来：
+    R7 的进展更新要**比较前后是否相同**（相同就不发那次写），拿字典比也行，但拿字符串更直白。
+    """
+    return _summary_of(text, fallback=DEFAULT_TITLE)["content"]
+
+
 def card(*, elements: Sequence[Dict[str, Any]], template: str = "blue",
          title: Optional[str] = DEFAULT_TITLE, streaming: Optional[bool] = None,
          update_multi: bool = True, summary: str = "",

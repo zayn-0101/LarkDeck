@@ -538,6 +538,28 @@ MUTATIONS = [
      '            if mode not in ("off", "basic", "full"):\n'
      '                mode = "full"',
      "test_units"),
+    ("R7-4-会话预览传裸字符串（真机回 300122，预览整条失效）", "core/adapter.py",
+     '        res = await self._ld_ck_settings(card_id, {"content": text}, seq)',
+     '        res = await self._ld_ck_settings(card_id, text, seq)',
+     "test_units"),
+    ("R7-5-会话预览不限频（每帧都写 ⇒ 超每帧写入预算）", "core/adapter.py",
+     '        if isinstance(last_at, (int, float)) and now - float(last_at) < interval:\n'
+     '            return seq, fields',
+     '        if False:\n'
+     '            return seq, fields',
+     "test_units"),
+    ("R7-6-会话预览写失败升级成整帧失败（为了列表预览掉纯文本）", "core/adapter.py",
+     '            fields = {"ck_summary_dead": True}\n'
+     '            _log_ck_summary_failed_once(res.code)',
+     '            fields = {"ck_summary_dead": True}\n'
+     '            _log_ck_summary_failed_once(res.code)\n'
+     '            raise RuntimeError("preview dead")',
+     "test_units"),
+    ("R7-7-会话预览不占序号（与元素写入账本脱钩 ⇒ 真机撞号）", "core/adapter.py",
+     '        seq += 1\n'
+     '        res = await self._ld_ck_settings(card_id, {"content": text}, seq)',
+     '        res = await self._ld_ck_settings(card_id, {"content": text}, seq)',
+     "test_units"),
     ("R7-3-缺数据编成 0（页脚显示「⚡ 0%」这种假读数）", "core/adapter.py",
      '                cache=snap.get("cache_pct") if mode in ("basic", "full") else None,',
      '                cache=(snap.get("cache_pct") or 0) if mode in ("basic", "full") else None,',
@@ -597,9 +619,9 @@ MUTATIONS = [
      '        ops.append(_CkOp(_cards.CARDKIT_ANSWER_ID, " ", _CK_ROLE_ANSWER))',
      "test_units"),
     ("U3-元素表改成「另读一遍配置」（与建出来的卡是两个真相源）", "core/adapter.py",
-     '                                          "ck_elems": _ck_elems_from_card(card_json)})',
+     '                                          "ck_elems": _ck_elems_from_card(card_json),',
      '                                          "ck_elems": [_cards.CARDKIT_ANSWER_ID,\n'
-     '                                                       _cards.CARDKIT_PANEL_BODY_ID]})',
+     '                                                       _cards.CARDKIT_PANEL_BODY_ID],',
      "test_units"),
     # R7 数据层：派生值算错会让页脚显示假信息（比不显示更坏）。
     ("R7-1-TTFB 的差值方向反了（负差被当成 None，页脚永远没有首字延迟）", "core/context.py",

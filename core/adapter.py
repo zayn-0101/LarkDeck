@@ -139,6 +139,11 @@ _STREAM_MIN_INTERVAL = 0.25
 #: `card_element.content`（正文）**算一次**（真机实测 batch 只占 1 个 sequence）。
 #: ⚠️ 这是**逻辑写**的预算，不是 HTTP 调用数：撞限流时 `_ld_write_with_retry` 会把同一个请求
 #: 重发（退避表 3 项 ⇒ 每次逻辑写最多 4 次尝试）⇒ **单帧最坏 8 次调用 / ≈2.0s**（R2 审计实测）。
+#: R7 的 **summary 进展**限频窗口（秒）：`card.settings` 会占**一个序号**、算**一次逻辑写**，
+#: 所以绝不许每帧发（每帧 2 次已经是预算）。5 秒一次 ≈ 每 20 帧一次，平均远在预算内，
+#: 峰值 3 次/帧也仍在卡级上限（10 次/秒）之内。它只影响**会话列表的预览文字**。
+_CK_SUMMARY_INTERVAL = 5.0
+
 _CK_WRITES_PER_SECOND = 10
 _CK_WRITES_PER_FRAME = max(1, int(_CK_WRITES_PER_SECOND * _STREAM_MIN_INTERVAL))   # 0.25s ⇒ 2
 
@@ -702,6 +707,20 @@ def _log_ck_over_budget_once(size: int) -> None:
     logger.warning("[larkdeck] CardKit 实体卡 %d 字节超过飞书实测硬上限 %d —— "
                    "不能像 patch 路径那样分级丢装饰（结构已定死），本帧 fail-open 交核心回落",
                    size, _cards.FEISHU_CARD_BYTE_LIMIT)
+
+
+def _log_ck_summary_failed_once(code: int) -> None:
+    """`card.settings`（会话列表预览）写失败的限流告警（60 秒一条）——绝不静默。
+
+    它坏了**不影响卡片内容**（只是列表里那行预览停留在旧文字），所以按 `DEAD` 处理：
+    本回合不再试，而且必须留痕 —— 「看起来一切正常、其实某一项悄悄失效」是本项目的头号形态。
+    """
+    now = time.monotonic()
+    if now - getattr(_log_ck_summary_failed_once, "_at", 0.0) < 60.0:
+        return
+    _log_ck_summary_failed_once._at = now  # type: ignore[attr-defined]
+    logger.warning("[larkdeck] CardKit 会话预览（summary）写入失败 code=%s ⇒ 本回合不再尝试；"
+                   "卡片内容不受影响，只是会话列表里那行预览停在旧文字", code)
 
 
 def _log_ck_degrade_once(code: int) -> None:
@@ -1277,7 +1296,9 @@ class LarkDeckMixin:
                                                   ContentCardElementRequest,
                                                   ContentCardElementRequestBody,
                                                   BatchUpdateCardRequest,
-                                                  BatchUpdateCardRequestBody)
+                                                  BatchUpdateCardRequestBody,
+                                                  SettingsCardRequest,
+                                                  SettingsCardRequestBody)
             from lark_oapi.api.im.v1 import (CreateMessageRequest, CreateMessageRequestBody,
                                               ReplyMessageRequest, ReplyMessageRequestBody)
         except Exception:
@@ -1311,6 +1332,12 @@ class LarkDeckMixin:
             BatchUpdateCardRequest.builder().card_id(card_id).request_body(
                 BatchUpdateCardRequestBody.builder()
                 .actions(json.dumps(actions, ensure_ascii=False))
+                .sequence(sequence).uuid(uuid_value).build()).build(),
+            # `card.settings`：改**卡级 config**（R7 用它更新会话列表预览）。
+            # ⚠️ `summary` 必须是 **i18n 对象** `{"content": …}`：传裸字符串会被拒 `300122`（真机实测）。
+            settings_card=lambda card_id, payload, sequence, uuid_value:
+            SettingsCardRequest.builder().card_id(card_id).request_body(
+                SettingsCardRequestBody.builder().settings(payload)
                 .sequence(sequence).uuid(uuid_value).build()).build(),
             write_element=lambda card_id, element_id, content, sequence, uuid_value:
             ContentCardElementRequest.builder().card_id(card_id).element_id(element_id)
@@ -1389,6 +1416,25 @@ class LarkDeckMixin:
                                        f"ld-{card_id}-{element_id}-{sequence}"),
             self._client.cardkit.v1.card_element.content,
             f"写元素 {element_id}")
+        return _CkResult(_ld_response_code(resp) == 0, _ld_response_code(resp),
+                         str(getattr(resp, "msg", "") or ""))
+
+    async def _ld_ck_settings(self, card_id: str, summary: Dict[str, Any],
+                              seq: int) -> "_CkResult":
+        """写**卡级 config** 的 `summary`（R7 的「进展」：会话列表里那行预览文字）。
+
+        真机实测的两条硬约束（`probe_ck_stream_ops.py --p3`）：
+          * `summary` 必须是 **i18n 对象** `{"content": …}` —— 传裸字符串会得 `300122`；
+          * `card.settings` **吃一个序号**，与元素写入**共用**同一个计数器。
+        所以调用方必须把 `seq + 1` 写回状态；本函数本身不碰状态（与 `_ld_ck_batch` 同形）。
+        """
+        reqs = self._ld_ck_requests()
+        if reqs is None:
+            return _CkResult(False, 0, "没有 CardKit SDK")
+        payload = json.dumps({"config": {"summary": summary}}, ensure_ascii=False)
+        resp = await self._ld_write_with_retry(
+            lambda: reqs.settings_card(card_id, payload, int(seq), f"ld-{card_id}-s{seq}"),
+            self._client.cardkit.v1.card.settings, "会话预览")
         return _CkResult(_ld_response_code(resp) == 0, _ld_response_code(resp),
                          str(getattr(resp, "msg", "") or ""))
 
@@ -1542,6 +1588,44 @@ class LarkDeckMixin:
                 return False, seq, answer
         return True, seq, None
 
+    async def _ld_ck_maybe_summary(self, card_id: str, display: str, state_ref: Dict[str, Any],
+                                   seq: int, now: float) -> Tuple[int, Dict[str, Any]]:
+        """按限频更新**会话列表预览**（R7 的后半），返回 ``(新的序号, 要并进状态的字段)``。
+
+        为什么这件事值得单开一条路：飞书的会话列表显示的是卡片的 `config.summary` ——
+        建卡时它是「⏳ 正在生成…」，收尾时是回答的开头。中间那几分钟里列表一直停在旧文字，
+        而**核心在流式期间不会替我们更新它**（它只管正文）。R7 把它做成「进展」。
+
+        纪律（每一条都有理由，别简化）：
+          * **限频** `_CK_SUMMARY_INTERVAL`：`card.settings` 吃一个序号、算一次逻辑写，
+            而每帧预算只有 2 次 ⇒ 绝不许每帧发；
+          * **失败只标死**（`ck_summary_dead`）+ 限流 WARNING：它坏了不影响卡片内容，
+            所以**绝不让这一帧失败**（fail-open 会让整回合掉成纯文本，代价与收益不成比例）；
+          * **序号共用**：成功才 `seq += 1` 并把新序号交回调用方写进状态 —— 跳号/撞号都会被
+            服务端拒（`300317`）；
+          * **内容没变就不发**：预览文字与上次一样时省掉这次写。
+        """
+        fields: Dict[str, Any] = {}
+        if state_ref.get("ck_summary_dead"):
+            return seq, fields
+        interval = float(_CK_SUMMARY_INTERVAL)
+        last_at = state_ref.get("ck_summary_at")
+        if isinstance(last_at, (int, float)) and now - float(last_at) < interval:
+            return seq, fields
+        text = _cards.summary_text(display)
+        if not text or text == state_ref.get("ck_summary"):
+            return seq, fields
+        seq += 1
+        res = await self._ld_ck_settings(card_id, {"content": text}, seq)
+        if res.ok:
+            fields = {"ck_summary": text, "ck_summary_at": now}
+        else:
+            # 标死 + 留痕；**不改 `ck_summary_at`**（让状态如实反映「上次成功是什么时候」），
+            # 但 `ck_summary_dead` 会让后续帧直接短路，不再白试（也就不会再刷日志）。
+            fields = {"ck_summary_dead": True}
+            _log_ck_summary_failed_once(res.code)
+        return seq, fields
+
     async def _ld_write_with_retry(self, make_request: Any, call: Any, what: str) -> Any:
         """CardKit 写调用的**限流退避**（与 patch 路径的 `_ld_update_card` 同一层保护）。
 
@@ -1618,7 +1702,12 @@ class LarkDeckMixin:
                                           # 页脚/状态元素、R3 加面板子元素都靠它。
                                           # 元素表 = **这张卡里真有**的 id（从卡 JSON 抽出来，
                                           # 不是另读一遍配置算的）⇒ 结构分叉在构造上不可能
-                                          "ck_elems": _ck_elems_from_card(card_json)})
+                                          "ck_elems": _ck_elems_from_card(card_json),
+                                          # R7：建卡时的 summary 已经是「⏳ 正在生成…」，
+                                          # 所以这里把「上次预览」记成**刚刚**——第一帧不必再写一次
+                                          # （限频窗口到点后才更新成真实进展）
+                                          "ck_summary_at": now,
+                                          "ck_summary": _cards.summary_text(display)})
                 return True
             card = self._ld_build_card(display, streaming=True,
                                        panel=self._ld_panel(chat, now),
@@ -1695,13 +1784,17 @@ class LarkDeckMixin:
                                                            live_state)
             degrade_code = int(live_state.get("ck_degrade") or 0)
             if ok and not degrade_code:
+                # R7：**会话列表预览**（`card.settings`）——限频、失败只标死、绝不影响这一帧
+                seq_after, summary_extra = await self._ld_ck_maybe_summary(
+                    card_id, display, live_state, seq_after, now)
                 # `live_state` 里带着装饰失败时标下的 `ck_dead`，所以这里用它的并集
-                self._ld_stream_put(key, {**state, "ck_dead": live_state.get("ck_dead") or set(),
+                self._ld_stream_put(key, {**live_state, "ck_dead": live_state.get("ck_dead") or set(),
                                           # 装饰的「已写成功」记账（未变化不重写的判据）
                                           "ck_decor": live_state.get("ck_decor") or {},
                                           "last": text, "last_at": now,
                                           "ck_seq": seq_after,
-                                          "frames": int(state.get("frames") or 0) + 1})
+                                          "frames": int(state.get("frames") or 0) + 1,
+                                          **summary_extra})
                 return True
             if ok and degrade_code:
                 # 这一帧**正文写成功了**，但同一帧的装饰批量拿到了卡级死法（会话是在两次调用
