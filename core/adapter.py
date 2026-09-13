@@ -50,7 +50,7 @@ import os
 import threading
 import time
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from . import cards as _cards
 from . import compat as _compat
@@ -427,6 +427,53 @@ def _stop_redraw_would_paint(body: str) -> bool:
     except Exception:
         logger.debug("[larkdeck] 中止重绘可行性判定异常，保守保留正文", exc_info=True)
         return True
+
+
+#: CardKit 元素角色 —— 决定「这个元素写失败时这一帧怎么办」（处置矩阵见 docs/plan-v1.md 附录 A）。
+#: R1 只把顺序与账本抽出来，**处置仍是老的**（正文/面板失败都 fail-open）；R2/R5 再按角色分档。
+_CK_ROLE_ANSWER = "answer"      # 提交点：没有它这张卡就没有意义
+_CK_ROLE_PANEL = "panel"        # 内容型装饰（面板正文）
+_CK_ROLE_DECOR = "decor"        # 纯装饰（页脚 / 状态色 / summary），R2 起才会出现
+
+
+def _ck_elems_for_entity() -> List[str]:
+    """建实体时这张卡会有哪些元素（**结构的唯一来源**，R2 起往里加页脚/状态元素）。"""
+    elems = [_cards.CARDKIT_ANSWER_ID]
+    if _cfg("unified_panel"):
+        elems.append(_cards.CARDKIT_PANEL_BODY_ID)
+    return elems
+
+
+class _CkOp(NamedTuple):
+    """一次要发给飞书的元素写入。
+
+    ``element_id`` 必须是**建实体时就存在**的那个（写不存在的 id 得 ``300313``，见
+    ``docs/plan-v1.md`` 的 R0 结论）。``role`` 决定失败语义，不是装饰性字段。
+    """
+
+    element_id: str
+    content: str
+    role: str
+
+    def fail_reason(self) -> str:
+        return {"answer": "CardKit 写正文元素失败",
+                "panel": "CardKit 写面板元素失败"}.get(
+                    self.role, f"CardKit 写 {self.element_id} 元素失败")
+
+
+def _ck_plan(display: str, panel_text: str, elems: Sequence[str]) -> List[_CkOp]:
+    """这一帧要写的元素列表（**按发送顺序**）。
+
+    结构的唯一事实来源是 ``elems``（建实体时定下来的那份，之后只读）——所以「卡里没有的元素
+    一个都不写」这件事是**由数据决定**的，不靠调用点上的 if。纯函数：单测可以直接锁
+    「哪些元素、什么顺序、什么内容」，不必跑整条帧路径。
+    """
+    ops: List[_CkOp] = []
+    if _cards.CARDKIT_ANSWER_ID in elems:
+        ops.append(_CkOp(_cards.CARDKIT_ANSWER_ID, display, _CK_ROLE_ANSWER))
+    if _cards.CARDKIT_PANEL_BODY_ID in elems:
+        ops.append(_CkOp(_cards.CARDKIT_PANEL_BODY_ID, panel_text or " ", _CK_ROLE_PANEL))
+    return ops
 
 
 def _log_ck_panel_write_failed_once() -> None:
@@ -1045,6 +1092,35 @@ class LarkDeckMixin:
             f"写元素 {element_id}")
         return _ld_response_code(resp) == 0
 
+    @staticmethod
+    def _ld_ck_elems(state: Dict[str, Any]) -> List[str]:
+        """这张实体卡**实际有哪些元素**（建实体时的决定，之后只读）。
+
+        兼容老回合状态（`ck_elems` 出现之前只有 `ck_panel` 布尔）：由它推出元素表。
+        """
+        elems = state.get("ck_elems")
+        if isinstance(elems, (list, tuple)):
+            return [str(e) for e in elems]
+        out = [_cards.CARDKIT_ANSWER_ID]
+        if state.get("ck_panel"):
+            out.append(_cards.CARDKIT_PANEL_BODY_ID)
+        return out
+
+    async def _ld_ck_apply(self, card_id: str, ops: Sequence["_CkOp"],
+                           seq: int) -> Tuple[bool, int, Optional["_CkOp"]]:
+        """按顺序写一批元素；返回 ``(是否全部成功, 用掉之后的序号, 失败的那个 op)``。
+
+        ⚠️ **序号只增不减**：调用方必须把返回的序号**无条件写回状态**，哪怕中途失败 ——
+        回退序号会让下一帧用同一个号，而 `uuid` 是由 (卡, 元素, 序号) 推出来的 ⇒ 服务端按
+        去重键处理（**可能返回 0 但内容没变** = 静默半更新）。这条规矩来自第十二路审计，
+        R0 的真机探针也印证了「严格递增」：跳号与撞号都回 `300317`。
+        """
+        for op in ops:
+            seq += 1
+            if not await self._ld_ck_write(card_id, op.element_id, op.content, seq):
+                return False, seq, op
+        return True, seq, None
+
     async def _ld_write_with_retry(self, make_request: Any, call: Any, what: str) -> Any:
         """CardKit 写调用的**限流退避**（与 patch 路径的 `_ld_update_card` 同一层保护）。
 
@@ -1105,9 +1181,11 @@ class LarkDeckMixin:
                                           "t0": now, "last": text, "last_at": now,
                                           "frames": 0, "skipped": 0,
                                           "card_id": card_id, "ck_seq": 0,
-                                          # 结构在这一刻定死：面板元素有没有进卡，后续每一帧
-                                          # 都按这个走（写了不在卡里的 id 会得 300313，整帧失败）
-                                          "ck_panel": bool(_cfg("unified_panel"))})
+                                          # 结构在这一刻定死：**卡里到底有哪些元素**记进状态，
+                                          # 后续每一帧只写这里面的 id（写不在卡里的 id 会得
+                                          # 300313，整帧失败）。这是 R1 的元素表，R2 往里加
+                                          # 页脚/状态元素、R3 加面板子元素都靠它。
+                                          "ck_elems": _ck_elems_for_entity()})
                 return True
             card = self._ld_build_card(display, streaming=True,
                                        panel=self._ld_panel(chat, now),
@@ -1154,7 +1232,6 @@ class LarkDeckMixin:
         if card_id:
             # ---- CardKit：本实现只写元素内容（**不做整卡替换** —— 那会关闭流式会话。
             # 元素级/批量接口其实可以在流式期间用，见 docs/plan-6-effects.md 的「重大更正」）----
-            seq = int(state.get("ck_seq") or 0)
             # **正文的预算闸门**（与建实体那道同源）：元素内容是**累积全文**，它自己就超过
             # 整卡硬上限时，这张卡无论怎么写都不可能成立 —— 与其白花一次往返等飞书拒，
             # 不如当场 fail-open 交核心回落（第十二路审计：建实体那道闸门守的其实是**空正文**
@@ -1163,26 +1240,24 @@ class LarkDeckMixin:
             if body_bytes > _cards.FEISHU_CARD_BYTE_LIMIT:
                 _log_ck_over_budget_once(body_bytes)
                 return self._ld_stream_fail("CardKit 正文超过硬上限")
-            if not await self._ld_ck_write(card_id, _cards.CARDKIT_ANSWER_ID, display, seq + 1):
-                return self._ld_stream_fail("CardKit 写正文元素失败")
-            if not state.get("ck_panel"):
-                # 建实体时就没放面板元素（`unified_panel: false`）：**不能**去写它的 id，
-                # 飞书会回 300313（元素不存在）⇒ 每帧都失败 ⇒ 本回合被打回纯文本。
+            ops = _ck_plan(display, self._ld_panel_markdown(chat, state.get("t0")),
+                           self._ld_ck_elems(state))
+            ok, seq_after, failed = await self._ld_ck_apply(
+                card_id, ops, int(state.get("ck_seq") or 0))
+            if ok:
                 self._ld_stream_put(key, {**state, "last": text, "last_at": now,
-                                          "ck_seq": seq + 1,
+                                          "ck_seq": seq_after,
                                           "frames": int(state.get("frames") or 0) + 1})
                 return True
-            panel_text = self._ld_panel_markdown(chat, state.get("t0"))
-            if not await self._ld_ck_write(card_id, _cards.CARDKIT_PANEL_BODY_ID,
-                                           panel_text or " ", seq + 2):
-                # 这一条必须**单独留痕**：正文（seq+1）已经写成功了，面板失败意味着那张卡
+            # 失败：**只把序号推进**（绝不回退，见 `_ld_ck_apply` 的说明），
+            # 不动 `last`/`last_at` —— 让下一帧还能把同一段文本重试一次。
+            self._ld_stream_put(key, {**state, "ck_seq": seq_after})
+            if failed is not None and failed.role == _CK_ROLE_PANEL:
+                # 这一条必须**单独留痕**：正文已经写成功了，面板失败意味着那张卡
                 # 会停在「正文新、面板旧」的半更新态 —— 而唯一判据就是这次返回码。
                 _log_ck_panel_write_failed_once()
-                return self._ld_stream_fail("CardKit 写面板元素失败")
-            self._ld_stream_put(key, {**state, "last": text, "last_at": now,
-                                      "ck_seq": seq + 2,
-                                      "frames": int(state.get("frames") or 0) + 1})
-            return True
+            return self._ld_stream_fail(failed.fail_reason() if failed
+                                        else "CardKit 写元素失败（没有可写的元素）")
         card = self._ld_build_card(display, streaming=True,
                                    panel=self._ld_panel(chat, state.get("t0")),
                                    footer=self._ld_footer())

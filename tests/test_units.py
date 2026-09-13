@@ -1079,8 +1079,14 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         raw2b._client = client
         adapter.configure(native_transport="cardkit")
         assert _run(raw2b.send_stream_frame("", chat_id="oc_ck2b", turn_id="t-2b"))
-        assert not _run(raw2b.send_stream_frame("正文", chat_id="oc_ck2b", turn_id="t-2b")), \
-            "面板写失败必须也返回 False（否则卡片半更新且无日志）"
+        # ⚠️ 「要留痕」这件事此前**没有任何断言**（变异 M07b 全绿）：面板失败 → 正文新、面板旧，
+        # 而这条 WARNING 是排查时唯一的线索。清零限流时间戳再捕获（它 60 秒一条）。
+        adapter._log_ck_panel_write_failed_once._at = 0.0
+        with _LogCapture("larkdeck") as records:
+            assert not _run(raw2b.send_stream_frame("正文", chat_id="oc_ck2b", turn_id="t-2b")), \
+                "面板写失败必须也返回 False（否则卡片半更新且无日志）"
+        assert any("面板元素写入失败" in r.getMessage() for r in records), \
+            "面板写失败必须留下那条 WARNING（半更新态的唯一线索）"
         assert any(c[0] == cards.CARDKIT_ANSWER_ID for c in calls["content"]), \
             "前提：正文那一次确实写成功了"
 
@@ -1164,6 +1170,37 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         adapter.configure(native_transport="cardkit")
         assert _run(raw13.send_stream_frame("", chat_id="oc_ck14", turn_id="t-14"))
         assert calls["send"] == 1 and calls["reply"] == 0, calls
+
+        # ⑮ **序号只增不减**（R1 的规矩，第十二路审计给的）：一帧失败之后，下一帧必须用
+        #    **更大**的序号。回退序号会让下一帧撞上同一个 uuid（uuid 由 (卡,元素,序号) 推出）
+        #    ⇒ 服务端按去重键处理 ⇒ **可能返回 0 但内容没变**（静默半更新）。
+        #    R0 真机探针也印证了服务端要求严格递增（跳号与撞号都是 300317）。
+        calls, client = _mk_fake(fail_write_after=0)     # 第一帧的正文写入就失败
+        raw15 = _make()
+        raw15._client = client
+        # ⚠️ 必须**显式**写 `unified_panel=True`：这一段跑在前面那些用例之后，而 ⑥ 把
+        # `unified_panel` 设成了 False（元素表里就没有面板），不写清楚期望会随执行顺序漂移。
+        adapter.configure(native_transport="cardkit", unified_panel=True)
+        assert _run(raw15.send_stream_frame("", chat_id="oc_ck16", turn_id="t-16")), "seed 帧"
+        assert not _run(raw15.send_stream_frame("正文", chat_id="oc_ck16", turn_id="t-16")), \
+            "前提：这一帧的正文写入确实失败了"
+        seq_after_fail = int((raw15._ld_stream_get("oc_ck16:t-16") or {}).get("ck_seq") or 0)
+        assert seq_after_fail >= 1, \
+            f"失败的那一帧也必须把序号推进（否则下一帧会撞同一个 uuid）：实得 {seq_after_fail}"
+        calls, client = _mk_fake()
+        raw16 = _make()
+        raw16._client = client
+        adapter.configure(native_transport="cardkit", unified_panel=True)
+        _bigger = []
+
+        async def _spy_write(card_id, element_id, content, sequence):
+            _bigger.append(sequence)
+            return True
+
+        raw16._ld_ck_write = _spy_write
+        assert _run(raw16.send_stream_frame("", chat_id="oc_ck17", turn_id="t-17"))
+        assert _run(raw16.send_stream_frame("正文", chat_id="oc_ck17", turn_id="t-17"))
+        assert _bigger == [1, 2], f"首帧应写 1、2 号：{_bigger}"
 
         # ⑭ **正文长大之后也要守硬上限**（第十二路审计第 5 条）：建实体那道闸门守的是
         #    **空正文**的 seed 帧（核心传 `""`），真正会长大的是后面每一帧的累积全文。
