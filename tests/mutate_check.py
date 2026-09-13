@@ -448,6 +448,16 @@ MUTATIONS = [
      '    if _cards.count_elements(card) > _cards.FEISHU_ELEMENT_LIMIT:',
      '    if len(card.get("body", {}).get("elements") or []) > _cards.FEISHU_ELEMENT_LIMIT:',
      "test_units"),
+    ("R2-13-记账提前到 batch 调用之前（没写成功也算「已写」⇒ 静默冻结的种子）", "core/adapter.py",
+     '            if not await self._ld_ck_batch(card_id, fresh, seq):',
+     '            state_ref["ck_decor"] = {**sent,\n'
+     '                                     **{op.element_id: op.content for op in fresh}}\n'
+     '            if not await self._ld_ck_batch(card_id, fresh, seq):',
+     "test_units"),
+    ("R2-14-退避表少一项（调用放大效应的最坏值变了，而文档口径没变）", "core/adapter.py",
+     '_TRANSIENT_BACKOFF = (0.1, 0.3, 0.6)',
+     '_TRANSIENT_BACKOFF = (0.1, 0.3)',
+     "test_units"),
     # R1 审计（U1/U2/U4/W5/W6）实测「四门禁全绿」的五种改法，逐条钉住。
     ("U1-空元素表/一个 op 都写不出去被当作成功（卡片静默冻死、无日志、不回落）", "core/adapter.py",
      '        if answer is None and not fresh:',

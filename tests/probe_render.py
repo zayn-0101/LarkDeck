@@ -855,7 +855,10 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
 
     async def _spy_batch(card_id, ops, sequence):
         ok = await original_batch(card_id, ops, sequence)
-        calls["batch"].append(([op.element_id for op in ops], sequence, ok))
+        # 记下**每个元素被写进去的内容**（不只是 id）：`R2` 要断言「首帧写出的页脚 == 那一刻
+        # `_ld_footer()`」，只记 id 的话这条断言写不出来（R2 审计的「探针只会 print」之痛）。
+        contents = {op.element_id: op.content for op in ops}
+        calls["batch"].append(([op.element_id for op in ops], sequence, ok, contents))
         return ok
 
     async def _spy_update(chat_id, message_id, card):
@@ -915,6 +918,20 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
             adapter._client.im.v1.message.create = _orig_msg_create
             return 1
         loop = asyncio.new_event_loop()
+        # ★ 页脚必须**在建实体之前**灌好真数据（R2 审计指出：探针进程里 `_ld_footer()` 恒为空串
+        #   时只能证明「写成功」，证明不了「写的是当前内容」）。灌在 seed 之前，首帧那次 batch
+        #   里页脚就是**真内容**；而之后它不再变 ⇒ 面板变化那一帧的 batch 里**只该有 panel_body**
+        #   （这正好是同一条去重规则的另一面）。
+        #   ⚠️ `configure()` 是**模块级**函数（不是实例方法）：写成 `adapter.configure(...)` 会
+        #   AttributeError，而且是在真机建卡**之后**炸 ⇒ DM 里留一张冻结卡、探针白跑（被绊过）。
+        _mod.configure(footer=True)
+        _ctx_mod = _probe_context_module()
+        _ctx_mod.reset()
+        _ctx_mod.record_api_call(model="probe-model",
+                                 usage={"input_tokens": 4321, "output_tokens": 10})
+        _ctx_mod.set_context_override(20000)
+        footer_at_start = adapter._ld_footer() or ""
+        print(f"   探针页脚（建实体前灌进去的） = {footer_at_start!r}")
         try:
             ok_seed = loop.run_until_complete(adapter.send_stream_frame(
                 "", chat_id=chat, turn_id=tid))
@@ -932,8 +949,7 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
             # ★ R2 的「**未变化不重写**」真机验证：把面板内容改掉再发一帧，那一帧**只该写面板**。
             #   为什么必须在真机上验这一条：去重的判据在本地（`ck_decor`），所以它不会因为
             #   飞书拒绝而变红 —— 真机要证明的是「只带一个 action 的 batch 照样 `code=0`」
-            #   （多元素 batch 已经验过，单元素那条路是新的）。页脚在探针里是空的（这个进程
-            #   没有真实回合的指标），所以它**没变** ⇒ 那一帧的 batch 只该有 panel_body。
+            #   （多元素 batch 已经验过，单元素那条路是新的）。
             panel_before = adapter._ld_panel_markdown(chat, None)
             _panel_mod.record_reasoning(_sid, _tid, "再补一段推理，让面板内容变一次。") \
                 if _panel_mod is not None else None
@@ -971,18 +987,47 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
           f"（必须 ==1）· 正文写入 {len(writes)} 次（必须 == 正文帧数 4）"
           f"· 装饰 batch {len(batches)} 次（必须 ==2：首帧 + 面板变化帧）")
     batch_shapes = [tuple(b[0]) for b in batches]
+    # ★ **序号账本**（R2 审计第 2 条：旧版把「单调递增」写在 docstring 里却一条断言都没有，
+    #   于是提交信息里那些序号值**无法被复核**）。现在逐条真断言，并把账本打出来进提交信息：
+    #   装饰与正文**共用**一个计数器 ⇒ 合并后必须严格递增、不撞号、且**连续**（连续是我们
+    #   自己 +1 的实现性质；服务端只实测过「撞号/回退 ⇒ 300317」，前向空洞没实测过）。
+    ledger = sorted([b[1] for b in batches] + [w[1] for w in writes])
+    print(f"   序号账本（装饰 + 正文共用）= {ledger}")
+    ledger_strictly_increasing = all(a < b for a, b in zip(ledger, ledger[1:]))
+    # ★ 页脚那一路**写的是当前内容**吗（R2 审计指出：探针进程页脚恒为空串时只能证明「写成功」）
+    footer_written = [b[3].get("footer") for b in batches]
+    footer_is_current = bool(footer_at_start) and footer_written[0] == footer_at_start
+    print(f"   首帧写出的页脚 = {footer_written[0]!r} · 那一刻 `_ld_footer()` = {footer_at_start!r}"
+          f"（必须相等；为空串说明探针没把页脚灌进去 ⇒ 这一条没验，按失败处理）")
     ok = (bool(state) and card_id and writes and calls["patch"] == 1
           and all(w[2] for w in writes) and bool(panel_hits)
           and calls["create"] == 1 and calls["send"] == 1
           and len(writes) == 4
           and batch_shapes == [("panel_body", "footer"), ("panel_body",)]
-          and all(b[2] for b in batches))
+          and all(b[2] for b in batches)
+          and ledger_strictly_increasing
+          and ledger == list(range(1, len(ledger) + 1))
+          and footer_is_current)
     if ok:
         print("✅ 生产路径的 CardKit 传输真机通过（建实体 + 元素写入 + patch 收尾）")
         print("   ⚠️ 这些卡的 id 没进账本（收尾后 stream state 已清）—— 看够了就叫我删。")
     else:
         print("❌ 生产路径的 CardKit 传输有问题（见上面的 code / 计数）")
     return 0 if ok else 1
+
+
+def _probe_context_module():
+    """拿到**加载器那份** `context` 模块（与适配器用的是同一个对象）。
+
+    ⚠️ 必须走 `sys.modules` 里那个名字：直接 `import larkdeck.core.context` 会拿到**第二个**
+    模块对象，往里写指标时适配器读的还是原来那份（`check_hooks.py` 专门盯这个坑）。
+    """
+    for name in ("hermes_plugins.larkdeck.core.context", "larkdeck.core.context"):
+        mod = sys.modules.get(name)
+        if mod is not None:
+            return mod
+    import importlib
+    return importlib.import_module("hermes_plugins.larkdeck.core.context")
 
 
 def _load_adapter_for_probe(chat: str):

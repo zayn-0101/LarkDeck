@@ -1029,9 +1029,10 @@ def test_ck_create_wall_counts_elements_recursively():
     为什么单独拿纯函数验：这道墙在今天的实体卡上**永远不会响**（结构定死 4 个元素）——
     而 R3 要把面板改成多子元素、元素数变成动态的，那时它必须已经在位。用**合成的长卡**
     直接喂它，不依赖「今天会不会响」。
-    ⚠️ 嵌套那一条是**判别力所在**：只数顶层元素的实现（`len(body["elements"])`）在扁平卡上
-    与递归口径一样，只有「1 个面板里塞 210 个子元素」这种形状能把它区分出来 ——
-    而真机实测服务端数的就是递归总数（`300305`）。
+    ⚠️ 判别力来自**变异 `R2-12`**（把递归计数换成只数顶层）：嵌套那一条（1 个面板里塞 210 个
+    子元素）在**只数顶层**的错实现下会放行 ⇒ 断言变红。审计提醒：别把这条夸成「两种实现在
+    扁平卡上一样、只有嵌套能区分」——那是**变异**的判别力来源，不是这组断言的强度来源；
+    断言本身是在「递归总数必须 ≤200」这条真机口径上钉死的。
     """
     limit = cards.FEISHU_ELEMENT_LIMIT
     assert limit == 200, f"元素硬上限是实测出来的 200：{limit}"
@@ -1068,8 +1069,11 @@ def test_cardkit_golden_trace_is_frozen():
 
     夹具在 `tests/golden_cardkit_trace.json`；**有意**改行为后用
     `python3 tests/write_golden_trace.py` 重新生成（那份 diff 就是行为变更声明）。
-    夹具的**定义域**：cardkit 传输的成功路径 + 建实体 JSON + 每次写入（装饰 batch + 正文
-    `content`）的 (元素, 内容, 序号, uuid) + 收尾整卡 JSON + 每帧返回值。
+    夹具的**定义域**：cardkit 传输的成功路径 + 建实体 JSON + 每次写入的
+    (元素, 内容, 序号) + 收尾整卡 JSON + 每帧返回值。
+    （装饰 batch 那一列记的是 (actions, sequence) —— **没有 uuid**：batch 的 uuid 由
+    (卡, 序号) 推出、正文的由 (卡, 元素, 序号) 推出，两者不同源，夹具只记序号。审计提醒过
+    这句措辞别写成「每次写入都含 uuid」。）
     其中「装饰**只在内容变了时**才写」这条 R2 规则也在域内：夹具里第二帧的装饰没变 ⇒
     只有一次 batch（序号 1），两帧的正文是 2、3 号。
     **它覆盖不到的**（这些地方「逐字节不变」不成立，别假装成立）：所有失败路径、
@@ -1106,7 +1110,7 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         def _mk_fake(*, fail_write_after=10 ** 9, create_ok=True, fail_answer_only=False,
                      fail_panel_only=False, create_empty_id=False,
                      create_codes=None, answer_codes=None, fail_first_only=False,
-                     fail_at=None, fail_batch=False):
+                     fail_at=None, fail_batch=False, fail_batch_code=300309):
             calls = {"create": 0, "send": 0, "reply": 0, "content": [], "patch": 0,
                      "entity": [], "send_req": [], "reply_req": [], "batch": [],
                      "writes": 0}
@@ -1126,7 +1130,9 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                     calls["batch"].append((json.loads(request.request_body.actions),
                                            request.request_body.sequence))
                     if fail_batch:
-                        return _Resp(300309)
+                        # 码可配：`300309`（结构性死法）与 `99991400`（限流类 ⇒ 会退避重试）
+                        # 在 R2 之后的处置**不一样**，用例要能分别构造
+                        return _Resp(fail_batch_code)
                     if fail_at is not None and calls["writes"] == fail_at:
                         return _Resp(300309)
                     return _Resp(0)
@@ -1276,7 +1282,9 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             f"装饰只在**内容变了**的元素上重写（顺序：变化的那一帧才发）：{batch_ids}"
         assert batch_seqs == [1, 4, 6], f"三次装饰 batch 的序号：{batch_seqs}"
         assert seqs == [2, 3, 5, 7], f"正文序号（装饰先、正文最后）：{seqs}"
-        assert footer_written[-1] == [], f"最后一帧页脚没变，不该写它：{footer_written}"
+        # ⚠️ 这里**不许**再写「最后一帧页脚没变，所以 footer_written 最后一项是空列表」这种断言：
+        #    同一件事已经由 `batch_ids` 精确钉住（最后一批只含 panel_body），那条断言是**空真**的
+        #    —— R2 审计实测：删掉它 132/132 照样全绿，它只会给人一种「页脚去重被多条断言守住」的错觉。
         assert footer_written[1] == [footer_after], \
             f"页脚变化的那一帧必须写**当前**页脚内容：{footer_written}"
         assert sorted(batch_seqs + seqs) == [1, 2, 3, 4, 5, 6, 7], \
@@ -1336,12 +1344,43 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         state2b = raw2b._ld_stream_get("oc_ck2b:t-2b") or {}
         assert state2b.get("ck_dead") == {"panel_body", "footer"}, \
             f"失败过的装饰元素必须被标死（后续不再尝试）：{state2b.get('ck_dead')}"
+        # ⚠️ **装饰失败那一帧不许有任何「已写成功」记账**（R2 审计第 4 条）：把记账挪到 batch
+        #    调用**之前**时，`ck_dead` 会把它掩蔽住 ⇒ 四门禁全绿；可一旦装饰能被复活（R3 起）
+        #    那一行就变成真静默冻结（内容变了却因为「记过了」永不重写、无日志、不回落）。
+        #    所以这里直接断言「失败帧之后 `ck_decor` 是空的」，让记错位置当场变红（变异 `R2-13`）。
+        assert not state2b.get("ck_decor"), \
+            f"写失败的装饰绝不能被记成「已写成功」：{state2b.get('ck_decor')}"
         # ⚠️ 正文**没有**因为是「装饰先写」而被拖累：这一帧的正文确实落盘了
         assert [c[0] for c in calls["content"]] == ["answer"], calls["content"]
         # 下一帧：装饰已标死 ⇒ **不再发 batch**，只写正文（省配额、也不再刷日志）
         assert _run(raw2b.send_stream_frame("正文二", chat_id="oc_ck2b", turn_id="t-2b"))
         assert len(calls["batch"]) == 1, f"标死的装饰不该再试：{calls['batch']}"
         assert [c[0] for c in calls["content"]] == ["answer", "answer"], calls["content"]
+
+        # ②c **退避重试的调用放大效应**（R2 审计第 1 条）：`_CK_WRITES_PER_FRAME` 是**逻辑写**
+        #    预算，不是「每帧最多 2 次 API 调用」—— 撞限流时每次逻辑写最多重发
+        #    `len(_TRANSIENT_BACKOFF) + 1` 次。这个最坏值是**承诺的一部分**（文档口径写的就是它），
+        #    所以钉成一个数：改退避表长度、或哪天有人把「每帧 2 次」当成 HTTP 上限来用，这里会红。
+        #    ⚠️ 退避表在测试里换成全 0（否则本条用例要真的睡 2 秒 ×120 条变异）。
+        saved_backoff = adapter._TRANSIENT_BACKOFF
+        adapter._TRANSIENT_BACKOFF = (0.0, 0.0, 0.0)
+        try:
+            calls, client = _mk_fake(fail_batch=True, fail_batch_code=99991400,
+                                     answer_codes=[99991400])
+            raw2c = _make()
+            raw2c._client = client
+            adapter.configure(native_transport="cardkit", unified_panel=True)
+            assert _run(raw2c.send_stream_frame("", chat_id="oc_ck2c", turn_id="t-2c")), "seed 帧"
+            before = calls["writes"]
+            assert not _run(raw2c.send_stream_frame("正文", chat_id="oc_ck2c", turn_id="t-2c")), \
+                "限流耗尽后正文写仍然失败 ⇒ 这一帧必须 fail-open"
+            attempts = adapter._TRANSIENT_BACKOFF + (0.0,)          # 每次逻辑写的尝试次数
+            assert calls["writes"] - before == len(attempts) * 2, \
+                (f"最坏情况：2 次逻辑写 × 每次 {len(attempts)} 次尝试 = {len(attempts) * 2} 次调用，"
+                 f"实得 {calls['writes'] - before}")
+            assert adapter._CK_WRITES_PER_SECOND == 10, "官方口径不能顺手改"
+        finally:
+            adapter._TRANSIENT_BACKOFF = saved_backoff
 
         # ③ 建实体失败 ⇒ seed 帧就返回 False（整回合回落，消息不会丢）
         calls, client = _mk_fake(create_ok=False)

@@ -837,14 +837,21 @@ def panel_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = ()
 def cardkit_entity_card(answer: str, panel_text: str, *, streaming: bool = True,
                         status: Any = None, expanded: bool = False,
                         panel: bool = True, footer_text: Optional[str] = None) -> Dict[str, Any]:
-    """**CardKit 实体卡**的 JSON（结构固定：一个正文元素 + 一个折叠面板，面板里一个 markdown）。
+    """**CardKit 实体卡**的 JSON（结构固定：正文元素 + 折叠面板 + 面板里的 markdown + 页脚）。
 
     结构固定是有原因的（真机实测）：`card_element.content` 只能按 id 写内容；而
     `message.patch` / `card.update` 这类**整卡替换会关闭流式会话**（再写元素得 `300309`）——
     注意**元素级**接口（`card_element.patch`/`create`/`update`、`card.batch_update`）不受此限。
-    所以：流式期间只写这两个元素，收尾才用 patch 整卡替换（那一刻流式本来也结束了）。
+    所以：流式期间只写这几个元素的**内容**（装饰合并成一次 `card.batch_update`），
+    收尾才用 patch 整卡替换（那一刻流式本来也结束了）。
 
-    面板的边框色按状态给（收尾帧会连面板一起换成带色的完整卡，这里只是建实体时的初始值）。
+    元素清单（R2 起）——**建实体时定死，之后只能按 id 写内容**：
+      * `answer`（正文，必在）；
+      * `panel`（可折叠面板；`panel=False` 时整个不进卡）+ 面板里的 `panel_body`；
+      * `footer`（`footer_text is None` 时不进卡；开着但这一刻没数据 ⇒ 空串占位，元素留着等后续帧写）
+        —— **流式期间页脚就能更新**，这是 R2 的用户可见收益。
+
+    面板的边框色按状态给（**状态色载体也在这一刻进卡**，灰边起步；收尾帧的整卡替换才上色）。
 
     ``panel=False``（对应 ``unified_panel: false``）时**整个面板元素不进卡**。判据是配置而不是
     ``panel_text`` 空不空：面板内容为空是**正常中间态**（还没有工具/推理数据），那一刻的元素
