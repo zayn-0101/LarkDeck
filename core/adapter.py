@@ -949,6 +949,40 @@ def _log_degrade_once(tier: str, elements: int = 0, size: int = 0) -> None:
                    _cards.CARD_BYTE_BUDGET)
 
 
+def _log_turn_selfcheck(chat_id: str, transport: str, frames: int) -> None:
+    """**每回合一条自检汇总**（60 秒限流）：把「这次卡片到底长没长全」变成机器可读。
+
+    ⚠️ 为什么必须有（2026-09-14 的教训）：面板为空 / 页脚不显示 / 账本「累计 0 帧」这三个
+    症状，**用户看得见、日志里却一个字都没有** —— 于是只能靠「让用户再发一条消息、再截个图」
+    来判定，而那是**在消耗用户的时间**。这一行把三件事一次性写进日志，任何人（包括我）
+    读日志就能判定，不需要眼睛，也不需要用户复现。
+
+    字段全部取自**只读**快照：`panel.diagnose()`（会话桶与内容）与 `context.status_snapshot()`
+    （写卡帧数）。判据是「有没有内容」，不是「内容对不对」——内容对不对由单元测试与真机探针管。
+    """
+    now = time.monotonic()
+    if now - getattr(_log_turn_selfcheck, "_at", 0.0) < 60.0:
+        return
+    _log_turn_selfcheck._at = now          # type: ignore[attr-defined]
+    try:
+        info = _panel.diagnose(chat_id)
+        snap = _context.status_snapshot() or {}
+    except Exception:
+        logger.debug("[larkdeck] 回合自检汇总失败", exc_info=True)
+        return
+    panel_ok = bool(info.get("rounds") or info.get("tools"))
+    try:
+        footer_text = LarkDeckMixin._ld_footer() or ""
+    except Exception:
+        footer_text = ""
+    logger.info(
+        "[larkdeck] 回合自检：面板=%s（rounds=%s tools=%s）· 页脚=%s（%s）· 写卡帧数=%s · "
+        "传输=%s · 本回合帧=%s · 会话桶=%s",
+        "有" if panel_ok else "无", info.get("rounds"), info.get("tools"),
+        "有" if footer_text else "无", footer_text[:40] or "空",
+        snap.get("frame_ok_count"), transport, frames, info.get("buckets"))
+
+
 def _log_empty_panel_once(chat_id: str = "") -> None:
     """面板为空时记一条限流 INFO **外加一份只读诊断**（60 秒最多一条）。
 
@@ -2139,6 +2173,7 @@ class LarkDeckMixin:
             # 也是发现「悄悄退回纯文本」的唯一线索（docs/lessons.md 推论 1）。
             logger.info("[larkdeck] native 流式收尾：更新 %d 帧（跳过 %d 帧）",
                         int(state.get("frames") or 0) + 1, int(state.get("skipped") or 0))
+            _log_turn_selfcheck(chat, self._ld_transport(), int(state.get("frames") or 0) + 1)
             # 记账在 `_ld_update_card` 里（收尾就是一次整卡替换）—— 这里不再重复记。
             return True
         if text == state.get("last"):
@@ -2316,6 +2351,8 @@ class LarkDeckMixin:
         # R9：失败**每一次都记**（不跟着日志限流）—— 用户问「刚才那回合为什么掉成纯文本」时，
         # 卡片要答得出原因；日志只有 30 秒一条，且用户看不到日志。
         _context.note_frame_fail(reason)
+        # A3：失败收口也打一条自检汇总 —— 停在失败上的回合同样要能判定「面板/页脚有没有内容」
+        _log_turn_selfcheck("", self._ld_transport(), -1)
         now = time.monotonic()
         # 限流状态挂在**函数对象**上（不是 self）：本方法同名于类属性，裸名字在方法体里
         # 不在作用域内，必须经类名取 —— 写成 ``getattr(_ld_stream_fail, ...)`` 会

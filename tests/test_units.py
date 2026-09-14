@@ -2265,6 +2265,53 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             panel.reset()
             context.reset()
 
+
+        # ㉗ **A3：每回合一条自检汇总**（面板/页脚/账本 → 机器可读）。
+        #    为什么要有它：面板为空、页脚不显示、账本「累计 0 帧」这三个症状**用户看得见、
+        #    日志里却一个字都没有** ⇒ 判定只能靠「请用户再发一条消息再截图」—— 那是在消耗用户时间。
+        #    ⚠️ 判据必须**能分辨是哪条路径打的**：失败路径打 `本回合帧=-1`，正常收尾打 `本回合帧=N(≥1)`。
+        #    第一版只断言「有 `面板=有`」，结果**失败路径那条日志把它顺带满足了**
+        #    （变异 `R10-4` 撤掉正常收尾那行日志、门禁照样全绿）—— 所以这里另起一个干净回合。
+        calls27, client27 = _mk_fake()
+        raw27 = _make()
+        raw27._client = client27
+        adapter.configure(native_transport="cardkit", unified_panel=True, footer=True)
+        panel.reset()
+        context.reset()
+        panel.record_reasoning("oc_r3sc", "s-r3sc", "面板有内容。")
+        panel.record_tool_started("oc_r3sc", "s-r3sc", "bash", {"cmd": "ls"}, "c-r3sc")
+        adapter._log_turn_selfcheck._at = 0.0
+        with _LogCapture("larkdeck") as records27:
+            assert _run(raw27.send_stream_frame("", chat_id="oc_r3sc", turn_id="t-r3sc"))
+            assert _run(raw27.send_stream_frame("正文", chat_id="oc_r3sc", turn_id="t-r3sc"))
+            adapter._log_turn_selfcheck._at = 0.0
+            assert _run(raw27.send_stream_frame("正文完", chat_id="oc_r3sc", turn_id="t-r3sc",
+                                               finalize=True))
+        _sc = [r.getMessage() for r in records27 if "回合自检" in r.getMessage()]
+        def _frames_of(line: str) -> int:
+            """从自检行里取「本回合帧」的数字（失败路径是 -1，正常收尾 ≥1）。"""
+            found = re.search(r"本回合帧=(-?\d+)", line)
+            return int(found.group(1)) if found else 0
+
+        assert any(_frames_of(l) >= 1 and "面板=有" in l for l in _sc), \
+            f"正常收尾必须打一条「本回合帧≥1 + 面板=有」的自检汇总：{_sc}"
+        assert any("写卡帧数=" in l and "传输=cardkit" in l and "页脚=" in l for l in _sc), \
+            f"自检汇总必须带上页脚 / 写卡帧数 / 传输三项：{_sc}"
+        # 对偶：**没有面板数据**的回合必须如实说「面板=无」（否则这行日志只有一个取值）
+        calls28, client28 = _mk_fake()
+        raw28 = _make()
+        raw28._client = client28
+        panel.reset()
+        adapter._log_turn_selfcheck._at = 0.0
+        with _LogCapture("larkdeck") as records28:
+            assert _run(raw28.send_stream_frame("", chat_id="oc_r3no", turn_id="t-r3no"))
+            assert _run(raw28.send_stream_frame("正文", chat_id="oc_r3no", turn_id="t-r3no"))
+            adapter._log_turn_selfcheck._at = 0.0
+            assert _run(raw28.send_stream_frame("正文完", chat_id="oc_r3no", turn_id="t-r3no",
+                                               finalize=True))
+        _sc2 = [r.getMessage() for r in records28 if "回合自检" in r.getMessage()]
+        assert any(_frames_of(l) >= 1 and "面板=无" in l for l in _sc2), \
+            f"没有面板数据的回合必须如实说「面板=无」：{_sc2}"
         # ⑭ **正文长大之后也要守硬上限**（第十二路审计第 5 条）：建实体那道闸门守的是
         #    **空正文**的 seed 帧（核心传 `""`），真正会长大的是后面每一帧的累积全文。
         #    ⚠️ R4 起这一格分**两半**（行为**有意**变了，别再当成回归）：

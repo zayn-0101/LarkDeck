@@ -861,6 +861,10 @@ MUTATIONS = [
      '    for item in steps:\n        lines.append(item)\n'
      '    return "\\n\\n".join(lines)',
      "test_units"),
+    ("R10-4-删掉每回合自检汇总（三个症状又变回只能靠用户截图）", "core/adapter.py",
+     '            _log_turn_selfcheck(chat, self._ld_transport(), int(state.get("frames") or 0) + 1)',
+     '',
+     "test_units"),
     ("R10-1-面板状态退回模块局部（插件被加载两次时钩子写一份、卡片读另一份）", "core/panel.py",
      '_STATE: Dict[str, Dict[str, Any]] = _SHARED["panel_state"]',
      '_STATE: Dict[str, Dict[str, Any]] = {}',
