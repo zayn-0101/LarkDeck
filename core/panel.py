@@ -67,12 +67,32 @@ _ARGS_PREVIEW_CHARS = 80
 _MAX_CLOSED_TURNS = 8
 
 #: ``chat_id -> (session_id, 记录时刻)``：由 ``pre_gateway_dispatch`` 观察到的归属。
-_CHAT_SESSION: Dict[str, Any] = {}
+# ⚠️⚠️ **进程内状态必须真的「进程内」**（2026-09-14 真机踩到，根因在 Hermes 侧）：
+# 同一个网关进程里 **插件发现会跑两遍**（日志实测：`Plugin discovery complete` 出现两次，
+# 启动自检打印两遍），于是本模块被加载成**两份模块对象** ⇒ 如果状态绑在模块变量上，
+# 就会变成两份：**钩子写 A 份、卡片读 B 份** ⇒ 面板恒空（实测 `buckets=0` 而
+# `pre_tool_call 钩子触达` 同时在打）；`context._STATUS`（写卡账本）同理，
+# 表现为「最近写卡：无记录 · 累计 0 帧」而卡片明明在往外冒字。
+# 修法：把状态容器挂到一个**进程级稳定位置**（`builtins` 上的私有名字），
+# 两份模块对象取到的是**同一个 dict** —— 这正是文档里「进程级全局」这句话的实现。
+def _shared_state() -> Dict[str, Any]:
+    import builtins
+    box = getattr(builtins, "_larkdeck_shared_state", None)
+    if not isinstance(box, dict):
+        box = {"panel_state": {}, "panel_chat_session": {}, "panel_last_active": [""],
+               "status": None}
+        setattr(builtins, "_larkdeck_shared_state", box)
+    return box
+
+
+_SHARED = _shared_state()
+
+_CHAT_SESSION: Dict[str, Any] = _SHARED["panel_chat_session"]
 _CHAT_SESSION_MAX = 256
 _CHAT_SESSION_TTL = 86400.0
 
 #: ``session_id -> state``；state = turn_id / rounds / current_round / tools / status / ...
-_STATE: Dict[str, Dict[str, Any]] = {}
+_STATE: Dict[str, Dict[str, Any]] = _SHARED["panel_state"]
 
 # --------------------------------------------------------------------------- #
 # 回合状态（卡片颜色由它决定）
@@ -84,7 +104,9 @@ STATUS_STOPPED = "stopped"  # 用户中止 → 黄
 
 
 #: 最近有活动的会话 id —— 适配器没有 session_id，只能靠它关联。
-_LAST_ACTIVE: str = ""
+#: 「最近活跃会话」的盒子（长度 1 的 list）：与上面同一个理由，必须是**进程内共享**的
+#: 可变对象。用盒子而不是字符串全局，是因为字符串全局没法跨模块对象共享（赋值只会改一份）。
+_LAST_ACTIVE_BOX: list = _SHARED["panel_last_active"]
 
 
 def _now() -> float:
@@ -113,7 +135,6 @@ def _as_int(value: Any) -> Optional[int]:
 
 def _purge_locked(now: float) -> None:
     """清理过期会话与超量会话（锁内调用，O(_MAX_SESSIONS)）。"""
-    global _LAST_ACTIVE
     expired = [sid for sid, st in _STATE.items()
                if now - st.get("updated", 0.0) > _TTL_SECONDS]
     for sid in expired:
@@ -122,8 +143,8 @@ def _purge_locked(now: float) -> None:
         oldest = sorted(_STATE.items(), key=lambda kv: kv[1].get("updated", 0.0))
         for sid, _ in oldest[: len(_STATE) - _MAX_SESSIONS]:
             _STATE.pop(sid, None)
-    if _LAST_ACTIVE not in _STATE:
-        _LAST_ACTIVE = ""
+    if _LAST_ACTIVE_BOX[0] not in _STATE:
+        _LAST_ACTIVE_BOX[0] = ""
 
 
 def _new_state_locked(sid: str, now: float) -> Dict[str, Any]:
@@ -141,7 +162,7 @@ def _touch_locked(session_id: str, turn_id: str, now: float) -> Optional[Dict[st
     """取（或新建）会话状态；``turn_id`` 变化视为新回合，清空过程数据。
 
     **返回 ``None`` 表示这次事件属于一个已作废的旧回合，调用方必须原样丢弃** ——
-    且在**任何状态写入之前**丢弃（``updated`` / ``_LAST_ACTIVE`` 都不能被碰，否则迟到
+    且在**任何状态写入之前**丢弃（``updated`` / ``_LAST_ACTIVE_BOX[0]`` 都不能被碰，否则迟到
     事件仍会刷新 TTL 与「最近活跃」路由）。
 
     为什么需要它：Hermes 给每个 ``(钩子名, 回调)`` 配一对独立的有界队列 + 独立守护线程
@@ -154,7 +175,6 @@ def _touch_locked(session_id: str, turn_id: str, now: float) -> Optional[Dict[st
     若 t2 的首个事件先于 t2 的 ``on_stream_start`` 到达（两条队列，属常态），
     替换是这里自己完成的，t1 从未经过 ``begin_turn``，集合会恒空、保护失效。
     """
-    global _LAST_ACTIVE
     sid = str(session_id or "")
     if not sid:
         # 归属不明的数据不许进桶：空 session_id 会建成匿名桶，而 snapshot() 会把它
@@ -195,7 +215,7 @@ def _touch_locked(session_id: str, turn_id: str, now: float) -> Optional[Dict[st
             state["status"] = None
         state["turn_id"] = tid
     state["updated"] = now
-    _LAST_ACTIVE = sid
+    _LAST_ACTIVE_BOX[0] = sid
     return state
 
 
@@ -431,7 +451,7 @@ def record_turn_end(session_id: str, turn_id: str, *, completed: bool = False,
                 # ⚠️ **绝不能走 ``_touch_locked``**：它会把 tid 当成「新回合」，于是
                 # 清空当前回合的面板数据并把 turn_id 倒回去 —— 一个迟到的旧收尾就能
                 # 把正在跑的回合打空（2026-09-13 加测试时实测到这条）。
-                # 丢弃时**不写任何状态**（``updated`` / ``_LAST_ACTIVE`` 都不碰）。
+                # 丢弃时**不写任何状态**（``updated`` / ``_LAST_ACTIVE_BOX[0]`` 都不碰）。
                 logger.debug("larkdeck: 丢弃属于另一个回合的收尾（当前 %s / 载荷 %s）",
                              current[:16], tid[:16])
                 return
@@ -443,7 +463,7 @@ def record_turn_end(session_id: str, turn_id: str, *, completed: bool = False,
             state = _new_state_locked(sid, now)
             state["turn_id"] = tid
             state["status"] = status
-        _LAST_ACTIVE = sid
+        _LAST_ACTIVE_BOX[0] = sid
         _purge_locked(now)
 
 
@@ -515,7 +535,7 @@ def record_answer_delta(session_id: str, turn_id: str) -> None:
     热路径（每个正文 token 一次），必须极快：没有正在进行的轮时**立即返回**，
     不做任何状态写入。
 
-    ⚠️ 这里**刻意不调** ``_touch_locked``（所以不刷新 ``updated`` / ``_LAST_ACTIVE``）：
+    ⚠️ 这里**刻意不调** ``_touch_locked``（所以不刷新 ``updated`` / ``_LAST_ACTIVE_BOX[0]``）：
     上面那条早退已经盖住了绝大多数正文 token，而剩下的每一次都要多写两个状态字段。
     代价只是「纯正文长回合不会续上 TTL 与最近活跃」—— 归属改成
     ``chat_id -> session_id`` 确定性绑定（:func:`bind_chat_session`）之后，这条代价
@@ -557,8 +577,16 @@ def record_tool_started(session_id: str, turn_id: str, tool_name: str,
         # 工具调用也是推理轮的**结束信号**（轮次定义 = 被正文或工具打断）
         _finalize_round_locked(state, now)
         tools: List[Dict[str, Any]] = state["tools"]
+        # ⚠️ **同一 `tool_call_id` 只记一次**（2026-09-14 真机根因的另一面）：同一进程里插件会被
+        # 发现两次 ⇒ 钩子被订阅两遍 ⇒ 每个工具事件会被回调两次；状态共享之后就会在面板里
+        # 出现**两行同样的工具**。判据用非空 `tool_call_id`（它是网关给这次调用的稳定标识），
+        # 已经在跑的同名步骤直接跳过 —— 幂等，而不是「猜哪个是重复的」。
+        _tcid = str(tool_call_id or "")
+        if _tcid and any(str(item.get("id") or "") == _tcid for item in tools):
+            _purge_locked(now)
+            return
         tools.append({
-            "id": str(tool_call_id or ""),
+            "id": _tcid,
             "name": str(tool_name or "tool"),
             "status": "running",
             "duration_ms": None,
@@ -736,7 +764,7 @@ def _select_locked(chat_id: str, now: float) -> "tuple[str, Optional[Dict[str, A
     #    取「最近活跃会话」。**必须保住这条退路**，不能因为归属失败就不渲染面板。
     #    注意②③**只认有内容的桶**：这里没有归属信息可依，只有状态（没有过程数据）
     #    的桶是「另一个会话刚结束」的痕迹，选中它就会把别人的颜色画到这张卡上。
-    sid = _LAST_ACTIVE
+    sid = _LAST_ACTIVE_BOX[0]
     state = _STATE.get(sid) if sid else None
     if state is not None and _has_content(state):
         return sid, state
@@ -794,11 +822,10 @@ def _has_content(state: Dict[str, Any]) -> bool:
 
 def reset() -> None:
     """清空全部面板数据（测试用）。"""
-    global _LAST_ACTIVE
     with _LOCK:
         _STATE.clear()
         _CHAT_SESSION.clear()
-        _LAST_ACTIVE = ""
+        _LAST_ACTIVE_BOX[0] = ""
 
 
 __all__ = [  # noqa: RUF022 - 按功能分组列出，便于对照文档

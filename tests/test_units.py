@@ -3031,6 +3031,46 @@ def test_panel_tools_block_truncates_and_keeps_the_most_recent() -> None:
         f"上限是元素行数（保留 30 步）：{[l for l in lines if l.startswith('✅')][:3]}"
 
 
+def test_panel_and_context_state_survive_the_module_being_loaded_twice() -> None:
+    """**进程内状态必须真的进程内** —— 真机根因（2026-09-14）。
+
+    实测：同一个网关进程里 **插件发现跑了两遍**（日志里 `Plugin discovery complete` 出现两次、
+    启动自检打印两遍）⇒ `core.panel` / `core.context` 各被加载成**两份模块对象**。状态绑在模块
+    变量上就是两份，于是：**钩子写 A 份、卡片读 B 份** ⇒ 面板恒空（诊断实测 `buckets=0`，
+    而同时 `pre_tool_call 钩子触达` 在打日志）；账本同理 ⇒ 卡片写「最近写卡：无记录 · 累计 0 帧」
+    而 DM 里明明有卡。
+
+    判据**不是**「`_STATE` 是个 dict」这种恒真话，而是**真的造出第二份模块对象**（把同一份源码
+    `exec` 到另一个命名空间），然后：① 两份的容器是**同一个对象**；② 在第二份里记一个工具，
+    **第一份**的 `snapshot` 就能看见它。撤掉共享（`_STATE` 改回模块局部 dict）⇒ ② 必红。
+    """
+    src = (_pathlib.Path(_REPO_PARENT) / "larkdeck" / "core" / "panel.py").read_text(
+        encoding="utf-8")
+    copy1: dict = {"__name__": "larkdeck_panel_copy_1"}
+    copy2: dict = {"__name__": "larkdeck_panel_copy_2"}
+    exec(compile(src, "panel_copy_1", "exec"), copy1)      # noqa: S102 —— 故意的：模拟第二份
+    exec(compile(src, "panel_copy_2", "exec"), copy2)      # noqa: S102
+    assert copy1["_STATE"] is copy2["_STATE"], \
+        "两份模块对象必须共享同一个会话状态容器（否则钩子写一份、卡片读另一份 ⇒ 面板恒空）"
+    assert copy1["_CHAT_SESSION"] is copy2["_CHAT_SESSION"]
+    copy1["reset"]()
+    try:
+        copy2["record_tool_started"]("s-share", "t-share", "bash", {"cmd": "ls"}, "c-share")
+        snap = copy1["snapshot"]("") or {}
+        assert [t.get("name") for t in (snap.get("tools") or [])] == ["bash"], \
+            f"在第二份模块对象里记录的工具，第一份必须看得见（真机面板为空的根因）：{snap}"
+        # 同一 `tool_call_id` 再记一次 ⇒ **不许出现第二行**（插件被加载两次时钩子会回调两遍）
+        copy2["record_tool_started"]("s-share", "t-share", "bash", {"cmd": "ls"}, "c-share")
+        snap2 = copy1["snapshot"]("") or {}
+        assert len(snap2.get("tools") or []) == 1, \
+            f"同一个 tool_call_id 只该有一行（重复订阅不许在面板里变成两行）：{snap2.get('tools')}"
+    finally:
+        copy1["reset"]()
+    # 账本（`context._STATUS`）同一条纪律
+    assert context._STATUS is context._shared_status(), \
+        "写卡账本必须挂在进程级共享容器上（否则「累计 0 帧」那个症状会回来）"
+
+
 def test_unified_panel_applies_caps() -> None:
     panel = cards.unified_panel(reasoning="x" * 5000, tools=["a"])
     assert panel is not None

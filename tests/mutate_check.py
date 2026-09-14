@@ -861,6 +861,14 @@ MUTATIONS = [
      '    for item in steps:\n        lines.append(item)\n'
      '    return "\\n\\n".join(lines)',
      "test_units"),
+    ("R10-1-面板状态退回模块局部（插件被加载两次时钩子写一份、卡片读另一份）", "core/panel.py",
+     '_STATE: Dict[str, Dict[str, Any]] = _SHARED["panel_state"]',
+     '_STATE: Dict[str, Dict[str, Any]] = {}',
+     "test_units"),
+    ("R10-2-写卡账本退回模块局部（卡片永远说「累计 0 帧」）", "core/context.py",
+     '_STATUS: Dict[str, Any] = _shared_status()',
+     '_STATUS: Dict[str, Any] = dict(_STATUS_DEFAULTS)',
+     "test_units"),
     ("R3-7-降级车道改用实体卡形状（把面板两块塞进普通卡载荷）", "core/adapter.py",
      '                card = self._ld_build_card(visible, streaming=True,\n'
      '                                           panel=self._ld_panel(chat, state.get("t0")),\n'

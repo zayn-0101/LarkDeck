@@ -84,11 +84,31 @@ _ALIASES: Dict[str, str] = {}
 #: 也要写 —— 页脚那条同类说明早就在，账本这条此前一个字都没有，用户会拿别人的失败去查
 #: 自己的卡（正是本阶段要消灭的「静默误诊」）。要真做对得从钩子载荷的 `session_id` 分桶
 #: （与页脚同一件事，**未做**）。
-_STATUS: Dict[str, Any] = {
+def _shared_status() -> Dict[str, Any]:
+    """账本容器挂在**进程级稳定位置**上（理由见 `panel._shared_state` 的长注释）。
+
+    ⚠️ 2026-09-14 真机实测：同一进程里插件被发现两次 ⇒ 本模块有两份模块对象 ⇒
+    钩子记在 A 份、`/larkdeck` 读 B 份 ⇒ 卡片上永远写「最近写卡：无记录 · 累计 0 帧」，
+    而 DM 里明明躺着一张张卡。共享同一个 dict 之后这个症状从构造上消失。
+    """
+    import builtins
+    box = getattr(builtins, "_larkdeck_shared_state", None)
+    if not isinstance(box, dict):
+        box = {"panel_state": {}, "panel_chat_session": {}, "panel_last_active": [""],
+               "status": None}
+        setattr(builtins, "_larkdeck_shared_state", box)
+    if not isinstance(box.get("status"), dict):
+        box["status"] = dict(_STATUS_DEFAULTS)
+    return box["status"]
+
+
+_STATUS_DEFAULTS: Dict[str, Any] = {
     "inbound_at": None, "inbound_count": 0,
     "frame_ok_at": None, "frame_ok_count": 0,
     "frame_fail_at": None, "frame_fail_count": 0, "frame_fail_reason": "",
 }
+
+_STATUS: Dict[str, Any] = _shared_status()
 
 #: 失败原因存进账本前截断到多少字符（原因来自异常字符串 / SDK 返回，长度不可控）。
 _STATUS_REASON_MAX = 120
