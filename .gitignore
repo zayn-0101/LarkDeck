@@ -12,8 +12,9 @@ config.yaml
 *.env
 *.key
 *.pem
-# 渲染探针自己发的消息 ID（本地状态，别提交）
+# 探针自己发的消息 ID（本地状态，别提交）
 .probe_state.json
+.probe_*.json
 
 # 非本项目的产物（别的会话/设计工具生成），别误提交
 design/
