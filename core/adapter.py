@@ -949,13 +949,31 @@ def _log_degrade_once(tier: str, elements: int = 0, size: int = 0) -> None:
                    _cards.CARD_BYTE_BUDGET)
 
 
-def _log_empty_panel_once() -> None:
-    """面板为空时记一条限流 INFO（排查「钩子没数据」用；60 秒最多一条）。"""
+def _log_empty_panel_once(chat_id: str = "") -> None:
+    """面板为空时记一条限流 INFO **外加一份只读诊断**（60 秒最多一条）。
+
+    ⚠️ 为什么必须带上 `chat_id` 并打**数字**（2026-09-14 真机踩到）：这个函数以前只写
+    「面板无数据（钩子未写入或已清空）」—— 而「面板为空」有**两种成因、修法相反**：
+    ① 这个 chat 绑定到了**另一个（空的）会话桶**；② 桶被**反复清空**（`_touch_locked`
+    把每次钩子事件都判成「换了回合」⇒ rounds/tools 清零）。只有症状、没有数字时，
+    排查只能靠猜，而猜错方向等于白改一通。`panel.diagnose()` 是**只读**快照，代价可忽略。
+    """
     now = time.monotonic()
     if now - getattr(_log_empty_panel_once, "_at", 0.0) < 60.0:
         return
     _log_empty_panel_once._at = now
     logger.info("[larkdeck] 面板无数据（钩子未写入或已清空）")
+    try:
+        info = _panel.diagnose(chat_id)
+        logger.info(
+            "[larkdeck] 面板为空 · 诊断：chat=%s · 绑定会话=%s（桶存在=%s）· 选中会话=%s · "
+            "该桶 rounds=%s tools=%s reasoning_len=%s turn=%s · 进程内共 %s 个会话桶",
+            info.get("chat"), info.get("bound_session") or "（无）",
+            info.get("bound_state_exists"), info.get("selected_session") or "（无）",
+            info.get("rounds"), info.get("tools"), info.get("reasoning_len"),
+            info.get("turn_id"), info.get("buckets"))
+    except Exception:
+        logger.debug("[larkdeck] 面板诊断失败", exc_info=True)
 
 
 def _remember_selfcheck(ok: bool, detail: str) -> None:
@@ -1208,35 +1226,11 @@ class LarkDeckMixin:
                 ),
             )
             if not (_body or _tools_text):
-                cls._ld_log_panel_empty(chat_id)
+                _log_empty_panel_once(chat_id)
             return _body, _tools_text
         except Exception:
             logger.debug("[larkdeck] 面板两块渲染失败，跳过", exc_info=True)
             return "", ""
-
-    @staticmethod
-    def _ld_log_panel_empty(chat_id: str) -> None:
-        """面板两块都空时打一条**限流诊断**（60 秒一条）—— 分辨「绑定错桶」与「桶被清空」。
-
-        为什么值得留这条日志（不是临时调试）：线上唯一症状就是「执行详情是空的」，
-        而它有两种成因、修法相反；没有这条日志就只能靠猜。数字全部来自
-        `panel.diagnose()` 的**只读**快照。
-        """
-        now = time.monotonic()
-        if now - getattr(_ld_log_panel_empty, "_at", 0.0) < 60.0:
-            return
-        _ld_log_panel_empty._at = now          # type: ignore[attr-defined]
-        try:
-            info = _panel.diagnose(chat_id)
-        except Exception:
-            logger.debug("[larkdeck] 面板诊断失败", exc_info=True)
-            return
-        logger.info(
-            "[larkdeck] 面板为空 · 诊断：chat=%s · 绑定会话=%s（桶存在=%s）· 选中会话=%s · "
-            "该桶 rounds=%s tools=%s reasoning_len=%s turn=%s · 进程内共 %s 个会话桶",
-            info.get("chat"), info.get("bound_session") or "（无）", info.get("bound_state_exists"),
-            info.get("selected_session") or "（无）", info.get("rounds"), info.get("tools"),
-            info.get("reasoning_len"), info.get("turn_id"), info.get("buckets"))
 
     @classmethod
     def _ld_panel_markdown(cls, chat_id: str = "", started: Optional[float] = None) -> str:
@@ -1299,7 +1293,7 @@ class LarkDeckMixin:
                 return None
             snap = _panel.snapshot(chat_id)
             if not snap:
-                _log_empty_panel_once()
+                _log_empty_panel_once(chat_id)
                 return None
             steps = [
                 _cards.tool_step(

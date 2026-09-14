@@ -8,7 +8,20 @@
 
 ## [Unreleased]
 
-（下一版开发时在这里累积；发布时定稿成带日期的版本段。）
+### 修复
+
+- **页脚的上下文上限长期按 128K 兜底（DeepSeek V4.1 Flash 实际是 1M）**：`hooks._on_api_request`
+  往指标层传了 model / provider / usage / response_model，**漏了 `base_url`** ——
+  而 `context.context_max()` 是按 `model@base_url` 解析窗口的，少了它探测就退化成
+  「无 base_url、无 provider」的**裸查表**，落到家族兜底 `deepseek`: 128K（真实 1M）。
+  用户可见症状：页脚一直显示 `ctx x/128k`，据此判断「该压缩了」必然误判。
+  修复 = 把 `base_url` 从钩子载荷透传下去（一行）。
+  ⚠️ `tests/check_hooks.py` **抓不到**这条（脚本自己把 `base_url` 塞进派发载荷，
+  缺陷恰在「回调 → 指标层」这一跳）；判据是
+  `tests/test_units.py::test_api_hook_passes_base_url_to_the_context_probe`，
+  变异清单 `HK` 撤掉透传即红。盲区本身记进 `docs/lessons.md` 第三节。
+  验收：单测 **177/177** · `OVERRIDE OK` · `HOOKS OK` · `CLARIFY E2E OK` · 变异 `HK` 红
+  （`python3 tests/mutate_check.py -k HK` → 断言红=['test_units.py']）。
 
 ## [0.3.0] - 2026-09-14
 

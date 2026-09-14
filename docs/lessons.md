@@ -344,13 +344,19 @@ R3 最初的写法是「面板里每个工具一行 = 一个元素」，来源�
 `_save_sent_ids`）；清理只按账本或**已知 card_id**（`cardkit.v1.card.id_convert(message_id)`
 能把 message_id 映射回 card_id，用它把「认不出来的卡」比对出来 —— 但不能靠时间窗猜）。
 
-## 三、两个验证盲区
+## 三、三个验证盲区
 
 - **`install.sh --copy` 的 `FILES` 数组是手写的。** 新增模块漏同步会装出一个「少了指标采集
   和钩子订阅」的插件 —— 而**默认软链模式永远测不出来**，只有 NAS 会中招。
 - **配置键有两处真相**：文档写的路径、代码真正读取的路径。曾经文档写
   `plugins.larkdeck.*`，代码里却没有任何读取路径，静默空转。`check_override.py`
   目前是唯一端到端断言这件事的地方。
+- **检查脚本自己补的字段，会盖住生产路径上的丢字段。** `check_hooks.py` 走的是真派发器，
+  但载荷是**脚本自己构造**的（`base_url=...` 是它写进去的）—— 于是「回调把载荷字段丢了」
+  这一跳它看不见：2026-09-14 页脚恒显示 `ctx x/128k`（DeepSeek V4.1 Flash 真实 1M），
+  而四门禁当时全绿。判据必须落在**真回调**上：`test_units.py::test_api_hook_passes_base_url_to_the_context_probe`
+  直调 `hooks._on_api_request` + 打桩上游 API，断言**到达 `get_model_context_length` 的参数**；
+  变异清单 `HK` 锁它（撤掉透传即红）。规矩：**门禁比生产多给的字段，就是门禁比生产少看的字段。**
 
 ## 四、交付约定（此前只活在 commit message 里）
 

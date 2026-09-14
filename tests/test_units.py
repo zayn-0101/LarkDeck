@@ -6178,6 +6178,63 @@ def test_args_preview_is_bounded_for_nested_and_long_inputs():
     assert len(panel._args_preview(cyc)) <= panel._ARGS_PREVIEW_CHARS + 1
 
 
+def test_api_hook_passes_base_url_to_the_context_probe():
+    """`post_api_request` 回调必须把 base_url 传给指标层 —— 页脚的窗口靠它解析。
+
+    病（2026-09-14 线上）：`_on_api_request` 只透传 model/provider/usage/response_model，
+    而 `record_api_call` 里读的是 `payload.get("base_url")` ⇒ 快照的 base_url 恒为 ""，
+    探测退化成 `get_model_context_length(model, base_url="")`（无 base_url、无 provider）。
+    对**不在硬编码表里、靠 provider 元数据解析窗口**的模型 —— opencode-go 的
+    `deepseek-flash`（真实 1M）—— 这一步落到家族兜底 `deepseek`: 128K，
+    于是页脚恒显示 `ctx x/128k`，用户按这个数字判断「该压缩了」会一直误判。
+
+    `tests/check_hooks.py` 抓不到这条：它**自己**把 base_url 塞进派发载荷，
+    而缺陷恰恰在「回调 → 指标层」这一跳。所以这里直接对真回调打桩上游 API，
+    断言**到达 `get_model_context_length` 的 base_url** 与载荷一致。
+    """
+    assert hooks._context is context, \
+        "钩子读的 context 与测试读的不是同一个模块对象 —— 下面的打桩会看不见"
+    url = "https://opencode.ai/zen/go/v1"
+    seen: list = []
+    fake = types.ModuleType("agent.model_metadata")
+
+    def _capture(model, base_url="", **_kw):
+        # 记**每一次**探测：别的用例可能留下一枚晚跑的探测线程，它带着空的 base_url 进来。
+        # 用「集合里出现过正确的一对」判定，而不是「最后一次」，否则测试顺序会变成判据。
+        seen.append((model, base_url))
+        return 1_000_000
+
+    fake.get_model_context_length = _capture
+    agent_mod = sys.modules.get("agent") or types.ModuleType("agent")
+    old_meta = getattr(agent_mod, "model_metadata", None)
+    sys.modules["agent"] = agent_mod
+    agent_mod.model_metadata = fake
+    sys.modules["agent.model_metadata"] = fake
+    try:
+        context.reset()
+        hooks._on_api_request(
+            model="deepseek-flash", provider="opencode-go", base_url=url,
+            usage={"input_tokens": 20753, "prompt_tokens": 20753},
+            response_model="deepseek-flash",
+        )
+        assert context._LATEST.get("base_url") == url, \
+            f"① 回调没把 base_url 存进快照（存的是 {context._LATEST.get('base_url')!r}）"
+        for _ in range(60):  # 探测在后台线程上，等它写回
+            if context.context_max() == 1_000_000:
+                break
+            time.sleep(0.05)
+        assert ("deepseek-flash", url) in seen, \
+            f"② base_url 没传到上游 —— 页脚会按兜底窗口算百分比。上游实际收到：{seen}"
+        assert context.context_max() == 1_000_000
+    finally:
+        sys.modules.pop("agent.model_metadata", None)
+        if old_meta is None:
+            sys.modules.pop("agent", None)
+        else:
+            agent_mod.model_metadata = old_meta
+        context.reset()
+
+
 def test_context_max_never_blocks_the_caller():
     """`context_max` 未命中缓存时**必须立即返回**，把探测交给后台线程。
 

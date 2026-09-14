@@ -82,6 +82,12 @@ def _on_api_request(**payload: Any) -> None:
         _context.record_api_call(
             model=payload.get("model", ""),
             provider=payload.get("provider", ""),
+            # ⚠️ base_url 必须透传：页脚的上下文上限按 `model@base_url` 解析
+            # （`context.context_max()` → `get_model_context_length(model, base_url=...)`），
+            # 缺了它探测就退化成「无 base_url、无 provider」的裸查表 —— 对不在硬编码表里、
+            # 靠 provider 元数据解析窗口的模型（如 opencode-go 的 `deepseek-flash`）会落到
+            # 家族兜底（`deepseek`: 128K），而真实窗口是 1M。2026-09-14 线上页脚即此症状。
+            base_url=payload.get("base_url", ""),
             usage=payload.get("usage"),
             response_model=payload.get("response_model"),
         )

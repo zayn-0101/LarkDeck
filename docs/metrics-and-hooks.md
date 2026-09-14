@@ -42,9 +42,18 @@ prompt_tokens, reasoning_tokens, request_count, total_tokens
 开了 prompt caching 之后 `input_tokens` 只是**未命中**的那一小段，用它算进度条
 会把上下文严重低报（实测：input 800 + cache_read 44000 → 真实占用 44800）。
 
-上限用 `agent.model_metadata.get_model_context_length(model)` 探测，按
+上限用 `agent.model_metadata.get_model_context_length(model, base_url=base_url)` 探测，按
 `model@base_url` 缓存；探测不到时页脚退化成只显示已用量。也可以用
 `context_max_override` 直接钉住。
+
+⚠️ **`base_url` 必须从钩子载荷一路透传到 `record_api_call`**（`hooks._on_api_request` 里那一行）。
+少了它，探测就退化成「无 base_url、无 provider」的**裸查表**：不在硬编码表里、靠 provider
+元数据解析窗口的模型会落到家族兜底 —— opencode-go 的 `deepseek-flash` 真实窗口 1M，
+兜底表里 `deepseek` 是 128K，于是页脚长期显示 `ctx x/128k`（用户按这个数判断「该压缩了」
+必然误判）。2026-09-14 线上即此症。
+`tests/check_hooks.py` **抓不到**这条：它自己把 `base_url` 塞进派发载荷，而缺陷在
+「回调 → 指标层」这一跳。判据是 `tests/test_units.py::test_api_hook_passes_base_url_to_the_context_probe`
+（变异清单 `HK`：撤掉透传必须红）。
 
 ## 面板数据：订阅七个钩子
 
