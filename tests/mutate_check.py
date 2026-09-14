@@ -807,6 +807,55 @@ MUTATIONS = [
      '    if now - getattr(_log_ck_over_budget_once, "_at", 0.0) < 60.0:\n        return',
      '    if False:\n        return',
      "test_units"),
+    # ---- R3 收窄版：面板拆两块（推理 / 工具）后必须守住的四件事 -------------------- #
+    # 拆开的**唯一**目的是「工具事件只重写工具块、推理增长只重写推理块」，所以四条变异
+    # 分别打：结构（两块都在卡里）、写入计划（工具有没有自己的 op）、方向（谁跟谁混了）、
+    # 以及「推理块里混进工具行」这条**唯一能证伪「两块其实是同一块」**的形态。
+    ("R3-1-面板只建一块（工具块没有自己的元素 ⇒ 拆开白做）", "core/cards.py",
+     '                          {"tag": "markdown", "element_id": CARDKIT_PANEL_TOOLS_ID,\n'
+     '                           "content": panel_tools_text or " "}]})',
+     '                          ]})',
+     "test_units"),
+    ("R3-2-写入计划里丢掉工具块（工具行永远不更新）", "core/adapter.py",
+     '    if _cards.CARDKIT_PANEL_TOOLS_ID in elems:\n'
+     '        ops.append(_CkOp(_cards.CARDKIT_PANEL_TOOLS_ID, panel_tools_text or " ", _CK_ROLE_PANEL))',
+     '    if False:\n        pass',
+     "test_units"),
+    ("R3-3-两块写反（工具内容写进推理块、推理内容写进工具块）", "core/adapter.py",
+     '        ops.append(_CkOp(_cards.CARDKIT_PANEL_BODY_ID, panel_text or " ", _CK_ROLE_PANEL))\n'
+     '    if _cards.CARDKIT_PANEL_TOOLS_ID in elems:\n'
+     '        ops.append(_CkOp(_cards.CARDKIT_PANEL_TOOLS_ID, panel_tools_text or " ", _CK_ROLE_PANEL))',
+     '        ops.append(_CkOp(_cards.CARDKIT_PANEL_BODY_ID, panel_tools_text or " ", _CK_ROLE_PANEL))\n'
+     '    if _cards.CARDKIT_PANEL_TOOLS_ID in elems:\n'
+     '        ops.append(_CkOp(_cards.CARDKIT_PANEL_TOOLS_ID, panel_text or " ", _CK_ROLE_PANEL))',
+     "test_units"),
+    ("R3-4-推理块把工具行也一起装进去（回到「一个 markdown 装全部」）", "core/adapter.py",
+     '                _cards.panel_rounds_markdown(\n'
+     '                    reasoning=str(snap.get("reasoning") or ""),\n'
+     '                    rounds=snap.get("rounds") or [],\n'
+     '                    max_reasoning_chars=_cfg_int("max_reasoning_chars", _cards.MAX_REASONING_CHARS),\n'
+     '                ),',
+     '                _cards.panel_markdown(\n'
+     '                    reasoning=str(snap.get("reasoning") or ""),\n'
+     '                    rounds=snap.get("rounds") or [],\n'
+     '                    tools=steps,\n'
+     '                    max_reasoning_chars=_cfg_int("max_reasoning_chars", _cards.MAX_REASONING_CHARS),\n'
+     '                    max_tool_chars=_cfg_int("max_tool_result_chars", _cards.MAX_TOOL_RESULT_CHARS),\n'
+     '                    max_steps=_cfg_int("max_panel_steps", _cards.MAX_PANEL_STEPS),\n'
+     '                ),',
+     "test_units"),
+    ("R3-5-工具块忘了截断（长工具输出把卡片顶爆）", "core/cards.py",
+     '    for item in steps:\n        lines.append(truncate(item, max_tool_chars))\n'
+     '    return "\\n\\n".join(lines)',
+     '    for item in steps:\n        lines.append(item)\n'
+     '    return "\\n\\n".join(lines)',
+     "test_units"),
+    ("R3-6-工具块的裁减方向写反（丢掉最近的、保留最早的）", "core/cards.py",
+     '        lines.append(_i18n.t("panel.trimmed", n=len(steps) - max_steps))\n'
+     '        steps = steps[-max_steps:]',
+     '        steps = steps[:max_steps]\n'
+     '        lines.append(_i18n.t("panel.trimmed", n=len(steps) - max_steps))',
+     "test_units"),
     # ---- 第十一路审计：CardKit 的三条「门禁说绿、真机说 300301」----------------- #
     ("M30-两个元素 id 撞车", "core/cards.py",
      'CARDKIT_ANSWER_ID = "answer"\nCARDKIT_PANEL_ID = "panel"\nCARDKIT_PANEL_BODY_ID = "panel_body"',

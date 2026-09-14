@@ -1091,29 +1091,31 @@ def _round_title(index: int, elapsed_ms: Any) -> str:
 CARDKIT_ANSWER_ID = "answer"
 CARDKIT_PANEL_ID = "panel"
 CARDKIT_PANEL_BODY_ID = "panel_body"
+#: 面板的**第二块**：工具步骤列表（R3 收窄版）。
+#: 为什么拆成两个元素：面板正文里的推理文本**逐字在长**（轮次标题的耗时每秒还在变），
+#: 于是 `panel_body` 几乎每帧都要重写；而工具行**只在工具开始/结束时才变**。合成一个
+#: markdown 时，那几十行工具摘要会**跟着推理一起每帧重发**（实测 ≈2.7KB/帧），客户端也要
+#: 把整块重绘。拆开后两块走**同一次** `card.batch_update`（逻辑写次数一次都不增加），
+#: 而「内容没变就不写」的去重让工具块只在工具事件那一帧才发。
+CARDKIT_PANEL_TOOLS_ID = "panel_tools"
 CARDKIT_FOOTER_ID = "footer"
 
 #: 会被**流式写入**的元素 id（建实体时创建、之后按 id 写内容）。
 #: adapter 从建出来的卡 JSON 里按这份清单抽元素表（结构单一来源），
 #: 所以「加一个新的流式元素」= 在这里登记 + 在 `cardkit_entity_card` 里建出来，两处。
-CARDKIT_STREAM_IDS = (CARDKIT_ANSWER_ID, CARDKIT_PANEL_BODY_ID, CARDKIT_FOOTER_ID)
+CARDKIT_STREAM_IDS = (CARDKIT_ANSWER_ID, CARDKIT_PANEL_BODY_ID,
+                      CARDKIT_PANEL_TOOLS_ID, CARDKIT_FOOTER_ID)
 
 
-def panel_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
-                   tools: Sequence[str] = (),
-                   max_reasoning_chars: int = MAX_REASONING_CHARS,
-                   max_tool_chars: int = MAX_TOOL_RESULT_CHARS,
-                   max_steps: int = MAX_PANEL_STEPS) -> str:
-    """面板内容的 **markdown 文本**（CardKit 流式写入用）。
+def panel_rounds_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
+                          max_reasoning_chars: int = MAX_REASONING_CHARS) -> str:
+    """面板里**推理轮**那一块的 markdown（R3 收窄版：这一块单独一个元素）。
 
-    为什么需要它：CardKit 只能按 ``element_id`` 往元素里**写文本**，不能边流边改结构，
-    所以那个「折叠面板」里的内容必须是一个 markdown 子元素的字符串。这里复用与
-    :func:`unified_panel` 同样的截断/收轮规则（`_cap` + `truncate` + `_round_title`），
-    保证两条路径**看到的内容一致**，只是载体不同（多个元素 vs 一个 markdown）。
+    与 :func:`panel_markdown` 的推理段**逐字节同源**（后者现在就是把它和
+    :func:`panel_tools_markdown` 拼起来），所以「拆成两个元素」不会改变用户看到的内容，
+    只改变**载体与重发频率**。
     """
     max_reasoning_chars = _cap(max_reasoning_chars, MAX_REASONING_CHARS)
-    max_tool_chars = _cap(max_tool_chars, MAX_TOOL_RESULT_CHARS)
-    max_steps = _cap(max_steps, MAX_PANEL_STEPS)
     lines: List[str] = []
     round_list = [item for item in rounds if isinstance(item, dict) and str(item.get("text") or "")]
     if round_list:
@@ -1127,6 +1129,21 @@ def panel_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = ()
             lines.append(f"**{_round_title(index, item.get('elapsed_ms'))}**\n\n{body}")
     elif reasoning:
         lines.append(truncate(reasoning, max_reasoning_chars))
+    return "\n\n".join(lines)
+
+
+def panel_tools_markdown(*, tools: Sequence[str] = (),
+                         max_tool_chars: int = MAX_TOOL_RESULT_CHARS,
+                         max_steps: int = MAX_PANEL_STEPS) -> str:
+    """面板里**工具步骤**那一块的 markdown（R3 收窄版：这一块单独一个元素）。
+
+    裁减规则与 :func:`panel_markdown` 的工具段**逐字节同源**：超上限时保留**最近的**
+    ``max_steps`` 步，并在前面加一行「已省略 N 步」的提示（`panel.trimmed`）——
+    ⚠️ 提示在**前面**、保留的是**最近**的，这个方向不许改（改了就等于对用户说反话）。
+    """
+    max_tool_chars = _cap(max_tool_chars, MAX_TOOL_RESULT_CHARS)
+    max_steps = _cap(max_steps, MAX_PANEL_STEPS)
+    lines: List[str] = []
     steps = [str(item) for item in tools]
     if steps and len(steps) > max_steps:
         lines.append(_i18n.t("panel.trimmed", n=len(steps) - max_steps))
@@ -1136,9 +1153,36 @@ def panel_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = ()
     return "\n\n".join(lines)
 
 
+def panel_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
+                   tools: Sequence[str] = (),
+                   max_reasoning_chars: int = MAX_REASONING_CHARS,
+                   max_tool_chars: int = MAX_TOOL_RESULT_CHARS,
+                   max_steps: int = MAX_PANEL_STEPS) -> str:
+    """面板内容的 **markdown 文本**（**普通卡**与 `patch` 传输用，一个元素装全部）。
+
+    为什么需要它：CardKit 只能按 ``element_id`` 往元素里**写文本**，不能边流边改结构，
+    所以那个「折叠面板」里的内容必须是一个 markdown 子元素的字符串。这里复用与
+    :func:`unified_panel` 同样的截断/收轮规则（`_cap` + `truncate` + `_round_title`），
+    保证两条路径**看到的内容一致**，只是载体不同（多个元素 vs 一个 markdown）。
+
+    ⚠️ **实体卡（CardKit）不再用这个函数**（R3 收窄版起）：它拆成 `panel_body`
+    （推理，:func:`panel_rounds_markdown`）+ `panel_tools`（工具行，:func:`panel_tools_markdown`）
+    两个元素。本函数保留给普通卡 / `patch` 传输 / `/stop` 重绘 / 降级车道 ——
+    那几条路径的面板**逐字节不变**。
+    """
+    parts = [part for part in (
+        panel_rounds_markdown(reasoning=reasoning, rounds=rounds,
+                              max_reasoning_chars=max_reasoning_chars),
+        panel_tools_markdown(tools=tools, max_tool_chars=max_tool_chars,
+                             max_steps=max_steps),
+    ) if part]
+    return "\n\n".join(parts)
+
+
 def cardkit_entity_card(answer: str, panel_text: str, *, streaming: bool = True,
                         status: Any = None, expanded: bool = False,
-                        panel: bool = True, footer_text: Optional[str] = None) -> Dict[str, Any]:
+                        panel: bool = True, footer_text: Optional[str] = None,
+                        panel_tools_text: Optional[str] = None) -> Dict[str, Any]:
     """**CardKit 实体卡**的 JSON（结构固定：正文元素 + 折叠面板 + 面板里的 markdown + 页脚）。
 
     结构固定是有原因的（真机实测）：`card_element.content` 只能按 id 写内容；而
@@ -1149,7 +1193,9 @@ def cardkit_entity_card(answer: str, panel_text: str, *, streaming: bool = True,
 
     元素清单（R2 起）——**建实体时定死，之后只能按 id 写内容**：
       * `answer`（正文，必在）；
-      * `panel`（可折叠面板；`panel=False` 时整个不进卡）+ 面板里的 `panel_body`；
+      * `panel`（可折叠面板；`panel=False` 时整个不进卡）+ 面板里的**两个** markdown：
+        `panel_body`（推理轮，R3 收窄版）与 `panel_tools`（工具行列表）。两个都在这一刻建出来
+        —— **流式期间只改内容、不做结构性写入**；
       * `footer`（`footer_text is None` 时不进卡；开着但这一刻没数据 ⇒ 空串占位，元素留着等后续帧写）
         —— **流式期间页脚就能更新**，这是 R2 的用户可见收益。
 
@@ -1180,8 +1226,15 @@ def cardkit_entity_card(answer: str, panel_text: str, *, streaming: bool = True,
                         "icon_position": "right", "icon_expanded_angle": -180},
              "border": {"color": border_for_status(status), "corner_radius": "8px"},
              "padding": "8px 8px 8px 8px",
+             # ⚠️ 面板里是**两个** markdown 子元素（R3 收窄版）：`panel_body` 放推理轮、
+             # `panel_tools` 放工具行。两个都**在建实体时定死**（之后只按 id 写内容，绝不
+             # 做结构性写入），所以「元素表由建出来的卡 JSON 派生」这条机制原样成立。
+             # 顺序 = panel_body → panel_tools，与 `panel_markdown` 的拼接顺序**逐行一致**
+             # （先推理块、后工具行），所以用户看到的内容与拆分前没有差别。
              "elements": [{"tag": "markdown", "element_id": CARDKIT_PANEL_BODY_ID,
-                           "content": panel_text or " "}]})
+                           "content": panel_text or " "},
+                          {"tag": "markdown", "element_id": CARDKIT_PANEL_TOOLS_ID,
+                           "content": panel_tools_text or " "}]})
     if footer_text is not None:
         elements.append({"tag": "markdown", "element_id": CARDKIT_FOOTER_ID,
                          "content": footer_text or " ", "text_size": "notation"})

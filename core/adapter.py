@@ -139,7 +139,9 @@ _STREAM_MIN_INTERVAL = 0.25
 #: 记账口径：一次 `card.batch_update`（承载面板 + 页脚）**算一次**，一次
 #: `card_element.content`（正文）**算一次**（真机实测 batch 只占 1 个 sequence）。
 #: ⚠️ 这是**逻辑写**的预算，不是 HTTP 调用数：撞限流时 `_ld_write_with_retry` 会把同一个请求
-#: 重发（退避表 3 项 ⇒ 每次逻辑写最多 4 次尝试）⇒ **单帧最坏 8 次调用 / ≈2.0s**（R2 审计实测）。
+#: 重发（退避表 3 项 ⇒ 每次逻辑写最多 4 次尝试）⇒ **单帧最坏 = 2×4 + 预览 1 次 = 9 次调用 /
+#: 退避睡眠 2.0s**（2026-09-14 更正：这里曾写「8 次 / ≈2.0s」= R7 之前的旧值，
+#: 而 README/AGENTS 又写着把预览按 4 次算的「12 次」—— 两处都错，现已按 `retry=False` 统一）。
 #: R7 的 **summary 进展**限频窗口（秒）：`card.settings` 会占**一个序号**、算**一次逻辑写**，
 #: 所以绝不许每帧发（每帧 2 次已经是预算）。5 秒一次 ≈ 每 20 帧一次，平均远在预算内，
 #: 峰值 3 次/帧也仍在卡级上限（10 次/秒）之内。它只影响**会话列表的预览文字**。
@@ -724,12 +726,17 @@ class _CkOp(NamedTuple):
 
 
 def _ck_plan(display: str, panel_text: str, elems: Sequence[str],
-             footer_text: Optional[str] = None) -> List[_CkOp]:
+             footer_text: Optional[str] = None,
+             panel_tools_text: str = "") -> List[_CkOp]:
     """这一帧要写的元素列表（**按发送顺序**）。
 
     结构的唯一事实来源是 ``elems``（建实体时定下来的那份，之后只读）——所以「卡里没有的元素
     一个都不写」这件事是**由数据决定**的，不靠调用点上的 if。纯函数：单测可以直接锁
     「哪些元素、什么顺序、什么内容」，不必跑整条帧路径。
+
+    R3 收窄版：面板是**两个**元素 —— ``panel_body``（推理块）与 ``panel_tools``（工具块），
+    两者顺序与 `cards.panel_markdown` 的拼接顺序一致（先推理、后工具）。它们都进**同一个**
+    装饰 batch（`_ck_split` 按 role 分流）⇒ 逻辑写次数一次都不增加。
     """
     ops: List[_CkOp] = []
     # 装饰先写、**正文最后写**（提交点在后）：上游按「最后一次**成功**发出的帧文本」记账
@@ -738,6 +745,8 @@ def _ck_plan(display: str, panel_text: str, elems: Sequence[str],
     # 回落补发的尾部会把同一段话再说一遍（R1 审计的第③条，也是 `docs/plan-v1.md` 的 R1 交付项）。
     if _cards.CARDKIT_PANEL_BODY_ID in elems:
         ops.append(_CkOp(_cards.CARDKIT_PANEL_BODY_ID, panel_text or " ", _CK_ROLE_PANEL))
+    if _cards.CARDKIT_PANEL_TOOLS_ID in elems:
+        ops.append(_CkOp(_cards.CARDKIT_PANEL_TOOLS_ID, panel_tools_text or " ", _CK_ROLE_PANEL))
     if _cards.CARDKIT_FOOTER_ID in elems:
         # 页脚是**纯装饰**：钩子还没数据时 `footer_text` 是 None ⇒ 写空格占位
         # （元素建出来就必须有内容；空串在飞书那边有历史坑）。
@@ -1156,11 +1165,61 @@ class LarkDeckMixin:
             return ""
 
     @classmethod
+    def _ld_panel_parts(cls, chat_id: str = "", started: Optional[float] = None
+                        ) -> Tuple[str, str]:
+        """面板的**两块**内容（CardKit 实体卡用，R3 收窄版）：``(推理块, 工具块)``。
+
+        为什么拆两块：推理文本**逐字在长**（轮次标题的耗时每秒还在变）⇒ 装推理的那个元素
+        几乎每帧都要重写；而工具行**只在工具开始/结束时才变**。合成一个 markdown 时，
+        那几十行工具摘要会跟着推理一起每帧重发（实测 ≈2.7KB/帧）。两块走**同一次**
+        `card.batch_update` ⇒ **逻辑写次数一次都不增加**；去重（`ck_decor`）让工具块
+        只在工具事件那一帧才发。
+
+        与 :meth:`_ld_panel_markdown` **同源快照、同一套上限**，所以拆开不会改变用户看到的内容：
+        `cards.panel_markdown()`（普通卡 / `patch` 传输）就是这两块的拼接（先推理、后工具）。
+
+        任何异常都退回空串（面板是装饰，绝不因为它把帧搞失败）。
+        """
+        try:
+            if not _cfg("unified_panel"):
+                # 与 `_ld_panel_markdown` 同一条门禁（关掉面板的人不该在 cardkit 下还看到面板）
+                return "", ""
+            snap = _panel.snapshot(chat_id) or {}
+            steps = [
+                _cards.tool_step(
+                    str(t.get("name") or "tool"),
+                    status=str(t.get("status") or "ok"),
+                    duration_ms=t.get("duration_ms"),
+                    preview=str(t.get("preview") or ""),
+                )
+                for t in (snap.get("tools") or [])
+            ]
+            return (
+                _cards.panel_rounds_markdown(
+                    reasoning=str(snap.get("reasoning") or ""),
+                    rounds=snap.get("rounds") or [],
+                    max_reasoning_chars=_cfg_int("max_reasoning_chars", _cards.MAX_REASONING_CHARS),
+                ),
+                _cards.panel_tools_markdown(
+                    tools=steps,
+                    max_tool_chars=_cfg_int("max_tool_result_chars", _cards.MAX_TOOL_RESULT_CHARS),
+                    max_steps=_cfg_int("max_panel_steps", _cards.MAX_PANEL_STEPS),
+                ),
+            )
+        except Exception:
+            logger.debug("[larkdeck] 面板两块渲染失败，跳过", exc_info=True)
+            return "", ""
+
+    @classmethod
     def _ld_panel_markdown(cls, chat_id: str = "", started: Optional[float] = None) -> str:
-        """面板内容的 **markdown 文本**（CardKit 路径用，见 :func:`cards.panel_markdown`）。
+        """面板内容的 **markdown 文本**（**普通卡 / `patch` 传输**用，见 :func:`cards.panel_markdown`）。
 
         与 :meth:`_ld_panel` 取**同一份快照、同一套上限**，所以两条传输看到的内容一致；
         差别只是载体（多个元素 vs 一个 markdown 字符串）。任何异常都退回空串（面板是装饰）。
+
+        ⚠️ **CardKit 实体卡不再用它**（R3 收窄版起改用 :meth:`_ld_panel_parts` 的两块）——
+        这里保留，是因为 `/stop` 重绘、降级车道、收尾整卡替换与普通卡走的是同一条面板渲染，
+        那几条路径要**逐字节不变**。
         """
         try:
             if not _cfg("unified_panel"):
@@ -1527,7 +1586,8 @@ class LarkDeckMixin:
 
     async def _ld_ck_create(self, chat: str, *, answer: str, panel_text: str,
                             reply_to: Optional[str] = None,
-                            footer_text: Optional[str] = None) -> Any:
+                            footer_text: Optional[str] = None,
+                            panel_tools_text: str = "") -> Any:
         """建 CardKit 实体 + 发实体卡。返回 ``(result, card_id, card_json)`` 或 ``None``。
 
         ⚠️ 第三个返回值是**建出来的那张卡的 JSON**：回合状态的元素表要从它里面抽
@@ -1543,6 +1603,8 @@ class LarkDeckMixin:
         card = _cards.cardkit_entity_card(answer, panel_text, streaming=True,
                                          expanded=bool(_cfg("panel_expanded")),
                                          panel=bool(_cfg("unified_panel")),
+                                         # R3 收窄版：工具块是面板里的第二个元素（建实体时定死）
+                                         panel_tools_text=panel_tools_text,
                                          # `footer: false` ⇒ 传 None ⇒ 页脚元素**不进卡**；
                                          # 开着但这一刻还没数据 ⇒ 空串 ⇒ 元素留在卡里等后续帧更新
                                          footer_text=("" if _cfg("footer") else None))
@@ -1812,8 +1874,9 @@ class LarkDeckMixin:
         # 但它的 id 留在 `ck_cards` 里 —— 那是「这一回合发过哪几张卡」的唯一记录。
         self._ld_forget(old_message_id)
         # ② 开新卡：只写**剩下的那一段**（写整段会让用户把前半段再看一遍 —— R4 最大的观感坑）
+        new_body, new_tools = self._ld_panel_parts(chat, now)
         made = await self._ld_ck_create(chat, answer=text[cut:],
-                                        panel_text=self._ld_panel_markdown(chat, now),
+                                        panel_text=new_body, panel_tools_text=new_tools,
                                         reply_to=reply_to, footer_text=self._ld_footer())
         if made is None:
             logger.warning("[larkdeck] 卡链：开新卡失败，本帧回落")
@@ -1908,7 +1971,8 @@ class LarkDeckMixin:
 
         ⚠️⚠️ **调用放大效应**（R2 审计实测，别再把它说成「每帧最多 2 次」）：退避表有
         `len(_TRANSIENT_BACKOFF)` 项 ⇒ **一次逻辑写 = 最多 `len+1` 次 HTTP 调用**。一帧有
-        2 次逻辑写（装饰 batch + 正文 content）⇒ **限流风暴下单帧最坏 8 次调用、耗时最坏
+        2 次逻辑写（装饰 batch + 正文 content）⇒ **限流风暴下单帧最坏 9 次调用、
+        退避睡眠 2.0s（2 次可重试的 ×4 + 预览 1 次不重试），耗时最坏
         ≈2.0s**（退避 0.1+0.3+0.6 各来一遍）。所以 `_CK_WRITES_PER_FRAME` 是**逻辑写预算**，
         **不是**「每帧最多 2 次 API 调用」这句更强的话 —— 文档口径必须写清（审计第 1 条）。
         为什么仍然选「重试」而不是「早失败」：帧失败会让内核**停用本回合的 native**，
@@ -1959,8 +2023,10 @@ class LarkDeckMixin:
                 return False
             if self._ld_transport() == "cardkit":
                 # ---- CardKit 实体卡（真打字机）：结构建实体时定死，之后只按 id 写元素 ----
-                panel_text = self._ld_panel_markdown(chat, now)
+                # R3 收窄版：面板是**两块**（推理 / 工具），建实体时都定死，之后只改内容
+                panel_text, panel_tools_text = self._ld_panel_parts(chat, now)
                 made = await self._ld_ck_create(chat, answer=display, panel_text=panel_text,
+                                                panel_tools_text=panel_tools_text,
                                                 reply_to=reply_to,
                                                 footer_text=self._ld_footer())
                 if made is None:
@@ -2122,8 +2188,11 @@ class LarkDeckMixin:
             # ⚠️ 正文写的是**本卡那一段**（`visible`），不是累积全文 —— 写全文会让新卡把
             # 已经封掉的那几段**重放一遍**（R4 最大的观感坑，变异 `R4-1` 钉住）。
             # 装饰（面板/页脚）与预览（summary）照旧用整回合的语义。
-            ops = _ck_plan(visible, self._ld_panel_markdown(chat, state.get("t0")),
-                           live_elems, self._ld_footer())
+            # ⚠️ 面板那两块**按关键字**传：`_ck_plan` 的第 3 个位置参数是**元素表**，
+            # 用 `*parts` 展开会把工具块塞进 `elems`（实测症状：帧异常 ⇒ 整回合掉 native）。
+            _panel_body, _panel_tools = self._ld_panel_parts(chat, state.get("t0"))
+            ops = _ck_plan(visible, _panel_body, live_elems, self._ld_footer(),
+                           panel_tools_text=_panel_tools)
             live_state = dict(state)
             ok, seq_after, failed = await self._ld_ck_apply(card_id, ops, _ck_seq(state),
                                                            live_state)

@@ -74,7 +74,8 @@ core/         插件本体（Hermes 加载器以 hermes_plugins.larkdeck.core.* 
   adapter.py    覆盖层：LarkDeckMixin（含 native streaming 契约）+ merged_class() + build_adapter() + register() + 启动自检
   cards.py      卡片 JSON 构造（纯函数、无 I/O）—— 两种方言的边界在这里；
                 也放 CardKit 实体卡与面板 markdown 的构造（`cardkit_entity_card` /
-                `panel_markdown`：我们的实现是「结构建实体时定死 + 收尾整卡替换」）
+                `panel_rounds_markdown` + `panel_tools_markdown`（R3 收窄版：面板两块）/
+                `panel_markdown`（普通卡与 `patch` 传输：两块拼成一个 markdown））
   i18n.py       双语文案（飞书原生 i18n_content）
   compat.py     版本 / 能力探测 —— Hermes 私有名的唯一存放处
   context.py    运行时指标（钩子写入 → 页脚读取的进程内全局快照）；
@@ -115,11 +116,21 @@ tests/        见「验证」
   `test_declared_defaults_are_an_explicit_decision` 钉住这个默认值）：
   * `patch`：普通卡 + `message.patch` 整卡替换。字是**几个几个跳**（用户实测语）。
   * `cardkit`：CardKit 实体（`card.create` + 发实体卡）+ 每帧 **至多一次 `card.batch_update`
-    写装饰（面板 + 页脚）+ 一次 `card_element.content` 写正文** ⇒ **真逐字打字机**（用户实测语）。
+    写装饰（面板**两块** + 页脚）+ 一次 `card_element.content` 写正文** ⇒ **真逐字打字机**（用户实测语）。
+    ⚠️ **面板是两块**（R3 收窄版，2026-09-14）：`panel_body`（推理轮）+ `panel_tools`（工具行列表），
+    **都在建实体时建好**（结构仍然「建实体时定死」，没破那条不变量），两块走**同一次** batch
+    ⇒ **逻辑写次数一次都不增加**。拆开的唯一目的是「工具事件只重写工具块、推理增长只重写推理块」：
+    推理逐字在长时不再把那几十行工具摘要一起重发（实测 ≈2.7KB/帧）。
+    判据是 `test_units` 的 `㉕/㉖` 两条（字面量 id 列表 + `⏳/✅` 字面量 + **反向**搜索
+    「工具名不许出现在推理块里」），变异 `R3-1..R3-6` 六条全红。
+    ⚠️ **收尾/降级/`/stop` 重绘走的是普通卡**（`unified_panel` = `auxiliary_timeline`），
+    那三条路径**没有** `panel_body`/`panel_tools`（有反向断言钉住）—— 所以「面板两块」是
+    **实体卡流式期间**的形态，收尾那一刻整卡一换就回到一个 markdown（今天本来就是这样）。
     每帧**元素写**预算 2 次（常量 `_CK_WRITES_PER_FRAME`；卡级上限 10 次/秒 × 帧窗口 0.25s）；
     R7 起再加一次**会话预览**写（`card.settings`，`_CK_SUMMARY_INTERVAL = 5s` 限频 ⇒ 平均
     ≈0.2 次/秒，且**不重试**）⇒ 折算 ≈8.2 逻辑写/秒 < 卡级上限 10 次/秒；
-    ⚠️ 不是 HTTP 调用数：元素写撞限流时同一请求退避重发最多 4 次 ⇒ **单帧最坏 12 次调用 / ≈3.0s**；
+    ⚠️ 不是 HTTP 调用数：元素写撞限流时同一请求退避重发最多 4 次，而预览**不重试**
+    ⇒ **单帧最坏 9 次调用 / 退避 2.0s**（切卡帧另算：封卡 patch + 建实体 + 发实体卡也都能重试）；
     **装饰内容没变就不发那次 batch**（稳态下每帧 1 次）；**正文最后写**（提交点在后）；
     装饰失败只标死 + 留痕（不 fail-open）；正文失败 fail-open —— **但有两条例外（R5）**：
     ① 元素通道拿到**卡级死法**（`300309`/`300313`/`300317`）⇒ **降级成整卡 `message.patch`
@@ -136,8 +147,10 @@ tests/        见「验证」
     整卡替换（补面板与状态色 —— 那一刻流式本来就结束）。**失败的分档见上面那两条例外**：
     确定性失败 fail-open 返回 `False` 交核心回落 edit/send（不变量 2）；卡级死法走降级车道
     （返回 `True`、续写同一张卡）；撤回类码标死 + 清追踪（不补发）。
-    `unified_panel: false` 时面板元素**不进卡**，这个结构决定记在回合状态里（`ck_panel`），
-    后续帧**不再去写它的 id**（写了会得 `300313` ⇒ 每帧失败 ⇒ 整回合被打回纯文本）。
+    `unified_panel: false` 时面板元素**不进卡** —— 这个结构决定由**元素表**（`ck_elems`，
+    从建出来的卡 JSON 抽的）承载，`_ck_plan` 只对表里的 id 发写入（写不在卡里的 id 会得
+    `300313` ⇒ 每帧失败 ⇒ 整回合被打回纯文本）。⚠️ 别再写 `ck_panel`：那是 R1 之前用过的
+    布尔字段，**已经删了**（2026-09-14 审计发现文档还在引用它，照文档写就会造一个没人读的字段）。
   * 想翻默认：先过一轮对抗性审计 + 真机 `probe_render.py --cardkit-prod`，
     再改 `_DEFAULTS` + `plugin.yaml` + README（三处同步有机械门禁：
     `test_config_schema_matches_defaults_exactly` 连 README 的键集一起核对，

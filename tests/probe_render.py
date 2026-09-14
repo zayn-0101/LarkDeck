@@ -955,6 +955,19 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
                     text[:cut], chat_id=chat, turn_id=tid))     # ← 同一个 tid
                 print(f"   正文帧 {cut} 字 = {ok}")
                 time.sleep(0.4)
+            # ★ R3 收窄版：**seed 之后再起一个工具**，让「工具块在流式期间被单独重写」这条
+            #   真机路径真的被走到。审计指出：把工具事件全灌在 seed 之前的话，工具块只在
+            #   **建实体**那一刻被写一次，运行期的更新车道**一次都走不到** —— 那样这次改动
+            #   在真机上等于没有验证。
+            _before_batches = len(calls["batch"])
+            _panel_mod.record_tool_started(_sid, _tid, "bash", args={"command": "pwd"})
+            ok_tool = loop.run_until_complete(adapter.send_stream_frame(
+                text[:12], chat_id=chat, turn_id=tid))
+            _new_ids = [b[0] for b in calls["batch"][_before_batches:]]
+            print(f"   工具开始那一帧 = {ok_tool} · 该帧写出的装饰元素 = {_new_ids}"
+                  f"（**预期只含 panel_tools** —— 推理块没变就不许重发）")
+            time.sleep(0.4)
+
             # ★ R2 的「**未变化不重写**」真机验证：把面板内容改掉再发一帧，那一帧**只该写面板**。
             #   为什么必须在真机上验这一条：去重的判据在本地（`ck_decor`），所以它不会因为
             #   飞书拒绝而变红 —— 真机要证明的是「只带一个 action 的 batch 照样 `code=0`」
@@ -990,11 +1003,13 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
     print(f"   收尾 patch {calls['patch']} 次")
     # ⚠️ R2 起的写入形态：**每帧最多 1 次装饰 batch + 1 次正文 content**（卡级写入上限按官方
     #    口径 10 次/秒 × 0.25s 帧窗口 = 2），而装饰**内容没变就不发那个 batch** ⇒ 这里应当
-    #    只有**两次** batch：第一帧（面板+页脚都第一次有内容）与面板变化那一帧（只带 panel_body）。
+    #    R3 收窄版起是**三次** batch：第一帧（三块都第一次有内容）、「工具开始」那一帧
+    #    （**只带 `panel_tools`**）、面板变化那一帧（只带 `panel_body`）—— 后两条正是
+    #    「拆两块」的真机判据。
     #    「旧断言（每帧各 2 次）不改就会在正确的实现上红」这件事上一轮已经发生过一次。
     print(f"   card.create {calls['create']} 次（必须 ==1）· message.create {calls['send']} 次"
-          f"（必须 ==1）· 正文写入 {len(writes)} 次（必须 == 正文帧数 4）"
-          f"· 装饰 batch {len(batches)} 次（必须 ==2：首帧 + 面板变化帧）")
+          f"（必须 ==1）· 正文写入 {len(writes)} 次（必须 == 正文帧数 5）"
+          f"· 装饰 batch {len(batches)} 次（必须 ==3：首帧三块 + 工具开始帧 + 面板变化帧）")
     batch_shapes = [tuple(b[0]) for b in batches]
     # ★ **序号账本**（R2 审计第 2 条：旧版把「单调递增」写在 docstring 里却一条断言都没有，
     #   于是提交信息里那些序号值**无法被复核**）。现在逐条真断言，并把账本打出来进提交信息：
@@ -1026,13 +1041,14 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
         print(f"   ⚠️ 读不到 R9 自检账本：{exc!r}")
     _expected_frames = len(writes) + int(calls["create"] > 0) + len(_frame_writes)
     _ledger_ok = (int(_snap.get("frame_ok_count") or 0) == _expected_frames
-                  # 场景是脚本写死的四帧正文 + 一次建实体 + 一次收尾 ⇒ 帧数必须是 5。
+                  # 场景是脚本写死的**五帧正文**（20/40/102 字的累积帧、R3 的「工具开始」那一帧、
+                  # 面板变化帧）+ 一次建实体 + 一次收尾 ⇒ 帧数必须是 7。
                   # 这一条**不依赖**任何桩：它把「探针脚本到底跑了几帧」写成了字面量。
-                  and _expected_frames == 5
+                  and _expected_frames == 7
                   and int(_snap.get("frame_fail_count") or 0) == 0)
     print(f"   R9 自检账本：写卡 {_snap.get('frame_ok_count')} 帧（期望 {_expected_frames} = "
           f"元素写 {len(writes)} + 建实体 {int(calls['create'] > 0)} + 整卡 patch {len(_frame_writes)}；"
-          f"脚本场景固定 5）· 失败 {_snap.get('frame_fail_count')} 次 "
+          f"脚本场景固定 7）· 失败 {_snap.get('frame_fail_count')} 次 "
           f"{_snap.get('frame_fail_reason')!r}")
     footer_written = [b[3].get("footer") for b in batches]
     footer_is_current = bool(footer_at_start) and footer_written[0] == footer_at_start
@@ -1041,8 +1057,12 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
     ok = (bool(state) and card_id and writes and calls["patch"] == 1
           and all(w[2] for w in writes) and bool(panel_hits)
           and calls["create"] == 1 and calls["send"] == 1
-          and len(writes) == 4
-          and batch_shapes == [("panel_body", "footer"), ("panel_body",)]
+          # R3 收窄版：场景现在有**五**个正文帧（多出「工具开始」那一帧），
+          # 装饰 batch 是**三**次，且形状必须**逐字**是「首帧三块 → 只有工具块 → 只有推理块」
+          # —— 最后两条正是「拆两块」的真机判据（写成字面量，不做任何推导）。
+          and len(writes) == 5
+          and batch_shapes == [("panel_body", "panel_tools", "footer"), ("panel_tools",),
+                               ("panel_body",)]
           and all(b[2] for b in batches)
           and ledger_strictly_increasing
           and ledger == list(range(1, len(ledger) + 1))

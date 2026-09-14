@@ -941,7 +941,22 @@ def _golden_trace() -> dict:
         panel.reset()
         panel.record_reasoning("oc_golden", "s-golden", "先想一下这个问题该怎么拆。")
         returns.append(_run(raw.send_stream_frame("", chat_id="oc_golden", turn_id="t-golden")))
+        # ⚠️ **必须有工具事件**（R3 收窄版的夹具定义域）：面板拆成 `panel_body` + `panel_tools`
+        # 两块之后，只灌推理的场景里 `panel_tools` 恒为空 ⇒ `entity_card` 与装饰 batch 在
+        # 「工具块整条丢失/写错元素」这类改动下**逐字不变**，夹具对它们**零判别力**
+        # （方案审计中-4④ 实测：那份场景一个工具步都没有）。工具事件本身也会 finalize 一轮推理，
+        # 所以它同时把「轮次标题」这一路也带进了定义域。
+        # ⚠️ 两个位置参数是 `(session_id, turn_id)`，本场景上面写的是
+        # `record_reasoning("oc_golden", "s-golden", …)` ⇒ 这里必须是**同一对**
+        # （session=`oc_golden`、turn=`s-golden`）。我第一版把第二个参数写成 `"t-golden"`，
+        # 于是 `_touch_locked` 判成「换了回合」⇒ **清空 rounds**，夹具里 `panel_body` 写成空、
+        # 只有 `panel_tools` 有内容（门禁当时全绿 —— 是靠**读夹具 diff** 抓到的，
+        # 这也是为什么夹具改完必须逐字段看一眼再接受）。
+        panel.record_tool_started("oc_golden", "s-golden", "read_file",
+                                  {"path": "/tmp/golden.txt"}, "tc-golden-1")
         returns.append(_run(raw.send_stream_frame("第一段", chat_id="oc_golden", turn_id="t-golden")))
+        panel.record_tool_finished("oc_golden", "s-golden", "read_file", status="ok",
+                                   duration_ms=2300, tool_call_id="tc-golden-1")
         returns.append(_run(raw.send_stream_frame("第一段，第二段。", chat_id="oc_golden",
                                                   turn_id="t-golden")))
         finalized = []
@@ -1395,7 +1410,11 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         # R2 之后的写入形态：**装饰一次 batch、正文一次 content** = 每帧 ≤2 次写（写入预算），
         # 而**装饰没变就不写** ⇒ 稳态下每帧 1 次。
         assert ids == ["answer"] * 4, f"正文只该走 content 通道：{ids}"
-        assert batch_ids == [["panel_body", "footer"], ["footer"], ["panel_body"]], \
+        # R3 收窄版：面板是 `panel_body`（推理）+ `panel_tools`（工具）两块，**都在首帧建出来**
+        # ⇒ 首帧的装饰 batch 是三元素；之后只有内容变了的那一块才会再写（工具块在这个场景里
+        # 一直没有工具事件，所以只出现首帧那一次 —— 「工具块变化只重写工具块」由
+        # `test_cardkit_panel_tools_block_rewrites_alone` 单独钉）。
+        assert batch_ids == [["panel_body", "panel_tools", "footer"], ["footer"], ["panel_body"]], \
             f"装饰只在**内容变了**的元素上重写（顺序：变化的那一帧才发）：{batch_ids}"
         assert batch_seqs == [1, 4, 6], f"三次装饰 batch 的序号：{batch_seqs}"
         assert seqs == [2, 3, 5, 7], f"正文序号（装饰先、正文最后）：{seqs}"
@@ -1479,10 +1498,14 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             "msg 解析不出坏元素时必须如实说「整批标死」（别让人以为只死了一个）"
         # ⚠️ 告警必须**点名受影响的元素**（R5 审计低-10：把 ids 清空成 "" ⇒ 133/133 曾全绿，
         # 而那段清单正是这条告警存在的理由 —— 排查时要知道「冻了哪几个」）。
-        assert any("panel_body" in r.getMessage() and "footer" in r.getMessage() for r in records), \
+        # R3 收窄版：面板是**两块**（`panel_body` + `panel_tools`），所以整批标死时
+        # 三个装饰元素都在名单里 —— 这条断言的字面量**必须跟着结构更新**
+        # （而不是改成 `>= 2` 那种「随便几个都行」的写法：那样「少标死一个」就抓不住了）。
+        assert all(x in r.getMessage() for r in records
+                   for x in ("panel_body", "panel_tools", "footer")), \
             f"装饰失败的告警必须列出受影响的元素 id：{[r.getMessage() for r in records]}"
         state2b = raw2b._ld_stream_get("oc_ck2b:t-2b") or {}
-        assert state2b.get("ck_dead") == {"panel_body", "footer"}, \
+        assert state2b.get("ck_dead") == {"panel_body", "panel_tools", "footer"}, \
             f"失败过的装饰元素必须被标死（后续不再尝试）：{state2b.get('ck_dead')}"
         # ⚠️ **装饰失败那一帧不许有任何「已写成功」记账**（R2 审计第 4 条）：把记账挪到 batch
         #    调用**之前**时，`ck_dead` 会把它掩蔽住 ⇒ 四门禁全绿；可一旦装饰能被复活（R3 起）
@@ -1596,7 +1619,8 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             assert not state2g.get("card_id"), "降级必须同时清掉 card_id"
             # ⚠️ 本帧算出来的标死也要落进状态（从 `live_state` 出发，不是旧 `state`）——
             #    否则「同一件事两处真相」（审计低-5），而这条断言是它唯一的可观测量。
-            assert state2g.get("ck_dead") == {"panel_body", "footer"}, \
+            # R3 收窄版：面板两块（`panel_body` + `panel_tools`）都在装饰名单里
+            assert state2g.get("ck_dead") == {"panel_body", "panel_tools", "footer"}, \
                 f"降级那一帧标死的装饰不能被丢掉：{state2g.get('ck_dead')}"
             element_writes = len(calls["content"])
             assert _run(raw2g.send_stream_frame("正文二", chat_id="oc_ck2g", turn_id="t-2g"))
@@ -1618,7 +1642,7 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         with _LogCapture("larkdeck") as records:
             assert _run(raw2h.send_stream_frame("正文", chat_id="oc_ck2h", turn_id="t-2h"))
         state2h = raw2h._ld_stream_get("oc_ck2h:t-2h") or {}
-        assert state2h.get("ck_dead") == {"panel_body", "footer"}, \
+        assert state2h.get("ck_dead") == {"panel_body", "panel_tools", "footer"}, \
             (f"只有 `300313` 的 msg 才允许按名字标死；这条 230099 必须整批标死（保守）："
              f"{state2h.get('ck_dead')}")
         assert any("整批标死" in r.getMessage() for r in records), \
@@ -1969,8 +1993,12 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         # ⚠️ 光看 `ck_dead` 不够：还要证明**面板下一帧真的又被写了**（否则「只标一个」只是状态好看）
         calls["batch"].clear()
         assert _run(raw2d.send_stream_frame("正文二", chat_id="oc_ck2d", turn_id="t-2d"))
-        assert [[a["params"]["element_id"] for a in b[0]] for b in calls["batch"]] == [["panel_body"]], \
-            f"被点名的 footer 死了，但 panel_body 必须继续写：{calls['batch']}"
+        # R3 收窄版：面板两块（`panel_body` + `panel_tools`）。⚠️ 上一次 batch **失败**过 ⇒
+        # 两块都**没有**进 `ck_decor` 记账（记账只在成功分支）⇒ 这一帧两块都还在 fresh 集合里，
+        # 于是字面量是两块 —— 这不是「footer 没死」：footer 已从计划里被 `live_elems` 过滤掉。
+        assert [[a["params"]["element_id"] for a in b[0]] for b in calls["batch"]] \
+            == [["panel_body", "panel_tools"]], \
+            f"被点名的 footer 死了，但面板两块必须继续写：{calls['batch']}"
 
         # ⑫ **回复锚点必须透传** + 发实体卡必须带**确定性 uuid**（第十二轮审计实测：
         #    锚点被整个丢掉、且两条 uuid 一个都没填）。
@@ -2121,16 +2149,107 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             got_ids = [[a["params"]["element_id"] for a in b[0]] for b in calls["batch"]]
             got_batch_seqs = [b[1] for b in calls["batch"]]
             got_answer_seqs = [c[2] for c in calls["content"]]
-            assert got_ids == [["panel_body", "footer"], ["footer"], ["footer"], ["panel_body"]], \
+            # R3 收窄版：首帧建出来的面板是**两块**（`panel_body` + `panel_tools`），
+            # 两块都在首帧写一次占位；本场景**没有工具事件** ⇒ 工具块此后一次都不再写
+            # （这正是拆开的目的：工具块不跟着推理逐帧重发）。
+            assert got_ids == [["panel_body", "panel_tools", "footer"], ["footer"], ["footer"],
+                               ["panel_body"]], \
                 f"每帧只该写**这一帧真的变了**的装饰：{got_ids}"
             assert got_batch_seqs == [1, 4, 6, 8], got_batch_seqs
             assert got_answer_seqs == [2, 3, 5, 7, 9], got_answer_seqs
             assert sorted(got_batch_seqs + got_answer_seqs) == list(range(1, 10)), \
                 f"装饰与正文共用同一个严格递增序号：{sorted(got_batch_seqs + got_answer_seqs)}"
+
         finally:
             panel.reset()
             context.reset()
             context.set_context_override(None)
+
+        # ㉕ **R3 收窄版的核心收益**：面板拆成 `panel_body`（推理）+ `panel_tools`（工具）之后，
+        #    **工具事件只重写工具块、推理增长只重写推理块**（推理逐字在长时不再把那几十行
+        #    工具摘要一起每帧重发）。判据全部**独立**于被测实现：字面量 id 列表、`⏳`/`✅` 字面量、
+        #    以及对另一块的**反向搜索**（工具名一次都不许出现在推理块里 —— 否则「两块其实是
+        #    同一块」也全绿）。
+        #    ⚠️ **时钟必须冻结**：推理轮收尾时标题会补上耗时（`**第 1 轮**` → `**第 1 轮 · 0.0s**`），
+        #    而耗时是墙钟算出来的 —— 不冻结时「工具开始那一帧会不会连带重写推理块」**取决于跑得多快**
+        #    （我实测到两种结果：快时只写工具块、慢时两块都写，门禁在两台机器上结论不同）。
+        #    这与 `_golden_trace()` 冻结时钟是同一条理由：**时间派生值不在断言的覆盖范围内**。
+        calls, client = _mk_fake()
+        raw25 = _make()
+        raw25._client = client
+        adapter.configure(native_transport="cardkit", unified_panel=True, footer=True)
+        panel.reset()
+        context.reset()
+        _saved_monotonic, _saved_time = time.monotonic, time.time
+        _saved_interval = adapter._STREAM_MIN_INTERVAL
+        time.monotonic = lambda: 1_700_000_000.0        # type: ignore[assignment]
+        time.time = lambda: 1_700_000_000.0             # type: ignore[assignment]
+        # 冻结时钟下 `now - last_at` 恒为 0 ⇒ 不把节流窗口置 0 会被跳过（帧根本走不到写路径）
+        adapter._STREAM_MIN_INTERVAL = 0.0
+        try:
+            panel.record_reasoning("oc_r3", "s-r3", "先看目录结构。")
+            assert _run(raw25.send_stream_frame("", chat_id="oc_r3", turn_id="t-r3"))
+            # 帧①：第一次写元素 —— 两块都还没有记账 ⇒ 都写一遍（预期，不是浪费）
+            assert _run(raw25.send_stream_frame("正文一", chat_id="oc_r3", turn_id="t-r3"))
+            # 帧②：**工具开始**（推理文本没变）⇒ 只该写工具块
+            panel.record_tool_started("oc_r3", "s-r3", "read_file", {"path": "/tmp/r3.txt"}, "tc-r3")
+            assert _run(raw25.send_stream_frame("正文二", chat_id="oc_r3", turn_id="t-r3")), \
+                "工具开始那一帧必须成功"
+            # 帧③：**工具结束**（推理仍没变）⇒ 还是只该写工具块
+            panel.record_tool_finished("oc_r3", "s-r3", "read_file", status="ok",
+                                       duration_ms=2300, tool_call_id="tc-r3")
+            assert _run(raw25.send_stream_frame("正文三", chat_id="oc_r3", turn_id="t-r3")), \
+                "工具结束那一帧必须成功"
+            # 帧④：**第二个工具开始** ⇒ 仍旧只该写工具块
+            panel.record_tool_started("oc_r3", "s-r3", "bash", {"cmd": "ls"}, "tc-r3b")
+            assert _run(raw25.send_stream_frame("正文四", chat_id="oc_r3", turn_id="t-r3"))
+            # 帧⑤：**推理增长**（工具没变）⇒ 只该写推理块
+            panel.record_reasoning("oc_r3", "s-r3", "再看一眼测试目录。")
+            assert _run(raw25.send_stream_frame("正文五", chat_id="oc_r3", turn_id="t-r3"))
+            frames = [[a["params"]["element_id"] for a in b[0]] for b in calls["batch"]]
+            assert frames == [["panel_body", "panel_tools", "footer"], ["panel_tools"],
+                              ["panel_tools"], ["panel_tools"], ["panel_body"]], \
+                f"工具事件只该重写工具块、推理增长只该重写推理块：{frames}"
+            written = [{a["params"]["element_id"]: a["params"]["partial_element"]["content"]
+                        for a in b[0]} for b in calls["batch"]]
+            assert "read_file" not in written[0]["panel_body"], \
+                f"推理块里不许出现工具行（两块其实是同一块时这条会红）：{written[0]['panel_body']!r}"
+            assert "先看目录结构。" in written[0]["panel_body"], \
+                f"推理块必须带推理文本：{written[0]['panel_body']!r}"
+            assert "⏳ read_file" in written[1]["panel_tools"], \
+                f"工具开始后工具块要写**运行中**那一行：{written[1]['panel_tools']!r}"
+            assert "✅ read_file · 2.3s" in written[2]["panel_tools"], \
+                f"工具结束后工具块要写**完成**那一行：{written[2]['panel_tools']!r}"
+            assert "⏳ bash" in written[3]["panel_tools"], \
+                f"第二个工具开始后工具块要带它：{written[3]['panel_tools']!r}"
+            assert "再看一眼测试目录。" in written[4]["panel_body"] and \
+                "先看目录结构。" in written[4]["panel_body"], \
+                f"推理块写的是**整块**（累积轮次），不是增量：{written[4]['panel_body']!r}"
+            # 反向搜索要覆盖**每一帧**（不是只看第一帧）：工具名一次都不许出现在推理块里
+            assert all("read_file" not in w.get("panel_body", "")
+                       and "bash" not in w.get("panel_body", "") for w in written), \
+                f"任何一帧的推理块里都不许出现工具行：{[w.get('panel_body') for w in written]}"
+            # ㉖ **「普通卡」车道不含面板两块**（收尾 / 降级 / `/stop` 重绘走 `unified_panel`）：
+            #    面板两块是**实体卡专属**结构。这是**反向断言**：谁把实体卡的面板塞进普通卡就会红。
+            final_cards = []
+
+            async def _record_final(chat_id, mid, card):
+                final_cards.append(card)
+                return _StubResult(True, mid)
+
+            raw25._ld_update_card = _record_final
+            assert _run(raw25.send_stream_frame("正文一，正文二", finalize=True,
+                                                chat_id="oc_r3", turn_id="t-r3"))
+            assert final_cards, "收尾必须走整卡替换（patch）"
+            blob = json.dumps(final_cards[0], ensure_ascii=False)
+            assert cards.CARDKIT_PANEL_TOOLS_ID not in blob and \
+                cards.CARDKIT_PANEL_BODY_ID not in blob, \
+                "收尾整卡替换走的是普通卡（unified_panel），不该带实体卡的面板元素"
+        finally:
+            time.monotonic, time.time = _saved_monotonic, _saved_time
+            adapter._STREAM_MIN_INTERVAL = _saved_interval
+            panel.reset()
+            context.reset()
 
         # ⑭ **正文长大之后也要守硬上限**（第十二路审计第 5 条）：建实体那道闸门守的是
         #    **空正文**的 seed 帧（核心传 `""`），真正会长大的是后面每一帧的累积全文。
@@ -2846,6 +2965,35 @@ def test_tool_step_formatting() -> None:
     assert cards.tool_step("x", duration_ms=True) == "✅ x", "bool 不是数字"
     assert cards.tool_step("", status="ok") == "✅ tool"
     assert cards.tool_step("x", preview="a`b") == "✅ x · `a'b`", "预览里的反引号不能破坏行内代码"
+
+
+def test_panel_tools_block_truncates_and_keeps_the_most_recent() -> None:
+    """R3 收窄版：**工具块**的截断与裁减方向。
+
+    这两条**曾经零门禁**：R3 的两条变异（`R3-5` 工具行不再过 `truncate`、`R3-6` 裁减方向写反）
+    实测**四门禁全绿** —— 而后果分别是「一条超长工具输出把面板撑爆」与
+    「对用户说反话（丢掉最近的、留下最早的）」。期望值**全部写死**：**不同的**两步文本 +
+    字面量 `已省略` 提示 + 字面量的首尾 id —— 拿被测函数自己算期望值就是自证循环。
+    """
+    # ① 截断：一条 2000 字的工具行必须被截到上限附近，且**带省略标记**（不能静默截断）
+    long_row = "✅ bash · " + "甲" * 2000
+    got = cards.panel_tools_markdown(tools=[long_row], max_tool_chars=40)
+    assert len(got) < len(long_row), f"超长工具行必须被截断：{len(got)} vs {len(long_row)}"
+    assert got.startswith("✅ bash · 甲"), got[:20]
+    assert got != long_row and "…" in got, f"截断必须带省略标记（静默截断会让用户以为就这么多）：{got[-20:]!r}"
+
+    # ② 裁减方向：33 步 / 上限 30 ⇒ **保留最近的 30 步**、丢掉最早的 3 步，
+    #    并且提示行在**最前面**、数字是**被丢掉的那 3 步**。
+    steps = [f"✅ step{i:02d}" for i in range(33)]
+    got = cards.panel_tools_markdown(tools=steps, max_steps=30)
+    assert "step00" not in got and "step01" not in got and "step02" not in got, \
+        f"裁减必须丢掉**最早**的几步：{got[:60]!r}"
+    assert "step03" in got and "step32" in got, "最近的几步必须都在"
+    lines = got.split("\n\n")
+    assert lines[0] not in steps and "3" in lines[0], \
+        f"提示行必须在前、且说的是被丢掉的那 3 步：{lines[0]!r}"
+    assert len([l for l in lines if l.startswith("✅")]) == 30, \
+        f"上限是元素行数（保留 30 步）：{[l for l in lines if l.startswith('✅')][:3]}"
 
 
 def test_unified_panel_applies_caps() -> None:
@@ -6287,9 +6435,16 @@ def test_plan_progress_table_is_checkable_from_its_own_rows() -> None:
     hole_problems = _plan_progress_problems(hole)
     assert any("证据" in p for p in hole_problems), hole_problems
 
-    # ② 「未完成的下一个阶段」整行被删（2026-09-14 真实发生过的静默丢失）⇒ 必须被拒绝
-    r3_line = [l for l in real.splitlines() if l.startswith("| R3")][0]
-    dropped = real.replace(r3_line + "\n", "", 1)
+    # ② 「未完成的下一个阶段」整行被删（2026-09-14 真实发生过的静默丢失）⇒ 必须被拒绝。
+    #    ⚠️ 目标行必须取**状态列是「未开始」的那一行**，不能取「第一行以 `| R3` 开头的」：
+    #    2026-09-14 R3 收窄版落地后表里同时有「R3 面板拆两块（收窄版）| ✅ 完成」与
+    #    「R3 完整版 | 未开始」两行，按前缀取第一行会删掉**已完成**那一行 ——
+    #    而判据「未开始的行里有 R3」仍被另一行满足 ⇒ 这条构造样本**自己失去判别力**（实测红了）。
+    #    判据与要守的回归（「未开始那一行被静默抹掉」）必须同源，这就是同源的写法。
+    pending_r3 = [l for l in real.splitlines()
+                  if l.startswith("| R3") and "未开始" in l]
+    assert len(pending_r3) == 1, f"表里应当只有一行「R3 …未开始」：{pending_r3}"
+    dropped = real.replace(pending_r3[0] + "\n", "", 1)
     dropped_problems = _plan_progress_problems(dropped)
     assert any("R3" in p for p in dropped_problems), dropped_problems
 
