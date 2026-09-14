@@ -748,6 +748,36 @@ def _select_locked(chat_id: str, now: float) -> "tuple[str, Optional[Dict[str, A
     return sid, state
 
 
+def diagnose(chat_id: str = "") -> Dict[str, Any]:
+    """**只读诊断**：这次渲染会选中哪个会话桶、桶里到底有什么（不改任何状态）。
+
+    为什么需要它：面板为空有**两种完全不同的原因**，而线上只看得到「空」这一个结果 ——
+      * ① **绑定了另一个（空的）会话**（`_CHAT_SESSION[chat]` 指向的桶没数据）；
+      * ② **桶被反复清空**（`_touch_locked` 把每次事件都判成「换了回合」⇒ rounds/tools 被清）。
+    两种的修法完全不同，所以先分辨再动手（`docs/lessons.md`：先量再修）。
+    """
+    now = _now()
+    with _LOCK:
+        bound = _CHAT_SESSION.get(str(chat_id).strip()) if chat_id else None
+        bound_sid = str(bound[0]) if bound else ""
+        sid, state = _select_locked(chat_id, now)
+        out = {
+            "chat": str(chat_id),
+            "bound_session": bound_sid,
+            "bound_state_exists": bool(bound_sid and _STATE.get(bound_sid) is not None),
+            "selected_session": str(sid or ""),
+            "buckets": len(_STATE),
+            "rounds": 0, "tools": 0, "reasoning_len": 0, "turn_id": "", "updated": 0.0,
+        }
+        if isinstance(state, dict):
+            out["rounds"] = len(state.get("rounds") or [])
+            out["tools"] = len(state.get("tools") or [])
+            out["reasoning_len"] = int(state.get("reasoning_len") or 0)
+            out["turn_id"] = str(state.get("turn_id") or "")
+            out["updated"] = float(state.get("updated") or 0.0)
+        return out
+
+
 def _has_content(state: Dict[str, Any]) -> bool:
     """这个会话桶里有没有值得渲染的东西（工具步骤或非空推理轮）。
 

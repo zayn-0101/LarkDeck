@@ -1195,7 +1195,7 @@ class LarkDeckMixin:
                 )
                 for t in (snap.get("tools") or [])
             ]
-            return (
+            _body, _tools_text = (
                 _cards.panel_rounds_markdown(
                     reasoning=str(snap.get("reasoning") or ""),
                     rounds=snap.get("rounds") or [],
@@ -1207,9 +1207,36 @@ class LarkDeckMixin:
                     max_steps=_cfg_int("max_panel_steps", _cards.MAX_PANEL_STEPS),
                 ),
             )
+            if not (_body or _tools_text):
+                cls._ld_log_panel_empty(chat_id)
+            return _body, _tools_text
         except Exception:
             logger.debug("[larkdeck] 面板两块渲染失败，跳过", exc_info=True)
             return "", ""
+
+    @staticmethod
+    def _ld_log_panel_empty(chat_id: str) -> None:
+        """面板两块都空时打一条**限流诊断**（60 秒一条）—— 分辨「绑定错桶」与「桶被清空」。
+
+        为什么值得留这条日志（不是临时调试）：线上唯一症状就是「执行详情是空的」，
+        而它有两种成因、修法相反；没有这条日志就只能靠猜。数字全部来自
+        `panel.diagnose()` 的**只读**快照。
+        """
+        now = time.monotonic()
+        if now - getattr(_ld_log_panel_empty, "_at", 0.0) < 60.0:
+            return
+        _ld_log_panel_empty._at = now          # type: ignore[attr-defined]
+        try:
+            info = _panel.diagnose(chat_id)
+        except Exception:
+            logger.debug("[larkdeck] 面板诊断失败", exc_info=True)
+            return
+        logger.info(
+            "[larkdeck] 面板为空 · 诊断：chat=%s · 绑定会话=%s（桶存在=%s）· 选中会话=%s · "
+            "该桶 rounds=%s tools=%s reasoning_len=%s turn=%s · 进程内共 %s 个会话桶",
+            info.get("chat"), info.get("bound_session") or "（无）", info.get("bound_state_exists"),
+            info.get("selected_session") or "（无）", info.get("rounds"), info.get("tools"),
+            info.get("reasoning_len"), info.get("turn_id"), info.get("buckets"))
 
     @classmethod
     def _ld_panel_markdown(cls, chat_id: str = "", started: Optional[float] = None) -> str:
