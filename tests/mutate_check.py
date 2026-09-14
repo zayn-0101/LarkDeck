@@ -1208,6 +1208,14 @@ MUTATIONS = [
      '    "clarify.toast_failed": {ZH: "提交未生效：可能已被处理或过期，请重试",\n'
      '                             EN: "Could not submit: already handled or expired — please retry"},',
      "test_units"),
+    # ---- R11-B1/B2/B3：三件通用加固 ----
+    ("B3-失败分支从旧状态出发（`live_state` 里新写的键静默消失）", "core/adapter.py",
+     '            self._ld_stream_put(key, {**live_state,\n'
+     '                                      "last": state.get("last", ""),',
+     '            self._ld_stream_put(key, {**state,\n'
+     '                                      "last": state.get("last", ""),',
+     "test_units"),
+
     # ---- R11-A1：世代快照（「哪一份模块对象是活的」必须是读得出来的数字）----
     ("R13-1-加载序号写死（世代标记退回装饰品）", "core/panel.py",
      '_LOAD_SEQ: int = int(_SHARED["load_seq"])',

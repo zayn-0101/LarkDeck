@@ -2313,6 +2313,39 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         assert any(_frames_of(l) >= 1 and "面板=无" in l for l in _sc2), \
             f"没有面板数据的回合必须如实说「面板=无」：{_sc2}"
 
+        # ㉚ **R11-B3：失败分支不许丢掉 `live_state` 里新写的键**。
+        #    病因：这一支原来写的是 `{**state, ...}`（旧状态）+ 手动抄三个字段 —— 于是
+        #    `_ld_ck_apply` 里**任何新写的键**都会在这一支静默消失，而没有任何门禁看得见。
+        #    判据必须往 `live_state` 塞一个**合成键**再让正文失败（否则撤掉修复不会红）：
+        #    合成键只有从 `live_state` 出发才会留在回合状态里。
+        _callsB, _clientB = _mk_fake(fail_answer_only=True)
+        _rawB = _make()
+        _rawB._client = _clientB
+        adapter.configure(native_transport="cardkit")
+        panel.reset()
+        context.reset()
+        assert _run(_rawB.send_stream_frame("", chat_id="oc_b3", turn_id="t-b3"))
+        _apply_saved = adapter.LarkDeckMixin._ld_ck_apply
+
+        async def _apply_probe(self, card_id, ops, seq, live_state):
+            live_state["ck_synth_probe"] = "probe"        # ← 合成键（R11-B3 的判据）
+            return await _apply_saved(self, card_id, ops, seq, live_state)
+
+        adapter.LarkDeckMixin._ld_ck_apply = _apply_probe
+        try:
+            assert not _run(_rawB.send_stream_frame("正文", chat_id="oc_b3", turn_id="t-b3")), \
+                "正文写失败必须 fail-open 返回 False（交核心回落 edit/send）"
+        finally:
+            adapter.LarkDeckMixin._ld_ck_apply = _apply_saved
+        _stB = _rawB._ld_stream_get("oc_b3:t-b3") or {}
+        assert _stB.get("ck_synth_probe") == "probe", \
+            (f"失败分支必须从 `live_state` 出发 —— 只写进 live_state 的键不许被丢掉："
+             f"{sorted(_stB)}")
+        # 对偶：失败帧**不许动** `last` / `last_at` / `frames`（下一帧要重试同一段文本）
+        assert _stB.get("last") == "" and int(_stB.get("frames") or 0) == 0, \
+            (f"失败帧不许推进 last/frames（否则这段正文永远不会重试）："
+             f"{_stB.get('last')!r} / {_stB.get('frames')}")
+
         # ㉘ **R11-A7：正文净化 —— 有证据地剥掉核心叠加的工具进度块**。
         #    用户明确要求「一个核心配置都不动」⇒ 必须在插件侧解决（不能靠
         #    `display.tool_progress`）。判据的要点是**证明**而不是**猜**：

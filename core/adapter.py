@@ -2454,8 +2454,19 @@ class LarkDeckMixin:
                 # 记账在 `_ld_update_card` 里（降级这一帧就是一次整卡 patch）—— 不再重复记。
                 return True
             # 失败：**只把序号推进**（绝不回退，见 `_ld_ck_apply` 的说明），
-            # 不动 `last`/`last_at` —— 让下一帧还能把同一段文本重试一次。
-            self._ld_stream_put(key, {**state, "ck_dead": live_state.get("ck_dead") or set(),
+            # 不动 `last`/`last_at`/`frames` —— 让下一帧还能把同一段文本重试一次。
+            #
+            # ⚠️ **必须从 `live_state` 出发**（R11-B3）：`_ld_ck_apply` 会把这一帧算出来的
+            # 结论写进它（`ck_dead` / `ck_decor` / 将来的新键），从旧 `state` 出发就等于
+            # **只保留了我们记得手动抄过来的那三个** —— 以后任何人在 `_ld_ck_apply` 里新写
+            # 一个键，都会在「正文失败」这一支上**静默消失**，而且没有任何门禁看得见
+            # （同一件事两处真相的又一个形态，见 docs/lessons.md 推论 13）。
+            # 下面三行是**点名保留旧值**，不是「拷贝恰好没被改」：读者一眼能看出这一帧的意图。
+            self._ld_stream_put(key, {**live_state,
+                                      "last": state.get("last", ""),
+                                      "last_at": state.get("last_at"),
+                                      "frames": int(state.get("frames") or 0),
+                                      "ck_dead": live_state.get("ck_dead") or set(),
                                       # 装饰**在正文之前写**，正文失败时装饰可能已经写成功 ⇒
                                       # 记账要跟着走，否则下一帧会把没变的装饰重写一遍
                                       "ck_decor": live_state.get("ck_decor") or {},
