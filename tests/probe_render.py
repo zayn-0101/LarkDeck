@@ -950,6 +950,14 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
                 state = item
             card_id = (state or {}).get("card_id") if isinstance(state, dict) else None
             print(f"   实体 card_id = {card_id}（必须有值，否则说明走的是 patch 传输）")
+            # ⚠️ **必须记账**（2026-09-14 实测踩到）：这一支以前不记 `message_id`，
+            # 于是「认不出来的探针卡」只能靠人长按删 —— 我自己就有一次重跑留下的卡
+            # 认不出来（`--clean-only` 按账本删，账本里没有它就删不掉）。
+            # 判据：能从回合状态里拿到 message_id 就立刻记进账本。
+            _mid_now = (state or {}).get("message_id") if isinstance(state, dict) else None
+            if _mid_now:
+                _save_sent_ids(_load_sent_ids() + [str(_mid_now)])
+                print(f"   已记账 message_id = {_mid_now}（`--clean-only` 能按它删掉这张）")
             for cut in (20, 40, len(text)):
                 ok = loop.run_until_complete(adapter.send_stream_frame(
                     text[:cut], chat_id=chat, turn_id=tid))     # ← 同一个 tid
