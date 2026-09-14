@@ -42,7 +42,12 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("larkdeck.panel")
 
-_LOCK = threading.Lock()
+# ⚠️ 这里**曾经**是 `_LOCK = threading.Lock()`（R11-A0 改掉）：锁必须与它守的容器**同源**。
+# 容器已经是进程级共享的（见下面 `_shared_state`），而锁是模块级 ⇒ 同一进程里插件的
+# **两份模块对象各持一把锁**，互斥从构造上失效：一份在 `_purge_locked` 里迭代
+# `_STATE.items()`、另一份同时在插新桶 ⇒ 实测 `RuntimeError: dictionary changed size
+# during iteration`（真机上是「偶发丢面板」，完全不可复现的那种）。现在的 `_LOCK` 定义在
+# `_SHARED` 之后，直接从共享盒子里取。
 
 #: 最多同时保留的会话数；超出按最近更新淘汰。
 _MAX_SESSIONS = 16
@@ -81,23 +86,64 @@ _MAX_CLOSED_TURNS = 8
 # 表现为「最近写卡：无记录 · 累计 0 帧」而卡片明明在往外冒字。
 # 修法：把状态容器挂到一个**进程级稳定位置**（`builtins` 上的私有名字），
 # 两份模块对象取到的是**同一个 dict** —— 这正是文档里「进程级全局」这句话的实现。
-def _shared_state() -> Dict[str, Any]:
+#: **进程级共享盒子的唯一键清单**（R11-A0）。改这里就是改盒子本体 —— 别在别的模块里再抄一份
+#: （`context.py` 过去自己声明过一串同名键，那是「同一件事两处真相」：加一个键很容易只加一处，
+#: 而漏掉的那一份会**静默新建一个不属于盒子的容器**，症状与「世代裂脑」一模一样）。
+#: 断言：`tests/test_units.py` 的 ㉙ 要求 `set(真实盒子) == set(_SHARED_BOX_FACTORY)`。
+_SHARED_BOX_FACTORY: Dict[str, Any] = {
+    # —— 面板数据层（panel.py 自己用）
+    "panel_state": {}, "panel_chat_session": {}, "panel_last_active": [""],
+    # ⚠️ **锁必须与它守的容器同源**（R11-A0）：容器进程级共享、锁模块级 ⇒ 两份模块对象
+    # 各持一把锁 ⇒ 互斥失效（实测 `dictionary changed size during iteration`）。
+    "panel_lock": threading.Lock(),
+    # R11-A7：正文累积的**独立小仓库**（``session_id -> {turn, parts, ...}``）与它自己的
+    # 「最近活跃」盒子。为什么不塞进 `panel_state` 的会话桶、也不借 `panel_last_active`：
+    # 正文累积只有一个用途（当**前缀对照物**），而面板那个盒子会被 `_purge_locked` 按
+    # 「必须指向一个真面板桶」清空 —— 借来的话，「纯正文回合」（压根没有面板桶）第一帧就丢归属。
+    "answers": {}, "answers_last": [""],
+    # —— 指标与账本（context.py 用）
+    "status": None,
+    "context_lock": threading.Lock(), "ctx_inflight": set(),
+    "ctx_latest": {}, "ctx_max_cache": {}, "ctx_retry_after": {},
+    "ctx_max_override": [None], "ctx_aliases": {},
+    # —— 注册结论（adapter.py 用）：两世代各记一份的话，`/larkdeck status` 与启动自检
+    # 会按「读到哪一代」给两个不同的答案（钩子 7/7 还是 0/7、命令注册还是没注册）。
+    # ⚠️ 适配器的**类缓存**（`_BASE_CLASSES`/`_MERGED_CLASSES`）**故意不在**这里 ——
+    # 它们缓存的是代码而不是结论，共享会把活适配器冻在上一世代的代码上（见 adapter.py 的说明）。
+    "adapter_hooks": {}, "adapter_command": {},
+    # ⚠️ **明确不共享**的一项：各 `_log_*_once` 的限流戳挂在**函数对象**上（`fn._at`），
+    # 而函数对象是每个世代的模块自己的 ⇒ 换世代后限流窗口会重置一次（最多多打一条同样的
+    # 限流日志）。它**不影响任何行为与数据**，而为它搬家要把 ~10 处调用点改成查表 ——
+    # 收益与风险不成比例，所以这里显式记成「已决定：不共享」，不是「忘了」。
+}
+
+
+def shared_box() -> Dict[str, Any]:
+    """进程级共享盒子的**唯一入口**（`context.py` / `adapter.py` 都从这里取，不各自声明键）。"""
     import builtins
     box = getattr(builtins, "_larkdeck_shared_state", None)
     if not isinstance(box, dict):
-        box = {"panel_state": {}, "panel_chat_session": {}, "panel_last_active": [""],
-               "status": None,
-               # R11-A7：正文累积的**独立小仓库**（``session_id -> {turn, parts, ...}``）
-               # 与它自己的「最近活跃」盒子。为什么不塞进 `panel_state` 的会话桶、也不借
-               # 面板的 `panel_last_active`：正文累积的用途只有一个（当**前缀对照物**），
-               # 而面板那个盒子会被 `_purge_locked` 按「必须指向一个真面板桶」清空 ——
-               # 借来的话，「纯正文回合」（压根没有面板桶）会在第一帧就丢掉归属。
-               "answers": {}, "answers_last": [""]}
+        box = {}
         setattr(builtins, "_larkdeck_shared_state", box)
+    for key, default in _SHARED_BOX_FACTORY.items():
+        if key not in box:
+            # 容器按**类型**造一个新的（不能共用 `_SHARED_BOX_FACTORY` 里那个原对象：
+            # 它是模块级原型，共用会让「测试里 reset 一下」把原型本体也清掉）。
+            box[key] = dict(default) if isinstance(default, dict) else (
+                list(default) if isinstance(default, list) else (
+                    set(default) if isinstance(default, set) else default))
     return box
 
 
-_SHARED = _shared_state()
+def _shared_state() -> Dict[str, Any]:
+    """（历史名字，保留给老调用点）等价于 :func:`shared_box`。"""
+    return shared_box()
+
+
+_SHARED = shared_box()
+
+#: 面板的互斥锁 —— **从共享盒子取**（见 `_SHARED_BOX_FACTORY` 里的长注释）。
+_LOCK: threading.Lock = _SHARED["panel_lock"]
 
 #: ``session_id -> {"turn", "parts", "len", "complete", "tool_since_text", "updated"}``
 _ANSWERS: Dict[str, Any] = _SHARED.setdefault("answers", {})

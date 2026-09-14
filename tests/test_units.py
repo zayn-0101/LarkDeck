@@ -3246,6 +3246,81 @@ def test_panel_and_context_state_survive_the_module_being_loaded_twice() -> None
     assert context._MAX_OVERRIDE_BOX is box["ctx_max_override"], \
         "标量配置（context_max_override）也要用共享盒子，否则两份模块各记一个值"
 
+    # ㉙ **R11-A0：容器共享了，锁也必须共享；键清单只有一处。**
+    #    为什么锁是独立的缺陷：容器进程级共享、而 `_LOCK` 是模块级 ⇒ **两份模块对象各持一把锁**，
+    #    互斥从构造上失效 —— 一份在 `_purge_locked` 里迭代 `_STATE.items()`、另一份同时插新桶，
+    #    实测 `RuntimeError: dictionary changed size during iteration`（真机上是「偶发丢面板」，
+    #    不可复现的那一类）。判据是**对象同一性**（互斥性由它推出），不靠复现竞态。
+    assert copy1["_LOCK"] is copy2["_LOCK"], \
+        "面板锁必须与它守的容器同源（两份模块对象各持一把锁 = 互斥失效）"
+    assert copy1["_LOCK"] is box["panel_lock"]
+    assert context._LOCK is box["context_lock"], \
+        "指标层的锁也必须共享（`_LATEST`/`_STATUS` 的读改写跨世代才真正互斥）"
+    assert context._INFLIGHT is box["ctx_inflight"], \
+        "「正在探测」集合必须共享：各持一份时，另一份 discard 不掉 ⇒ 那个模型永远不再被探测"
+    assert adapter.HOOKS is box["adapter_hooks"] and adapter.COMMAND is box["adapter_command"], \
+        "注册结论（钩子挂载数 / 命令注册）必须共享，否则自检按世代给出两个不同的答案"
+    assert set(box) == set(panel._SHARED_BOX_FACTORY), \
+        (f"共享盒子的键清单必须只有一处真相（`panel._SHARED_BOX_FACTORY`）："
+         f"多出 {sorted(set(box) - set(panel._SHARED_BOX_FACTORY))}、"
+         f"缺少 {sorted(set(panel._SHARED_BOX_FACTORY) - set(box))}")
+    # 压力冒烟：两个线程各拿一份模块对象反复写 + 淘汰。**这不是判别力来源**（两把锁时它
+    # 也可能侥幸通过），只是「共享之后真的没炸」的旁证 —— 判别力在上面那组同一性断言上。
+    import threading as _threading
+
+    def _hammer(mod: dict) -> None:
+        for i in range(120):
+            mod["record_tool_started"]("s-hammer", "t-hammer", "bash",
+                                       {"cmd": "ls"}, f"c-{i % 7}")
+            mod["snapshot"]("")
+
+    _threads = [_threading.Thread(target=_hammer, args=(m,)) for m in (copy1, copy2)]
+    for _t in _threads:
+        _t.start()
+    for _t in _threads:
+        _t.join()
+    copy1["reset"]()
+
+
+def test_merged_class_never_stacks_our_mixin_twice() -> None:
+    """R11-A6：**自套娃**检测 —— 第二世代拿到的基类是**第一世代的合并类**。
+
+    真机时序（日志实测）：两遍扫描各注册一次平台 ⇒ 第二世代的 `_discover_base_class()`
+    问注册表要「上一个工厂造出来的类」时，拿回来的是第一世代的合并类。照旧写法再叠一层，
+    MRO 就是 ``[新合并, 新混入, 旧合并, 旧混入, 官方…]`` —— 混入层里 `super().xxx()` 的
+    回退路径会**执行两遍**，而我们的回退路径都是「真的去写一次卡 / 真的去交还控制权」
+    ⇒ 同一帧写两次。
+
+    ⚠️ 关键细节：**跨世代的 `LarkDeckMixin` 是两个不同的类对象**（模块被重新 exec 过），
+    所以「剥旧层」不能只按对象同一性判 —— 下面第二格就是用**同名不同对象**的假旧层钉这条。
+    """
+    class _Official:
+        def ping(self) -> str:
+            return "official"
+
+    first = adapter.merged_class(_Official)
+    assert first.__mro__.count(adapter.LarkDeckMixin) == 1, "正常叠一层就够"
+    assert _Official in first.__mro__
+
+    with _LogCapture("larkdeck") as records:
+        second = adapter.merged_class(first)          # ← 第二世代拿到的基类
+    assert second.__mro__.count(adapter.LarkDeckMixin) == 1, \
+        "自套娃：混入层被叠了两层（`super()` 回退路径会执行两遍）"
+    assert second.__bases__ == (adapter.LarkDeckMixin, _Official), \
+        f"合并类必须直接继承**官方类**，而不是上一世代的合并类：{second.__bases__}"
+    assert second.__mro__.index(_Official) == second.__mro__.index(adapter.LarkDeckMixin) + 1, \
+        "官方类必须紧跟在我们这一层之后（中间多一层 = 那段代码会被执行两遍）"
+    assert any("已经是本插件叠过的" in r.getMessage() for r in records), \
+        "自套娃必须在日志里说出来（它是「插件被加载了两遍」最直接的信号）"
+
+    # 跨世代：旧层是**同名但不同对象**的类（模拟上一世代那份模块）
+    class LarkDeckMixin:                              # noqa: N801 - 故意同名，模拟旧世代
+        pass
+
+    _gen1_merged = type(adapter.ADAPTER_CLASS_NAME, (LarkDeckMixin, _Official), {})
+    assert adapter._official_base_class(_gen1_merged) is _Official, \
+        "按对象同一性判会漏掉旧世代的层（同名不同对象）—— 必须连名字一起判"
+
 
 def test_unified_panel_applies_caps() -> None:
     panel = cards.unified_panel(reasoning="x" * 5000, tools=["a"])

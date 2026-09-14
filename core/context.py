@@ -43,25 +43,23 @@ from . import i18n as _i18n
 
 logger = logging.getLogger("larkdeck.context")
 
-_LOCK = threading.Lock()
-
 def _shared_box() -> Dict[str, Any]:
-    """进程级共享容器本体（`panel` 与本模块共用同一个 `builtins` 上的盒子）。"""
-    import builtins
-    box = getattr(builtins, "_larkdeck_shared_state", None)
-    if not isinstance(box, dict):
-        box = {}
-        setattr(builtins, "_larkdeck_shared_state", box)
-    for key, default in (("panel_state", {}), ("panel_chat_session", {}),
-                         ("panel_last_active", [""]), ("status", None),
-                         ("ctx_latest", {}), ("ctx_max_cache", {}),
-                         ("ctx_retry_after", {}), ("ctx_max_override", [None]),
-                         ("ctx_aliases", {})):
-        if key not in box:
-            box[key] = dict(default) if isinstance(default, dict) else (
-                list(default) if isinstance(default, list) else default)
-    return box
+    """进程级共享容器本体 —— **委托面板层的唯一入口**（R11-A0）。
 
+    ⚠️ 这里**过去自己声明了一串键**（`panel_state` / `status` / `ctx_latest` …），与
+    `panel._shared_state()` 构成「同一件事两处真相」：给盒子加一个键很容易只加一处，
+    而漏掉的那一份会**静默新建一个不属于盒子的容器** —— 症状与「世代裂脑」一模一样
+    （钩子写一份、卡片读另一份），而这次连「两份模块对象」都看不出来。
+    现在键清单只在 `panel._SHARED_BOX_FACTORY` 一处；本模块只读/取用。
+    依赖方向是安全的：`panel` 只 import 标准库，不 import 本模块。
+    """
+    from . import panel as _panel
+    return _panel.shared_box()
+
+
+#: 指标层的互斥锁 —— **从共享盒子取**（与 `panel._LOCK` 同一条纪律：容器共享了、锁也必须共享，
+#: 否则同一进程里两份模块对象各持一把锁，`_LATEST`/`_STATUS` 的读改写就不再互斥）。
+_LOCK: threading.Lock = _shared_box()["context_lock"]
 
 def _shared_status() -> Dict[str, Any]:
     """账本容器挂在**进程级稳定位置**上（理由见 `panel._shared_state` 的长注释）。
@@ -94,7 +92,10 @@ _LATEST: Dict[str, Any] = _shared_box()["ctx_latest"]
 _MAX_CACHE: Dict[str, Optional[int]] = _shared_box()["ctx_max_cache"]
 
 #: 正在后台探测的 key（避免同一模型被并发渲染起出一堆线程）。
-_INFLIGHT: set = set()
+# ⚠️ 也必须进程内共享（R11-A0）：两世代各持一份 ⇒ 同一个 key 会被探测两次（多起线程、
+# 多花一次网络往返），而且 `_INFLIGHT.discard` 只清掉自己那份 ⇒ 另一份的 key **永远留在
+# 「在飞」集合里**、那个模型的上下文窗口**永远不会被探测**（静默退化成家族兜底）。
+_INFLIGHT: set = _shared_box()["ctx_inflight"]
 
 #: 探测**失败**后的退避截止时刻（单调钟）。失败不写负缓存，只退避重试。
 _RETRY_AFTER: Dict[str, float] = _shared_box()["ctx_retry_after"]

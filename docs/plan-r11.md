@@ -81,7 +81,8 @@ _MAX_CACHE/_RETRY_AFTER/_ALIASES/_MAX_OVERRIDE`）；`record_tool_started` 幂�
 
 | 步骤 | 内容 | 回滚点 |
 |---|---|---|
-| **A0 状态清点** | 把**进程内可变状态**列成表并逐条决定「共享 / 无关」：`panel._STATE/_CHAT_SESSION/_LAST_ACTIVE_BOX/_LOCK`、`context._STATUS/_LATEST/_MAX_CACHE/_RETRY_AFTER/_ALIASES/_MAX_OVERRIDE_BOX/_INFLIGHT/_LOCK`、`adapter.HOOKS/COMMAND/_BASE_CLASSES/_MERGED_CLASSES`、以及 `_log_*_once` 这类**挂在函数对象上的限流戳**。**锁必须与它守的容器同源**（现在是两世代共写同一 dict、却各有一把 `_LOCK` ⇒ 互斥失效）。共享盒子的**键清单收敛到一处**（`_shared_box()`），并加断言「盒子键集合 == 声明集合」 | `git revert` |
+| **A0 状态清点**（**已落地**） | 把**进程内可变状态**列成表并逐条决定「共享 / 无关」：容器、**锁**、在飞集合、结论性数据、类缓存、限流戳。**锁必须与它守的容器同源**（容器共享、锁模块级 ⇒ 两世代各一把 ⇒ 互斥失效，实测 `dictionary changed size during iteration`）。键清单**收敛到一处**（`panel._SHARED_BOX_FACTORY`，`context._shared_box()` 委托），断言 `set(box) == set(声明)`。**已实测落地**：`panel._LOCK`、`context._LOCK`、`context._INFLIGHT`、`adapter.HOOKS`、`adapter.COMMAND` 全部进盒子；**明确不共享**：适配器类缓存（缓存的是代码，共享会把活适配器冻在旧世代）与 `_log_*_once` 限流戳（只影响日志噪声）。变异 `R12-1..R12-5` 全红 | `git revert` |
+| **A6 自套娃检测**（本版新增，**已落地**） | 第二世代 `_discover_base_class()` 拿回的是**第一世代的合并类** ⇒ 照旧写法叠两层，混入里 `super()` 的**回退路径执行两遍**（同一帧写两次卡）。`merged_class()` 先用 `_official_base_class()` 剥掉我们的层，只继承官方类；并打一条 WARNING（「插件被加载了两遍」最直接的信号）。⚠️ **剥旧层不能只按对象同一性**（跨世代的 `LarkDeckMixin` 是两个不同类对象）⇒ 判据 = 同一性 **或** 命中我们自己的名字。变异 `R12-6/R12-7` 全红 | `git revert` |
 | **A1 决定性实测** | 启动自检里打一行：`scope=<hermes_home_key> · manager=<id> · manager._hooks['pre_tool_call'] 长度 · 世代标记`（世代标记 = 本模块加载序号）；再在一次真机回合里统计**每个钩子的派发次数**。**先拿到「哪一份是活的、哪一份只留在平台上」的实测结论**，A2' 才允许动手 | 同上 |
 | **A2'（取代 v1 的 A2）** | 按 A1 结论决定形态，候选：① 世代更替只影响「谁持有引用」，而状态已共享 ⇒ **记录结论、不加守卫**；② 若实测发现某世代零回调/平台被旧世代冻结 ⇒ 让**适配器按需解析共享状态**（而不是在 import 期绑定模块全局），并加「世代更替后第一帧仍能读到最新面板/页脚」的门禁 | 同上 |
 | **A3 每回合自检汇总**（已实现，v2 补两项） | 现有：正常收尾与失败收口各打一行 `面板=有/无（rounds/tools）· 页脚=有/无 · 写卡帧数=N · 传输 · 本回合帧=N · 会话桶=N`。**补**：① 写明账本是**进程级跨会话**（否则又是「数字旁边没有口径」）；② 补 `scope`；③ 门禁已具备判别力（失败路径 `本回合帧=-1` vs 正常收尾 `≥1`，变异 `R10-4` 已实测红） | `git revert` |

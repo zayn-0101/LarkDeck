@@ -407,11 +407,14 @@ _IDENTITY_ENTRY_FIELDS = frozenset({"name", "label", "adapter_factory", "check_f
                                      "source", "plugin_name"})
 
 #: 钩子订阅结论：``{钩子名: 是否成功}``；空 dict 表示还没跑过 register()。
-HOOKS: Dict[str, bool] = {}
+# ⚠️ R11-A0：**必须进程级共享** —— 两世代各记一份的话，`/larkdeck status` 与启动自检会按
+# 「读到哪一代」给出两个不同的答案（钩子 7/7 还是 0/7、命令注册还是没注册），
+# 而这两个答案都是**结论性**的、用户会拿去排障。
+HOOKS: Dict[str, bool] = _panel.shared_box()["adapter_hooks"]
 
-#: 插件命令名（`/larkdeck status`）与注册结论；`register()` 填 `COMMAND`。
+#: 插件命令名（`/larkdeck status`）与注册结论；`register()` 填 `COMMAND`（同上：进程级共享）。
 LARKDECK_COMMAND = "larkdeck"
-COMMAND: Dict[str, Any] = {}
+COMMAND: Dict[str, Any] = _panel.shared_box()["adapter_command"]
 
 #: ``plugin.yaml`` 的位置与版本行。版本**每次现读**，不复制成常量 —— 常量会漂
 #: （改了清单忘了改常量，卡片就会自信地报一个错的版本号）。
@@ -3206,6 +3209,12 @@ class LarkDeckMixin:
 # --------------------------------------------------------------------------- #
 # 组装
 # --------------------------------------------------------------------------- #
+#: ⚠️ R11-A0 的**明确决定：这两个缓存留在「每个世代各一份」，不进共享盒子**。
+#: 它们缓存的是**代码**（内置工厂 → 官方类、官方类 → 我们叠出来的类），不是结论：
+#: 共享的话，第二世代会直接复用**第一世代那份合并类**，于是「活适配器」永远跑第一世代的
+#: 代码，而钩子跑第二世代 —— 插件升级后只做一次重载（不重启进程）时，两边就是**不同版本的
+#: 代码在同一个回合里协作**。留在各世代 + 下面 `_official_base_class()` 剥掉旧层，
+#: 得到的正是「第二世代的混入 + 官方基类」：单一混入层、代码同一个世代。
 _BASE_CLASSES: Dict[Any, type] = {}
 _MERGED_CLASSES: Dict[type, type] = {}
 
@@ -3270,12 +3279,72 @@ def _log_probe_report(report: Dict[str, Any]) -> None:
                        "工具行会重新并进正文（「干净卡片」静默失效）", missing_display)
 
 
+#: 我们自己的层用的名字（`LarkDeckMixin` 与 `merged_class()` 造出来的类名）。
+_OUR_LAYER_NAMES = frozenset({ADAPTER_CLASS_NAME, LarkDeckMixin.__name__})
+
+
+def _is_our_layer(klass: type) -> bool:
+    """这个类（或它的 MRO 里）是不是**本插件自己叠的一层**。
+
+    ⚠️ **不能只按对象同一性判**（R11-A6 的关键细节）：同一进程里插件的模块被重新加载过时，
+    上一世代的 `LarkDeckMixin` 与这一世代的 `LarkDeckMixin` 是**两个不同的类对象**
+    （模块被重新 `exec` 了）—— 只按 `is` 判就会**认不出旧层**，于是自套娃照旧发生。
+    所以对象同一性 **或** 名字命中（`LarkDeckMixin` / 合并类名）都算。名字来自我们自己的代码，
+    不涉及 Hermes 内部结构（不变量 4）。
+    """
+    names = _OUR_LAYER_NAMES
+    try:
+        for item in getattr(klass, "__mro__", ()):
+            if item is LarkDeckMixin or getattr(item, "__name__", "") in names:
+                return True
+    except Exception:  # pragma: no cover - 防御性
+        return False
+    return False
+
+
+def _official_base_class(cls: type) -> type:
+    """把 `cls` 的 MRO 里**我们自己的层**剥掉，返回真正该被继承的那个类（R11-A6）。
+
+    为什么需要它（**自套娃**）：第二世代的 `_discover_base_class()` 问注册表要「上一个工厂
+    造出来的类」，而那时注册表里挂的是**第一世代的 `build_adapter`** ⇒ 拿回来的基类
+    是第一世代的合并类。照旧写法再叠一层，MRO 会变成
+    ``[第二世代合并, 第二世代混入, 第一世代合并, 第一世代混入, 官方…]``。
+    后果不是「多一层」这么轻：**混入层里那些 `super().xxx()` 的回退路径会被执行两遍**
+    （第二世代混入 → 第一世代混入 → 官方），而我们的回退路径全都是「真的去写一次卡 /
+    真的去交还控制权」，也就是**同一帧写两次、状态改两遍**。
+
+    `cls` 本身就是官方类时**原样返回**（等价于改之前的行为）。
+    """
+    try:
+        for klass in cls.__mro__:
+            if _is_our_layer(klass):
+                continue
+            return klass
+    except Exception:  # pragma: no cover - 防御性：拿不到 MRO 就用原类（退回旧行为）
+        logger.debug("[larkdeck] 剥不掉自己那一层，按原类处理", exc_info=True)
+    return cls
+
+
 def merged_class(base_cls: type) -> type:
-    """给 ``base_cls`` 叠一层 ``LarkDeckMixin``；按 base_cls 缓存，避免重复建类。"""
-    merged = _MERGED_CLASSES.get(base_cls)
+    """给 ``base_cls`` 叠**一层** ``LarkDeckMixin``；按剥掉旧层之后的官方类缓存。
+
+    ⚠️ 缓存键是**剥掉旧层之后**的那个类（`_official_base_class`）：两世代都问同一个官方类，
+    各自得到「自己世代的混入 + 官方类」，既不会叠成两层，也不会跨世代共用代码。
+    """
+    official = _official_base_class(base_cls)
+    if official is not base_cls:
+        # A6：把「自套娃」这件事说出来。它**不是**致命错误（下面已经剥掉了），但它是
+        # 「插件在同一进程里被加载两遍」最直接的信号 —— 没有这一行，那个事实只能靠
+        # `Plugin discovery complete` 出现两次来推断（日志里很容易被淹没）。
+        logger.warning("[larkdeck] 适配器基类已经是本插件叠过的（%s）—— 说明同一进程里"
+                       "插件的模块被重新加载过（世代更替）；本次改为继承官方类 %s，"
+                       "避免把混入层套两层（回退路径会被执行两遍）",
+                       getattr(base_cls, "__name__", base_cls),
+                       getattr(official, "__name__", official))
+    merged = _MERGED_CLASSES.get(official)
     if merged is None:
-        merged = type(ADAPTER_CLASS_NAME, (LarkDeckMixin, base_cls), {"__module__": __name__})
-        _MERGED_CLASSES[base_cls] = merged
+        merged = type(ADAPTER_CLASS_NAME, (LarkDeckMixin, official), {"__module__": __name__})
+        _MERGED_CLASSES[official] = merged
     return merged
 
 
