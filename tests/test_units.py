@@ -940,6 +940,11 @@ def _golden_trace() -> dict:
         # 而「面板内容整条丢失」这种改动就抓不到（R1 审计 W6：把面板内容换成常量，全绿）。
         panel.reset()
         panel.record_reasoning("oc_golden", "s-golden", "先想一下这个问题该怎么拆。")
+        # ⚠️ **seed 之前先有一个工具**：否则种子那一帧的 `panel_tools` 只是空占位，
+        #    「seed 漏传 `panel_tools_text`」这种改动在夹具里**看不出来**（R3 代码审计中-3
+        #    实测：掉参数四门禁全绿）。工具事件会 finalize 当前推理轮，所以下面还会再补一轮推理。
+        panel.record_tool_started("oc_golden", "s-golden", "terminal",
+                                  {"command": "ls"}, "tc-golden-0")
         returns.append(_run(raw.send_stream_frame("", chat_id="oc_golden", turn_id="t-golden")))
         # ⚠️ **必须有工具事件**（R3 收窄版的夹具定义域）：面板拆成 `panel_body` + `panel_tools`
         # 两块之后，只灌推理的场景里 `panel_tools` 恒为空 ⇒ `entity_card` 与装饰 batch 在
@@ -1079,8 +1084,9 @@ def test_ck_plan_content_and_role_failures_are_pinned():
 def test_ck_create_wall_counts_elements_recursively():
     """建实体前的**两道墙**（R2 补的审计缺口）：字节是硬上限，元素是**递归** 200。
 
-    为什么单独拿纯函数验：这道墙在今天的实体卡上**永远不会响**（结构定死 4 个元素）——
-    而 R3 要把面板改成多子元素、元素数变成动态的，那时它必须已经在位。用**合成的长卡**
+    为什么单独拿纯函数验：这道墙在今天的实体卡上**永远不会响**（结构定死 **5** 个元素：
+    正文 + 面板 + 面板里两个 markdown + 页脚）—— 而 R3 **完整版**（每工具一行，运行时
+    `card_element.create`）会把元素数变成动态的，那时它必须已经在位。用**合成的长卡**
     直接喂它，不依赖「今天会不会响」。
     ⚠️ 判别力来自**变异 `R2-12`**（把递归计数换成只数顶层）：嵌套那一条（1 个面板里塞 210 个
     子元素）在**只数顶层**的错实现下会放行 ⇒ 断言变红。审计提醒：别把这条夸成「两种实现在
@@ -1413,7 +1419,8 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         # R3 收窄版：面板是 `panel_body`（推理）+ `panel_tools`（工具）两块，**都在首帧建出来**
         # ⇒ 首帧的装饰 batch 是三元素；之后只有内容变了的那一块才会再写（工具块在这个场景里
         # 一直没有工具事件，所以只出现首帧那一次 —— 「工具块变化只重写工具块」由
-        # `test_cardkit_panel_tools_block_rewrites_alone` 单独钉）。
+        # 本函数末尾的**场景 ㉕** 单独钉（原先这里写的是一个**并不存在**的函数名 ——
+        # 2026-09-14 R3 代码审计按「文档说有、代码没有」的规矩抓出来的）。
         assert batch_ids == [["panel_body", "panel_tools", "footer"], ["footer"], ["panel_body"]], \
             f"装饰只在**内容变了**的元素上重写（顺序：变化的那一帧才发）：{batch_ids}"
         assert batch_seqs == [1, 4, 6], f"三次装饰 batch 的序号：{batch_seqs}"
@@ -1890,6 +1897,13 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             degrade_body = json.dumps(calls["patch_cards"][-1], ensure_ascii=False)
             assert grown3[cut:] in degrade_body and "前段标记" not in degrade_body, \
                 "降级分支同样不许重放前半段"
+            # R3 收窄版：降级走的是**普通卡**（`unified_panel`，面板 id 是 `auxiliary_timeline`）
+            # ⇒ 这句话只该是普通卡的面板，绝不许把实体卡那两块（`panel_body`/`panel_tools`）
+            # 塞进来。这是**反向断言**（AGENTS/CHANGELOG 里说过「三条车道有反向断言」——
+            # 2026-09-14 审计实测只有收尾那一条真有，这条就是补上的另一半）。
+            assert cards.CARDKIT_PANEL_TOOLS_ID not in degrade_body \
+                and cards.CARDKIT_PANEL_BODY_ID not in degrade_body, \
+                "降级车道用的是普通卡，不该带实体卡的面板元素"
 
             # ⑥ 收尾：封的是**最新那张**，内容同样是本卡那一段
             raw2r._ld_streams["oc_ck2r:t-2r"]["card_id"] = "ck_2"
@@ -2415,12 +2429,33 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         adapter.configure(native_transport="cardkit", unified_panel=True,
                           max_reasoning_chars=100)
         _panel_mod.record_reasoning("oc_ck12", "s-ck12", "推理" * 400)
-        _md = raw11._ld_panel_markdown("oc_ck12", None)
-        assert _md, "前提：面板得有内容（否则这条断言恒真）"
-        assert len(_md) <= 200, \
-            f"配了 max_reasoning_chars=100，cardkit 面板却有 {len(_md)} 字符（上限被忽略）"
+        # ⚠️ 这里**必须**钉在真正写入实体卡的那条路径上（`_ld_panel_parts`）。
+        #    R3 收窄版把实体卡的面板从「一个 markdown」拆成两块之后，
+        #    `_ld_panel_markdown` 在生产里**一个调用方都没有**了 —— 而这条用例原本调的就是它
+        #    （2026-09-14 R3 代码审计实测：把 `_ld_panel_parts` 的三个上限换成写死的值，
+        #    四门禁全绿 ⇒ 实体卡面板的上限**完全没人守**，长工具行/200 步都不会被截断，
+        #    最后撞建实体的字节墙 ⇒ 那一帧 fail-open）。所以两块各自断言一次。
+        _body, _tools = raw11._ld_panel_parts("oc_ck12", None)
+        assert _body, "前提：推理块得有内容（否则这条断言恒真）"
+        assert len(_body) <= 200, \
+            f"配了 max_reasoning_chars=100，cardkit 的推理块却有 {len(_body)} 字符（上限被忽略）"
+        # 工具块的两个上限同样要守（用户可配 `max_tool_result_chars` / `max_panel_steps`）
+        adapter.configure(max_tool_result_chars=60, max_panel_steps=3)
+        for _i in range(8):
+            _panel_mod.record_tool_started("oc_ck12", "s-ck12", f"tool{_i}", {"i": _i}, f"c{_i}")
+            _panel_mod.record_tool_finished("oc_ck12", "s-ck12", f"tool{_i}", status="ok",
+                                            duration_ms=10, tool_call_id=f"c{_i}")
+        _body2, _tools2 = raw11._ld_panel_parts("oc_ck12", None)
+        assert _tools2, "前提：工具块得有内容"
+        _rows = [r for r in _tools2.split("\n\n") if r.startswith(("✅", "⏳"))]
+        assert len(_rows) == 3, \
+            f"配了 max_panel_steps=3 ⇒ 只该留 3 行工具，实得 {len(_rows)}：{_tools2!r}"
+        assert "tool7" in _tools2 and "tool0" not in _tools2, \
+            f"要留**最近**的几步：{_tools2!r}"
         _panel_mod.reset()
-        adapter.configure(max_reasoning_chars=adapter._DEFAULTS["max_reasoning_chars"])
+        adapter.configure(max_reasoning_chars=adapter._DEFAULTS["max_reasoning_chars"],
+                          max_tool_result_chars=adapter._DEFAULTS["max_tool_result_chars"],
+                          max_panel_steps=adapter._DEFAULTS["max_panel_steps"])
 
         # ⑪ 两条 CardKit 告警的**限流**本身要有门禁（第十二路审计缺口 3）：
         #    `M07`/`CK4`/`CK8` 只打「失败被吞掉」的调用点，从没打过「60 秒一条」这件事。
@@ -5144,7 +5179,13 @@ def test_long_body_still_redraws_on_stop_and_never_degrades_silently():
         assert raw._ld_state, "（前提）卡应当被追踪"
         _run(raw.interrupt_session_activity("sk", "oc_1"))
         assert updates, "长正文的卡在 /stop 时没有重绘（原来的静默缺陷）"
-        assert "yellow" in json.dumps(json.loads(updates[-1]["content"]), ensure_ascii=False)
+        _stop_body = json.dumps(json.loads(updates[-1]["content"]), ensure_ascii=False)
+        assert "yellow" in _stop_body
+        # R3 收窄版：`/stop` 重绘也是**普通卡** ⇒ 同样不许出现实体卡那两块面板元素
+        # （审计实测这条反向断言原本只覆盖收尾那一条车道）。
+        assert cards.CARDKIT_PANEL_TOOLS_ID not in _stop_body \
+            and cards.CARDKIT_PANEL_BODY_ID not in _stop_body, \
+            "`/stop` 重绘用的是普通卡，不该带实体卡的面板元素"
 
         # ①' 阈值之内但远超卡片自己的降载预算（= 那条阻断项的实测区间）：**必须**保留正文
         panel.reset()

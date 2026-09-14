@@ -749,23 +749,28 @@ MUTATIONS = [
      '    if _cards.card_bytes(card) > _cards.FEISHU_CARD_BYTE_LIMIT:',
      '    if False:',
      "test_units"),
-    # ⚠️ 锚点必须带上 `_cards.panel_markdown(` 那一行：这四行在 `adapter.py` 里出现**两次**
-    # （`_ld_panel` 与 `_ld_panel_markdown` 各一次），短锚点会改到另一处去 ——
-    # 这一条刚写出来时就被新加的唯一性守卫当场拦下（第十二路审计缺口 2）。
-    ("CK16-CardKit 面板无视用户的三个上限", "core/adapter.py",
-     '''            return _cards.panel_markdown(
-                reasoning=str(snap.get("reasoning") or ""),
-                rounds=snap.get("rounds") or [],
-                tools=steps,
-                max_reasoning_chars=_cfg_int("max_reasoning_chars", _cards.MAX_REASONING_CHARS),
-                max_tool_chars=_cfg_int("max_tool_result_chars", _cards.MAX_TOOL_RESULT_CHARS),
-                max_steps=_cfg_int("max_panel_steps", _cards.MAX_PANEL_STEPS),
-            )''',
-     '''            return _cards.panel_markdown(
-                reasoning=str(snap.get("reasoning") or ""),
-                rounds=snap.get("rounds") or [],
-                tools=steps,
-            )''',
+    # ⚠️ **锚点在 R3 收窄版落地时重对准过**：实体卡的面板改由 `_ld_panel_parts` 渲染之后，
+    # `_ld_panel_markdown`（原锚点）在生产里**一个调用方都没有**了 —— 变异打在孤儿函数上
+    # 等于打在死代码上（那正是 `CK23` 教过的形态：撤掉「修复」四门禁照旧全绿）。
+    # 现在锚点对着**真正写进卡的那条路径**，判据是「配了上限却没用上就必须红」。
+    ("CK16-实体卡面板无视用户的三个上限（推理块与工具块都不截断）", "core/adapter.py",
+     '''                _cards.panel_rounds_markdown(
+                    reasoning=str(snap.get("reasoning") or ""),
+                    rounds=snap.get("rounds") or [],
+                    max_reasoning_chars=_cfg_int("max_reasoning_chars", _cards.MAX_REASONING_CHARS),
+                ),
+                _cards.panel_tools_markdown(
+                    tools=steps,
+                    max_tool_chars=_cfg_int("max_tool_result_chars", _cards.MAX_TOOL_RESULT_CHARS),
+                    max_steps=_cfg_int("max_panel_steps", _cards.MAX_PANEL_STEPS),
+                ),''',
+     '''                _cards.panel_rounds_markdown(
+                    reasoning=str(snap.get("reasoning") or ""),
+                    rounds=snap.get("rounds") or [],
+                ),
+                _cards.panel_tools_markdown(
+                    tools=steps,
+                ),''',
      "test_units"),
     ("CK17-面板元素失败告警不再限流（每帧一条刷爆日志）", "core/adapter.py",
      '    if now - getattr(_log_ck_panel_write_failed_once, "_at", 0.0) < 60.0:\n        return',
@@ -849,6 +854,13 @@ MUTATIONS = [
      '    return "\\n\\n".join(lines)',
      '    for item in steps:\n        lines.append(item)\n'
      '    return "\\n\\n".join(lines)',
+     "test_units"),
+    ("R3-7-降级车道改用实体卡形状（把面板两块塞进普通卡载荷）", "core/adapter.py",
+     '                card = self._ld_build_card(visible, streaming=True,\n'
+     '                                           panel=self._ld_panel(chat, state.get("t0")),\n'
+     '                                           footer=self._ld_footer())',
+     '                card = _cards.cardkit_entity_card(visible, "", streaming=True,\n'
+     '                                                 panel_tools_text="")',
      "test_units"),
     ("R3-6-工具块的裁减方向写反（丢掉最近的、保留最早的）", "core/cards.py",
      '        lines.append(_i18n.t("panel.trimmed", n=len(steps) - max_steps))\n'
@@ -1088,9 +1100,11 @@ MUTATIONS = [
      '    original_builder = adapter.LarkDeckMixin._ld_build_resolved_card.__func__',
      "test_units"),
     # ---- R4：卡链（超长回答封旧卡 + 开新卡，正文只写本卡那一段）------------------------- #
+    # ⚠️ 锚点在 R3 收窄版落地时**重对准过一次**（那一行整行被重写成「面板两块按关键字传」）：
+    #    锚点失效 = 红（本项目规矩），而它当时确实让全量跑退出码 1 —— 重对准是唯一正确处置。
     ("R4-1-新卡重放整段（用户把前半段再看一遍）", "core/adapter.py",
-     '            ops = _ck_plan(visible, self._ld_panel_markdown(chat, state.get("t0")),',
-     '            ops = _ck_plan(display, self._ld_panel_markdown(chat, state.get("t0")),',
+     '            ops = _ck_plan(visible, _panel_body, live_elems, self._ld_footer(),',
+     '            ops = _ck_plan(display, _panel_body, live_elems, self._ld_footer(),',
      "test_units"),
     ("R4-2-封旧卡忘了关流式态（旧卡永远停在「正在生成」）", "core/adapter.py",
      '                                   streaming=False,',

@@ -1167,8 +1167,15 @@ def panel_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = ()
 
     ⚠️ **实体卡（CardKit）不再用这个函数**（R3 收窄版起）：它拆成 `panel_body`
     （推理，:func:`panel_rounds_markdown`）+ `panel_tools`（工具行，:func:`panel_tools_markdown`）
-    两个元素。本函数保留给普通卡 / `patch` 传输 / `/stop` 重绘 / 降级车道 ——
-    那几条路径的面板**逐字节不变**。
+    两个元素（`adapter._ld_panel_parts`）。
+
+    ⚠️⚠️ **它现在在生产里没有调用方**（2026-09-14 R3 代码审计实测）：普通卡 / `patch` 传输 /
+    `/stop` 重绘 / 降级 / 收尾的面板**全部**走 :func:`unified_panel`（它有自己的一套截断逻辑），
+    而实体卡走 `_ld_panel_parts`。本函数目前只被**单测与探针**使用 —— 所以：
+      * **别**把它当成「几条车道共用的面板渲染」来推理（旧版注释就是这么写错的）；
+      * 改面板渲染规则时，**真正要改的是 `_ld_panel_parts` 与 `unified_panel` 两处**；
+      * 想删掉它得先把单测/探针的引用一起清掉（现在留着是为了避免一次「顺手删」把
+        两条路径的输出对比丢掉）。
     """
     parts = [part for part in (
         panel_rounds_markdown(reasoning=reasoning, rounds=rounds,

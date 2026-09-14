@@ -812,9 +812,10 @@ def _ck_create_wall(card: Mapping[str, Any]) -> Optional[str]:
       * 元素：``cards.count_elements``（**递归**口径 —— 真机实测服务端就是数递归总数：
         递归 200 收下、204 拒收，码 `300305`；只数顶层会让「面板里塞了 200 个子元素」这种
         形状从闸门底下溜过去）。
-    ⚠️ 这道墙**现在永远不会响**：实体卡的元素数是结构定死的 4 个（正文 + 面板 + 面板里的
-    markdown + 页脚）。留着它是**契约**：R3 要往面板里加子元素，那时元素数变成动态的，
-    墙必须已经在位（`tests/test_units.py` 直接拿合成长卡验它，不依赖它今天会响）。
+    ⚠️ 这道墙**现在永远不会响**：实体卡的元素数仍然是**结构定死的 5 个**（正文 + 面板 +
+    面板里**两个** markdown（推理块与工具块，R3 收窄版）+ 页脚）。留着它是**契约**：
+    R3 完整版（每工具一行、运行时 `card_element.create`）会让元素数变成动态的，那时墙必须
+    已经在位（`tests/test_units.py` 直接拿合成长卡验它，不依赖它今天会响）。
     """
     if _cards.card_bytes(card) > _cards.FEISHU_CARD_BYTE_LIMIT:
         return "字节"
@@ -1217,9 +1218,11 @@ class LarkDeckMixin:
         与 :meth:`_ld_panel` 取**同一份快照、同一套上限**，所以两条传输看到的内容一致；
         差别只是载体（多个元素 vs 一个 markdown 字符串）。任何异常都退回空串（面板是装饰）。
 
-        ⚠️ **CardKit 实体卡不再用它**（R3 收窄版起改用 :meth:`_ld_panel_parts` 的两块）——
-        这里保留，是因为 `/stop` 重绘、降级车道、收尾整卡替换与普通卡走的是同一条面板渲染，
-        那几条路径要**逐字节不变**。
+        ⚠️ **CardKit 实体卡不再用它**（R3 收窄版起改用 :meth:`_ld_panel_parts` 的两块）。
+        ⚠️⚠️ 与 `cards.panel_markdown` 一样，**它现在在生产里也没有调用方了**：
+        `/stop` 重绘、降级车道、收尾整卡替换与普通卡走的是 `_ld_panel()` → `unified_panel`
+        （另一条渲染路径）。保留它是给**单测与 `probe_render.py`** 用的对拍基准，
+        别再把它描述成「几条车道共用」。
         """
         try:
             if not _cfg("unified_panel"):
@@ -1585,9 +1588,9 @@ class LarkDeckMixin:
         )
 
     async def _ld_ck_create(self, chat: str, *, answer: str, panel_text: str,
+                            panel_tools_text: str,
                             reply_to: Optional[str] = None,
-                            footer_text: Optional[str] = None,
-                            panel_tools_text: str = "") -> Any:
+                            footer_text: Optional[str] = None) -> Any:
         """建 CardKit 实体 + 发实体卡。返回 ``(result, card_id, card_json)`` 或 ``None``。
 
         ⚠️ 第三个返回值是**建出来的那张卡的 JSON**：回合状态的元素表要从它里面抽

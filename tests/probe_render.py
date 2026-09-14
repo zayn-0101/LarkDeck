@@ -961,8 +961,11 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
             #   在真机上等于没有验证。
             _before_batches = len(calls["batch"])
             _panel_mod.record_tool_started(_sid, _tid, "bash", args={"command": "pwd"})
+            # ⚠️ 正文必须**比上一帧长**：帧文本的契约是「累积全文」，发一个更短的前缀虽然
+            #    直连适配器不会真的伤到用户，但作为「生产路径」证据不该出现非法帧形状
+            #    （R3 代码审计低-5 抓到）。
             ok_tool = loop.run_until_complete(adapter.send_stream_frame(
-                text[:12], chat_id=chat, turn_id=tid))
+                text + "。", chat_id=chat, turn_id=tid))
             _new_ids = [b[0] for b in calls["batch"][_before_batches:]]
             print(f"   工具开始那一帧 = {ok_tool} · 该帧写出的装饰元素 = {_new_ids}"
                   f"（**预期只含 panel_tools** —— 推理块没变就不许重发）")

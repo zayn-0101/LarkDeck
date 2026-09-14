@@ -177,8 +177,12 @@ SDK 的 `cardkit.v1.card` 只有 create/update/settings/batch_update/id_convert�
 `panel_body`（推理轮，`cards.panel_rounds_markdown`）+ `panel_tools`（工具行列表，
 `cards.panel_tools_markdown`），**都在建实体时建好**（结构仍然「建实体时定死」，没有引入
 流式期间的结构性写入），两块走**同一次** `card.batch_update` ⇒ **逻辑写次数一次都不增加**。
-收益：**工具事件只重写工具块、推理增长只重写推理块** —— 推理逐字在长时不再把那几十行工具摘要
-一起每帧重发（≈2.7KB/帧），客户端也不再整块重绘。顺序与拆分前**逐行一致**
+收益是两条**与时钟无关**的不变量：**工具结束那一帧不重发推理块**、**推理增长那一帧不重发
+工具块** —— 推理逐字在长时不再把那几十行工具摘要一起每帧重发（量级 ≈2.7KB/帧），客户端也不再
+整块重绘。⚠️ **工具开始那一帧通常两块都写**：工具会打断当前推理轮，轮次标题补上耗时
+（`**第 1 轮**` → `**第 1 轮 · 0.4s**`）⇒ 推理块内容真的变了；单测 ㉕ 的帧② 之所以是「只写工具块」
+是因为它**冻结了时钟**（`elapsed_ms` 恒为 0）—— 那条用例的结论只对**工具结束帧**与
+**推理增长帧**成立（2026-09-14 R3 代码审计中-1）。顺序与拆分前**逐行一致**
 （`cards.panel_markdown` 本来就是「先推理块、后工具行」两段式拼接）。
 证据：单测 ㉕/㉖ 两条（字面量 id 列表 + `⏳/✅` 字面量 + 反向搜索「工具名不许出现在推理块里」+
 三条普通卡车道不许带面板两块）、`golden_cardkit_trace.json` 的 diff（首帧三元素 → 工具事件那帧
@@ -500,7 +504,7 @@ summary 那一半必须先修一处高项。** 收口逐条如下（审计用的
 | R8①② 交互增强 | ✅ 完成（内联换卡 + 能力探测；失败态/「其他」/被拒文本/空提交/退化成功五条都只弹 toast 不动卡；顺带修掉一处既存测试污染）+ **对抗审计收口 8 条**（见上「对抗审计收口」节） | 单测 15 条 · 变异 `R8-1..R8-14` 全红 · 门禁 162/162 + OVERRIDE/HOOKS/CLARIFY E2E 全绿 · `disabled` 的**渲染观感**仍需肉眼（接口接受已真机确认）· ⚠️ 两处**只有真机能答**的留白：toast 是否真的弹出、空提交是否触发回调 |
 | R4 多卡拆分 | ✅ 完成（封旧卡 + 开新卡；正文只写本卡那一段；切点避围栏；装不下仍 fail-open） | 单测 2 条 · 变异 `R4-1..R4-7` 全红 · **真机生产路径**：4.6 万字 ⇒ `card.create=3`、封卡 patch 含「（续下一条）」且 `streaming_mode=False`、三帧全 `True`、探针卡按 message_id 删净（肉眼观感未验） |
 | R10 发布（+ 洁癖收尾） | ✅ 完成（v0.2.0 首次发布；洁癖收口六面：代码 / 运行态 / 文档 / 规则 / 记忆 / 工作区） | **冻结树上跑的全量门禁**：单测 **175/175** · OVERRIDE OK · HOOKS OK · CLARIFY E2E OK · 变异 **219/219 全红 + 8 对照绿** · 版本三处同步（`plugin.yaml` 0.2.0 / README 自检示例 / CHANGELOG 定稿）· annotated tag `v0.2.0` + GitHub Release（说明**手写**、红线扫描干净）· 文档四件套按实测数字同步（AGENTS / lessons 26 条推论 / 本文件 / README）· 工作区待删清单交用户确认（见附录 E） |
-| R3 面板拆两块（**收窄版**） | ✅ 完成（`panel_body` 推理 / `panel_tools` 工具两块，**建实体时都建好**；两块同一次 batch ⇒ 逻辑写不增加；工具事件只重写工具块、推理增长只重写推理块） | 单测 ㉕/㉖ + `test_panel_tools_block_truncates_and_keeps_the_most_recent`（截断与裁减方向，**曾经零门禁**）· 变异 `R3-1..R3-6` 六条全红 · `golden_cardkit_trace.json` diff（工具事件那一帧**只含 `panel_tools`**）· P5 真机落点结论（`tests/probe_panel_placement.py`）· 真机 `--cardkit-prod` 见下 |
+| R3 面板拆两块（**收窄版**） | ✅ 完成（`panel_body` 推理 / `panel_tools` 工具两块，**建实体时都建好**；两块同一次 batch ⇒ 逻辑写不增加；工具事件只重写工具块、推理增长只重写推理块） | 单测 ㉕/㉖ + `test_panel_tools_block_truncates_and_keeps_the_most_recent`（截断与裁减方向，**曾经零门禁**）· 变异 `R3-1..R3-6` 六条全红 · `golden_cardkit_trace.json` diff（工具事件那一帧**只含 `panel_tools`**）· P5 真机落点结论（`tests/probe_panel_placement.py`）· **真机 `--cardkit-prod`**（2026-09-14）：`工具开始那一帧 = True · 该帧写出的装饰元素 = [['panel_tools']]`、装饰 batch 形状逐字为 `[panel_body,panel_tools,footer] → [panel_tools] → [panel_body]`、序号账本 `[1..8]` 连续、R9 账本 7 帧 0 失败 |
 | R3 完整版（每工具一行 · 运行时 `card_element.create`） | 未开始（前置三件基础设施：**滑窗写入守卫** + `300315` 内层码解析 + 失败分支记账合并；另需附录 C 的观感确认） | 证据列见「R3 面板结构化」一节 + 三份方案审计报告（预算算术 / 代码吻合度 / 门禁判别力）—— 那一节逐条写了六个硬问题与代码位置，**不许在补齐前置之前开工** |
 
 ### R6a 对抗审计（2026-09-14，独立子 Agent，全程只读）—— 结论与收口
@@ -714,6 +718,13 @@ R7 起还有**第三次逻辑写**：`card.settings` 写会话列表预览，受
 | 规则 | AGENTS.md 的探针清单、双清单（钩子）一致性 | 收尾一轮 |
 | 记忆 | 按规矩**无授权不写** ⇒ 显式标 `pending`/`not-applicable` | 收尾一轮 |
 | 工作区 | 本文件入库 + `design/` + `.probe_state.json` + `__pycache__` + **DM 里的探针残留** | 收尾一轮（清单交用户确认后再删） |
+
+## 附录 F0：**已知死代码**（记录在案，不在本轮修）
+
+| 死的东西 | 证据 | 为什么没在本轮修 |
+|---|---|---|
+| `_ld_stream_frame` 里 `if failed.role == _CK_ROLE_PANEL:` 那条「面板失败」WARNING | `_ld_ck_apply` **只在正文失败**时返回非 None（面板/页脚走装饰 batch，失败走 `_log_ck_decor_write_failed_once`），而 `_ck_split` 挑出的 `answer` 恒是 `_CK_ROLE_ANSWER` ⇒ 这个条件**永远不成立**；替身里的 `fail_panel_only` 也没有任何用例置 True（2026-09-14 R3 代码审计低-6 实测） | 修它要动**失败语义**（让 `_ld_ck_apply` 把挂掉的装饰 op 也返回出来），与本轮的「面板拆两块」不是一件事。**别**顺手删：先决定「面板写失败要不要单独留痕」，再动 |
+| `LarkDeckMixin._ld_panel_markdown` / `cards.panel_markdown` 在生产里**零调用方** | R3 收窄版把实体卡面板改走 `_ld_panel_parts` 之后，`grep -rn` 显示 core/ 内只剩定义与注释；普通卡/`patch`/降级/`/stop`/收尾走 `_ld_panel` → `unified_panel`（另一套截断逻辑）。**重要后果**：钉「面板要过用户三个上限」的用例 ⑩ 与变异 `CK16` 原先都锚在它身上 ⇒ 真正的写入路径 `_ld_panel_parts` 的上限**曾经完全没人守**（2026-09-14 审计高-1 实测：把它三个上限换成写死的值，四门禁全绿） | 已把用例 ⑩ 与 `CK16` **重对准 `_ld_panel_parts`**（真正写卡那条路）；函数本身暂时保留，因为单测/探针还拿它当对拍基准 —— 要删得先把那些引用一起清掉，见 `cards.panel_markdown` 的 docstring |
 
 ## 附录 F：审计留下的「核对不了」清单（不许猜，逐条由探针或人眼回答）
 
