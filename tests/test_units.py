@@ -3282,6 +3282,56 @@ def test_panel_and_context_state_survive_the_module_being_loaded_twice() -> None
     copy1["reset"]()
 
 
+def test_generation_snapshot_is_machine_readable_and_never_fakes_it() -> None:
+    """R11-A1：世代快照 —— 「哪一份模块对象是活的」必须是**读得出来的数字**。
+
+    为什么值得一条门禁：真机上「插件被加载两遍」这件事，原先只能靠日志时序推断
+    （`Plugin discovery complete` 出现两次 + 启动自检打印两遍），而那条线索既容易被别的插件
+    淹没、又分不清「同一个 manager 里重复加载」与「两个 manager 按 home 分身」——两者修法不同。
+    快照把四件事变成数字：**加载序号**（1 = 第一世代，≥2 = 世代更替真的发生了）、模块 id、
+    manager id、home。
+
+    两半判据：① 快照里必须有 `加载序号=` 且值 ≥1；② **不在 Hermes 环境里时必须如实说
+    「读不到」，绝不编一个数字**（本项目的头号失败模式是「静默」，第二号就是「谎报」）。
+    """
+    line = adapter.generation_snapshot_line()
+    found = re.search(r"加载序号=(\d+)", line)
+    assert found and int(found.group(1)) >= 1, f"快照必须带可读的加载序号：{line}"
+    assert f"模块={adapter.__name__}#" in line, f"快照必须带模块身份：{line}"
+    # ⚠️ 光有「加载序号=N」不够：**写死成 1 也能过**（那就是个装饰）。所以再真加载一次
+    # `panel.py`（同一份源码 exec 到另一个命名空间 = 第二世代），断言序号**真的**跟着涨。
+    _src = (_pathlib.Path(_REPO_PARENT) / "larkdeck" / "core" / "panel.py").read_text(
+        encoding="utf-8")
+    _base = panel.latest_load_seq()
+    _gen1: dict = {"__name__": "larkdeck_panel_gen1"}
+    _gen2: dict = {"__name__": "larkdeck_panel_gen2"}
+    exec(compile(_src, "panel_gen1", "exec"), _gen1)      # noqa: S102 —— 故意的
+    exec(compile(_src, "panel_gen2", "exec"), _gen2)      # noqa: S102
+    # ⚠️ 判据是「**每个模块对象自己的**序号」按加载顺序递增。第一版写的是「读盒子里的当前值」，
+    # 结果两份模块对象报**同一个数**（盒子共享）⇒ 世代标记等于没有 —— 测试当场抓出来了。
+    assert (_gen1["load_seq"](), _gen2["load_seq"]()) == (_base + 1, _base + 2), \
+        (f"加载序号必须是「本模块对象自己的」那个号、且随加载顺序递增："
+         f"{_gen1['load_seq']()} / {_gen2['load_seq']()}（基线 {_base}）")
+    assert _gen1["latest_load_seq"]() == _base + 2, \
+        "`latest_load_seq()` 要能说出「进程内最新那一份是第几代」（旧的那份靠它发现新世代）"
+    if not compat.manager_snapshot():
+        assert "读不到" in line, f"拿不到 manager 时要如实说「读不到」，不许编：{line}"
+    else:
+        assert "manager=" in line and "home=" in line, f"拿到就要报出来：{line}"
+    # ⚠️ 「编一个数字」这条路**本地环境里走不到**（这个 venv 里 `hermes_cli` 可导入，
+    # 快照总是拿得到）—— 所以必须**把「拿不到」的情形造出来**再断言，否则那条纪律毫无判别力
+    # （变异 R13-2 实测：不造它就是 🟢）。判据：不许出现 `manager=<数字>`。
+    _saved_snapshot = compat.manager_snapshot
+    try:
+        compat.manager_snapshot = lambda: {}          # type: ignore[assignment]
+        _no_env = adapter.generation_snapshot_line()
+    finally:
+        compat.manager_snapshot = _saved_snapshot     # type: ignore[assignment]
+    assert "读不到" in _no_env, f"拿不到管理器时必须如实说「读不到」：{_no_env}"
+    assert not re.search(r"manager=\d", _no_env), \
+        f"拿不到管理器时**不许编一个 id**（谎报比缺失更糟）：{_no_env}"
+
+
 def test_merged_class_never_stacks_our_mixin_twice() -> None:
     """R11-A6：**自套娃**检测 —— 第二世代拿到的基类是**第一世代的合并类**。
 

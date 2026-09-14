@@ -1208,6 +1208,21 @@ MUTATIONS = [
      '    "clarify.toast_failed": {ZH: "提交未生效：可能已被处理或过期，请重试",\n'
      '                             EN: "Could not submit: already handled or expired — please retry"},',
      "test_units"),
+    # ---- R11-A1：世代快照（「哪一份模块对象是活的」必须是读得出来的数字）----
+    ("R13-1-加载序号写死（世代标记退回装饰品）", "core/panel.py",
+     '_LOAD_SEQ: int = int(_SHARED["load_seq"])',
+     '_LOAD_SEQ: int = 1',
+     "test_units"),
+    ("R13-1b-本模块序号改去读盒子里的当前值（两份模块对象报同一个数 = 世代标记失效）",
+     "core/panel.py",
+     '    return _LOAD_SEQ\n',
+     '    return int(_SHARED.get("load_seq") or 0)\n',
+     "test_units"),
+    ("R13-2-拿不到 manager 时编一个数字（而不是如实说「读不到」）", "core/adapter.py",
+     '        parts.append("manager=读不到（不在 Hermes 环境里）")',
+     '        parts.append(f"manager={id(object())}")',
+     "test_units"),
+
     # ---- R11-A0 / A6：进程内状态的清点（锁与容器同源、键清单一处真相、自套娃）----
     ("R12-1-面板锁退回模块局部（两世代各一把 ⇒ 互斥失效，实测能撞出字典迭代异常）",
      "core/panel.py",

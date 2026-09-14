@@ -106,6 +106,8 @@ _SHARED_BOX_FACTORY: Dict[str, Any] = {
     "context_lock": threading.Lock(), "ctx_inflight": set(),
     "ctx_latest": {}, "ctx_max_cache": {}, "ctx_retry_after": {},
     "ctx_max_override": [None], "ctx_aliases": {},
+    # —— 诊断：本模块在这个进程里被加载了几次（1 = 第一世代，≥2 = 发生过世代更替）
+    "load_seq": 0,
     # —— 注册结论（adapter.py 用）：两世代各记一份的话，`/larkdeck status` 与启动自检
     # 会按「读到哪一代」给两个不同的答案（钩子 7/7 还是 0/7、命令注册还是没注册）。
     # ⚠️ 适配器的**类缓存**（`_BASE_CLASSES`/`_MERGED_CLASSES`）**故意不在**这里 ——
@@ -116,6 +118,27 @@ _SHARED_BOX_FACTORY: Dict[str, Any] = {
     # 限流日志）。它**不影响任何行为与数据**，而为它搬家要把 ~10 处调用点改成查表 ——
     # 收益与风险不成比例，所以这里显式记成「已决定：不共享」，不是「忘了」。
 }
+
+
+def load_seq() -> int:
+    """**本模块对象**在进程里的加载序号（1 = 第一世代；≥2 = 这一份是后来加载的）。
+
+    用途只有一个：让「哪一份模块对象是活的」变成可以**读出来**的事实（R11-A1）。
+    ⚠️ 它读的是 import 时定格的常量，**不是**盒子里的当前值 —— 后者会被后一个世代改写，
+    于是两份模块对象报同一个数、世代标记等于没有（实测过）。
+    ⚠️ 它**只读诊断**，绝不许参与任何业务判断 —— 拿它当「谁是新代码」的判据会在热重载时把
+    行为改掉（那就是在猜，而本项目对「猜」的代价有前科）。
+    """
+    return _LOAD_SEQ
+
+
+def latest_load_seq() -> int:
+    """进程内**最新那一份**模块对象的加载序号（盒子里的当前值）。
+
+    与 :func:`load_seq` 的差是这个诊断的第二个维度：本模块 `load_seq()=1` 而
+    `latest_load_seq()=2` ⇒ **这一份是旧的，进程里已经存在第二世代**。
+    """
+    return int(_SHARED.get("load_seq") or 0)
 
 
 def shared_box() -> Dict[str, Any]:
@@ -141,6 +164,17 @@ def _shared_state() -> Dict[str, Any]:
 
 
 _SHARED = shared_box()
+
+#: **本模块被加载了几次**（R11-A1 的决定性凭据）。同一进程里插件被加载两遍时，
+#: 第一世代的模块看到 1、第二世代看到 2 —— 于是「哪一份是活的」不再靠日志时序去猜：
+#: 启动自检、启动快照里都带上这个数字，一眼就能把两行日志分开。
+#: 它同时是「世代更替真的发生了」的**机器可读**证据（`Plugin discovery complete` 出现两次
+#: 只是间接迹象，而且极易被别的插件淹没）。
+_SHARED["load_seq"] = int(_SHARED.get("load_seq") or 0) + 1
+#: ⚠️ **必须在 import 时定格成本模块对象自己的那个号**：`load_seq()` 若去读盒子里的当前值，
+#: 两份模块对象会报**同一个数**（盒子是共享的），世代标记就等于没有 —— 这个坑是写门禁时
+#: 实测出来的（`3 → 3`），不是推演出来的。
+_LOAD_SEQ: int = int(_SHARED["load_seq"])
 
 #: 面板的互斥锁 —— **从共享盒子取**（见 `_SHARED_BOX_FACTORY` 里的长注释）。
 _LOCK: threading.Lock = _SHARED["panel_lock"]

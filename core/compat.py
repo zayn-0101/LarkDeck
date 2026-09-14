@@ -319,6 +319,49 @@ def clarify_text_answer(clarify_id: str, text: str) -> str:
         return CLARIFY_TEXT_NO_PENDING
 
 
+def manager_snapshot() -> Dict[str, Any]:
+    """插件管理器的**只读快照**（R11-A1 的决定性实测）：身份 / home / 各钩子回调数。
+
+    为什么需要它：真机实测「同一进程里插件被加载两遍」，而**哪一份是活的**、两遍是不是
+    同一个 manager，只能在运行时量 —— 日志里的 `Plugin discovery complete` 出现两次只是
+    间接迹象（别的插件也会打，而且极易淹没）。这个函数把三件事一次性变成数字：
+      * ``manager``：管理器对象 id（**两个 id = 真的有两个 manager**，那就不是「重复加载」
+        而是「按 home 分身」—— 修法完全不同）；
+      * ``home``：管理器的 home 路径（审计给的判别信号之一：只差大小写的两种写法会分成两个 manager）；
+      * ``hooks``：每个钩子名下的回调数（同一个 manager 里我们那 7 个钩子只该各有一份；
+        若是两份，说明**真的重复订阅** —— 那与世代更替是两回事，别混为一谈）。
+
+    纪律：**只读**（不注册、不注销、不触发发现），取不到就返回 ``{}`` —— 它是诊断，
+    缺了不许影响任何行为（调用方只把它打进日志）。
+    """
+    out: Dict[str, Any] = {}
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+
+        manager = get_plugin_manager()
+    except Exception:
+        return out
+    out["manager"] = id(manager)
+    try:
+        home = getattr(manager, "home_path", None)
+        out["home"] = str(home) if home else ""
+    except Exception:
+        out["home"] = ""
+    counts: Dict[str, int] = {}
+    try:
+        raw = getattr(manager, "_hooks", None)
+        if isinstance(raw, dict):
+            for hook_name, callbacks in raw.items():
+                try:
+                    counts[str(hook_name)] = len(callbacks)
+                except TypeError:
+                    continue
+    except Exception:
+        counts = {}
+    out["hooks"] = counts
+    return out
+
+
 def hook_is_wired(name: str) -> bool:
     """问核心：这个钩子名当前真的有订阅者吗？
 

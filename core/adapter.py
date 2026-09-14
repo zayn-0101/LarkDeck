@@ -48,6 +48,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -1060,6 +1061,56 @@ def _log_empty_panel_once(chat_id: str = "") -> None:
         logger.debug("[larkdeck] 面板诊断失败", exc_info=True)
 
 
+def generation_snapshot_line() -> str:
+    """R11-A1：一行**机器可读**的世代快照（启动自检旁边打）。
+
+    真机实测「同一进程里插件被加载两遍」，而这件事的两个关键问题——**哪一份是活的**、
+    第二遍是同一个 manager 还是两个——在日志里原本只能靠时序推断（`Plugin discovery complete`
+    出现两次 + 启动自检打印两遍，还容易被别的插件淹没）。这一行把它变成能读的数字：
+
+    ``模块=<名字>#<id> · 加载序号=N · manager=<id> · home=<路径> · 钩子回调数={...}``
+
+    * **加载序号**（`panel.load_seq()`）：1 = 第一世代；**≥2 就说明世代更替真的发生了**，
+      而且同一份日志里两行不同的序号能直接指出「谁先谁后」；
+    * **模块 id**：`#140234` 这种数字，两份模块对象一眼可分；
+    * **manager id / home**：两个不同的 id ⇒ 是**两个 manager**（按 home 分身），
+      与「同一个 manager 里重复加载」是两种病、修法不同；
+    * **钩子回调数**：同一个 manager 里我们那 7 个钩子只该各一份；出现 2 份才是真的重复订阅。
+
+    只读、不抛（`compat.manager_snapshot()` 取不到就只少几个字段，不许让自检失败）。
+    """
+    parts = [f"模块={__name__}#{id(sys.modules.get(__name__))}",
+             f"加载序号={_panel.load_seq()}",
+             f"（进程内最新={_panel.latest_load_seq()}）"]
+    try:
+        snap = _compat.manager_snapshot()
+    except Exception:
+        snap = {}
+    if snap:
+        raw_hooks = snap.get("hooks") or {}
+        ours = {k: v for k, v in raw_hooks.items() if k in _compat.OBSERVED_HOOKS}
+        parts.append(f"manager={snap.get('manager')}")
+        parts.append(f"home={snap.get('home') or '（读不到）'}")
+        # ⚠️ 「读不到」与「一个都没有」必须分开说（否则排障时会拿「空」当「没挂上」，
+        # 或者更糟：拿「没挂上」当「读不到」而放过一次真的静默失灵）。
+        if not raw_hooks:
+            parts.append("钩子回调数=读不到")
+        else:
+            parts.append(f"钩子回调数={ours or '（我们订阅的一个都没有）'}")
+    else:
+        # 不在 Hermes 环境里（单测）——如实说，别编一个数字
+        parts.append("manager=读不到（不在 Hermes 环境里）")
+    return " · ".join(parts)
+
+
+def _log_generation_snapshot() -> None:
+    """把世代快照打进日志（启动自检旁边）。诊断失败绝不影响自检结论。"""
+    try:
+        logger.info("[larkdeck] 世代快照：%s", generation_snapshot_line())
+    except Exception:  # pragma: no cover - 防御性
+        logger.debug("[larkdeck] 世代快照打印失败", exc_info=True)
+
+
 def _remember_selfcheck(ok: bool, detail: str) -> None:
     SELFCHECK["ok"] = ok
     SELFCHECK["detail"] = detail
@@ -1068,6 +1119,7 @@ def _remember_selfcheck(ok: bool, detail: str) -> None:
     else:
         # 自检失败必须响亮：否则用户会以为卡片在跑，实际还是内置纯文本。
         logger.error("[larkdeck] 启动自检失败：%s（卡片不会生效，飞书仍是纯文本）", detail)
+    _log_generation_snapshot()
 
 
 # --------------------------------------------------------------------------- #
