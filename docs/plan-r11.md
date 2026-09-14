@@ -48,6 +48,26 @@
 （`gateway/run_startup.py:714-729` → `~/.hermes/logs/gateway_faulthandler.log`），在窗口内连拍即可。
 **对根因结论无影响**（三种都产生「两套模块对象」），但它决定 A2' 要不要加守卫。
 
+> ### A1 实测（2026-09-14 22:49，本版新增的两条硬结论）
+>
+> 1. **C 假设已被排除**：`start_background_plugin_discovery()` 的线程体是
+>    `try: manager.discover_and_load(); _persist_plugin_toolset_keys() except Exception:
+>    logger.warning("background plugin discovery failed", exc_info=True)`
+>    （`plugins.py:1582-1589`）⇒ 第一遍**真抛了异常**必然留一条 WARNING。全量日志里该字符串
+>    出现 **0 次** ⇒ 第一遍是**正常跑完**的，第二遍不是「复位后重扫」。
+>    所以只剩 **(A) force=True**（会先 unload）与 **(B) 两个 manager**（按 home 分身）。
+> 2. **双跑是「偶发」的，不是每次启动都有**：同一天三次启动里 17:45 与 18:19 是两遍，
+>    22:49（`launchctl kickstart`）**只有一遍**（`Plugin discovery complete` ×1、
+>    世代快照 `加载序号=1 · 进程内最新=1`、`钩子回调数` 里我们那 7 个各一份 ——
+>    `pre_tool_call=2` 是另一个插件也订阅了它）。
+>    ⇒ **三个用户可见症状（面板恒空 / 没页脚 / 累计 0 帧）只在「那个进程恰好双跑」时出现，
+>    一旦出现就持续整个进程生命周期**（这解释了「一直空，重启后可能自己好了」）。
+> 3. **判 (A) vs (B) 的凭据已经就位**：`世代快照` 里两条日志的 `manager=` 相同 ⇒ (A)；
+>    不同 ⇒ (B)（再看模块名有没有 `__home_<digest>` 后缀）。下次双跑发生时读日志即可定案，
+>    不必冒 SIGUSR2 的风险（`chain=True` 在没有前置处理器时可能落到默认动作）。
+>    **对修法没有影响**：两种都产生「两套模块对象」，共享盒子都治得住。
+
+
 已落地（含证据）：共享盒子（`panel._STATE/_CHAT_SESSION/最近活跃盒子`、`context._STATUS/_LATEST/
 _MAX_CACHE/_RETRY_AFTER/_ALIASES/_MAX_OVERRIDE`）；`record_tool_started` 幂等；`panel.diagnose()` +
 空面板限流日志；门禁（源码 `exec` 两份 → 容器同一 + 跨份可见 + 同 id 一行）；变异 `R10-1/2/3` 全红；
