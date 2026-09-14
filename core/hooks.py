@@ -66,7 +66,10 @@ def _on_stream_delta(**payload: Any) -> None:
         if kind == "reasoning":
             _panel.record_reasoning(session_id, turn_id, payload.get("delta", ""))
         elif kind == "text":
-            _panel.record_answer_delta(session_id, turn_id)
+            # R11-A7：**正文增量要连文本一起入账** —— 正文净化靠「我们这份正文是不是帧文本的
+            # 前缀」来**证明**帧尾那一段是核心叠加的工具进度块，所以这里必须传 `delta`。
+            # 只报「来了正文」而不报内容，判据就退化成猜（8f81b4d 那个 P0 就是这么来的）。
+            _panel.record_answer_delta(session_id, turn_id, payload.get("delta", ""))
     except Exception:  # pragma: no cover - 防御性：钩子绝不能抛
         logger.debug("[larkdeck] on_stream_delta 采集忽略了一次异常", exc_info=True)
 

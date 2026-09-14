@@ -19,8 +19,16 @@
    适配器必需 3 个（`REQUIRED_ADAPTER_ATTRS`，`probe_adapter_class()` 运行时校验，
    缺了拒绝覆盖）；适配器可选 1 个（`OPTIONAL_ADAPTER_ATTRS` —— `edit_message`，
    有则用、无则退回内置）；**显示 chrome 1 个**（`DISPLAY_CHROME_ATTRS` —— `format_tool_event`：
-   我们**覆盖它并允许返回 `None`**（基类 docstring 明写的官方扩展点）来吃掉核心并进正文的工具行；
-   缺了不致命，但「正文干净」这件事会静默失效，所以要探测上报）；
+   我们**覆盖它并允许返回 `None`**（基类 docstring 明写的官方扩展点）。
+   ⚠️ **2026-09-14 实测更正：这条覆盖在 0.21.1 里根本不在这条路上** ——
+   `format_tool_event` 的唯一调用点是 `gateway/stream_dispatch.py`，而那个
+   `GatewayEventDispatcher` **只在测试里被构造**（全树 grep：生产侧零引用）。
+   真机上的工具进度行由 `gateway/run_turn_runner.py` 的 `_progress_build_message` 生成，
+   在 native 流式下由 `gateway/stream_consumer.py` 的
+   `"\n\n---\n".join((accumulated, progress))` **合成进同一帧**。
+   所以这条覆盖只是**向前兼容的保险**（哪天核心把它接回来就自动生效），
+   **不是**「正文干净」的活杠杆 —— 后者是 R11-A7 的正文净化（下一节）。
+   探测照旧上报：缺了不致命，但那时连保险也没了）；
    点击回调路径 5 个类属性（`CALLBACK_ADAPTER_ATTRS`）+ 2 个实例属性
    （`CALLBACK_INSTANCE_ATTRS` —— 实例属性在类上探不到，只在运行时 `AttributeError` 时回落）；
    **信号型契约 1 个**（`SIGNAL_ADAPTER_ATTRS` ——
@@ -81,7 +89,9 @@ core/         插件本体（Hermes 加载器以 hermes_plugins.larkdeck.core.* 
   context.py    运行时指标（钩子写入 → 页脚读取的进程内全局快照）；
                 R9 起还持有**自检账本**（入站心跳 / 写卡 / 写卡失败），由 `/larkdeck status` 读
   panel.py      面板数据层（推理轮 / 工具 / 回合结局写入 → 卡片面板读取；
-                按会话分桶 + chat_id→session_id 确定性归属，拿不到才退回「最近活跃」）
+                按会话分桶 + chat_id→session_id 确定性归属，拿不到才退回「最近活跃」）；
+                R11-A7 起还持有**正文累积**（单独的小仓库 + 自己的「最近活跃」盒子，
+                只服务正文净化的前缀判据，**不参与**面板的回合切换与归属回退）
   hooks.py      官方钩子订阅（7 个观察型钩子，清单见 compat.OBSERVED_HOOKS）：
                 只写内存、异常自吞、永不返回 directive
 install.sh    安装脚本（默认软链；NAS 用 --copy，其 FILES 数组是手动的，新增模块要同步）
@@ -230,6 +240,22 @@ tests/        见「验证」
   重放一遍 —— 变异 `R4-1/4/6/7` 四条各钉一条车道）；③ 封卡必须 `streaming=False`（否则旧卡永远
   停在「正在生成」）；④ 切点优先换行、**避开代码围栏**（`cards.code_spans`），整段都在代码区里时
   退到围栏起点。含「切不开就 fail-open」的两半判据（一帧的增量连新卡都装不下时必须回落，不发必被拒的卡）。
+- **正文净化 = 有证据地剥掉核心叠加的工具进度块**（R11-A7，`adapter._strip_core_progress`）。
+  起因：native 流式下核心会把工具进度行**合成进同一帧**
+  （`"\n\n---\n".join((accumulated, progress))`），而我们按契约渲染整帧 ⇒ 那几行出现在卡片正文里。
+  用户明确要求**一个核心配置都不动**（不改 `display.platforms.feishu.tool_progress`）⇒ 只能在插件侧做。
+  判据是**证明**不是猜：`帧文本 == 我们的正文累积 + "\n\n---\n" + 尾巴` ⇒ 尾巴只可能是核心加的
+  （模型写下的每个字节——**包括它自己写的 `---`**——都在累积里）。四个条件缺一不可：
+  ① 有工具窗口（自上次正文增量以来有过 `pre_tool_call`，与核心 `_tool_progress_lines` 同生命周期）；
+  ② 累积**完整**（没被 `_MAX_ANSWER_CHARS` 冻结——残缺的累积仍可能是前缀，拿它当证据会吞正文）；
+  ③ 累积非空且是帧文本的前缀（归属错/回合错/核心换了累积都对不上）；
+  ④ 尾巴以分隔符开头**且分隔符之后还有内容**。
+  任何一条不成立 ⇒ **原样渲染**（fail-open：那一次进度行短暂可见，核心下个正文增量到达时自己会清）。
+  ⚠️ **只剥后缀**：`ck_offset` 等偏移都指向正文内部，剥后缀不会让任何偏移失效（R4 卡链的前提）。
+  ⚠️ 旧版（`8f81b4d` 移除）是**按分隔符切**——那是猜，模型写一条 markdown 分隔线就会把后半段答案
+  吞掉、而且核心对 finalize 是乐观记账、不会再补发。判别力由变异 `R11-1..R11-7` 七条守住
+  （含「按分隔符切」「不完整也剥」「没有工具窗口也剥」三条反例），
+  真机凭据是自检行里的 `正文剥进度=N`（卡片读不回来，这是唯一凭据；没有它真机没法验）。
 - 页脚指标是进程内全局（钩子记「最近一次 API 请求」），多会话并发共享同一快照；
   要按会话隔离得从钩子载荷的 `session_id` 分桶（未做）。
 - 面板数据策略与页脚不同：`panel.py` 按 `session_id` 分桶；归属优先用

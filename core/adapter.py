@@ -288,9 +288,9 @@ _STREAM_LEAK_SECONDS = 3600.0
 #: 硬上限倍数：软上限只告警、不淘汰活跃流；到这个倍数才被迫淘汰（防内存）。
 _STREAM_HARD_CAP_FACTOR = 4
 
-#: ⚠️ 这里曾经有一个「工具进度块不进正文 / 叙述归档」的实现，**已作为安全修复移除**。
+#: ⚠️ 这里曾经有一个**猜**着做的「工具进度块不进正文 / 叙述归档」实现，**已作为安全修复移除**。
 #:
-#: 它用裸分隔符 ``"\n\n---\n"`` 判断核心有没有往帧里拼工具进度块，但核心的合成式是
+#: 旧版用裸分隔符 ``"\n\n---\n"`` 判断核心有没有往帧里拼工具进度块，但核心的合成式是
 #: ``gateway/stream_consumer.py`` 的
 #: ``"\n\n---\n".join(p for p in (accumulated, progress) if p)`` —— **没有工具进度时，
 #: 帧文本就是累积正文本身**。而 ``---`` 独占一行、前后空行，正是普通的 markdown 分隔线，
@@ -300,10 +300,52 @@ _STREAM_HARD_CAP_FACTOR = 4
 #: 记录已送达，``delivered_final_matches`` 比对通过），核心认为送达成功、**不会再补发** ——
 #: 这条回答就彻底没了，任何一层都不会报错。
 #:
-#: 分隔符天生无歧义判据可用（两侧都是普通 markdown，核心的进度行也没有稳定形状），
-#: 判错任一方向都会吞正文。所以结论是**不猜**：整帧原样渲染。代价是工具执行期间
-#: 核心叠加的进度行会短暂出现在正文里 —— 那本来就是核心给 native 流式的默认呈现，
-#: 而且核心在下一个正文增量到达时会自己清掉它；工具细节另有折叠面板承载。
+#: ⇒ 教训不是「不许剥」，而是「**判据必须有证据**」。R11-A7 重做了这件事，判据换成可以被
+#: **证明**的形式（用户明确要求「一个核心配置都不动」⇒ 只能插件侧解决）：
+#:
+#:   * 核心那一段正文（``accumulated``）与我们从**公开钩子** ``on_stream_delta`` 收到的
+#:     正文增量**同源**：``agent/stream_delivery.py`` 把**同一个 chunk** 既交给流式 consumers、
+#:     又投给插件钩子队列（``_enqueue_stream_hook("on_stream_delta", delta=text, kind="text")``）；
+#:   * 于是判据是：``帧文本 == 我们的累积全文 + "\n\n---\n" + 尾巴``
+#:     ⇒ 那条尾巴**只可能**是核心叠加的工具进度块。
+#:
+#: 为什么这是**证明**而不是启发式：模型写下的每一个字节（**包括它自己写的 ``---``**）都在
+#: 累积全文里，所以「累积之后的第一个字节是核心的分隔符」这件事，除了核心叠加没有别的来源。
+#: 与旧版的关键差别：旧版把分隔符当**切点**（分隔符之前全算正文、之后全丢），新版把它当
+#: **验证条件**（累积全文负责说「正文到哪为止」）。任何一个条件不成立就**原样渲染** ——
+#: 代价只是这一次进度行可见（核心下一个正文增量到达时它也会自己清掉），绝不会吞正文。
+_CORE_PROGRESS_SEP = "\n\n---\n"
+
+
+def _strip_core_progress(text: str, accumulated: str, tool_pending: bool,
+                         complete: bool) -> str:
+    """剥掉核心叠加在**帧尾**的工具进度块；证明不了就原样返回（fail-open）。
+
+    四个条件缺一不可，各自对应一类「不能剥」的情形（每条都有对应变异，撤掉必红）：
+
+    1. ``tool_pending``：自上次正文增量以来**有过工具事件**。核心的 ``_tool_progress_lines``
+       只在有工具进度时被 append、在下一个正文增量时被 clear；没有工具事件却去剥，
+       等于把「模型自己写的内容」当成核心加的（变异 ``R11-2``）。
+    2. ``complete``：我们的累积没被上限冻结。**残缺的累积仍然可能是帧文本的前缀**，
+       拿它当证据就会把「冻结点之后、核心分隔符之前」的那段正文吞掉（变异 ``R11-4``）。
+    3. ``accumulated`` 非空且是帧文本的前缀 —— 归属错、回合错、核心换了累积
+       （``_adopt_final_text`` 用权威终稿替换、或流式被重试取代）都会在这里对不上。
+    4. 尾巴**以分隔符开头、且分隔符之后还有内容**：核心的合成式在 ``progress`` 为空时
+       **不会**留下裸分隔符，所以裸分隔符只能是模型写的（那时它已在 ``accumulated`` 里，
+       条件 3 就把它挡住了）。要求「还有内容」是给这条再加一道锁。
+
+    ⚠️ **只可能剥掉后缀**，这条性质是 R4 卡链的前提：``ck_offset`` 之类的偏移量都指向
+    正文内部，剥后缀不会让任何偏移失效（变异 ``R11-3`` 把判据换成「按最后一个分隔符切」，
+    那会连正文一起切掉）。
+    """
+    if not text or not accumulated or not tool_pending or not complete:
+        return text
+    if not text.startswith(accumulated):
+        return text
+    tail = text[len(accumulated):]
+    if not tail.startswith(_CORE_PROGRESS_SEP) or len(tail) <= len(_CORE_PROGRESS_SEP):
+        return text
+    return accumulated
 
 _DEFAULTS: Dict[str, Any] = {
     "cards": True,            # 用卡片渲染回复
@@ -949,7 +991,8 @@ def _log_degrade_once(tier: str, elements: int = 0, size: int = 0) -> None:
                    _cards.CARD_BYTE_BUDGET)
 
 
-def _log_turn_selfcheck(chat_id: str, transport: str, frames: int) -> None:
+def _log_turn_selfcheck(chat_id: str, transport: str, frames: int,
+                        strips: int = 0) -> None:
     """**每回合一条自检汇总**（60 秒限流）：把「这次卡片到底长没长全」变成机器可读。
 
     ⚠️ 为什么必须有（2026-09-14 的教训）：面板为空 / 页脚不显示 / 账本「累计 0 帧」这三个
@@ -959,6 +1002,10 @@ def _log_turn_selfcheck(chat_id: str, transport: str, frames: int) -> None:
 
     字段全部取自**只读**快照：`panel.diagnose()`（会话桶与内容）与 `context.status_snapshot()`
     （写卡帧数）。判据是「有没有内容」，不是「内容对不对」——内容对不对由单元测试与真机探针管。
+
+    ``strips``（R11-A7）是「本回合有多少帧**真的剥掉了核心叠加的工具进度块**」：这个数
+    只有真机回合才可能非 0（核心的进度行由 `display.tool_progress` 决定，默认飞书档位是
+    `"new"`），所以它是**正文净化在真机上确实生效**的唯一凭据（卡片本身读不回来）。
     """
     now = time.monotonic()
     if now - getattr(_log_turn_selfcheck, "_at", 0.0) < 60.0:
@@ -977,10 +1024,10 @@ def _log_turn_selfcheck(chat_id: str, transport: str, frames: int) -> None:
         footer_text = ""
     logger.info(
         "[larkdeck] 回合自检：面板=%s（rounds=%s tools=%s）· 页脚=%s（%s）· 写卡帧数=%s · "
-        "传输=%s · 本回合帧=%s · 会话桶=%s",
+        "传输=%s · 本回合帧=%s · 正文剥进度=%s · 会话桶=%s",
         "有" if panel_ok else "无", info.get("rounds"), info.get("tools"),
         "有" if footer_text else "无", footer_text[:40] or "空",
-        snap.get("frame_ok_count"), transport, frames, info.get("buckets"))
+        snap.get("frame_ok_count"), transport, frames, strips, info.get("buckets"))
 
 
 def _log_empty_panel_once(chat_id: str = "") -> None:
@@ -2050,6 +2097,33 @@ class LarkDeckMixin:
                 await asyncio.sleep(delay)
         return response
 
+    def _ld_body_text(self, text: str, chat: str) -> str:
+        """帧文本 → **要渲染的正文**（正文净化的唯一入口，R11-A7）。
+
+        两个决策点，都在这里：
+          * ``progress_lines_in_body: true`` ⇒ **原样渲染**（用户明确要核心那套：正文区也滚工具行）；
+          * 否则按证据剥掉核心叠加的工具进度块（证明不了就不剥，见 :func:`_strip_core_progress`）。
+
+        ⚠️ 这个配置项**早就存在**（`_DEFAULTS` + `plugin.yaml` + README 三处都有，默认 ``false``），
+        但在 2026-09-14 之前它的唯一实现是 ``format_tool_event`` 返回 ``None`` —— 而那个扩展点
+        在 Hermes 0.21.1 的**生产路径上根本没有调用点**（唯一调用者在
+        ``gateway/stream_dispatch.py``，那个 dispatcher 只在测试里被构造）。
+        于是「正文只有回答」这句文档**一直是空转的**，真机上工具行照样出现在卡片正文里。
+        R11-A7 把它接到真正的帧文本上 ⇒ 同一句文档、同一个默认值，从此**真的成立**。
+
+        为什么收敛成一个方法：任何第二处「顺手也剥一下」的调用点都会变成两处真相
+        （本项目最怕的形态）—— 而且四门禁抓不住它，只有真机上「同一帧有的地方剥了、
+        有的地方没剥」这种症状才会暴露。
+        """
+        if _cfg("progress_lines_in_body"):
+            return text
+        try:
+            accumulated, tool_pending, complete = _panel.answer_state(chat)
+        except Exception:  # pragma: no cover - 防御性：状态层异常绝不能让整帧失败
+            logger.debug("[larkdeck] 正文净化取状态失败，按原样渲染", exc_info=True)
+            return text
+        return _strip_core_progress(text, accumulated, tool_pending, complete)
+
     async def _ld_stream_frame(self, text: str, *, finalize: bool, chat_id: Optional[str],
                                reply_to: Optional[str], turn_id: str) -> bool:
         chat = str(chat_id or "").strip()
@@ -2058,10 +2132,12 @@ class LarkDeckMixin:
         key = f"{chat}:{turn_id}" if turn_id else chat
         state = self._ld_stream_get(key)
         now = time.monotonic()
-        # 整帧原样渲染，**不做任何正文归档** —— 理由见文件顶部那段说明。
-        # 简言之：核心的分隔符与模型自己写的 markdown 分隔线无法区分，猜错就会
-        # 静默吞掉整条回答（且核心按完整帧文本判定已送达，不会补发）。
-        display = text
+        # 整帧渲染，**只剥掉能被证明是核心叠加的工具进度块**（R11-A7）—— 判据与
+        # 「为什么这是证明而不是猜」见文件顶部那段说明。剥不出来就原样渲染（fail-open）。
+        # ⚠️ 「整帧原样渲染」是 8f81b4d 的安全修复留下的口径；R11-A7 把它收紧成
+        # 「按证据剥后缀」：仍然**不做任何正文归档**（不按分隔符切、不改写前缀）。
+        display = self._ld_body_text(text, chat)
+        stripped = display != text
         if state is None:
             if finalize:
                 # 没有活跃流可收尾：交核心回落（send/edit 会正常发出）。这是**正常路径**
@@ -2098,6 +2174,8 @@ class LarkDeckMixin:
                 self._ld_stream_put(key, {"message_id": message_id, "chat_id": chat,
                                           "t0": now, "last": text, "last_at": now,
                                           "frames": 0, "skipped": 0,
+                                          # R11-A7：seed 帧也可能剥（卡建起来之前就已经跑过工具）
+                                          "strips": 1 if stripped else 0,
                                           "card_id": card_id, "ck_seq": 0,
                                           # 结构在这一刻定死：**卡里到底有哪些元素**记进状态，
                                           # 后续每一帧只写这里面的 id（写不在卡里的 id 会得
@@ -2137,7 +2215,8 @@ class LarkDeckMixin:
             self._ld_track(message_id, chat)
             self._ld_stream_put(key, {"message_id": message_id, "chat_id": chat,
                                       "t0": now, "last": text, "last_at": now,
-                                      "frames": 0, "skipped": 0})
+                                      "frames": 0, "skipped": 0,
+                                      "strips": 1 if stripped else 0})
             # ⚠️ 这里**不再**记一笔：首发建卡发出去的正是 `_ld_send_card`，账本已经在
             # 那个底层收口点记过了（R9 审计中-1 的修法）。**一次写只记一笔**必须由构造保证，
             # 不能靠「记得别在调用方也写一遍」—— 那种纪律在下一个调用点就会静默失守
@@ -2173,7 +2252,8 @@ class LarkDeckMixin:
             # 也是发现「悄悄退回纯文本」的唯一线索（docs/lessons.md 推论 1）。
             logger.info("[larkdeck] native 流式收尾：更新 %d 帧（跳过 %d 帧）",
                         int(state.get("frames") or 0) + 1, int(state.get("skipped") or 0))
-            _log_turn_selfcheck(chat, self._ld_transport(), int(state.get("frames") or 0) + 1)
+            _log_turn_selfcheck(chat, self._ld_transport(), int(state.get("frames") or 0) + 1,
+                                strips=int(state.get("strips") or 0) + (1 if stripped else 0))
             # 记账在 `_ld_update_card` 里（收尾就是一次整卡替换）—— 这里不再重复记。
             return True
         if text == state.get("last"):
@@ -2184,6 +2264,11 @@ class LarkDeckMixin:
             # 节流窗口内的中间帧：跳过，等下个 tick（首帧不节流）
             self._ld_stream_put(key, {**state, "skipped": int(state.get("skipped") or 0) + 1})
             return True
+        if stripped:
+            # R11-A7：本帧**真的剥掉了**核心叠加的进度块 —— 累计进回合状态，供收尾那条
+            # 自检汇总打印（真机没有读卡接口，「剥了几帧」是正文净化生效的唯一凭据）。
+            # 放在节流早返回**之后**：被节流跳过的帧什么都没渲染，也就没有「剥」这回事。
+            state = {**state, "strips": int(state.get("strips") or 0) + 1}
         # ⚠️ 「这个回合要不要走元素通道」的判据**只有一个**：`card_id` 在不在。降级时帧路径会把
         # `card_id` 清成空串（见下面的 `DEGRADE` 分支）—— 以前这里还额外查了一次 `ck_degrade`，
         # 那是**同一件事的第二处机制**：变异证明它是死代码（把这一查去掉，门禁全绿）。
@@ -2352,7 +2437,8 @@ class LarkDeckMixin:
         # 卡片要答得出原因；日志只有 30 秒一条，且用户看不到日志。
         _context.note_frame_fail(reason)
         # A3：失败收口也打一条自检汇总 —— 停在失败上的回合同样要能判定「面板/页脚有没有内容」
-        _log_turn_selfcheck("", self._ld_transport(), -1)
+        # `strips=-1` 与 `frames=-1` 同义：这条路**没有正文净化可言**（帧没写出去）。
+        _log_turn_selfcheck("", self._ld_transport(), -1, strips=-1)
         now = time.monotonic()
         # 限流状态挂在**函数对象**上（不是 self）：本方法同名于类属性，裸名字在方法体里
         # 不在作用域内，必须经类名取 —— 写成 ``getattr(_ld_stream_fail, ...)`` 会
@@ -2429,19 +2515,21 @@ class LarkDeckMixin:
                           preview_max_len: int = 40) -> Optional[str]:
         """**吃掉**核心的工具行（默认），还是原样交给父类渲染。
 
-        为什么这件事归我们管：父类（`gateway/platforms/base.py`）把每个工具调用渲染成一行
-        chrome，原生流式路径会把它**并进正文**（`gateway/stream_dispatch.py` 的
-        `_dispatch_tool_call` → `_enqueue_tool_line`），老路径则会发一条独立的「进度气泡」。
-        于是同一回合里工具信息出现两遍：正文区滚着 `⚙️ mem0_search: "…"`，而下面收起的
-        「执行详情」面板里还有一份**结构化**的（来自我们订阅的官方钩子）。
+        ⚠️ **2026-09-14 实测更正：这个扩展点在 Hermes 0.21.1 的生产路径上没有被调用。**
+        父类确实是这么设计的（docstring 明写「adapters without editing/rich text override to
+        None」），但本版本里 `format_tool_event` 的唯一调用点是
+        `gateway/stream_dispatch.py` 的 `_dispatch_tool_call`，而那个 `GatewayEventDispatcher`
+        **只在测试里被构造**（全树 grep：生产侧零引用）。真机上的工具行由
+        `gateway/run_turn_runner.py` 的 `_progress_build_message` 生成，native 流式下由
+        `gateway/stream_consumer.py` 的 `"\n\n---\n".join((accumulated, progress))`
+        **合成进同一帧** —— 所以「正文干净」这件事**不能靠这个覆盖**。
 
-        基类 docstring 明写「adapters without editing/rich text override to None」——
-        返回 `None` 表示**适配器选择吃掉这个事件**，这是官方给的扩展点（不是 monkeypatch，
-        更不是改源码：不变量 1）。所以默认吃掉：**正文只有回答，工具步骤收在面板里**。
-        想恢复核心那套（正文区也滚工具行）就配 `progress_lines_in_body: true`。
+        它留着是**向前兼容的保险**：哪天核心把它接回来就自动生效（那时同一份配置语义仍然对）。
+        真正的活杠杆是 :func:`_strip_core_progress` / :meth:`_ld_body_text`（R11-A7），
+        两者共用 `progress_lines_in_body` 这一个配置键。
 
         ⚠️ 缺了不致命但要上报（`compat.DISPLAY_CHROME_ATTRS`）：父类哪天改名，这里会静默失效
-        ——用户看到的就不再是干净卡片，而启动自检不会说一句话。
+        —— 那时连保险也没了，而启动自检不会说一句话。
         """
         try:
             if _cfg("progress_lines_in_body"):

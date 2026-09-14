@@ -57,6 +57,12 @@ _MAX_REASONING_CHARS = 262144
 #: 单个会话最多缓存的工具步骤数（渲染层只显示最近 ``max_panel_steps`` 步）。
 _MAX_BUFFERED_TOOLS = 200
 
+#: R11-A7：本回合**正文累积**的字符上限。到顶就**冻结**（停止入账并标记不完整）——
+#: 而不是丢掉早期片段：正文累积的唯一用途是「当**完整**前缀去证明核心叠了进度块」，
+#: 于是「不完整」必须是一个**显式状态**，让判据整体退回「不剥」（fail-open），
+#: 绝不能留一份「看起来像前缀、其实是残缺」的缓冲区 —— 那会在正文里凭空吞掉一段。
+_MAX_ANSWER_CHARS = 262144
+
 #: 单个会话最多保留多少「推理轮」（渲染层再按配置裁剪）。
 _MAX_ROUNDS = 50
 
@@ -80,12 +86,26 @@ def _shared_state() -> Dict[str, Any]:
     box = getattr(builtins, "_larkdeck_shared_state", None)
     if not isinstance(box, dict):
         box = {"panel_state": {}, "panel_chat_session": {}, "panel_last_active": [""],
-               "status": None}
+               "status": None,
+               # R11-A7：正文累积的**独立小仓库**（``session_id -> {turn, parts, ...}``）
+               # 与它自己的「最近活跃」盒子。为什么不塞进 `panel_state` 的会话桶、也不借
+               # 面板的 `panel_last_active`：正文累积的用途只有一个（当**前缀对照物**），
+               # 而面板那个盒子会被 `_purge_locked` 按「必须指向一个真面板桶」清空 ——
+               # 借来的话，「纯正文回合」（压根没有面板桶）会在第一帧就丢掉归属。
+               "answers": {}, "answers_last": [""]}
         setattr(builtins, "_larkdeck_shared_state", box)
     return box
 
 
 _SHARED = _shared_state()
+
+#: ``session_id -> {"turn", "parts", "len", "complete", "tool_since_text", "updated"}``
+_ANSWERS: Dict[str, Any] = _SHARED.setdefault("answers", {})
+#: 正文仓库自己的「最近活跃会话」（长度 1 的 list，跨世代共享，理由同上）
+_ANSWERS_LAST: list = _SHARED.setdefault("answers_last", [""])
+#: 正文累积仓库的上限/存活期（与面板桶同一量级；它是**可选优化**的数据，淘汰了只是少剥一次）
+_ANSWER_MAX_SESSIONS = 32
+_ANSWER_TTL_SECONDS = 1800.0
 
 _CHAT_SESSION: Dict[str, Any] = _SHARED["panel_chat_session"]
 _CHAT_SESSION_MAX = 256
@@ -526,25 +546,34 @@ def record_reasoning(session_id: str, turn_id: str, delta: str) -> None:
         _purge_locked(now)
 
 
-def record_answer_delta(session_id: str, turn_id: str) -> None:
-    """``on_stream_delta``（**正文**增量）钩子回调 —— 只做一件事：结束当前推理轮。
+def record_answer_delta(session_id: str, turn_id: str, delta: str = "") -> None:
+    """``on_stream_delta``（**正文**增量）钩子回调 —— 两件事：结束推理轮 + 累积正文。
 
-    正文本身不进面板（面板只收过程信息），但「正文开始」是推理轮的**结束信号**：
-    轮次定义就是「被正文或工具打断」。所以这里只切轮，不存正文。
-
-    热路径（每个正文 token 一次），必须极快：没有正在进行的轮时**立即返回**，
-    不做任何状态写入。
+    ① 「正文开始」是推理轮的**结束信号**（轮次定义 = 被正文或工具打断）；
+    ② R11-A7 起**还累积正文本身**（``delta``）：核心会把工具进度行合成进流式帧文本，
+       要证明「帧尾那一段是核心加的」就必须有同一份正文可以比对（见 :func:`answer_state`
+       与 ``core/adapter.py`` 顶部的「正文净化」说明）。面板本身仍然不渲染正文。
 
     ⚠️ 这里**刻意不调** ``_touch_locked``（所以不刷新 ``updated`` / ``_LAST_ACTIVE_BOX[0]``）：
     上面那条早退已经盖住了绝大多数正文 token，而剩下的每一次都要多写两个状态字段。
     代价只是「纯正文长回合不会续上 TTL 与最近活跃」—— 归属改成
     ``chat_id -> session_id`` 确定性绑定（:func:`bind_chat_session`）之后，这条代价
     已经不再影响渲染正确性。哪天真要改，先想清楚它对 fail-closed 热路径的影响。
+
+    ⚠️ **正文累积只认「桶里当前那个回合」**（对称比较，同 ①）：比不上一律不入账 ——
+    宁可少剥一次（那次进度行短暂可见），也不能拿别的回合的正文去证明这一帧。
+    热路径代价是「一次 dict 取 + 一次 list append + 一次整数加」，量级低于已有的
+    :func:`record_reasoning`（那条还要建轮、做压缩），可以接受。
     """
     now = _now()
     sid = str(session_id or "")
     if not sid:
         return
+    # R11-A7：正文**要连文本一起入账**（单独的正文仓库，见 `note_answer_delta`）。
+    # 放在面板桶的早退**之前**：面板桶是「有没有过程数据」的概念，而正文累积的用途是
+    # 「证明帧尾那一段是核心加的」，与面板有没有内容无关（纯正文 + 工具回合的面板桶
+    # 由工具事件建，但**工具之前的正文**不能丢，否则前缀判据一开始就断）。
+    note_answer_delta(sid, turn_id, delta)
     with _LOCK:
         state = _STATE.get(sid)
         if not isinstance(state, dict) or not isinstance(state.get("current_round"), dict):
@@ -576,6 +605,10 @@ def record_tool_started(session_id: str, turn_id: str, tool_name: str,
             return
         # 工具调用也是推理轮的**结束信号**（轮次定义 = 被正文或工具打断）
         _finalize_round_locked(state, now)
+        # R11-A7：打开「工具窗口」—— 核心从这一刻起**可能**把工具进度行叠进流式帧的尾部，
+        # 而它只会在下一个正文增量到达时清掉那些行（公开语义推导，不读私有变量）。
+        # 放在幂等闸门**之前**：窗口问的是「核心有没有可能叠了进度行」，重复投递答的也是「有」。
+        note_tool_event_locked(str(session_id or ""), str(turn_id or ""))
         tools: List[Dict[str, Any]] = state["tools"]
         # ⚠️ **同一 `tool_call_id` 只记一次**（2026-09-14 真机根因的另一面）：同一进程里插件会被
         # 发现两次 ⇒ 钩子被订阅两遍 ⇒ 每个工具事件会被回调两次；状态共享之后就会在面板里
@@ -776,6 +809,138 @@ def _select_locked(chat_id: str, now: float) -> "tuple[str, Optional[Dict[str, A
     return sid, state
 
 
+# --------------------------------------------------------------------------- #
+# R11-A7：正文累积 —— 正文净化的**对照物**
+# --------------------------------------------------------------------------- #
+#: 为什么不用面板的会话桶：正文累积的生命周期与用途都不同（只服务「证明帧尾那一段是核心
+#: 叠加的工具进度块」），塞进面板桶会连带影响回合切换、归属回退与「有内容」判据 ——
+#: 那三样任何一处被带偏，症状都是**卡片渲染错**，而不是「少剥一次」。
+def _purge_answers_locked(now: float) -> None:
+    """淘汰过期/超量的正文累积（锁内调用）。全是 O(≤32)，可以随便调。"""
+    expired = [sid for sid, item in _ANSWERS.items()
+               if now - float(item.get("updated") or 0.0) > _ANSWER_TTL_SECONDS]
+    for sid in expired:
+        _ANSWERS.pop(sid, None)
+    if len(_ANSWERS) > _ANSWER_MAX_SESSIONS:
+        oldest = sorted(_ANSWERS.items(), key=lambda kv: kv[1].get("updated", 0.0))
+        for sid, _ in oldest[: len(_ANSWERS) - _ANSWER_MAX_SESSIONS]:
+            _ANSWERS.pop(sid, None)
+
+
+def _answer_bucket_locked(sid: str, tid: str, now: float) -> Dict[str, Any]:
+    """取（或按回合重建）某个会话的正文累积桶（锁内调用）。
+
+    **换回合就重建，绝不沿用上一回合的正文**：一份「属于上一回合」的正文仍然可能是
+    这一帧的前缀（两个回合开头一样时），而判据只比对前缀、看不出回合错位。
+    """
+    item = _ANSWERS.get(sid)
+    if not isinstance(item, dict) or str(item.get("turn") or "") != tid:
+        item = {"turn": tid, "parts": [], "len": 0, "complete": True,
+                "tool_since_text": 0, "updated": now}
+        _ANSWERS[sid] = item
+        # 顺带把正文仓库自己的「最近活跃」指到它：没有绑定 `chat_id -> session_id` 的路径
+        # （网关自己发的卡、探针卡）只能靠它。**不借面板那个盒子** —— 那个会被
+        # `_purge_locked` 按「必须指向一个真面板桶」清空，而纯正文回合没有面板桶。
+        _ANSWERS_LAST[0] = sid
+    return item
+
+
+def note_answer_delta(session_id: str, turn_id: str, delta: str) -> None:
+    """``on_stream_delta(kind="text")``：把正文增量攒进本回合的对照物。
+
+    三条纪律：
+      * **归属 / 回合不明一律不入账**（空 ``session_id`` 或空 ``turn_id``）：错记一份正文的
+        后果是**可能吞掉正文**（前缀判据看不出回合错位），而少记一次只是少剥一次
+        （那一次进度行短暂可见，核心下一个正文增量到达时自己也会清掉）；
+      * 正文增量同时**关闭工具窗口**（核心也在这一刻清掉它的进度行）；
+      * 超过 ``_MAX_ANSWER_CHARS`` 就**冻结**并标记不完整（不是丢掉早期片段）——
+        不完整就不许剥，理由见 :func:`answer_state`。
+    """
+    sid = str(session_id or "")
+    tid = str(turn_id or "")
+    if not sid or not tid:
+        return
+    text = str(delta) if delta else ""
+    now = _now()
+    with _LOCK:
+        item = _answer_bucket_locked(sid, tid, now)
+        if text and bool(item.get("complete", True)):
+            total = int(item.get("len") or 0) + len(text)
+            if total > _MAX_ANSWER_CHARS:
+                item["complete"] = False       # 从这一刻起不再是完整正文 ⇒ 判据整体退回「不剥」
+            else:
+                item["parts"].append(text)
+                item["len"] = total
+        item["tool_since_text"] = 0
+        item["updated"] = now
+        _purge_answers_locked(now)
+
+
+def note_tool_event_locked(sid: str, tid: str) -> None:
+    """``pre_tool_call``：打开工具窗口（**锁内**调用 —— 调用方 :func:`record_tool_started`
+    已经持有 ``_LOCK``，这里再取一次会死锁）。
+
+    这一回合还没有正文入账时，窗口照样要开——核心可能已经在叠进度行了；但那第①帧是
+    「没有正文的进度块」（核心合成式在 ``accumulated`` 为空时不留分隔符），证明不了，
+    按原样渲染。**不留上一回合的正文**：换回合由 :func:`_answer_bucket_locked` 负责重建。
+    """
+    if not sid or not tid:
+        return
+    item = _answer_bucket_locked(sid, tid, _now())
+    item["tool_since_text"] = int(item.get("tool_since_text") or 0) + 1
+    _purge_answers_locked(_now())
+
+
+def note_tool_event(session_id: str, turn_id: str) -> None:
+    """``pre_tool_call`` 的公开入口（自己取锁）。"""
+    with _LOCK:
+        note_tool_event_locked(str(session_id or ""), str(turn_id or ""))
+
+
+def _answer_session_for(chat_id: str) -> str:
+    """正文累积用哪套归属：**确定性绑定优先**，拿不到退回「最近活跃」。
+
+    为什么可以比面板的归属松：正文累积只当**前缀对照物**，归属错了只会比对不上、
+    退化成「不剥」（fail-open）—— 不会画错东西，更不会吞正文。
+    """
+    chat = str(chat_id or "").strip()
+    if chat:
+        bound = _CHAT_SESSION.get(chat)
+        if bound:
+            return str(bound[0])
+    return str(_ANSWERS_LAST[0] or "")
+
+
+def answer_state(chat_id: str = "") -> "tuple[str, bool, bool]":
+    """**只读**给正文净化用的三件事实（R11-A7）：``(累积正文, 有工具窗口, 累积是否完整)``。
+
+    为什么必须由面板层提供：钩子只知道 ``session_id``、卡片只知道 ``chat_id``，
+    而把两者对上的那套归属正是本模块一直在维护的东西。**归属错了也不会剥错** ——
+    比对不上前缀就退回「不剥」（见 ``core/adapter.py`` 的 :func:`_strip_core_progress`），
+    所以这里可以放心复用，不必比面板的归属判据更严。
+
+    三个返回值的用法（全部来自公开钩子语义，不读 Hermes 私有变量）：
+      * 累积正文 = ``on_stream_delta(kind="text")`` 的逐条拼接（见 :func:`note_answer_delta`）；
+      * 有工具窗口 = 「自上次正文增量以来有过 ``pre_tool_call``」（见 :func:`note_tool_event`）
+        —— 与核心 ``_tool_progress_lines`` 的生命周期同形（有工具进度就 append、来正文就 clear）；
+      * 是否完整 = 没到 ``_MAX_ANSWER_CHARS`` 而被冻结。**不完整就不许剥**：
+        一份残缺的累积仍然可能是帧文本的前缀，拿它当证据就会把中间那段正文吞掉。
+    """
+    now = _now()
+    with _LOCK:
+        _purge_answers_locked(now)
+        sid = _answer_session_for(chat_id)
+        item = _ANSWERS.get(sid) if sid else None
+        if not isinstance(item, dict):
+            return "", False, False
+        parts = list(item.get("parts") or [])
+        armed = int(item.get("tool_since_text") or 0) > 0
+        complete = bool(item.get("complete", True))
+    # 拼接放到锁外：正文可以长到 _MAX_ANSWER_CHARS，锁里拼会拖慢 fail-closed 的
+    # pre_tool_call 回调（同 snapshot 的推理拼接）。
+    return "".join(parts), armed, complete
+
+
 def diagnose(chat_id: str = "") -> Dict[str, Any]:
     """**只读诊断**：这次渲染会选中哪个会话桶、桶里到底有什么（不改任何状态）。
 
@@ -825,6 +990,8 @@ def reset() -> None:
     with _LOCK:
         _STATE.clear()
         _CHAT_SESSION.clear()
+        _ANSWERS.clear()
+        _ANSWERS_LAST[0] = ""
         _LAST_ACTIVE_BOX[0] = ""
 
 

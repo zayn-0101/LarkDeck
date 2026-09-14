@@ -407,6 +407,42 @@ else:
                 turn_exit_reason="text_response(stop)", model="deepseek-v4-flash",
                 platform="feishu")
 
+    # ------------------------------------------------------------------ #
+    # R11-A7：正文净化要的两件事实**必须真的由钩子写进去**
+    # ------------------------------------------------------------------ #
+    # 为什么单列一格：正文净化的判据是「帧文本 == 我们的正文累积 + 分隔符 + 尾巴」，
+    # 而**正文累积来自 `on_stream_delta(delta=...)`** —— 上面那条 `_stream("text", "这是正文")`
+    # 正是它，且它排在一个 `pre_tool_call` 之前 ⇒ 工具窗口应当是**开着的**。
+    # 这一格盯的是「钩子有没有把文本/工具事件真的送进正文仓库」：`hooks.py` 里少传一个
+    # `delta`、或 `record_tool_started` 少调一次 `note_tool_event`，四门禁会全绿而真机上
+    # **永远不剥**（症状 = 用户报的那个「正文里混进工具进度行」原样复现）。
+    _answer_seen = ""
+    for _ in range(60):                     # 等 worker 消费（正文增量走的是异步队列）
+        _answer_seen, _armed, _complete = _panel.answer_state(_SESSION)
+        if _answer_seen == "这是正文" and _armed:
+            break
+        time.sleep(0.05)
+    print(f"answer_state = {(_answer_seen, _armed, _complete)}")
+    if _answer_seen != "这是正文":
+        problems.append(
+            f"正文累积没入账（`on_stream_delta` 的 delta 没传进数据层）：{_answer_seen!r}")
+    if not _armed:
+        problems.append("工具窗口没开（`pre_tool_call` 没打开它 ⇒ 真机上永远不剥进度块）")
+    if not _complete:
+        problems.append("正文累积被误判成「不完整」⇒ 判据会整体退回「不剥」")
+    # 再来一条正文增量 ⇒ 窗口必须**关上**（核心也在这一刻清掉它的进度行）
+    _stream("text", "，还没写完")
+    for _ in range(60):
+        _answer_seen2, _armed2, _ = _panel.answer_state(_SESSION)
+        if _answer_seen2 == "这是正文，还没写完" and not _armed2:
+            break
+        time.sleep(0.05)
+    print(f"answer_state（正文增量之后） = {(_answer_seen2, _armed2)}")
+    if _answer_seen2 != "这是正文，还没写完":
+        problems.append(f"正文增量没有追加（拼接断链 ⇒ 前缀判据永远不成立）：{_answer_seen2!r}")
+    if _armed2:
+        problems.append("新的正文增量没有关闭工具窗口（核心此刻已经清掉了进度行）")
+
     # ⚠️ 轮次形状依赖**异步** worker：`enqueue_plugin_stream_hook` 每个回调一条队列 + 守护线程，
     # 而 `invoke_hook("pre_tool_call", ...)` 是同步的 —— 若 worker 还没消费掉「再看工具」，
     # 工具那次切轮就切在空轮上，轮的切分会少一段（实测按「工具先到、推理增量迟到」的顺序

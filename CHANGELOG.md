@@ -10,6 +10,28 @@
 
 ### 修复
 
+- **`progress_lines_in_body: false` 一直是空转的 —— 工具进度行照样出现在卡片正文里**
+  （R11-A7）。这个配置键从有卡片起就写在 `_DEFAULTS`/`plugin.yaml`/README 三处、默认 `false`
+  （「正文只有回答」），但它唯一的实现是覆盖 `format_tool_event` 返回 `None` ——
+  而 Hermes 0.21.1 的**生产路径根本不调用那个扩展点**（唯一调用者在
+  `gateway/stream_dispatch.py`，那个 `GatewayEventDispatcher` 只在测试里被构造）；
+  真机上的工具行由 `gateway/run_turn_runner.py` 生成，native 流式下被
+  `gateway/stream_consumer.py` 的 `"\n\n---\n".join((accumulated, progress))` **合成进同一帧**，
+  而卡片按契约渲染整帧。
+  现在改在**帧文本**上做，判据是**证明**而不是猜：
+  `帧文本 == 我们攒的正文 + "\n\n---\n" + 尾巴` ⇒ 尾巴只可能是核心加的。
+  四个条件缺一不可（有工具窗口 / 正文累积完整 / 前缀对得上 / 尾巴里有内容），
+  任何一条不成立就**原样渲染** —— 最坏是这一次进度行可见，**绝不吞正文**。
+  旧版（`8f81b4d` 移除）是**按分隔符切**：模型写一条 markdown 分隔线就会把后半段答案切掉，
+  而核心对 finalize 是乐观记账、不会再补发。
+  **不需要动核心的任何配置**（早先用 `display.platforms.feishu.tool_progress: off` 绕过，
+  已撤掉，`~/.hermes/config.yaml` 还原成与改动前**逐字节一致**）。
+  真机凭据：每回合自检行新增 `正文剥进度=N`（N ≥ 1 = 真的剥到了；卡片没有读回接口，
+  这是唯一凭据）。
+  验收：单测 **178/178** · `OVERRIDE OK` · `HOOKS OK` · `CLARIFY E2E OK` ·
+  变异 `R11-1..R11-8` 八条全红（含「按分隔符切」「累积不完整也剥」「没有工具窗口也剥」
+  「配置键又变空转」四条反例）。
+
 - **页脚的上下文上限长期按 128K 兜底（DeepSeek V4.1 Flash 实际是 1M）**：`hooks._on_api_request`
   往指标层传了 model / provider / usage / response_model，**漏了 `base_url`** ——
   而 `context.context_max()` 是按 `model@base_url` 解析窗口的，少了它探测就退化成

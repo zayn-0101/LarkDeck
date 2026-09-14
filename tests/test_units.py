@@ -2312,6 +2312,126 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         _sc2 = [r.getMessage() for r in records28 if "回合自检" in r.getMessage()]
         assert any(_frames_of(l) >= 1 and "面板=无" in l for l in _sc2), \
             f"没有面板数据的回合必须如实说「面板=无」：{_sc2}"
+
+        # ㉘ **R11-A7：正文净化 —— 有证据地剥掉核心叠加的工具进度块**。
+        #    用户明确要求「一个核心配置都不动」⇒ 必须在插件侧解决（不能靠
+        #    `display.tool_progress`）。判据的要点是**证明**而不是**猜**：
+        #        帧文本 == 我们的正文累积 + "\n\n---\n" + 尾巴   ⇒ 尾巴只可能是核心加的
+        #    下面五格各钉一个「缺一不可」的条件，撤掉任何一个都会让某一格变红：
+        #      ① 有证据 ⇒ 剥；② 没有工具窗口 ⇒ 不剥；③ 模型自己写的分隔线不许被吃掉；
+        #      ④ 累积被上限冻结（不完整）⇒ 不剥；⑤ 工具**已结束**但还没有新正文 ⇒ 仍要剥。
+        _SEP = adapter._CORE_PROGRESS_SEP
+        _PROG = "⚙️ 探针工具行（核心叠加的进度）"
+
+        def _a7_run(chat, hook_turn, frame, prep=None):
+            """跑一个 cardkit 回合；返回 (正文元素最后写入的内容, 收尾卡 JSON, 自检行)。"""
+            _calls2, _client2 = _mk_fake()
+            _raw2 = _make()
+            _raw2._client = _client2
+            adapter.configure(native_transport="cardkit", unified_panel=True)
+            panel.reset()
+            context.reset()
+            if prep is not None:
+                prep()
+            assert _run(_raw2.send_stream_frame("", chat_id=chat, turn_id="t-" + hook_turn))
+            with _LogCapture("larkdeck") as _recs:
+                assert _run(_raw2.send_stream_frame(frame, chat_id=chat,
+                                                    turn_id="t-" + hook_turn))
+                adapter._log_turn_selfcheck._at = 0.0
+                assert _run(_raw2.send_stream_frame(frame, chat_id=chat,
+                                                    turn_id="t-" + hook_turn, finalize=True))
+            _ans2 = [c[1] for c in _calls2["content"] if c[0] == cards.CARDKIT_ANSWER_ID][-1]
+            _fin2 = json.dumps(_calls2["patch_cards"][-1], ensure_ascii=False)
+            return _ans2, _fin2, [r.getMessage() for r in _recs if "回合自检" in r.getMessage()]
+
+        def _arm(body_text, turn, *, tool=True, finish_tool=False, session=None):
+            """正文入账 + 工具窗口（顺序照真机：**正文在前、工具在后**）。"""
+            sid = session or ("s-" + turn)
+            def _go():
+                panel.note_answer_delta(sid, "t-" + turn, body_text)
+                if tool:
+                    if finish_tool:
+                        # 走真钩子入口（含幂等闸门与回合创建）
+                        panel.record_tool_started(sid, "t-" + turn, "terminal", {"cmd": "ls"}, "c1")
+                        panel.record_tool_finished(sid, "t-" + turn, "terminal", "ok", 12, "c1")
+                    else:
+                        panel.note_tool_event(sid, "t-" + turn)
+            return _go
+
+        # ① 有证据 ⇒ 剥（正文元素与收尾卡都只有正文；自检要报出「剥了几帧」）
+        _body_a = "工具之前就写好的第一段正文。"
+        _ans_a, _fin_a, _sc_a = _a7_run("oc_a7a", "a7a", _body_a + _SEP + _PROG,
+                                        prep=_arm(_body_a, "a7a"))
+        assert _ans_a == _body_a, f"有证据时必须只渲染正文：{_ans_a!r}"
+        assert "探针工具行" not in _fin_a, \
+            f"收尾帧也不许把核心的进度行留在卡里（用户最终看到的就是这一帧）：{_fin_a[-300:]}"
+        assert any(int(re.search(r"正文剥进度=(\d+)", l).group(1)) >= 1 for l in _sc_a
+                   if "正文剥进度=" in l), \
+            f"自检必须报出本回合剥了几帧（真机没有读卡接口，这是唯一凭据）：{_sc_a}"
+
+        # ② 没有工具窗口 ⇒ **不剥**（核心没叠过进度块；这一格守住 `tool_pending` 条件）
+        _ans_b, _, _ = _a7_run("oc_a7b", "a7b", _body_a + _SEP + _PROG,
+                               prep=_arm(_body_a, "a7b", tool=False))
+        assert _ans_b == _body_a + _SEP + _PROG, \
+            f"没有工具事件就不该剥（那是模型自己写的内容）：{_ans_b!r}"
+
+        # ③ 模型自己写的分隔线：只能剥掉**核心那一截**，模型写的一字不许少
+        #    ⚠️ 这一格专治「按最后一个分隔符切」那种猜法 —— 猜法会把 `B段` 整段吞掉，
+        #    而 `B段` 是**真答案**（8f81b4d 那个 P0 就是同一个病因的变体）。
+        _body_c = "A段。" + _SEP + "B段（模型自己写的分隔线之后的正文）。"
+        _ans_c, _, _ = _a7_run("oc_a7c", "a7c", _body_c + _SEP + _PROG,
+                               prep=_arm(_body_c, "a7c"))
+        assert _ans_c == _body_c, f"只能剥核心叠加的那一截：{_ans_c!r}"
+        assert "B段" in _ans_c, "模型自己写的分隔线之后的正文被吃掉了"
+
+        # ④ 累积被上限**冻结**（不完整）⇒ 不剥：残缺的累积仍可能是帧前缀，
+        #    拿它当证据会把「冻结点之后、核心分隔符之前」的正文吞掉（那一段是真答案）。
+        _cap_saved = panel._MAX_ANSWER_CHARS
+        try:
+            panel._MAX_ANSWER_CHARS = 8
+
+            def _frozen_prep():
+                panel.note_answer_delta("s-a7d", "t-a7d", "12345")       # 入账（5 ≤ 8）
+                panel.note_answer_delta("s-a7d", "t-a7d", "67890")       # 超上限 ⇒ 冻结
+                panel.note_tool_event("s-a7d", "t-a7d")
+
+            _ans_d, _, _ = _a7_run("oc_a7d", "a7d",
+                                   "12345" + _SEP + "冻结之后模型继续写的正文" + _SEP + _PROG,
+                                   prep=_frozen_prep)
+        finally:
+            panel._MAX_ANSWER_CHARS = _cap_saved
+        assert "冻结之后模型继续写的正文" in _ans_d, \
+            f"累积不完整时绝不能剥（会吞掉冻结点之后的真答案）：{_ans_d!r}"
+
+        # ⑤ 工具**已经结束**、但还没有新的正文增量 ⇒ 仍然要剥。
+        #    核心的进度行是在**下一个正文增量**到达时才被清掉的，不是工具一结束就清 ——
+        #    所以「post_tool_call 关窗口」是错的（那一帧恰好就是收尾帧）。
+        _body_e = "工具跑完之后、下一个正文增量之前的那一帧。"
+        _ans_e, _fin_e, _ = _a7_run("oc_a7e", "a7e", _body_e + _SEP + _PROG,
+                                    prep=_arm(_body_e, "a7e", finish_tool=True))
+        assert _ans_e == _body_e, f"工具结束后（无新正文）的帧同样要剥：{_ans_e!r}"
+
+        # ⑥ 配置项 `progress_lines_in_body: true` ⇒ **原样渲染**（用户明确要核心那套）。
+        #    这一格的存在理由：这个键**早就写在 `_DEFAULTS`/`plugin.yaml`/README 里**，
+        #    而它原先的唯一实现（`format_tool_event` 返回 None）在 Hermes 0.21.1 的生产路径上
+        #    **根本没有调用点** ⇒ 那句文档一直是空转的（真机上工具行照样进正文）。
+        #    现在它接到真正的帧文本上，所以必须有一条断言钉住「这个键真的有用」。
+        _calls6, _client6 = _mk_fake()
+        _raw6 = _make()
+        _raw6._client = _client6
+        adapter.configure(native_transport="cardkit", unified_panel=True,
+                          progress_lines_in_body=True)
+        panel.reset()
+        context.reset()
+        panel.note_answer_delta("s-a7f", "t-a7f", _body_a)
+        panel.note_tool_event("s-a7f", "t-a7f")
+        assert _run(_raw6.send_stream_frame("", chat_id="oc_a7f", turn_id="t-a7f"))
+        assert _run(_raw6.send_stream_frame(_body_a + _SEP + _PROG,
+                                            chat_id="oc_a7f", turn_id="t-a7f"))
+        _ans_f = [c[1] for c in _calls6["content"] if c[0] == cards.CARDKIT_ANSWER_ID][-1]
+        assert _ans_f == _body_a + _SEP + _PROG, \
+            f"`progress_lines_in_body: true` 必须原样渲染（这个键不许是空转的）：{_ans_f!r}"
+        adapter.configure(progress_lines_in_body=False)
         # ⑭ **正文长大之后也要守硬上限**（第十二路审计第 5 条）：建实体那道闸门守的是
         #    **空正文**的 seed 帧（核心传 `""`），真正会长大的是后面每一帧的累积全文。
         #    ⚠️ R4 起这一格分**两半**（行为**有意**变了，别再当成回归）：

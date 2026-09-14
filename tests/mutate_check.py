@@ -570,9 +570,12 @@ MUTATIONS = [
      '            res = await self._ld_ck_settings(card_id, {"content": text}, seq, retry=False)',
      "test_units"),
     # ---- R6a：markdown 卫生（只在收尾帧、只删不补、代码区不动）------------------------- #
-    ("R6a-1-流式帧也做卫生（前缀链断掉 ⇒ 回答重发一遍）", "core/adapter.py",
-     '        display = text',
-     '        display = _cards.sanitize_markdown(text)',
+    # ⚠️ 锚点 2026-09-14 改过一次：`display = text` 那一行现在是**正文净化**的入口
+    # （R11-A7），卫生那一步在收尾帧上做（`_sanitize_for_send(display[tail_offset:])`）。
+    # 所以这条变异改成「收尾那一帧不做卫生」—— 它盯的性质没变：改写前缀会让前缀链断掉。
+    ("R6a-1-流式收尾帧不做卫生（前缀链断掉 ⇒ 回答重发一遍）", "core/adapter.py",
+     '            tail_visible = _sanitize_for_send(display[tail_offset:])',
+     '            tail_visible = display[tail_offset:]',
      "test_units"),
     ("R6a-2-改回「补一个 `**` 收尾」（把尾巴吞进加粗）", "core/cards.py",
      '    for index in range(0, len(text) - 1):\n'
@@ -862,7 +865,8 @@ MUTATIONS = [
      '    return "\\n\\n".join(lines)',
      "test_units"),
     ("R10-4-删掉每回合自检汇总（三个症状又变回只能靠用户截图）", "core/adapter.py",
-     '            _log_turn_selfcheck(chat, self._ld_transport(), int(state.get("frames") or 0) + 1)',
+     '            _log_turn_selfcheck(chat, self._ld_transport(), int(state.get("frames") or 0) + 1,\n'
+     '                                strips=int(state.get("strips") or 0) + (1 if stripped else 0))',
      '',
      "test_units"),
     ("R10-1-面板状态退回模块局部（插件被加载两次时钩子写一份、卡片读另一份）", "core/panel.py",
@@ -1204,8 +1208,54 @@ MUTATIONS = [
      '    "clarify.toast_failed": {ZH: "提交未生效：可能已被处理或过期，请重试",\n'
      '                             EN: "Could not submit: already handled or expired — please retry"},',
      "test_units"),
+    # ---- R11-A7：正文净化（**有证据**地剥掉核心叠加的工具进度块）----
+    # 用户选的是「一个核心配置都不动」⇒ 这件事只能在插件侧做，而它**有可能吞掉正文**，
+    # 所以每一条修复都必须有变异守着（撤掉一处 ⇒ 至少一个门禁变红）。
+    ("R11-1-正文净化整个撤掉（帧文本原样渲染）", "core/adapter.py",
+     '        display = self._ld_body_text(text, chat)',
+     '        display = text',
+     "test_units"),
+    ("R11-2-工具窗口判据撤掉（没有工具事件也照剥）", "core/adapter.py",
+     '    if not text or not accumulated or not tool_pending or not complete:\n        return text',
+     '    if not text or not accumulated or not complete:\n        return text',
+     "test_units"),
+    ("R11-3-判据退回「按分隔符切」（模型自己写的分隔线之后的正文被吞）", "core/adapter.py",
+     '    if not text.startswith(accumulated):\n'
+     '        return text\n'
+     '    tail = text[len(accumulated):]\n'
+     '    if not tail.startswith(_CORE_PROGRESS_SEP) or len(tail) <= len(_CORE_PROGRESS_SEP):\n'
+     '        return text\n'
+     '    return accumulated',
+     '    if _CORE_PROGRESS_SEP not in text:\n'
+     '        return text\n'
+     '    return text.split(_CORE_PROGRESS_SEP)[0]',
+     "test_units"),
+    ("R11-4-「累积完整」判据撤掉（冻结之后的真答案被吞）", "core/adapter.py",
+     '    if not text or not accumulated or not tool_pending or not complete:\n        return text',
+     '    if not text or not accumulated or not tool_pending:\n        return text',
+     "test_units"),
+    # ⚠️ 期望门禁是 **check_hooks** 而不是 test_units：这条变异改的是 `hooks.py` 的接线，
+    # 而单测是直接调数据层的（它验的是「工具结束**这个事实**不许关窗口」）。
+    # 谁改的谁负责 —— 归因写准，才不会被「反正变红了」糊过去（第十路审计的教训）。
+    ("R11-5-工具一结束就关窗口（收尾那一帧恰好就是有进度行的帧）", "core/hooks.py",
+     '        _panel.record_tool_finished(payload.get("session_id", ""),',
+     '        _panel.record_answer_delta(payload.get("session_id", ""),\n'
+     '                                   payload.get("turn_id", ""), "")\n'
+     '        _panel.record_tool_finished(payload.get("session_id", ""),',
+     "check_hooks"),
+    ("R11-6-自检不再报「剥了几帧」（真机上再没有凭据）", "core/adapter.py",
+     '                                strips=int(state.get("strips") or 0) + (1 if stripped else 0))',
+     '                                strips=0)',
+     "test_units"),
+    ("R11-8-配置项 progress_lines_in_body 又变成空转（文档说的与做的不一致）", "core/adapter.py",
+     '        if _cfg("progress_lines_in_body"):\n            return text\n',
+     '',
+     "test_units"),
+    ("R11-7-钩子不传正文增量（正文累积永远为空 ⇒ 真机上永不剥）", "core/hooks.py",
+     '            _panel.record_answer_delta(session_id, turn_id, payload.get("delta", ""))',
+     '            _panel.record_answer_delta(session_id, turn_id)',
+     "check_hooks"),
 ]
-
 
 #: **对照项**：行为等价的改动（合法 YAML 变体等），期望四门禁**全绿**。
 #: 与 MUTATIONS 分开成两张表 —— 判断依据是它属于哪张表，不是名字里有没有某个字。
