@@ -3066,9 +3066,18 @@ def test_panel_and_context_state_survive_the_module_being_loaded_twice() -> None
             f"同一个 tool_call_id 只该有一行（重复订阅不许在面板里变成两行）：{snap2.get('tools')}"
     finally:
         copy1["reset"]()
-    # 账本（`context._STATUS`）同一条纪律
+    # 账本（`context._STATUS`）与**页脚指标**（`context._LATEST` 等）同一条纪律：
+    # 钩子写、卡片读；分成两份 ⇒ 账本永远「累计 0 帧」、**页脚永远不显示**
+    # （用户实测：卡片上没有 `ctx 4.3k/20k · 22%` 那行，而接口层一切正常）。
+    import builtins
+    box = getattr(builtins, "_larkdeck_shared_state")
     assert context._STATUS is context._shared_status(), \
         "写卡账本必须挂在进程级共享容器上（否则「累计 0 帧」那个症状会回来）"
+    for name in ("_LATEST", "_MAX_CACHE", "_RETRY_AFTER", "_ALIASES"):
+        assert getattr(context, name) is box["ctx_" + name.lstrip("_").lower()], \
+            f"{name} 必须与进程级容器是同一个对象（否则页脚/缓存会被分成两份）"
+    assert context._MAX_OVERRIDE_BOX is box["ctx_max_override"], \
+        "标量配置（context_max_override）也要用共享盒子，否则两份模块各记一个值"
 
 
 def test_unified_panel_applies_caps() -> None:

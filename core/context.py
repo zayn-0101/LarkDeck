@@ -45,24 +45,67 @@ logger = logging.getLogger("larkdeck.context")
 
 _LOCK = threading.Lock()
 
+def _shared_box() -> Dict[str, Any]:
+    """进程级共享容器本体（`panel` 与本模块共用同一个 `builtins` 上的盒子）。"""
+    import builtins
+    box = getattr(builtins, "_larkdeck_shared_state", None)
+    if not isinstance(box, dict):
+        box = {}
+        setattr(builtins, "_larkdeck_shared_state", box)
+    for key, default in (("panel_state", {}), ("panel_chat_session", {}),
+                         ("panel_last_active", [""]), ("status", None),
+                         ("ctx_latest", {}), ("ctx_max_cache", {}),
+                         ("ctx_retry_after", {}), ("ctx_max_override", [None]),
+                         ("ctx_aliases", {})):
+        if key not in box:
+            box[key] = dict(default) if isinstance(default, dict) else (
+                list(default) if isinstance(default, list) else default)
+    return box
+
+
+def _shared_status() -> Dict[str, Any]:
+    """账本容器挂在**进程级稳定位置**上（理由见 `panel._shared_state` 的长注释）。
+
+    ⚠️ 2026-09-14 真机实测：同一进程里插件被发现两次 ⇒ 本模块有两份模块对象 ⇒
+    钩子记在 A 份、`/larkdeck` 读 B 份 ⇒ 卡片上永远写「最近写卡：无记录 · 累计 0 帧」，
+    而 DM 里明明躺着一张张卡。共享同一个 dict 之后这个症状从构造上消失。
+    """
+    box = _shared_box()
+    if not isinstance(box.get("status"), dict):
+        box["status"] = dict(_STATUS_DEFAULTS)
+    return box["status"]
+
+
+_STATUS_DEFAULTS: Dict[str, Any] = {
+    "inbound_at": None, "inbound_count": 0,
+    "frame_ok_at": None, "frame_ok_count": 0,
+    "frame_fail_at": None, "frame_fail_count": 0, "frame_fail_reason": "",
+}
+
+
 #: 最近一次 API 调用的指标快照（进程级）。
-_LATEST: Dict[str, Any] = {}
+# ⚠️ 与 `_STATUS` 同一条纪律（见 `_shared_status` 的长注释）：**这些容器也必须进程内共享**。
+# 否则「钩子记录最近一次 API 请求、卡片读它画页脚」会分开落在两份模块对象上 ⇒
+# **页脚永远不显示**（用户实测：卡片上没有那行 `ctx 4.3k/20k · 22%`，
+# 而接口层一切正常、没有任何报错）。同一进程里插件被发现两次是 Hermes 的既有行为。
+_LATEST: Dict[str, Any] = _shared_box()["ctx_latest"]
 
 #: ``model@base_url`` -> 上下文上限；``None`` 表示查过但没查到（同样是有效缓存）。
-_MAX_CACHE: Dict[str, Optional[int]] = {}
+_MAX_CACHE: Dict[str, Optional[int]] = _shared_box()["ctx_max_cache"]
 
 #: 正在后台探测的 key（避免同一模型被并发渲染起出一堆线程）。
 _INFLIGHT: set = set()
 
 #: 探测**失败**后的退避截止时刻（单调钟）。失败不写负缓存，只退避重试。
-_RETRY_AFTER: Dict[str, float] = {}
+_RETRY_AFTER: Dict[str, float] = _shared_box()["ctx_retry_after"]
 _PROBE_FAIL_BACKOFF_SECONDS = 300.0
 
 #: 配置钉住的上下文上限，优先级高于自动探测（所有模型统一生效）。
-_MAX_OVERRIDE: Optional[int] = None
+#: 标量没法跨模块对象共享 ⇒ 用**长度 1 的盒子**（与 panel 的「最近活跃会话」同一手法）
+_MAX_OVERRIDE_BOX: list = _shared_box()["ctx_max_override"]
 
 #: 用户配置的模型别名：真名 -> 显示名。
-_ALIASES: Dict[str, str] = {}
+_ALIASES: Dict[str, str] = _shared_box()["ctx_aliases"]
 
 # --------------------------------------------------------------------------- #
 # R9 自检账本 ——「插件到底在不在动」的三条证据
@@ -84,30 +127,6 @@ _ALIASES: Dict[str, str] = {}
 #: 也要写 —— 页脚那条同类说明早就在，账本这条此前一个字都没有，用户会拿别人的失败去查
 #: 自己的卡（正是本阶段要消灭的「静默误诊」）。要真做对得从钩子载荷的 `session_id` 分桶
 #: （与页脚同一件事，**未做**）。
-def _shared_status() -> Dict[str, Any]:
-    """账本容器挂在**进程级稳定位置**上（理由见 `panel._shared_state` 的长注释）。
-
-    ⚠️ 2026-09-14 真机实测：同一进程里插件被发现两次 ⇒ 本模块有两份模块对象 ⇒
-    钩子记在 A 份、`/larkdeck` 读 B 份 ⇒ 卡片上永远写「最近写卡：无记录 · 累计 0 帧」，
-    而 DM 里明明躺着一张张卡。共享同一个 dict 之后这个症状从构造上消失。
-    """
-    import builtins
-    box = getattr(builtins, "_larkdeck_shared_state", None)
-    if not isinstance(box, dict):
-        box = {"panel_state": {}, "panel_chat_session": {}, "panel_last_active": [""],
-               "status": None}
-        setattr(builtins, "_larkdeck_shared_state", box)
-    if not isinstance(box.get("status"), dict):
-        box["status"] = dict(_STATUS_DEFAULTS)
-    return box["status"]
-
-
-_STATUS_DEFAULTS: Dict[str, Any] = {
-    "inbound_at": None, "inbound_count": 0,
-    "frame_ok_at": None, "frame_ok_count": 0,
-    "frame_fail_at": None, "frame_fail_count": 0, "frame_fail_reason": "",
-}
-
 _STATUS: Dict[str, Any] = _shared_status()
 
 #: 失败原因存进账本前截断到多少字符（原因来自异常字符串 / SDK 返回，长度不可控）。
@@ -249,8 +268,8 @@ def context_max(model: str = "", base_url: str = "") -> Optional[int]:
     所以：命中缓存立即返回；未命中就起一个守护线程去探，本次返回 ``None``，
     下一个渲染周期自然拿到值。代价是页脚的 ctx 段可能晚一帧出现 —— 可接受。
     """
-    if _MAX_OVERRIDE:
-        return _MAX_OVERRIDE
+    if _MAX_OVERRIDE_BOX[0]:
+        return _MAX_OVERRIDE_BOX[0]
     model = (model or _LATEST.get("model") or "").strip()
     if not model:
         return None
@@ -299,8 +318,7 @@ def _probe_context_max(key: str, model: str, base_url: str) -> None:
 
 def set_context_override(value: Optional[int]) -> None:
     """手工钉住上下文上限（配置 ``context_max_override`` 用；0/None 表示取消）。"""
-    global _MAX_OVERRIDE
-    _MAX_OVERRIDE = _as_int(value) or None
+    _MAX_OVERRIDE_BOX[0] = _as_int(value) or None
 
 
 # --------------------------------------------------------------------------- #
