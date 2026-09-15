@@ -564,3 +564,20 @@ ls -la ~/.hermes/logs/agent.log*
    配置 + 实测（2026-09-13 那行确实在 `agent.log` 里），**不是靠门禁**。
 3. **客户端渲染无法本地判**：旧客户端渲染不出 2.0 卡时，「没有日志」与「没投递」同形 ⇒
    所以 12.2 的判定表把「用户确认看见了按钮」列为**必要输入**。
+
+### 12.6 附：路线 C 在本批次里的**可核对证据**（硬约束「不改 Hermes」）
+
+用户把「路线保持 C」写进了目标，所以它也该有证据，而不是一句声明。
+四条都是机械可复跑的（2026-09-16 实测）：
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| Hermes 源码没被动过 | `cd ~/.hermes/hermes-agent && git status --porcelain` | **空** |
+| 核心配置没被动过 | `ls -la ~/.hermes/config.yaml ~/.hermes/.env` | mtime `09-14 19:22` / `09-07 18:51`（**都早于本轮开工**） |
+| 没有 monkeypatch 形态 | 在 `core/` 里找 `setattr(` / `MethodType` / 给别人的类赋值 | 唯一命中是 `panel.py:151` 的 `setattr(builtins, "_larkdeck_shared_state", box)` —— 那是**我们自己的**进程内共享盒子（R11-A0 的既定机制），不是改 Hermes |
+| 不 import Hermes 内部模块 | `core/` 里找 `^(import\|from) (hermes\|gateway)` | **空** |
+| 私有名访问只在 `compat.py` | `core/` 里找 `getattr(<obj>, "_…")` | 命中的全是**我们自己的**限流戳（`getattr(_log_*_once, "_at", …)`），没有一处指向 Hermes 对象 |
+| 覆盖走的是官方契约 | `check_override.py` 真跑插件加载器 | `OVERRIDE OK`（不是替身） |
+| 部署方式 | `ls -la ~/.hermes/plugins/` | 软链 → 本仓库（`install.sh` 的既定形态） |
+
+⇒ 「路线 C」不是一句立场，是**六条可复跑的读数**。
