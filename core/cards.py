@@ -64,6 +64,23 @@ OTHER_VALUE = "__larkdeck_other__"
 #: 用途见 ``adapter._ld_log_probe_click`` 与 ``tests/probe_render.py`` 的探针卡。
 PROBE_VALUE_KEY = "larkdeck_probe"
 
+
+def is_probe_value(value: Any) -> bool:
+    """这个点击载荷是不是**探针**的？—— 适配器与探针**共用这一条判据**。
+
+    ⚠️ 为什么值得单独一个函数（2026-09-16 对抗审计实测，**真缺陷**）：
+    适配器用的判据是 `isinstance(value, dict) and value.get(PROBE_VALUE_KEY)`（**真值性**），
+    而探针的自检一度写的是 `PROBE_VALUE_KEY in value`（**键存在**）—— 两者**不等价**：
+    `{"larkdeck_probe": False}` 会被自检放行，却被适配器判为「不是探针」⇒ **不打任何日志、
+    静默交回内置实现**。而那一行日志是「2.0 `button` 能不能到服务端」**唯一**的凭据 ⇒
+    用户一次**成功**的点击会被读成「飞书没投递」。
+    ⇒ 判据只能有一处。探针的卡片形状与适配器的派发都调它（`PROBE_VALUE_KEY` 仍是它的数据来源），
+    这样「自检放行的形状」与「派发认的形状」在构造上不可能分叉。
+    """
+    return isinstance(value, dict) and bool(value.get(PROBE_VALUE_KEY))
+
+
+
 DEFAULT_TITLE = "Hermes"
 
 #: 2.0 卡片在通知栏 / 会话列表里显示的一句话摘要上限，超长会被截断。
@@ -1377,8 +1394,8 @@ def escape_inline_md(text: str) -> str:
     不该走 :func:`sanitize_markdown`（那一套是给整篇正文做围栏识别 / 加粗平衡 / 标题降级的）。
     这里只做一件事：把会被当成语法的字符加上反斜杠。
 
-    只转义 ``\`` ``` ` `` ``*`` ``_`` ``~`` ``[`` ``]`` ``|``：这几个在飞书 markdown 里
-    是真语法（加粗 / 斜体 / 删除线 / 链接 / 表格 / 代码）。``#`` ``-`` ``>`` ``.`` **只在行首**
+    只转义 **反斜杠、反引号、`*`、`_`、`~`、`[`、`]`、`|`**：这几个在飞书 markdown 里
+    是真语法（加粗 / 斜体 / 删除线 / 链接 / 表格 / 代码）。`#` `-` `>` `.` **只在行首**
     才有效，而我们的插入点是 ``❓ 问题`` 与 ``1. 标签``（都在行首标记**之后**），所以不动它们
     —— 多转义只会让用户看到一堆反斜杠。
 

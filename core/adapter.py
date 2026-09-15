@@ -3204,7 +3204,7 @@ class LarkDeckMixin:
             value = self._ld_normalize_value(action)
             if isinstance(value, dict) and value.get(ACTION_KEY) == ACTION_CLARIFY:
                 return self._ld_handle_clarify_click(event=event, action=action, value=value)
-            if isinstance(value, dict) and value.get(_cards.PROBE_VALUE_KEY):
+            if _cards.is_probe_value(value):      # 判据只有一处（见 cards.is_probe_value）
                 return self._ld_log_probe_click(event=event, action=action)
         except Exception as exc:
             logger.warning("[larkdeck] 处理卡片点击时异常: %s", exc, exc_info=True)

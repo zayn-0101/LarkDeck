@@ -167,6 +167,14 @@ def clean_previous(client, chat: str) -> int:
         content = (item.body.content if item.body else "") or ""
         if not any(m in content for m in PROBE_MARKERS):
             continue
+        # ⚠️ **只删本机器人自己发的**（2026-09-16 审计实测的隐患）：标记里混着
+        # `这张卡渲染正常吗？` 这种**自然中文句子**，而补扫原先不看发送者 ⇒ 理论上会把
+        # 用户/agent 的真实消息一起删掉。这与 `AGENTS.md` 的红线
+        # 「清理只许按 `message_id` 删」相抵触 —— ID 那条路已经天然是「自己发的」，
+        # 这条内容补扫就得自己补上这个判据。
+        sender = item.sender
+        if sender is not None and getattr(sender, "id_type", None) not in (None, "app_id"):
+            continue
         d = client.im.v1.message.delete(
             DeleteMessageRequest.builder().message_id(item.message_id).build())
         if d.code == 0:
@@ -1558,6 +1566,23 @@ def probe_stop_redraw(client, chat: str, cards) -> int:
     return 1
 
 
+def _iter_elements(node):
+    """把卡 JSON 里**所有**元素节点逐个吐出来（递归进 `column_set` / `column` 等容器）。
+
+    ⚠️ 为什么要递归（2026-09-16 对抗审计实测）：只扫顶层 `body.elements` 会**两头都错** ——
+    ① **假阴性**：1.0 的 `action` 行嵌在容器里照样会被飞书拒收（`230099`），而自检报 ✅；
+    ② **假阳性**：把按钮放进 `column_set` 是**合法的 2.0 写法**，却被「应当正好一个 button」
+       判成 0 个而拒发一张好卡。两头的判据都必须是「遍历整棵树」。
+    """
+    if isinstance(node, dict):
+        yield node
+        for v in node.values():
+            yield from _iter_elements(v)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _iter_elements(item)
+
+
 def probe_card_problems(card: dict, cards) -> list:
     """**发出去之前**把这张卡能本地查的问题查掉 —— 返回问题列表（空 = 可以发）。
 
@@ -1565,34 +1590,66 @@ def probe_card_problems(card: dict, cards) -> list:
     而**用户那一击只能点一次** —— 如果卡本身有结构问题（方言混用 ⇒ 飞书拒收 `230099`、
     元素/字节超限），那一击就白费了，而且用户只会在 DM 里看到「什么都没有」。
     能本地判的先本地判，别把可预防的失败留给用户的手。
+
     ⚠️ 它**查不出**「点击能不能到服务端」—— 那正是需要真人点一次的原因，不是这里能替代的。
+
+    ⚠️⚠️ **判据必须与适配器同口径**（2026-09-16 对抗审计抓出的**真缺陷**）：回调 value 那一条
+    一度写成 `PROBE_VALUE_KEY in value`（**键存在**），而适配器判的是 `value.get(...)` 的
+    **真值性** ⇒ `{"larkdeck_probe": False}` 被自检放行、却被适配器静默交回内置实现
+    ⇒ **一行日志都不会有**，用户一次**成功**的点击会被读成「飞书没投递」。现在两侧都调
+    `cards.is_probe_value()`（一处真相）。
+    同一批审计还抓出：只扫顶层（漏嵌套 `action` 行 / 误拒合法容器里的按钮）、
+    `config` 从不检查、`button.text` 不查、`behaviors[0]` 不是 dict 会崩、
+    字节边界 `>=` 与真机的 `128000 被接受` 矛盾。逐条都补上了。
     """
     problems = []
     if card.get("schema") != "2.0":
         problems.append(f"schema 必须是 2.0（实际 {card.get('schema')!r}）")
+
+    # `config.summary`：2.0 卡的**会话列表预览**文案，形态必须是 {"content": "…"}。
+    # 同类字段在 `card.settings` 那条 API 上真机实测回过 300122（`test_units.py` 有那条断言），
+    # 这里按同一形状先查一遍 —— 形态错的 summary 会让整张卡在 IM create 上被拒。
+    summary = (card.get("config") or {}).get("summary")
+    if not isinstance(summary, dict) or not str(summary.get("content") or "").strip():
+        problems.append(f"config.summary 必须是 {{\"content\": 非空字符串}}（实际 {summary!r}）")
+
+    nodes = list(_iter_elements(card.get("body") or {}))
     elems = ((card.get("body") or {}).get("elements")) or []
-    btns = [e for e in elems if isinstance(e, dict) and e.get("tag") == "button"]
+    btns = [e for e in nodes if e.get("tag") == "button"]
     if len(btns) != 1:
-        problems.append(f"应当正好一个 button，实际 {len(btns)} 个")
+        problems.append(f"应当正好一个 button，实际 {len(btns)} 个（按**整棵树**数）")
     for e in btns:
-        # 2.0 的唯一正确写法：**组件级** behaviors（顶层 value 的按钮在 2.0 卡里点不动）
+        text = e.get("text")
+        # 2.0 的 `button.text` 只接 `plain_text`；写成 markdown 会被拒。
+        if not isinstance(text, dict) or text.get("tag") != "plain_text":
+            problems.append(f"button.text 必须是 {{'tag': 'plain_text', …}}（实际 {text!r}）")
         behs = e.get("behaviors")
-        if not isinstance(behs, list) or not behs:
+        if not isinstance(behs, list) or not behs or not isinstance(behs[0], dict):
             problems.append("按钮缺**组件级** behaviors（2.0 卡里只有顶层 value 的按钮点不动）")
             continue
         if behs[0].get("type") != "callback":
             problems.append(f"behaviors[0].type 必须是 callback（实际 {behs[0].get('type')!r}）")
-        if cards.PROBE_VALUE_KEY not in (behs[0].get("value") or {}):
-            problems.append(f"回调 value 里必须带 {cards.PROBE_VALUE_KEY}"
-                            "（否则网关不会打「探针点击到达」，用户点了也看不到凭据）")
-    if any(isinstance(e, dict) and e.get("tag") == "action" for e in elems):
+        # 多条目行为**未定义**（审计 FN-7）：我们只造一条，就要求**恰好一条 callback** ——
+        # 与其让它「碰巧能用」，不如把意图钉死。
+        if len(behs) != 1:
+            problems.append(f"behaviors 应当**恰好一条**（实际 {len(behs)} 条，多条目行为未定义）")
+        # ⚠️ 与适配器**同一条判据**（`cards.is_probe_value`）—— 别在这里另写一遍。
+        if not cards.is_probe_value(behs[0].get("value")):
+            problems.append(
+                f"回调 value 必须让 cards.is_probe_value() 为真（即 dict 里 "
+                f"{cards.PROBE_VALUE_KEY} 为**真值**）—— 否则适配器不派发、日志一行都没有，"
+                f"用户点了我们也拿不到凭据。实际 {behs[0].get('value')!r}")
+    # 1.0 的 action 行：**整棵树**扫（嵌在 column_set 里照样被拒收 `230099`）
+    if any(e.get("tag") == "action" for e in nodes):
         problems.append("卡里混进了 1.0 的 action 按钮行 —— 飞书会拒收（230099），方言不许混用")
     if len(elems) > 200:
         problems.append(f"元素数 {len(elems)} 超官方硬上限 200")
     import json as _json
     size = len(_json.dumps(card, ensure_ascii=False).encode("utf-8"))
-    if size >= cards.FEISHU_CARD_BYTE_LIMIT:
-        problems.append(f"卡 JSON {size} 字节，达到/超过硬上限 {cards.FEISHU_CARD_BYTE_LIMIT}")
+    # ⚠️ 边界是 **>**，不是 **>=**：`test_units.py` 里那条真机包络线写死了
+    #    `128000 仍 code=0`（被接受），所以「恰好等于上限」是**能发出去**的。
+    if size > cards.FEISHU_CARD_BYTE_LIMIT:
+        problems.append(f"卡 JSON {size} 字节，**超过**硬上限 {cards.FEISHU_CARD_BYTE_LIMIT}")
     return problems
 
 
@@ -1624,6 +1681,14 @@ def probe_button_card(client, chat: str, cards) -> int:
     mark = "\u2705" if code == 0 else "\u274c"
     print(f"{mark} {label}  code={code} {msg}")
     if code == 0:
+        # ⚠️ **必须记进账本**（2026-09-16 审计：全文件 11 处入账，唯独这条路径没有）——
+        #    不记的话，它只靠「7 天内、最近 50 条、且内容读得回来」的内容补扫才能被清掉，
+        #    超过其中任何一条就永久留在用户 DM 里，只能靠人长按删除。
+        if mid:
+            try:
+                _save_sent_ids(_load_sent_ids() + [mid])
+            except Exception as exc:            # 记不上不该让探针失败（卡已经发出去了）
+                print(f"   ⚠️  记账失败（不影响这次点击）：{exc!r}")
         print("   请点那张卡上的按钮，然后看网关日志里有没有这一行：")
         print("   [larkdeck] 探针点击到达 \u2705 tag=button \u2026")
     return 0 if code == 0 else 1

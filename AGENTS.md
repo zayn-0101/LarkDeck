@@ -454,8 +454,13 @@ fail-open」）被顺带满足，报出来的失败信息与真实原因无关�
   `--clean-only` / `--no-clean`（清理控制）、
   `--button-2`（**只发 ⑮ 一张**：2.0 `button` + **组件级** `behaviors`。不变量 5 里 `button` 是
   唯一**只有官方文档**的一格，只能**真机点一次**判定 —— 而「请人点一次」是全项目唯一消耗用户
-  时间的动作，所以它**先本地自检再发**（`probe_card_problems()`：方言混用 / 缺 `behaviors` /
-  回调 value 少了 `PROBE_KEY` / 元素与字节超限），自检不过就**不发**，免得白费那一击）。
+  时间的动作，所以它**先本地自检再发**（`probe_card_problems()`：方言混用（**整棵树**扫，
+  嵌套在 `column_set` 里的 1.0 `action` 行照样拒收）/ 缺组件级 `behaviors` / `config.summary` 形态 /
+  `button.text` 必须是 `plain_text` / 回调 value **必须让 `cards.is_probe_value()` 为真** /
+  元素与字节超限），自检不过就**不发**，免得白费那一击）。
+  ⚠️ 那条 value 判据**必须与适配器共用 `cards.is_probe_value()`**：审计实测过两者分叉的后果 ——
+  自检按「键存在」放行、适配器按「真值性」不派发 ⇒ `{"larkdeck_probe": False}` 的卡
+  **一行日志都不会有**，用户一次**成功**的点击被读成「飞书没投递」。变异 `Y23` 钉这一条。
   ⚠️ **探针发消息的 `uuid` 必须每次都不同**（2026-09-14 实测）：飞书按 `uuid` 去重，
   用固定 uuid 时「删掉再重发」会拿到**同一个已删的 `message_id`** —— 接口回 `code=0`，
   而 DM 里什么都没有（我因此让用户白找了一次）。同理，`--cardkit-prod` 建出来的卡

@@ -1658,8 +1658,18 @@ MUTATIONS = [
     #      **把一次成功的真机实验读成失败**，再据此决定「澄清卡不加按钮形态」。
     ("Y21-探针点击不再留凭据（真人点完，我们拿不到任何判定依据 ⇒ 会把成功读成失败）",
      "core/adapter.py",
-     '            if isinstance(value, dict) and value.get(_cards.PROBE_VALUE_KEY):\n                return self._ld_log_probe_click(event=event, action=action)\n',
-     "",
+     '            if _cards.is_probe_value(value):      # 判据只有一处（见 cards.is_probe_value）\n                return self._ld_log_probe_click(event=event, action=action)',
+     '',
+     "test_units"),
+    ("Y22-插件 logger 关掉向 root 传播（那行**永远到不了 agent.log**，而门禁察觉不到）",
+     "core/adapter.py",
+     'logger = logging.getLogger("larkdeck")\n',
+     'logger = logging.getLogger("larkdeck")\nlogger.propagate = False      # 变异：关掉传播\n',
+     "test_units"),
+    ("Y23-探针判据从「真值性」放宽成「键存在」（探针自检与适配器分叉 ⇒ 点击静默无凭据）",
+     "core/cards.py",
+     '    return isinstance(value, dict) and bool(value.get(PROBE_VALUE_KEY))',
+     '    return isinstance(value, dict) and PROBE_VALUE_KEY in value',
      "test_units"),
 ]
 

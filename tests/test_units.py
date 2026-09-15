@@ -3198,6 +3198,29 @@ def test_probe_click_leaves_the_only_evidence_we_get():
     assert "tag=button" in hit[0], hit[0]
     # 反向：不许被当成澄清点击（那会去解一个不存在的澄清，用户看到「提交未生效」而困惑）
     assert raw.calls == [], f"探针点击不该交给内置处理：{raw.calls}"
+    # ⚠️⚠️ **堵两个「因错误原因通过」的洞**（2026-09-16 对抗审计实测，两条都真的全绿过）：
+    #  ① 上面那些断言只认 logger 的**名字子树** ⇒ 把留痕改到
+    #     `logging.getLogger("larkdeck.probe")` 上，四门禁**照样全绿**（实测）——
+    #     而生产里去找日志的人是按 `larkdeck` 找的，凭据等于凭空消失；
+    #  ② `logger.propagate = False` 也**照样全绿**（实测）—— 而 Hermes 的文件 handler 挂在
+    #     **root** 上（`hermes_logging.py` 的注释：「Always on the root logger so records from
+    #     any logger reach the queue」）⇒ 那行**永远到不了 `agent.log`**。
+    #  ⇒ 判据必须钉在**对象身份 + 可达性**上，不是钉在名字上。
+    assert adapter.logger is logging.getLogger("larkdeck"), \
+        "凭据必须打在 `larkdeck` 这个 logger **对象**上（换个名字照样能过测试，但没人会去那儿找）"
+    assert logging.getLogger("larkdeck").propagate is True, \
+        ("这个 logger 必须向 root 传播：Hermes 的文件 handler 挂在 root 上，"
+         "关掉传播 = 那行永远到不了 agent.log（而门禁察觉不到）")
+
+    # ⚠️ **判据的语义本身也要钉住**（这是「探针自检与适配器分叉」那个真缺陷的根因）：
+    # `cards.is_probe_value()` 是**适配器与探针共用**的唯一一处判据，判的是 `value.get(...)`
+    # 的**真值性**，不是「键存在」—— 两者在 `{"larkdeck_probe": False}` 上分叉，而那一格
+    # 唯一的凭据就是这行日志 ⇒ 「假值算不算探针」必须是被断言钉住的**行为**。
+    assert cards.is_probe_value({cards.PROBE_VALUE_KEY: True}) is True
+    assert cards.is_probe_value({cards.PROBE_VALUE_KEY: False}) is False, \
+        "判据必须是**真值性**：假值不算探针（探针自检与适配器共用这一条，分叉会让点击静默无凭据）"
+    assert cards.is_probe_value(cards.PROBE_VALUE_KEY) is False, "裸字符串不算探针（适配器 json.loads 会失败）"
+    assert cards.is_probe_value(None) is False
 
 
 def test_clarify_click_resolves_gateway():
