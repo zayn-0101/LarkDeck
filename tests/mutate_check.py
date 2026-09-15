@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -1799,11 +1800,79 @@ def _run_gates(repo: Path) -> "dict[str, tuple[int, str]]":
     return out
 
 
+def _anchor_problem(rel: str, old: str, text: Optional[str] = None) -> Optional[str]:
+    """锚点对账 —— 返回 ``None`` 表示可用，否则返回**给人读的原因**。
+
+    ⚠️ **一处真相**：这个判据同时服务两处 —— 全量循环里的逐条检查，以及 :func:`preflight`
+    的纯文本预检。以前它只写在循环里，于是「3 秒就能查完的事」必须等一次全量跑
+    （310 条 × 四门禁 ≈ 65 分钟）才暴露（2026-09-15 实测：7 条失效锚点就是这么拖到深夜的）。
+    两处各抄一遍，正是本项目最恨的「同一件事两处真相」—— 所以抽成函数。
+
+    ``text`` 由调用方给（**不是**函数自己去读同一个地方）：全量循环查的是 ``_prepare()``
+    拷出来的**快照**，预检查的是**工作树** —— 两者当前逐字节相同，但把「查哪一份」
+    写死在函数里就会悄悄改变循环的语义。
+
+    两种问题**都算红**，但理由不同（`AGENTS.md` 里写了）：
+      * **没找到** = 清单与源码**脱节**（源码改了、原文串已不存在）⇒ 跑不到的变异等于没验；
+      * **出现多次** = `replace(..., 1)` 只换**第一处** ⇒ 变异打到别处去，而报告照常打印
+        「🟢 断言没有判别力」，**结论正好写反**（真发生的是「变异没生效」）。
+    """
+    if text is None:
+        target = REPO / rel
+        if not target.exists():
+            return f"目标文件不存在：{rel}"
+        text = target.read_text(encoding="utf-8")
+    hits = text.count(old)
+    if hits == 0:
+        return "锚点没找到（源码变了？）"
+    if hits != 1:
+        return f"锚点在 {rel} 里出现 {hits} 次（歧义：会改到别处）"
+    return None
+
+
+def preflight() -> int:
+    """**只做纯文本锚点对账**：不跑任何门禁、不建快照目录、约 3 秒。
+
+    为什么值得一条独立入口：本验证器的结论**只有两种方式失效** —— ①断言没判别力（假绿）、
+    ②锚点失效/歧义（结论正好写反）。第 ② 种的判据**只要读文件**，却一直要等一次全量跑
+    （310 条 × 四门禁 ≈ 65 分钟）才顺带发现。2026-09-15 实测的代价：7 条失效锚点 +
+    1 条「锚点唯一却打错分支」把一批改动拖到深夜才敢提交。
+
+    ⚠️ 它**只能**证明「锚点还在、且唯一」——**证明不了**「变异打在正确的分支上」、
+    也证明不了「撤掉修复真的会变红」。那两件事只有跑门禁才知道，所以它是**前置筛子**，
+    不是全量跑的替代品（`AGENTS.md`：跑不到的变异等于没验，而跑得到的变异还得真跑）。
+    """
+    picked = [m for m in MUTATIONS] + [m for m in CONTROLS]
+    bad = []
+    for name, rel, old, _new, *_rest in picked:
+        why = _anchor_problem(rel, old)
+        if why:
+            bad.append(f"{name}: {why}")
+            print(f"❓ {name}\n   {why}")
+        else:
+            print(f"✅ {name}")
+    print(f"\n锚点对账：{len(picked) - len(bad)}/{len(picked)} 可用"
+          f"（变异 {len(MUTATIONS)} + 对照 {len(CONTROLS)}）")
+    if bad:
+        print("\n结论：清单与源码脱节（或锚点歧义）——**全量跑之前先修这里**。")
+        for line in bad:
+            print(" -", line)
+        return 1
+    print("✅ 全部锚点存在且唯一")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("-k", default="", help="只跑名字里含该子串的变异")
     ap.add_argument("--keep", action="store_true", help="保留临时目录（排查用）")
+    ap.add_argument("--preflight", action="store_true",
+                    help="只做纯文本锚点对账（约 3 秒）后就退出，不跑任何门禁")
     args = ap.parse_args()
+
+    # ⚠️ 必须排在**基线自校验之前** —— 预检的全部价值就是「3 秒」，排在后面就白搭了。
+    if args.preflight:
+        return preflight()
 
     picked = [m for m in MUTATIONS if args.k in m[0]]
     controls = [m for m in CONTROLS if args.k in m[0]]
@@ -1831,19 +1900,15 @@ def main() -> int:
             repo = _prepare(parent)
             target = repo / rel
             text = target.read_text(encoding="utf-8")
-            if old not in text:
-                bad.append(f"{name}: 变异锚点没找到（源码变了？）")
-                print(f"❓ {name}: 锚点没找到")
-                continue
-            # ⚠️ **锚点必须唯一**：`replace(..., 1)` 只换第一处，锚点串在文件里出现两次时
-            # 会去改**另一处**代码 —— 于是「变异没生效」被误报成「断言没有判别力」。
-            # 第十一路审计续实测：`if panel:` 那种短锚点在 cards.py 里有两处（统一面板那处
-            # 在前），一份变异静默地打到了无关分支上，报告写着 🟢。
-            # 歧义锚点与「锚点失效」同级：跑不到的变异等于没验，必须重新对准。
-            hits = text.count(old)
-            if hits != 1:
-                bad.append(f"{name}: 锚点在 {rel} 里出现 {hits} 次（歧义：会改到别处）")
-                print(f"❓ {name}: 锚点出现 {hits} 次（歧义，拒绝下结论）")
+            # ⚠️ 判据与 `--preflight` **共用** `_anchor_problem`（一处真相）：查的是**快照**那份文本。
+            # 两种问题都算红 —— 「没找到」= 清单与源码脱节；「出现多次」= `replace(..., 1)`
+            # 只换第一处 ⇒ 变异打到别处去，而报告照常打印 🟢（**结论正好写反**）。
+            # 第十一路审计续实测：`if panel:` 那种短锚点在 cards.py 里有两处（统一面板那处在前），
+            # 一份变异静默地打到了无关分支上，报告写着 🟢。
+            why = _anchor_problem(rel, old, text)
+            if why:
+                bad.append(f"{name}: {why}")
+                print(f"❓ {name}: {why}")
                 continue
             target.write_text(text.replace(old, new, 1), encoding="utf-8")
             results = _run_gates(repo)
@@ -1879,14 +1944,10 @@ def main() -> int:
         repo = _prepare(parent)
         target = repo / rel
         text = target.read_text(encoding="utf-8")
-        if old_text not in text:
-            bad.append(f"{name}: 对照锚点没找到")
-            print(f"❓ {name}: 锚点没找到")
-            continue
-        hits = text.count(old_text)
-        if hits != 1:
-            bad.append(f"{name}: 对照锚点在 {rel} 里出现 {hits} 次（歧义）")
-            print(f"❓ {name}: 锚点出现 {hits} 次（歧义，拒绝下结论）")
+        why = _anchor_problem(rel, old_text, text)      # 与变异循环、`--preflight` 共用同一判据
+        if why:
+            bad.append(f"{name}: 对照项{why}")
+            print(f"❓ {name}: {why}")
             continue
         target.write_text(text.replace(old_text, new_text, 1), encoding="utf-8")
         results = _run_gates(repo)
