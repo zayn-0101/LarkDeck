@@ -361,7 +361,7 @@ LarkDeck 接管后才生效）。带参数的几种模式各答一个只有真�
 把那张卡重绘成中止色 —— 它用真适配器跑生产路径，**两条路径都跑**（非 native 的 `send`+patch、
 以及真 native 流式 `send_stream_frame` 建卡→若干帧→`/stop`），断言**载荷里有颜色**
 而不只是「发了 patch」）、
-`--button-2`（**只发一张** 2.0 按钮探针卡：`button` + **组件级** `behaviors`。`AGENTS.md` 不变量 5 里「组件可以是 `button`」这句**只有官方文档**支撑 —— 真机点过的只有 `select_static` / `multi_select_static` / `input`。发一张、点一下、看网关日志里有没有 `探针点击到达 ✅ tag=button` 就行；单独一条命令是为了不用在一批探针卡里找那一张）、
+`--button-2`（**只发一张** 2.0 按钮探针卡：`button` + **组件级** `behaviors`。`AGENTS.md` 不变量 5 里「组件可以是 `button`」这句**只有官方文档**支撑 —— 真机点过的只有 `select_static` / `multi_select_static` / `input`。发一张、点一下、看网关日志（**本机实测在 `~/.hermes/logs/agent.log`** —— `gateway.log` 里只有内置 feishu 平台的行，插件的 `[larkdeck]` 行在 `agent.log`）里有没有 `探针点击到达 ✅ tag=button` 就行；单独一条命令是为了不用在一批探针卡里找那一张）、
 `--clean-only` / `--no-clean`（清理控制）。
 
 ---

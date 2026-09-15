@@ -68,7 +68,7 @@
 
    澄清卡现在**默认用 2.0**（`select_static` / `multi_select_static` / `input` + 组件级
    `behaviors`）—— **2026-09-13 翻的，两条前提都满足并留了一手证据**：
-   ① 真机点一次：探针 ⑫（2.0 `select_static`）点下去后网关日志出现
+   ① 真机点一次：探针 ⑫（2.0 `select_static`）点下去后网关日志（**本机实测在 `~/.hermes/logs/agent.log`** —— `gateway.log` 里只有内置 feishu 平台的行，插件的 `[larkdeck]` 行在 `agent.log`）出现
    `[larkdeck] 探针点击到达 ✅ tag=select_static option='opt_a'`；探针 ⑬⑭（真 2.0 澄清卡）
    点下去后出现 `澄清提交未生效（clarify=probe-c2）` —— 探针卡没在网关登记澄清，所以
    「没东西可解」是预期，而它证明**点击到达并正确解析出了 clarify id**；

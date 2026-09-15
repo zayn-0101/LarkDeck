@@ -305,7 +305,7 @@ zstd -dc "$H/<agent-id>/session.jsonl.zstd"     # 事件流；assistant 正文�
 /Users/Zayn/.hermes/hermes-agent/venv/bin/python3 tests/probe_render.py --button-2
 ```
 
-发一张卡到自己的飞书 DM，**点一下卡上那个按钮**，然后在网关日志里找：
+发一张卡到自己的飞书 DM，**点一下卡上那个按钮**，然后在网关日志（**本机实测在 `~/.hermes/logs/agent.log`** —— `gateway.log` 里只有内置 feishu 平台的行，插件的 `[larkdeck]` 行在 `agent.log`）里找：
 
 ```
 [larkdeck] 探针点击到达 ✅ tag=button
