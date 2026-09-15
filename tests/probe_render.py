@@ -33,6 +33,11 @@
                    （`send_stream_frame` 建卡 → 若干帧 → `/stop`）。会加载真适配器
     --clean-only   只清理上次的探针卡
     --no-clean     不清理，直接发（排查清理逻辑时用）
+    --button-2     **只发 ⑮ 一张**：2.0 `button` + 组件级 `behaviors`。不变量 5 里
+                   「组件可以是 button」这句**只有官方文档**（真机点过的只有 select_static /
+                   multi_select_static / input）—— 这一格**只有真机点击能判**。
+                   发一张、点一下、看日志里有没有 `探针点击到达 ✅ tag=button`，就这些。
+                   （单独一条命令，是为了不用在一批探针卡里找那一张。）
 
 用法::
 
@@ -300,6 +305,31 @@ def build_status_cases(cards, mark: str) -> list:
     return cases
 
 
+def _probe_button_card(probe: dict) -> dict:
+    """⑮ 用的那张卡：**一个 2.0 按钮**（组件级 ``behaviors``）。
+
+    ⚠️ 只放 ``button`` + 说明文字，**不放** 1.0 的 ``action`` 行 —— 混用会被飞书拒收
+    （``230099``），而这张卡要回答的问题恰恰是「**单独一个 2.0 按钮**能不能把点击
+    送到服务端」。混进来就把问题换掉了。
+    """
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True, "update_multi": True,
+                   "summary": {"content": "LARKDECK 按钮探针：点一下那个按钮"}},
+        "body": {"elements": [
+            {"tag": "markdown", "content":
+             "**2.0 按钮探针（组件级 `behaviors`）**\n"
+             "请点下面那个按钮。日志里应当出现一行 `探针点击到达 ✅ tag=button`。"},
+            {"tag": "button",
+             "text": {"tag": "plain_text", "content": "点我一个（应产生一条日志）"},
+             "type": "primary",
+             "behaviors": [{"type": "callback", "value": {**probe, "kind": "button"}}]},
+            {"tag": "markdown", "text_size": "notation",
+             "content": "LARKDECK-RENDER-PROBE · 按钮探针 · 只验 2.0 button 的点击能不能到服务端"},
+        ]},
+    }
+
+
 def build_dialect_probe_cards(cards) -> list:
     """**2.0 交互组件探针**（阶段 4 的第一步：先量，不猜）。
 
@@ -321,7 +351,13 @@ def build_dialect_probe_cards(cards) -> list:
     澄清卡就继续用 1.0。
 
     卡片刻意只做两件事：一个下拉（选完就该回调）+ 一个输入框（回车就该回调）。
-    按 ``AGENTS.md`` 不变量 5，**不许**在这张卡里混 1.0 的 ``action`` 按钮行。
+
+    ⑮ 补的是**另一格**：``button`` + 组件级 ``behaviors``。不变量 5 里「组件可以是
+    ``button``」这句**只有官方文档**支撑（真机点过的只有 ``select_static`` / ``input``），
+    而卡片上的按钮比下拉直观得多 —— 要不要给澄清卡加按钮形态，取决于这一格成不成立。
+
+    按 ``AGENTS.md`` 不变量 5，**不许**在这些卡里混 1.0 的 ``action`` 按钮行
+    （混用会被飞书拒收 ``230099``，而 ⑮ 要回答的正是「**单独一个 2.0 按钮**行不行」）。
     """
     probe = {cards.PROBE_VALUE_KEY: True}
     card = {
@@ -366,6 +402,14 @@ def build_dialect_probe_cards(cards) -> list:
                                        ["模型名", "轮次", "工具数", "耗时"],
                                        clarify_id="probe-c2m", session_key="probe-sk",
                                        multi=True)))
+    # ⑮ **2.0 的 `button` + 组件级 `behaviors`** —— 不变量 5 里**唯一没有真机证据**的那一格。
+    #    不变量 5 写的是「组件可以是 `button` / `select_static` / `multi_select_static` / `input`」，
+    #    可真机点过的只有后三种（⑫⑬⑭）—— `button` 这一格**只有官方文档**。
+    #    值不值得补：卡片上的按钮比下拉**直观得多**（选项一眼看见、一下点完），而我们要不要给
+    #    澄清卡加按钮形态，完全取决于这一格成不成立。点一下、看日志里有没有 `tag=button` 即可。
+    #    ⚠️ 这是**纯探针**：不带 `larkdeck_action` ⇒ 点它不改卡、不提交任何澄清，只看日志。
+    cases.append(("⑮ 2.0 按钮探针【button + 组件级 behaviors】← 请点一下按钮",
+                  _probe_button_card(probe)))
     return cases
 
 
@@ -1514,6 +1558,32 @@ def probe_stop_redraw(client, chat: str, cards) -> int:
     return 1
 
 
+def probe_button_card(client, chat: str, cards) -> int:
+    """**只发 ⑮ 一张**（2.0 `button` + 组件级 `behaviors`）。
+
+    为什么值得单独一条命令：这一格（不变量 5 里 `button` 是唯一**只有官方文档**的组件）
+    只能靠**真机点一次**判定，而「请人点一次」是本项目里**唯一需要消耗用户时间**的动作 ——
+    所以要把它的成本压到最低：**发一张卡、点一个按钮、看日志一行**，不用在一批探针卡里找。
+
+    ⚠️ 点击事件由**正在跑的网关**接收（这个脚本接不到），所以判据在网关日志里：
+    `[larkdeck] 探针点击到达 ✅ tag=button …`。看到 = 2.0 按钮的服务端回调成立；
+    什么都没有 = 点击没到服务端（那澄清卡就继续不用按钮形态）。
+    """
+    cases = [c for c in build_dialect_probe_cards(cards) if c[0].startswith("\u246e")]
+    assert cases, "⑮ 用例不见了（`build_dialect_probe_cards` 被改过？）"
+    label, card = cases[0]
+    code, msg, mid = send(client, chat, card)
+    # ⚠️ 标记先取出来再拼：f-string 的**表达式部分不许含反斜杠**（3.11 的限制）——
+    #    直接写 `f"{'\u2705' if ...}"` 会 SyntaxError，而且这个文件**不被任何门禁导入**
+    #    （它是真机探针），所以那种错只会等到真跑探针时才炸。改完必须 `py_compile` 一遍。
+    mark = "\u2705" if code == 0 else "\u274c"
+    print(f"{mark} {label}  code={code} {msg}")
+    if code == 0:
+        print("   请点那张卡上的按钮，然后看网关日志里有没有这一行：")
+        print("   [larkdeck] 探针点击到达 \u2705 tag=button \u2026")
+    return 0 if code == 0 else 1
+
+
 def main(argv: list) -> int:
     clean_only = "--clean-only" in argv
     do_clean = "--no-clean" not in argv
@@ -1550,6 +1620,9 @@ def main(argv: list) -> int:
         return probe_cardkit_transport(client, chat, cards)
     if "--degrade-lane" in argv:
         return probe_degrade_lane(client, chat, cards)
+
+    if "--button-2" in argv:
+        return probe_button_card(client, chat, cards)
 
     cases = (build_cases(cards) + build_bilingual_cases(cards) + build_footer_cases(cards)
              + build_dialect_probe_cards(cards))
@@ -1590,7 +1663,7 @@ def main(argv: list) -> int:
         print("  ③④ 折叠面板（③ 点一下标题行右边的三角应能展开）· ⑤⑥ 双语互换实验"
               "（看到英文说明 i18n 生效）")
         print("  ⑦⑧⑨ 页脚三样式 · ⑩⑪ 三种状态色边框 · ⑫ 方言探针（可点）· "
-              "⑬⑭ 真 2.0 澄清卡（可点）")
+              "⑬⑭ 真 2.0 澄清卡（可点）· ⑮ 2.0 按钮探针（可点）")
     else:
         print("有卡片被拒 ❌ —— 按上面飞书给的 msg 改")
     print("注意：按钮点击不会被处理（本探针只验渲染，不验点击）；"
