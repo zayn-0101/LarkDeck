@@ -309,8 +309,14 @@ MUTATIONS = [
     # ---- 阶段 9：CardKit 传输（撤掉任何一条保证都必须变红）------------------- #
     ("CK2-正文写失败被吞（不回落）", "core/adapter.py",
      '            wrote = await self._ld_ck_write(card_id, answer.element_id, answer.content, seq)\n'
+     '            # 正文这一次逻辑写**永远不跳**（它是提交点，见上面守卫那段说明），但照旧记进滑窗：\n'
+     '            # 守卫要算的是「这一秒真的欠了飞书多少次写」，漏记正文等于给自己虚报余量。\n'
+     '            _ck_window_note(state_ref, time.monotonic())\n'
      '            if not wrote.ok:',
      '            wrote = await self._ld_ck_write(card_id, answer.element_id, answer.content, seq)\n'
+     '            # 正文这一次逻辑写**永远不跳**（它是提交点，见上面守卫那段说明），但照旧记进滑窗：\n'
+     '            # 守卫要算的是「这一秒真的欠了飞书多少次写」，漏记正文等于给自己虚报余量。\n'
+     '            _ck_window_note(state_ref, time.monotonic())\n'
      '            if False:',
      "test_units"),
     ("CK3-序号不递增（成功路径不推进计数器）", "core/adapter.py",
@@ -548,8 +554,10 @@ MUTATIONS = [
      '                mode = "full"',
      "test_units"),
     ("R7-4-会话预览传裸字符串（真机回 300122，预览整条失效）", "core/adapter.py",
-     '            res = await self._ld_ck_settings(card_id, {"content": text}, seq, retry=False)',
-     '            res = await self._ld_ck_settings(card_id, text, seq, retry=False)',
+     '            res = await self._ld_ck_settings(card_id, {"content": text}, seq, retry=False,\n'
+     '                                             state_ref=state_ref)',
+     '            res = await self._ld_ck_settings(card_id, text, seq, retry=False,\n'
+     '                                             state_ref=state_ref)',
      "test_units"),
     ("R7-5-会话预览不限频（每帧都写 ⇒ 超每帧写入预算）", "core/adapter.py",
      '        if isinstance(last_at, (int, float)) and now - float(last_at) < interval:\n'
@@ -567,9 +575,11 @@ MUTATIONS = [
     ("R7-7-会话预览不占序号（与元素写入账本脱钩 ⇒ 真机撞号）", "core/adapter.py",
      '        seq += 1\n'
      '        try:\n'
-     '            res = await self._ld_ck_settings(card_id, {"content": text}, seq, retry=False)',
+     '            res = await self._ld_ck_settings(card_id, {"content": text}, seq, retry=False,\n'
+     '                                             state_ref=state_ref)',
      '        try:\n'
-     '            res = await self._ld_ck_settings(card_id, {"content": text}, seq, retry=False)',
+     '            res = await self._ld_ck_settings(card_id, {"content": text}, seq, retry=False,\n'
+     '                                             state_ref=state_ref)',
      "test_units"),
     # ---- R6a：markdown 卫生（只在收尾帧、只删不补、代码区不动）------------------------- #
     # ⚠️ 锚点 2026-09-14 改过一次：`display = text` 那一行现在是**正文净化**的入口
@@ -680,8 +690,10 @@ MUTATIONS = [
      '                cache=(snap.get("cache_pct") or None) if mode in ("basic", "full") else None,',
      "test_units"),
     ("R7-13-预览也跟着退避重试（白白给这一帧加最多 ≈1 秒）", "core/adapter.py",
-     '            res = await self._ld_ck_settings(card_id, {"content": text}, seq, retry=False)',
-     '            res = await self._ld_ck_settings(card_id, {"content": text}, seq)',
+     '            res = await self._ld_ck_settings(card_id, {"content": text}, seq, retry=False,\n'
+     '                                             state_ref=state_ref)',
+     '            res = await self._ld_ck_settings(card_id, {"content": text}, seq,\n'
+     '                                             state_ref=state_ref)',
      "test_units"),
     ("PL-1-无视配置一律转发父类（工具行又并进正文）", "core/adapter.py",
      '            if _cfg("progress_lines_in_body"):\n'
@@ -1238,6 +1250,29 @@ MUTATIONS = [
      "core/adapter.py",
      '_CARD_DEATH_CODES = frozenset({300309, 300313, 300317})',
      '_CARD_DEATH_CODES = frozenset({300309, 300313, 300317, 300315})',
+     "test_units"),
+    # ---- R11-B1：滑窗写入守卫（两条边界 + 「稳态不该触发」）-------------------- #
+    # ⚠️ 守卫的判据是**墙钟**（1 秒内 ≤10 次逻辑写），所以专用用例是**构造**出顶满的窗口来命中它；
+    #    真机稳态 ≈8.2 次/秒 < 10 ⇒ 它当前不可达（那是设计：给 Phase C 的运行时 create 留余量）。
+    ("B1-1-让出的写也记账（`ck_decor` 被写上 ⇒ 去重逻辑永久跳过 ⇒ 装饰静默冻结）",
+     "core/adapter.py",
+     '            state_ref["ck_window_skips"] = int(state_ref.get("ck_window_skips") or 0) + 1\n',
+     '            state_ref["ck_decor"] = {**sent,\n'
+     '                                     **{op.element_id: op.content for op in fresh}}\n'
+     '            state_ref["ck_window_skips"] = int(state_ref.get("ck_window_skips") or 0) + 1\n',
+     "test_units"),
+    ("B1-2-跳过被当成失败（这一帧返回 False ⇒ 核心停用本回合 native、用户掉成纯文本）",
+     "core/adapter.py",
+     '            _log_ck_window_skip_once([op.element_id for op in fresh],\n'
+     '                                     len(_ck_window(state_ref)))\n',
+     '            _log_ck_window_skip_once([op.element_id for op in fresh],\n'
+     '                                     len(_ck_window(state_ref)))\n'
+     '            return False, seq, None\n',
+     "test_units"),
+    ("B1-3-守卫无条件触发（稳态下装饰全被让出 ⇒ 面板/页脚在真机上默默掉帧）",
+     "core/adapter.py",
+     '        if fresh and not _ck_window_allow(state_ref, time.monotonic()):',
+     '        if fresh and not False:',
      "test_units"),
 
     # ---- R11-A1：世代快照（「哪一份模块对象是活的」必须是读得出来的数字）----

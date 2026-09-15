@@ -51,8 +51,10 @@ import re
 import sys
 import threading
 import time
+from collections import deque
 from types import SimpleNamespace
-from typing import Any, Dict, List, Mapping, NamedTuple, Optional, Sequence, Tuple
+from typing import (Any, Deque, Dict, List, Mapping, NamedTuple, Optional, Sequence,
+                    Tuple)
 
 from . import cards as _cards
 from . import compat as _compat
@@ -150,6 +152,70 @@ _CK_SUMMARY_INTERVAL = 5.0
 
 _CK_WRITES_PER_SECOND = 10
 _CK_WRITES_PER_FRAME = max(1, int(_CK_WRITES_PER_SECOND * _STREAM_MIN_INTERVAL))   # 0.25s ⇒ 2
+
+#: **滑窗写入守卫**（R11-B1）的窗口长度（秒）—— 与「每卡 10 次/秒」同一时间单位。
+_CK_WINDOW_SECONDS = 1.0
+#: 窗口的容量上界（只关心最近 1 秒，多出来的条目没有任何用途）。
+_CK_WINDOW_MAXLEN = 64
+
+
+def _ck_window(state_ref: Dict[str, Any]) -> Deque[float]:
+    """取（必要时建）**本回合**的写入滑窗（R11-B1）。
+
+    ⚠️ **窗口挂在回合状态上，不是进程级共享盒子** —— 这条与 `docs/plan-r11.md` §3 里
+    「共享盒子里的 `deque`」的原措辞**不同**，理由是实测出来的两条：
+      * 飞书的口径是**每张卡** 10 次/秒 ⇒ 一个进程级窗口会把并发回合的写入**加在一起算**，
+        两个长回合会让彼此的装饰互相饿死，而它们本来各有各的配额；
+      * 进程级窗口还会让**测试按执行顺序漂移**：上一个用例的写入填满窗口之后，
+        「这一帧写了几次 / 第 2 次写的是哪个元素」这类断言随顺序变化（实测：两条既有用例
+        当场红，而它们与守卫毫无关系）—— 这正是 `docs/lessons.md` 推论 28 的形态
+        （时间派生的行为必须能被冻结或隔离）。
+      * A0 那条纪律（进程内全局必须与它的守卫/兄弟容器同源）在这里**自动满足**：它根本不是
+        全局的，而是随回合状态显式传递的（回合状态本身有上界 `_MAX_STREAMS`）。
+    ⚠️ 这个窗口**当前在稳态下不可达**（每帧两次逻辑写 × 4 帧/秒 + 预览 ≈0.2 ⇒ ≈8.2 < 10），
+    这不是缺陷而是 B1 的**目的**：它是 Phase C（运行时 `card_element.create` 会把滑窗顶到
+    10–14 次/秒）的**余量闸门**。所以测试必须**构造**出窗口被顶满的情形（不然它就是一段
+    永远不执行的代码，本项目对「恒假门禁 / 死代码」有前科）。
+    """
+    win = state_ref.get("ck_window")
+    if not isinstance(win, deque):
+        win = deque(maxlen=_CK_WINDOW_MAXLEN)
+        state_ref["ck_window"] = win
+    return win
+
+
+def _ck_window_prune(state_ref: Dict[str, Any], now: float) -> Deque[float]:
+    """丢掉窗口里过期（早于 ``now - _CK_WINDOW_SECONDS``）的时刻。"""
+    win = _ck_window(state_ref)
+    floor = now - _CK_WINDOW_SECONDS
+    while win and win[0] <= floor:
+        win.popleft()
+    return win
+
+
+def _ck_window_allow(state_ref: Dict[str, Any], now: float) -> bool:
+    """这一秒里**还容得下**一次逻辑写吗（只看不记 —— 记账在真的发出去之后，R11-B1）。
+
+    ⚠️ 「只看不记」是有意的：把记账放在这里就等于把「打算写」记成「写了」，
+    与 `ck_decor` 那条纪律（记账只在真的成功之后）是同一条理由。
+    """
+    return len(_ck_window_prune(state_ref, now)) < _CK_WRITES_PER_SECOND
+
+
+def _ck_window_note(state_ref: Dict[str, Any], now: float) -> None:
+    """把一次**真的发出去了**的逻辑写记进滑窗（R11-B1）。
+
+    口径（三条，缺一条这个守卫就变成装饰品）：
+      * 记的是**配额消耗**，不是账本上的「成功写卡」：请求发出去了就计（含重试与失败）——
+        与 `/larkdeck status` 的「只统计真的写出去的动作」**故意不同**，两者回答的问题不同
+        （那边答「卡片有没有长」，这边答「这一秒还欠飞书多少配额」）；
+      * 只记**元素通道**的三类逻辑写（装饰 batch / 正文 content / 预览 settings）；
+        建实体不在窗口里（它发生在卡存在之前，且是一次性动作，不属于「每帧累积」的量）；
+      * 它**不是**硬限速器：正文（提交点）与预览都不跳过（见 `_ld_ck_apply` 里那段说明），
+        所以窗口仍可能被正文顶破 —— 那是有意的取舍（宁可多花一次配额，也不能让卡片停在半截）。
+    """
+    _ck_window_prune(state_ref, now).append(now)
+
 
 #: **R4 卡链**：一张卡装到硬上限的这个比例就**封卡**、另开一张（超长回答不再掉成纯文本）。
 #:
@@ -966,6 +1032,23 @@ def _ck_reject_reason(res: "_CkResult") -> str:
     if inner is not None:
         return f"内层码 {inner}"
     return "内层码解析不出（msg 里没有可认的 `code:` 标签）"
+
+
+def _log_ck_window_skip_once(elems: Sequence[str], used: int) -> None:
+    """滑窗守卫跳过装饰批量时的限流 WARNING（60 秒一条）—— **绝不静默**（R11-B1）。
+
+    为什么必须有：这一帧的**装饰**（面板/页脚）没有更新，而帧照旧返回成功 ——
+    「看起来正常、其实少写了一块」正是本项目的头号失败形态。文案必须说清三件事：
+    跳过了什么、窗口里已经有多少次写、以及**这些元素没有被记账**（下一帧会补写）。
+    """
+    now = time.monotonic()
+    if now - getattr(_log_ck_window_skip_once, "_at", 0.0) < 60.0:
+        return
+    _log_ck_window_skip_once._at = now  # type: ignore[attr-defined]
+    ids = "、".join(elems)
+    logger.warning("[larkdeck] 滑窗写入守卫：本帧装饰批量已让出（1 秒窗口内已写 %d 次 / 上限 %d）"
+                   "—— 跳过的元素 %s **没有被记账**，下一帧会补写；正文不受影响、本帧照旧算成功",
+                   used, _CK_WRITES_PER_SECOND, ids)
 
 
 def _log_ck_reject_once(res: "_CkResult", where: str) -> None:
@@ -1930,7 +2013,8 @@ class LarkDeckMixin:
                          str(getattr(resp, "msg", "") or ""))
 
     async def _ld_ck_settings(self, card_id: str, summary: Dict[str, Any],
-                              seq: int, *, retry: bool = True) -> "_CkResult":
+                              seq: int, *, retry: bool = True,
+                              state_ref: Optional[Dict[str, Any]] = None) -> "_CkResult":
         """写**卡级 config** 的 `summary`（R7 的「进展」：会话列表里那行预览文字）。
 
         真机实测的两条硬约束（`probe_ck_stream_ops.py --p3`）：
@@ -1953,6 +2037,12 @@ class LarkDeckMixin:
             # 之后），撞限流时退避重试只会给这一帧白加最多 ≈1.0s（0.1+0.3+0.6），而失败已经
             # 只标死 ⇒ 重试的收益是**零**。元素写入与建实体照旧带重试：那些失败会让整帧失败。
             resp = await self._run_blocking(self._client.cardkit.v1.card.settings, make_request())
+        # 预览也是**元素通道的逻辑写**（`card.settings` 吃一个序号、算一次配额）⇒ 记进滑窗，
+        # 否则滑窗会比真实写入率少 ≈0.2 次/秒（附录 B 的 8.2 就是这么算出来的，R11-B1）。
+        # ⚠️ 拿不到回合状态时**干脆不记**（而不是记到一个临时容器里）：守卫宁可少算一次，
+        # 也不给自己虚报配额 —— 记到假容器里等于把「这一秒还欠多少」变成一句谎话。
+        if isinstance(state_ref, dict):
+            _ck_window_note(state_ref, time.monotonic())
         return _CkResult(_ld_response_code(resp) == 0, _ld_response_code(resp),
                          str(getattr(resp, "msg", "") or ""))
 
@@ -2039,10 +2129,26 @@ class LarkDeckMixin:
         sent = state_ref.get("ck_decor")
         sent = sent if isinstance(sent, dict) else {}
         fresh = [op for op in decor if sent.get(op.element_id) != op.content]
-        if fresh:
+        if fresh and not _ck_window_allow(state_ref, time.monotonic()):
+            # ── **滑窗写入守卫**（R11-B1）：这一秒的配额已经用掉 10 次 ⇒ **让出这次装饰**。
+            # 两条边界必须同时守住（各有一条变异钉住）：
+            #   ① **不置 `ck_decor`** —— 记账只发生在 batch 真的写成功之后（下面那个 `else:`）。
+            #      在这里记一笔就等于把「没写」说成「写了」，去重逻辑随后会**永久跳过**这些
+            #      元素 = 装饰静默冻结（本项目最怕的失败形态：看得见、没日志、也不回落）。
+            #   ② **跳过 ≠ 失败**：本帧照旧返回 `True`（下面那段不动）—— 装饰是增强，
+            #      为它把整帧判失败会买下「核心停用本回合 native ⇒ 用户掉成纯文本」这条链。
+            # ⚠️ **正文（提交点）永远不跳**：帧文本是累积全文，核心按「这一帧送达」乐观记账，
+            # 跳过正文 = 用户永远看不到那一段（finalize 帧尤其致命）。所以这个守卫**不是**
+            # 硬限速器，它只把**可重放**的装饰写让出来；正文与预览照发，极端情况下窗口仍可能
+            # 被正文顶破 —— 那是有意的取舍（宁可多花一次配额，也不能让卡片停在半截）。
+            state_ref["ck_window_skips"] = int(state_ref.get("ck_window_skips") or 0) + 1
+            _log_ck_window_skip_once([op.element_id for op in fresh],
+                                     len(_ck_window(state_ref)))
+        elif fresh:
             # 装饰**一次 batch 发走**（写入预算：每帧 ≤2 次；R0 实测 batch 只占 1 个 sequence）
             seq += 1
             batch_res = await self._ld_ck_batch(card_id, fresh, seq)
+            _ck_window_note(state_ref, time.monotonic())   # 真的发出去了（成功与否都占配额）
             if not batch_res.ok:
                 # 装饰失败**不 fail-open**（处置矩阵：`DEAD` + 限流 WARNING，帧继续）：
                 # 把装饰失败升级成整帧失败，会买下「上游补 finalize + `_first_send` ⇒ DM 两张卡」
@@ -2095,6 +2201,9 @@ class LarkDeckMixin:
         if answer is not None:
             seq += 1
             wrote = await self._ld_ck_write(card_id, answer.element_id, answer.content, seq)
+            # 正文这一次逻辑写**永远不跳**（它是提交点，见上面守卫那段说明），但照旧记进滑窗：
+            # 守卫要算的是「这一秒真的欠了飞书多少次写」，漏记正文等于给自己虚报余量。
+            _ck_window_note(state_ref, time.monotonic())
             if not wrote.ok:
                 # **卡级死法 ⇒ 转 patch 车道**（R5，处置矩阵的 `DEGRADE`）：这张实体卡的元素通道
                 # 已经不可用（会话被关 / 序号冲突 / 元素没了），但消息本身还在 ⇒ 用 `message.patch`
@@ -2210,7 +2319,8 @@ class LarkDeckMixin:
             return seq, fields
         seq += 1
         try:
-            res = await self._ld_ck_settings(card_id, {"content": text}, seq, retry=False)
+            res = await self._ld_ck_settings(card_id, {"content": text}, seq, retry=False,
+                                             state_ref=state_ref)
         except Exception as exc:
             # 见 docstring 里那条纪律：**异常与返回码同等对待**，都只标死、绝不影响这一帧。
             logger.debug("[larkdeck] 会话预览写入异常", exc_info=True)
