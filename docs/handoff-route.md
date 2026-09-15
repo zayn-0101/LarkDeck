@@ -110,8 +110,53 @@ escape（S）· 8. 判据函数的双向负向对照（S）· 9. 陈旧澄清卡
 4. 动手做差距清单第 4/5 条（trace id / status 计数）前，**先复核 AP 的目标文件**：
    那两条的细节来自子代理报告，**我本人未逐行复核**（见 `plugins-compare.md` §6.5）。
 
-## 7. 未完成的一件取证
+## 7. HLS 那一列：取证**中止**（不是跑完），已抢救部分内容
 
-**HLS 的全功能矩阵报告仍在跑**（5 个对比子代理里的最后一个；其余 4 个已交付）。若重启把它打断
-⇒ 只少了 HLS 那一列与「AP 那个三重死的澄清卡是不是从 HLS 继承来的」这条交叉验证，
-**不影响本文件的任何结论**。回来后可重新派一个子代理补，或直接接受缺失。
+**结局**：2026-09-15 18:34 由我**主动打断**（父 `3a59e17b` + 两个子代理）。原因不是慢，是**卡死**：
+
+| 角色 | 步数 | 工具调用 | 压缩尝试 | 结局 |
+|---|---|---|---|---|
+| 父 `3a59e17b`（HLS+AP） | **127** | 151 | 1 次失败 + 重试中 | 打断（`turn/end: aborted`） |
+| └ 子 `4a9957e7`（HLS 清单） | **96** | 107 | **6 次**（最后一次也失败） | 打断 |
+| └ 子 `68ba6ede`（AP 清单） | **97** | 118 | 2 次 | 打断 |
+
+**失败凭据**：`compaction/end` 带 `error: "summarization truncated at the token cap
+(incomplete checkpoint)"`（父 18:30:33、子 18:33:30 各一次）—— **上下文太长，摘要被截断**。
+
+**根因（教训，下次派子代理必须照做）**：我把范围给大了（「**HLS + AP 两家**的完整功能矩阵」），
+它自己又往下派了两层（父 → 2 个清单 → 2 个文档扫描），**三层 agent 各跑到 ~100 步、全部撞上
+上下文天花板**。⇒ **重派时的硬约束模板**：① 只查**一家**；② 明确写「**不许再派下级子代理**」；
+③ 给步数上限（如 25 步）；④ 到点必须交报告，宁缺勿滥。
+
+**已抢救的内容**（两个已跑完的孙代理报告全文，从会话日志直接读出）：
+
+- **HLS 文档里没有任何真机凭据**：`实测` / `真机` / `真机验证` / `empirical` / `verified` 在全仓
+  `.md` 与 `.py` 里**零命中**；唯一近似的是 `ARCHITECTURE.md:594` 的「from today's debugging」
+  （**无日期**）。⇒ 再一次印证本项目「**不采信第三方 README**」的纪律。
+- **它自己两份文档互相矛盾**：flush 周期 `ARCHITECTURE.md:161` 写 180ms、
+  `technical-summary.md:479` 写 80ms，代码是 `FLUSH_INTERVAL_MS = 180.0`。
+- **`docs/adapter-patch.py` 根本不是补丁脚本**：它是 Hermes 官方飞书适配器的 **vendored 副本**
+  （6096 行 vs 装机 4320 行，漂移 4574 行），自己 `register(ctx)` 注册 `feishu` 平台，
+  且**没有任何模块 import 它**（带横杠的文件名 + 全仓 grep 无引用）。
+- **错误码**：14 个已带 `file:line` 定位；其中 `200860`（`feishu/client.py:140`）与 `300312`
+  （`card/builder.py:60`）**两份文档里都没有**。
+- **它的限制常量**：元素 200/195 · 30KB/20000B · 2400 字分片 · summary 截 120 字 ·
+  表格 20/5 · 打字 70ms。
+- **成本**走私有 `session_*` 属性；脱敏在 `state/tooluse.py:82-133`；澄清 2.0 `behaviors` 回调在
+  `card/special.py:371-407`；分片是 **seal-only**（`card_flow.py:920-953`）。
+- ⚠️ **HLS 仓库里没有任何测试 / CI / 探针脚本**（子代理实测）。
+- 同样证实了 6.1 的 B 类判定：HLS 是 monkeypatch 架构，**其文档没有任何「升级会坏」的说明**。
+
+**取证配方（下次要再挖任何子代理的产出都用它）**：
+
+```bash
+H="$HOME/Library/Application Support/dsh-desktop/harness/sessions/--Users-Zayn-Code-larkdeck--"
+zstd -dc "$H/<agent-id>/session.jsonl.zstd"     # 事件流；assistant 正文在
+#   type=="assistant/message" → data.message.content[] → 取 type=="text" 的片段拼接
+```
+
+⚠️ **会话日志在 `~/Library/Application Support/...`，是持久目录，重启不删** ——
+所以「重启会丢子代理产出」这个担心**不成立**：真正会丢的只是**正在跑的内存状态**。
+
+**对本文件其余结论的影响：无。** HLS 那一列在 `plugins-compare.md` 里仍是空的，
+可日后按上面的硬约束模板重派一个窄范围子代理补齐，或直接接受缺失。
