@@ -1558,6 +1558,44 @@ def probe_stop_redraw(client, chat: str, cards) -> int:
     return 1
 
 
+def probe_card_problems(card: dict, cards) -> list:
+    """**发出去之前**把这张卡能本地查的问题查掉 —— 返回问题列表（空 = 可以发）。
+
+    为什么这个自检**必须长在探针自己身上**（2026-09-16 加）：这一格是「请用户点一次」，
+    而**用户那一击只能点一次** —— 如果卡本身有结构问题（方言混用 ⇒ 飞书拒收 `230099`、
+    元素/字节超限），那一击就白费了，而且用户只会在 DM 里看到「什么都没有」。
+    能本地判的先本地判，别把可预防的失败留给用户的手。
+    ⚠️ 它**查不出**「点击能不能到服务端」—— 那正是需要真人点一次的原因，不是这里能替代的。
+    """
+    problems = []
+    if card.get("schema") != "2.0":
+        problems.append(f"schema 必须是 2.0（实际 {card.get('schema')!r}）")
+    elems = ((card.get("body") or {}).get("elements")) or []
+    btns = [e for e in elems if isinstance(e, dict) and e.get("tag") == "button"]
+    if len(btns) != 1:
+        problems.append(f"应当正好一个 button，实际 {len(btns)} 个")
+    for e in btns:
+        # 2.0 的唯一正确写法：**组件级** behaviors（顶层 value 的按钮在 2.0 卡里点不动）
+        behs = e.get("behaviors")
+        if not isinstance(behs, list) or not behs:
+            problems.append("按钮缺**组件级** behaviors（2.0 卡里只有顶层 value 的按钮点不动）")
+            continue
+        if behs[0].get("type") != "callback":
+            problems.append(f"behaviors[0].type 必须是 callback（实际 {behs[0].get('type')!r}）")
+        if cards.PROBE_VALUE_KEY not in (behs[0].get("value") or {}):
+            problems.append(f"回调 value 里必须带 {cards.PROBE_VALUE_KEY}"
+                            "（否则网关不会打「探针点击到达」，用户点了也看不到凭据）")
+    if any(isinstance(e, dict) and e.get("tag") == "action" for e in elems):
+        problems.append("卡里混进了 1.0 的 action 按钮行 —— 飞书会拒收（230099），方言不许混用")
+    if len(elems) > 200:
+        problems.append(f"元素数 {len(elems)} 超官方硬上限 200")
+    import json as _json
+    size = len(_json.dumps(card, ensure_ascii=False).encode("utf-8"))
+    if size >= cards.FEISHU_CARD_BYTE_LIMIT:
+        problems.append(f"卡 JSON {size} 字节，达到/超过硬上限 {cards.FEISHU_CARD_BYTE_LIMIT}")
+    return problems
+
+
 def probe_button_card(client, chat: str, cards) -> int:
     """**只发 ⑮ 一张**（2.0 `button` + 组件级 `behaviors`）。
 
@@ -1572,9 +1610,16 @@ def probe_button_card(client, chat: str, cards) -> int:
     cases = [c for c in build_dialect_probe_cards(cards) if c[0].startswith("\u246e")]
     assert cases, "⑮ 用例不见了（`build_dialect_probe_cards` 被改过？）"
     label, card = cases[0]
+    # ⚠️ **先自检再发**：用户那一击只能点一次，别把可本地预防的失败留给他的手。
+    problems = probe_card_problems(card, cards)
+    if problems:
+        print("\u274c ⑮ 探针卡**本地自检没过**，没有发出去（免得白费你一次点击）：")
+        for p in problems:
+            print(f"   · {p}")
+        return 1
     code, msg, mid = send(client, chat, card)
     # ⚠️ 标记先取出来再拼：f-string 的**表达式部分不许含反斜杠**（3.11 的限制）——
-    #    直接写 `f"{'\u2705' if ...}"` 会 SyntaxError，而且这个文件**不被任何门禁导入**
+    #    直接写 `f"{'\u2705' if ...}"` 会 SyntaxError，而且这个文件**不被任何门禁 import**
     #    （它是真机探针），所以那种错只会等到真跑探针时才炸。改完必须 `py_compile` 一遍。
     mark = "\u2705" if code == 0 else "\u274c"
     print(f"{mark} {label}  code={code} {msg}")
