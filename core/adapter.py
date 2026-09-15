@@ -415,10 +415,25 @@ _CORE_PROGRESS_SEP = "\n\n---\n"
 
 
 def _strip_core_progress(text: str, accumulated: str, tool_pending: bool,
-                         complete: bool) -> str:
+                         complete: bool, *, finalize: bool) -> str:
     """剥掉核心叠加在**帧尾**的工具进度块；证明不了就原样返回（fail-open）。
 
-    四个条件缺一不可，各自对应一类「不能剥」的情形（每条都有对应变异，撤掉必红）：
+    五个条件缺一不可，各自对应一类「不能剥」的情形（每条都有对应变异，撤掉必红）：
+
+    0. **``not finalize``：收尾帧一律不剥。** 这条最强，因为它是**证明**而不是启发式：
+       核心的收尾帧发的是**纯累积正文** —— `gateway/stream_consumer.py` 里
+       `display_text = self._accumulated` 之后，**只有 ``tick.is_interim``** 才走
+       ``_compose_frame_content()`` 把工具进度块合成进去（``:791-798``）；而**所有** finalize
+       发送点传的都是纯累积全文（``:747``、``:781`` 的切片、``:834``/``:856``/``:862``/``:912``，
+       以及边界收尾的 ``:486``）。⇒ 收尾帧上「累积之后还有内容」这件事**只可能是模型自己写的**
+       （**含它自己写的 ``---``**），核心那一帧根本没有进度块可剥。
+       为什么非加不可：我们的累积来自**钩子队列**（异步投递），收尾帧完全可能**早于**最后一个
+       正文增量到达我们这里 ⇒ 累积是一个**陈旧的完整前缀**（``complete`` 仍为真），条件 1/3/4
+       全部成立 ⇒ 旧版会把它当成核心进度剥掉；而核心对 finalize 是**乐观记账**
+       （``_record_turn_final_payload`` / ``delivered_final_matches``）⇒ 它认为送达成功、
+       **不会再补发**，用户看到的正文被静默砍掉一截，任何一层都不报错（变异 ``R11-9``）。
+       ⚠️ **残留（如实登记）**：同样的滞后在**中间帧**上仍可能剥掉模型的续写，但那只是**一帧**
+       —— 累积追上之后下一帧就把整段渲染出来（自愈）。收尾帧没有「下一帧」，所以只有它必须挡。
 
     1. ``tool_pending``：自上次正文增量以来**有过工具事件**。核心的 ``_tool_progress_lines``
        只在有工具进度时被 append、在下一个正文增量时被 clear；没有工具事件却去剥，
@@ -435,7 +450,7 @@ def _strip_core_progress(text: str, accumulated: str, tool_pending: bool,
     正文内部，剥后缀不会让任何偏移失效（变异 ``R11-3`` 把判据换成「按最后一个分隔符切」，
     那会连正文一起切掉）。
     """
-    if not text or not accumulated or not tool_pending or not complete:
+    if finalize or not text or not accumulated or not tool_pending or not complete:
         return text
     if not text.startswith(accumulated):
         return text
@@ -2407,12 +2422,17 @@ class LarkDeckMixin:
                 await asyncio.sleep(delay)
         return response
 
-    def _ld_body_text(self, text: str, chat: str) -> str:
+    def _ld_body_text(self, text: str, chat: str, *, finalize: bool) -> str:
         """帧文本 → **要渲染的正文**（正文净化的唯一入口，R11-A7）。
 
-        两个决策点，都在这里：
+        三个决策点，都在这里：
           * ``progress_lines_in_body: true`` ⇒ **原样渲染**（用户明确要核心那套：正文区也滚工具行）；
+          * ``finalize=True``（收尾帧）⇒ **原样渲染**（核心那一帧发的就是纯累积正文，
+            没有进度块可剥；多剥一次就是不可逆地吞正文，见 :func:`_strip_core_progress` 条件 0）；
           * 否则按证据剥掉核心叠加的工具进度块（证明不了就不剥，见 :func:`_strip_core_progress`）。
+
+        ⚠️ ``finalize`` 是**必填关键字**（没有默认值）：默认值会让「新调用点忘了传」静默退回
+        有缺陷的行为，而那正是收尾帧吞正文的入口。
 
         ⚠️ 这个配置项**早就存在**（`_DEFAULTS` + `plugin.yaml` + README 三处都有，默认 ``false``），
         但在 2026-09-14 之前它的唯一实现是 ``format_tool_event`` 返回 ``None`` —— 而那个扩展点
@@ -2432,7 +2452,8 @@ class LarkDeckMixin:
         except Exception:  # pragma: no cover - 防御性：状态层异常绝不能让整帧失败
             logger.debug("[larkdeck] 正文净化取状态失败，按原样渲染", exc_info=True)
             return text
-        return _strip_core_progress(text, accumulated, tool_pending, complete)
+        return _strip_core_progress(text, accumulated, tool_pending, complete,
+                                    finalize=finalize)
 
     async def _ld_stream_frame(self, text: str, *, finalize: bool, chat_id: Optional[str],
                                reply_to: Optional[str], turn_id: str) -> bool:
@@ -2446,7 +2467,9 @@ class LarkDeckMixin:
         # 「为什么这是证明而不是猜」见文件顶部那段说明。剥不出来就原样渲染（fail-open）。
         # ⚠️ 「整帧原样渲染」是 8f81b4d 的安全修复留下的口径；R11-A7 把它收紧成
         # 「按证据剥后缀」：仍然**不做任何正文归档**（不按分隔符切、不改写前缀）。
-        display = self._ld_body_text(text, chat)
+        # ⚠️ **必须把 ``finalize`` 传下去**（R11-A7 尾巴）：收尾帧是**唯一不可逆**的一帧
+        # （核心对 finalize 乐观记账、不会再补发），而核心那一帧发的是纯累积正文。
+        display = self._ld_body_text(text, chat, finalize=finalize)
         stripped = display != text
         if state is None:
             if finalize:

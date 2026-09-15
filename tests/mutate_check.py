@@ -1384,12 +1384,12 @@ MUTATIONS = [
     # 用户选的是「一个核心配置都不动」⇒ 这件事只能在插件侧做，而它**有可能吞掉正文**，
     # 所以每一条修复都必须有变异守着（撤掉一处 ⇒ 至少一个门禁变红）。
     ("R11-1-正文净化整个撤掉（帧文本原样渲染）", "core/adapter.py",
-     '        display = self._ld_body_text(text, chat)',
+     '        display = self._ld_body_text(text, chat, finalize=finalize)',
      '        display = text',
      "test_units"),
     ("R11-2-工具窗口判据撤掉（没有工具事件也照剥）", "core/adapter.py",
-     '    if not text or not accumulated or not tool_pending or not complete:\n        return text',
-     '    if not text or not accumulated or not complete:\n        return text',
+     '    if finalize or not text or not accumulated or not tool_pending or not complete:',
+     '    if finalize or not text or not accumulated or not complete:',
      "test_units"),
     ("R11-3-判据退回「按分隔符切」（模型自己写的分隔线之后的正文被吞）", "core/adapter.py",
      '    if not text.startswith(accumulated):\n'
@@ -1403,8 +1403,18 @@ MUTATIONS = [
      '    return text.split(_CORE_PROGRESS_SEP)[0]',
      "test_units"),
     ("R11-4-「累积完整」判据撤掉（冻结之后的真答案被吞）", "core/adapter.py",
-     '    if not text or not accumulated or not tool_pending or not complete:\n        return text',
-     '    if not text or not accumulated or not tool_pending:\n        return text',
+     '    if finalize or not text or not accumulated or not tool_pending or not complete:',
+     '    if finalize or not text or not accumulated or not tool_pending:',
+     "test_units"),
+    # R11-9（R11-A7 尾巴）：**收尾帧护栏撤掉**。这是本组里唯一「失败不可逆」的一条 ——
+    # 核心对 finalize 是乐观记账（`_record_turn_final_payload` / `delivered_final_matches`），
+    # 它认为送达成功、**不会再补发**；而那一帧核心发的是纯 `self._accumulated`
+    # （`stream_consumer.py:791-798` 只有 `tick.is_interim` 才合成进度块），所以剥掉的
+    # 只可能是**模型自己写的正文**。判别力由单测 ㉘⑦ 提供（陈旧前缀场景：累积只到前半段、
+    # 模型自己写了分隔线之后继续写 ⇒ 旧四个条件全部成立 ⇒ 收尾卡里后半段消失）。
+    ("R11-9-收尾帧护栏撤掉（finalize 帧也照剥 ⇒ 静默吞正文且核心不再补发）", "core/adapter.py",
+     '    if finalize or not text or not accumulated or not tool_pending or not complete:',
+     '    if not text or not accumulated or not tool_pending or not complete:',
      "test_units"),
     # ⚠️ 期望门禁是 **check_hooks** 而不是 test_units：这条变异改的是 `hooks.py` 的接线，
     # 而单测是直接调数据层的（它验的是「工具结束**这个事实**不许关窗口」）。

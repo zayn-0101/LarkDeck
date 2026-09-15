@@ -2391,8 +2391,22 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         _SEP = adapter._CORE_PROGRESS_SEP
         _PROG = "⚙️ 探针工具行（核心叠加的进度）"
 
-        def _a7_run(chat, hook_turn, frame, prep=None):
-            """跑一个 cardkit 回合；返回 (正文元素最后写入的内容, 收尾卡 JSON, 自检行)。"""
+        def _a7_run(chat, hook_turn, frame, final_text, prep=None):
+            """跑一个 cardkit 回合；返回 (中间帧写进正文元素的内容, 收尾卡 JSON, 自检行)。
+
+            ⚠️ **``frame`` 与 ``final_text`` 必须分开给，这是核心的真实行为**：核心只有
+            ``tick.is_interim`` 那一帧才走 ``_compose_frame_content()`` 把工具进度块合成进去
+            （``gateway/stream_consumer.py:791-798`` 的 ``display_text = self._accumulated``
+            之后那个 ``if tick.is_interim``），**收尾帧发的是纯 ``self._accumulated``**
+            （所有 finalize 发送点都是纯累积：``:747``/``:781``/``:834``/``:856``/``:862``/``:912``）。
+            旧版拿**同一个 frame** 发两次 —— 那是按**错误的核心行为**写的测试，它让
+            「收尾帧也剥进度」看起来是对的（R11-A7 尾巴的更正，变异 ``R11-9``）。
+
+            ⚠️ **第二个返回值是收尾卡，不是「元素被写成了什么」**：cardkit 的收尾帧走
+            ``_ld_update_card`` **整卡替换**（``core/adapter.py:2579``），那一刻**不写正文元素**
+            ⇒ 「用户最终看到的正文」只能从收尾卡里读。写成「收尾帧后元素内容」会得到
+            「元素没变」这种**恒真**断言（第一版就是这么写的，当场被 ⑦ 抓出来）。
+            """
             _calls2, _client2 = _mk_fake()
             _raw2 = _make()
             _raw2._client = _client2
@@ -2403,14 +2417,17 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                 prep()
             assert _run(_raw2.send_stream_frame("", chat_id=chat, turn_id="t-" + hook_turn))
             with _LogCapture("larkdeck") as _recs:
+                _n0 = len(_calls2["content"])
                 assert _run(_raw2.send_stream_frame(frame, chat_id=chat,
                                                     turn_id="t-" + hook_turn))
+                _mid2 = [c[1] for c in _calls2["content"][_n0:]
+                         if c[0] == cards.CARDKIT_ANSWER_ID]
                 adapter._log_turn_selfcheck._at = 0.0
-                assert _run(_raw2.send_stream_frame(frame, chat_id=chat,
+                assert _run(_raw2.send_stream_frame(final_text, chat_id=chat,
                                                     turn_id="t-" + hook_turn, finalize=True))
-            _ans2 = [c[1] for c in _calls2["content"] if c[0] == cards.CARDKIT_ANSWER_ID][-1]
+            assert _mid2, "中间帧必须真的写了一次正文元素（否则这一格什么都没验）"
             _fin2 = json.dumps(_calls2["patch_cards"][-1], ensure_ascii=False)
-            return _ans2, _fin2, [r.getMessage() for r in _recs if "回合自检" in r.getMessage()]
+            return _mid2[-1], _fin2, [r.getMessage() for r in _recs if "回合自检" in r.getMessage()]
 
         def _arm(body_text, turn, *, tool=True, finish_tool=False, session=None):
             """正文入账 + 工具窗口（顺序照真机：**正文在前、工具在后**）。"""
@@ -2426,11 +2443,11 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                         panel.note_tool_event(sid, "t-" + turn)
             return _go
 
-        # ① 有证据 ⇒ 剥（正文元素与收尾卡都只有正文；自检要报出「剥了几帧」）
+        # ① 有证据 ⇒ 剥（**中间帧**只渲染正文；自检要报出「剥了几帧」）
         _body_a = "工具之前就写好的第一段正文。"
-        _ans_a, _fin_a, _sc_a = _a7_run("oc_a7a", "a7a", _body_a + _SEP + _PROG,
-                                        prep=_arm(_body_a, "a7a"))
-        assert _ans_a == _body_a, f"有证据时必须只渲染正文：{_ans_a!r}"
+        _mid_a, _fin_a, _sc_a = _a7_run("oc_a7a", "a7a", _body_a + _SEP + _PROG, _body_a,
+                                       prep=_arm(_body_a, "a7a"))
+        assert _mid_a == _body_a, f"有证据时必须只渲染正文（中间帧）：{_mid_a!r}"
         assert "探针工具行" not in _fin_a, \
             f"收尾帧也不许把核心的进度行留在卡里（用户最终看到的就是这一帧）：{_fin_a[-300:]}"
         assert any(int(re.search(r"正文剥进度=(\d+)", l).group(1)) >= 1 for l in _sc_a
@@ -2438,19 +2455,26 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             f"自检必须报出本回合剥了几帧（真机没有读卡接口，这是唯一凭据）：{_sc_a}"
 
         # ② 没有工具窗口 ⇒ **不剥**（核心没叠过进度块；这一格守住 `tool_pending` 条件）
-        _ans_b, _, _ = _a7_run("oc_a7b", "a7b", _body_a + _SEP + _PROG,
-                               prep=_arm(_body_a, "a7b", tool=False))
-        assert _ans_b == _body_a + _SEP + _PROG, \
-            f"没有工具事件就不该剥（那是模型自己写的内容）：{_ans_b!r}"
+        #    ⚠️ 这一格是**合成探针**：`frame` 里那段「像核心进度块」的文字是**模型自己写的**
+        #    （所以 `final_text` 与 `frame` 相同 —— 模型写的就是全部）。它验的是「没有工具
+        #    事件就不许剥」，不是「真机长这样」。
+        _mid_b, _fin_b, _ = _a7_run("oc_a7b", "a7b", _body_a + _SEP + _PROG,
+                                    _body_a + _SEP + _PROG,
+                                    prep=_arm(_body_a, "a7b", tool=False))
+        assert _mid_b == _body_a + _SEP + _PROG, \
+            f"没有工具事件就不该剥（那是模型自己写的内容）：{_mid_b!r}"
+        assert "探针工具行" in _fin_b, \
+            f"没有工具窗口时收尾卡里就该保留模型自己写的那一整段：{_fin_b[-300:]}"
 
         # ③ 模型自己写的分隔线：只能剥掉**核心那一截**，模型写的一字不许少
         #    ⚠️ 这一格专治「按最后一个分隔符切」那种猜法 —— 猜法会把 `B段` 整段吞掉，
         #    而 `B段` 是**真答案**（8f81b4d 那个 P0 就是同一个病因的变体）。
         _body_c = "A段。" + _SEP + "B段（模型自己写的分隔线之后的正文）。"
-        _ans_c, _, _ = _a7_run("oc_a7c", "a7c", _body_c + _SEP + _PROG,
-                               prep=_arm(_body_c, "a7c"))
-        assert _ans_c == _body_c, f"只能剥核心叠加的那一截：{_ans_c!r}"
-        assert "B段" in _ans_c, "模型自己写的分隔线之后的正文被吃掉了"
+        _mid_c, _fin_c, _ = _a7_run("oc_a7c", "a7c", _body_c + _SEP + _PROG, _body_c,
+                                    prep=_arm(_body_c, "a7c"))
+        assert _mid_c == _body_c, f"只能剥核心叠加的那一截：{_mid_c!r}"
+        assert "B段" in _mid_c, "模型自己写的分隔线之后的正文被吃掉了"
+        assert "B段" in _fin_c, f"收尾卡里也必须留着模型自己写的 B 段：{_fin_c[-300:]}"
 
         # ④ 累积被上限**冻结**（不完整）⇒ 不剥：残缺的累积仍可能是帧前缀，
         #    拿它当证据会把「冻结点之后、核心分隔符之前」的正文吞掉（那一段是真答案）。
@@ -2463,21 +2487,25 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                 panel.note_answer_delta("s-a7d", "t-a7d", "67890")       # 超上限 ⇒ 冻结
                 panel.note_tool_event("s-a7d", "t-a7d")
 
-            _ans_d, _, _ = _a7_run("oc_a7d", "a7d",
-                                   "12345" + _SEP + "冻结之后模型继续写的正文" + _SEP + _PROG,
-                                   prep=_frozen_prep)
+            _mid_d, _fin_d, _ = _a7_run(
+                "oc_a7d", "a7d",
+                "12345" + _SEP + "冻结之后模型继续写的正文" + _SEP + _PROG,
+                "12345" + _SEP + "冻结之后模型继续写的正文",
+                prep=_frozen_prep)
         finally:
             panel._MAX_ANSWER_CHARS = _cap_saved
-        assert "冻结之后模型继续写的正文" in _ans_d, \
-            f"累积不完整时绝不能剥（会吞掉冻结点之后的真答案）：{_ans_d!r}"
+        assert "冻结之后模型继续写的正文" in _mid_d, \
+            f"累积不完整时绝不能剥（会吞掉冻结点之后的真答案）：{_mid_d!r}"
+        assert "冻结之后模型继续写的正文" in _fin_d, \
+            f"收尾卡里也必须有冻结点之后的真答案（那是用户最终看到的）：{_fin_d[-300:]}"
 
         # ⑤ 工具**已经结束**、但还没有新的正文增量 ⇒ 仍然要剥。
         #    核心的进度行是在**下一个正文增量**到达时才被清掉的，不是工具一结束就清 ——
         #    所以「post_tool_call 关窗口」是错的（那一帧恰好就是收尾帧）。
         _body_e = "工具跑完之后、下一个正文增量之前的那一帧。"
-        _ans_e, _fin_e, _ = _a7_run("oc_a7e", "a7e", _body_e + _SEP + _PROG,
+        _mid_e, _fin_e, _ = _a7_run("oc_a7e", "a7e", _body_e + _SEP + _PROG, _body_e,
                                     prep=_arm(_body_e, "a7e", finish_tool=True))
-        assert _ans_e == _body_e, f"工具结束后（无新正文）的帧同样要剥：{_ans_e!r}"
+        assert _mid_e == _body_e, f"工具结束后（无新正文）的帧同样要剥：{_mid_e!r}"
 
         # ⑥ 配置项 `progress_lines_in_body: true` ⇒ **原样渲染**（用户明确要核心那套）。
         #    这一格的存在理由：这个键**早就写在 `_DEFAULTS`/`plugin.yaml`/README 里**，
@@ -2500,6 +2528,29 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         assert _ans_f == _body_a + _SEP + _PROG, \
             f"`progress_lines_in_body: true` 必须原样渲染（这个键不许是空转的）：{_ans_f!r}"
         adapter.configure(progress_lines_in_body=False)
+
+        # ⑦ **收尾帧永远不剥**（R11-A7 尾巴；变异 `R11-9`）—— 本段最要紧的一格。
+        #    证据：核心的收尾帧发的是**纯** `self._accumulated`（只有 `tick.is_interim`
+        #    那一帧才合成进度块，`stream_consumer.py:791-798`），所以「累积之后还有内容」
+        #    只可能是**模型自己写的**。
+        #    为什么真机上真会发生：我们的累积来自**钩子队列**（异步投递），收尾帧完全可能
+        #    **早于**最后一个正文增量到达我们这里 ⇒ 累积是一个**陈旧的完整前缀**
+        #    （`complete` 仍为真、是帧文本的前缀、尾巴以分隔符开头且后面有内容）
+        #    ⇒ 旧版的四个条件**全部成立**，它会在**唯一不可逆**的那一帧上把模型的续写
+        #    当成核心进度剥掉；而核心对 finalize 是**乐观记账**
+        #    （`_record_turn_final_payload` / `delivered_final_matches`）⇒ 它认为送达成功、
+        #    **不会再补发** ⇒ 用户看到的正文被静默砍掉一截，任何一层都不报错。
+        _body_g = "前半段。"
+        _stale_full = _body_g + _SEP + "后半段（模型自己写的分隔线之后继续写的正文）。"
+        _mid_g, _fin_g, _ = _a7_run(
+            "oc_a7g", "a7g", _stale_full + _SEP + _PROG, _stale_full,
+            prep=_arm(_body_g, "a7g"))   # 累积只到「前半段。」：完整、非冻结、有工具窗口
+        assert _mid_g == _body_g, \
+            f"中间帧的判据不该被护栏一起关掉（那会变成「这个功能没了」）：{_mid_g!r}"
+        assert "后半段" in _fin_g, \
+            f"⚠️ 收尾帧吃掉了正文 —— 而核心不会再补发（不可逆）：{_fin_g[-300:]}"
+        assert _body_g in _fin_g, \
+            f"前半段也必须还在（不许整段被换成别的）：{_fin_g[-300:]}"
         # ⑭ **正文长大之后也要守硬上限**（第十二路审计第 5 条）：建实体那道闸门守的是
         #    **空正文**的 seed 帧（核心传 `""`），真正会长大的是后面每一帧的累积全文。
         #    ⚠️ R4 起这一格分**两半**（行为**有意**变了，别再当成回归）：
