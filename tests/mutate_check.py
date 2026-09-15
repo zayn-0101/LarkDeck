@@ -374,8 +374,10 @@ MUTATIONS = [
      "check_override"),
     # 空 card_id 的坏卡形态：撤掉这道闸门就会拿空 id 去发实体卡（第十一路审计的【低】项）。
     ("CK11-建实体拿到空 card_id 也照样发实体卡", "core/adapter.py",
-     '        if _ld_response_code(made) != 0 or not card_id:\n            return None',
-     '        if _ld_response_code(made) != 0:\n            return None',
+     '        if _ld_response_code(made) != 0 or not card_id:\n'
+     '            # R11-B2：**按内层码留痕**。',
+     '        if _ld_response_code(made) != 0:\n'
+     '            # R11-B2：**按内层码留痕**。',
      "test_units"),
     # ---- 第十二路审计：CardKit 写路径没有限流退避（patch 路径有）⇒ 不对称 ---------------- #
     ("CK12-元素写入不再退避重试（撞一次限流整回合掉 native）", "core/adapter.py",
@@ -1214,6 +1216,28 @@ MUTATIONS = [
      '                                      "last": state.get("last", ""),',
      '            self._ld_stream_put(key, {**state,\n'
      '                                      "last": state.get("last", ""),',
+     "test_units"),
+    # ---- R11-B2：`300315` 是**包装码** ⇒ 必须解析内层码（真机两种形状各跑两遍） ----
+    # ⚠️ 判别力全压在「重复 id」那条形状上：**只看外层码**的实现会把「我们自己的 id 炒了」
+    #    说成「元素到顶」，两者的修法相反（前者要提前算预算，后者是我们的 bug）。
+    ("B2-1-容量满只看外层码（`300315` 两种病被判成同一种）", "core/adapter.py",
+     '        return self.code == _CAPACITY_WRAPPER_CODE and self.inner_code() == _CAPACITY_CODE',
+     '        return self.code in (_CAPACITY_CODE, _CAPACITY_WRAPPER_CODE)',
+     "test_units"),
+    ("B2-2-内层码解析不出返回 0（0 在飞书语义里是**成功** ⇒ 失败被读成成功）",
+     "core/adapter.py",
+     '        return int(found[-1]) or None',
+     '        return int(found[-1]) if found else 0',
+     "test_units"),
+    ("B2-3-容量码进重试表（确定性失败变成重试：白等 ≈1.0s 再 fail-open）",
+     "core/adapter.py",
+     '_WRITE_RETRY_CODES = frozenset({230020, 99991400})',
+     '_WRITE_RETRY_CODES = frozenset({230020, 99991400, 300315})',
+     "test_units"),
+    ("B2-4-容量码当卡级死法（正文列从 FATAL 变 DEGRADE ⇒ 用户盯着一张不再更新的卡）",
+     "core/adapter.py",
+     '_CARD_DEATH_CODES = frozenset({300309, 300313, 300317})',
+     '_CARD_DEATH_CODES = frozenset({300309, 300313, 300317, 300315})',
      "test_units"),
 
     # ---- R11-A1：世代快照（「哪一份模块对象是活的」必须是读得出来的数字）----

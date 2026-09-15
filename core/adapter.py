@@ -272,7 +272,22 @@ _CARD_DEATH_DECOR_CODES = frozenset({300309, 300317})
 #: ⚠️ 上面那段注释写着这两个 CardKit 专属码是「为将来可能的 CardKit 传输预先收口」；
 #: 2026-09-13 CardKit 成了**默认传输**，那个「将来」到了 —— 而元素写入路径此前
 #: **一次都不重试**，等于那句收口一直是空的（第十二路审计）。
+#: ⚠️ **容量到顶（`300305`/`300315`）也绝不在这张表里**（R11-B2）：它不是「服务端拒绝执行」，
+#: 而是「这张卡装不下了」这种**确定性**状态，重发同一个请求必然同样失败。
 _WRITE_RETRY_CODES = frozenset({230020, 99991400})
+
+#: **元素容量到顶**的两个码（R11-B2）—— 处置是**确定性失败：不重试 + 留痕**。
+#:   * ``300305`` —— 「element exceeds the limit」：建实体时**直接**回它（P7 实测，
+#:     递归 200 收下、204 拒收）；
+#:   * ``300315`` —— 运行时 ``card_element.create`` 被拒的**包装码**（B2 实测）：真原因
+#:     在 msg 尾部的 ``code: NNNNNN`` 里（容量满是 `300305`，重复 id 是 `300301`）。
+#:     ⇒ **只看外层码就会把「我们自己的 id 炒了」误判成「元素到顶」**，见
+#:     `_CkResult.capacity_exceeded()`。
+#: ⚠️ 正文列拿到它仍然是 **FATAL**（附录 A）：容量满意味着这张卡的正文元素写不进去，
+#: 而卡片没有正文就没有意义 ⇒ fail-open 交核心回落。**不许**把它当成 `DEGRADE`
+#: （`_CARD_DEATH_CODES`）—— patch 车道解决的是「会话被关 / 序号废了」，不是「这张卡满了」。
+_CAPACITY_CODE = 300305
+_CAPACITY_WRAPPER_CODE = 300315
 
 #: 瞬态失败的退避间隔（秒）。**实测总代价约 1.0s**（0.101 + 0.302 + 0.602，四次调用）——
 #: 核心的帧 pump 是串行 await，所以最坏情况就是「用户看到首字晚 1 秒」；`/stop` 路径上的
@@ -743,11 +758,61 @@ class _CkResult(NamedTuple):
         found = _CK_BAD_ELEMENT_RE.search(self.msg or "")
         return found.group(1) if found else None
 
+    def inner_code(self) -> Optional[int]:
+        """从 msg 里解析**内层码**（解析不出返回 ``None``，**绝不返回 0**）—— R11-B2。
+
+        为什么需要它：`300315` 是运行时 `card_element.create` 被拒的**包装码**，同一个外层码
+        下至少两种真原因（2026-09-15 真机实测，`probe_ck_stream_ops.py --capacity-codes`）：
+        内层 `300305` = 元素数到顶、内层 `300301` = id 错（重复/格式）。不解析内层码就只能
+        「按外层码一刀切」，而这两种病的修法完全相反。
+
+        ⚠️ **绝不返回 0** 是硬纪律：`_ld_response_code(None)` 恰好就是 0，而 0 在飞书那侧是
+        **成功**的语义 —— 一个「解析不出来」被读成「成功码」会把失败判成成功。本文件已经踩过
+        同一个陷阱一次（`_ld_ck_settings` 里「老 SDK 缺模型时抛错而不是返回 None」那段）。
+        所以「内层码真的是 0」与「解析不出」都返回 ``None``（0 不携带任何信息）。
+        """
+        found = _CK_INNER_CODE_RE.findall(self.msg or "")
+        if not found:
+            return None
+        return int(found[-1]) or None
+
+    def capacity_exceeded(self) -> bool:
+        """这次写/建是不是**元素数到顶**（R11-B2）。
+
+        判据必须是**两个码 + 内层码**，不能只看外层：
+          * 外层 `300305` ⇒ 是（建实体时服务端直接回它，P7 实测）；
+          * 外层 `300315` ⇒ **只在内层码也是 `300305` 时**才算（否则那是重复 id 等别的病）。
+        处置（附录 A）：**确定性失败 —— 不重试、留痕**；正文列拿到它仍是 **FATAL**（fail-open）。
+        """
+        if self.code == _CAPACITY_CODE:
+            return True
+        return self.code == _CAPACITY_WRAPPER_CODE and self.inner_code() == _CAPACITY_CODE
+
 
 #: 从 CardKit 的 msg 里抓坏元素 id 的正则。
 #: ⚠️ **故意不写长度上界**：上界只对我们自己创建的 id 成立，对服务端回显的 id 不成立 ——
 #: 截断会让「解析出来的 id」匹配不上任何 op，从而静默滑过标死那一步（R5 审计的中-4）。
 _CK_BAD_ELEMENT_RE = re.compile(r"elementID\s*:\s*([A-Za-z0-9_]+)")
+
+#: 从 CardKit 的 msg 里抓**内层码**的正则（R11-B2）。两个真机字面形状（2026-09-15 实测，
+#: `probe_ck_stream_ops.py --capacity-codes`，两条臂各跑过两遍、字面一致）：
+#:
+#:   * 运行时 `create` 撞 200 墙（`append(panel)` 与 `insert_after(answer)` **同形**）::
+#:
+#:       code=300315 · msg='ErrMsg: msg: [element exceeds the limit], code: 300305; '
+#:
+#:   * 运行时 `create` 复用卡里已存在的 id（`panel_body`）::
+#:
+#:       code=300315 · msg='ErrMsg: msg: [ElementID panel_body: Code 1001: Duplicate ID], code: 300301; '
+#:
+#: 三条由此**确定**的结论（都是从这两条字面读出来的，不是推断）：
+#:   ① `300315` 是**包装码**，真原因在 msg **尾部**的 `code: NNNNNN` ⇒ 所以取**最后一个**匹配；
+#:   ② 方括号里的 `Code 1001` 是**描述码**（重复 id），它**不是**尾部的 `300301` ——
+#:      正则 `\bcode\s*:` 恰好只吃尾部那一个（`Code 1001:` 的数字在冒号**前面**，形状不同）；
+#:   ③ `\b` 是**有意的**：`card.create` 的 `230099` 里内层码写作 `ext=ErrCode: 11310;`
+#:      （见 `cards.py`），`\b` 把这种**前缀粘连**挡在外面 —— `ErrCode` 属于另一套码空间，
+#:      混进来会让「内层码」有两种口径。
+_CK_INNER_CODE_RE = re.compile(r"\bcode\s*:\s*(\d+)", re.IGNORECASE)
 
 
 class _CkOp(NamedTuple):
@@ -883,6 +948,41 @@ def _log_ck_over_budget_once(size: int) -> None:
     logger.warning("[larkdeck] CardKit 实体卡 %d 字节超过飞书实测硬上限 %d —— "
                    "不能像 patch 路径那样分级丢装饰（结构已定死），本帧 fail-open 交核心回落",
                    size, _cards.FEISHU_CARD_BYTE_LIMIT)
+
+
+def _ck_reject_reason(res: "_CkResult") -> str:
+    """一次 CardKit 写/建被拒的**人话原因**（按**内层码**分档，R11-B2）。
+
+    为什么要有这个纯函数：`300315` 是**包装码**，同一个外层码下至少两种真原因（真机实测）——
+    内层 `300305` = 元素数到顶、内层 `300301` = id 错（重复/格式）。两者的修法**相反**：
+    前者是容量（要提前算预算），后者是**我们自己的 bug**（id 重了）。而这两种在旧代码里
+    都会塌成同一句「CardKit 建实体/发实体卡失败」—— 故障归因就此消失。
+    """
+    if res.capacity_exceeded():
+        return "元素数到顶（200 是递归口径的硬墙）"
+    inner = res.inner_code()
+    if inner == 300301:
+        return "元素 id 有问题（重复或格式非法）"
+    if inner is not None:
+        return f"内层码 {inner}"
+    return "内层码解析不出（msg 里没有可认的 `code:` 标签）"
+
+
+def _log_ck_reject_once(res: "_CkResult", where: str) -> None:
+    """CardKit 写/建被拒的限流告警（60 秒一条）—— **确定性失败必须留痕**（R11-B2）。
+
+    为什么单列一条：`_ld_ck_create` 失败以前是**静默 return None**（帧路径只说一句
+    「CardKit 建实体/发实体卡失败」），而「容量满」与「id 错」是两种完全不同的病：
+    本地闸门 `_ck_create_wall` 用的是**本地**递归计数，一旦它与服务端口径漂移
+    （Phase C 的动态元素正是这种情形），唯一能留下凭据的就是这一行。
+    """
+    now = time.monotonic()
+    if now - getattr(_log_ck_reject_once, "_at", 0.0) < 60.0:
+        return
+    _log_ck_reject_once._at = now  # type: ignore[attr-defined]
+    logger.warning("[larkdeck] CardKit %s 被服务端拒：code=%s · 原因=%s —— "
+                   "**确定性失败：不重试**（原样重发必然同样失败），本帧交核心回落（fail-open）；"
+                   "原始 msg=%s", where, res.code, _ck_reject_reason(res), (res.msg or "")[:160])
 
 
 def _log_ck_summary_failed_once(code: int) -> None:
@@ -1783,6 +1883,14 @@ class LarkDeckMixin:
             self._client.cardkit.v1.card.create, "建实体")
         card_id = getattr(getattr(made, "data", None), "card_id", None)
         if _ld_response_code(made) != 0 or not card_id:
+            # R11-B2：**按内层码留痕**。这里以前是**静默** `return None`，帧路径只会说一句
+            # 「CardKit 建实体/发实体卡失败」⇒ 「容量到顶（服务端 300305，因为本地闸门是
+            # **本地**递归计数、可能与服务端口径漂移）」和「我们发了一份非法卡 JSON」在日志里
+            # 长得一模一样。两种都是**确定性失败**（`_WRITE_RETRY_CODES` 里没有它们），
+            # 但排查方向完全相反，所以必须点名。
+            _log_ck_reject_once(
+                _CkResult(False, _ld_response_code(made),
+                          str(getattr(made, "msg", "") or "")), "建实体")
             return None
         anchor = str(reply_to or "").strip()
         if anchor:

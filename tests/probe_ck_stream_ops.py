@@ -21,6 +21,7 @@ python3 tests/probe_ck_stream_ops.py --visual    # 出一张「看得见」的�
 python3 tests/probe_ck_stream_ops.py --batching  # R0：一次 batch 带多元素 / 序号账本语义（自动删卡）
 python3 tests/probe_ck_stream_ops.py --withdrawn # R0：消息被撤回/删除后写卡回什么码（自动删卡）
 python3 tests/probe_ck_stream_ops.py --element-limits  # R0：create 能带几个元素 / 运行时新增算不算进 200
+python3 tests/probe_ck_stream_ops.py --capacity-codes  # R11-B2：容量满 / 重复 id 的码与 msg 字面形状（自动删卡）
 python3 tests/probe_ck_stream_ops.py --lanes   # R5：batch 坏 id 的返回码口径 / 整卡 patch 能否覆盖实体卡（自动删卡）
 ```
 
@@ -572,6 +573,127 @@ def probe_visual(keep: bool) -> int:
     return 0
 
 
+def probe_capacity_codes() -> int:
+    """R11-B2 真机探针：**容量到顶 / 重复 id 时，运行时 `card_element.create` 到底回什么码 + 什么 msg**。
+
+    为什么必须实测（`docs/plan-v1.md` 附录 F 把 append 形状登记为**未测**）：
+    `300315` 在本项目里**一名两义** ——
+      * 容量满：P7 记的是「msg 里包着内层 `300305`」，但那是 `insert_after(answer)` 的形状；
+      * 复用已存在的元素 id：`Code 1001: Duplicate ID`。
+
+    B2 的 `_CkResult.inner_code()` 要**从 msg 里解析内层码**，所以 msg 的**字面形状**就是它的
+    输入契约；而「append 形状撞 200 墙」这一条至今没有真机样本（方案里明写未测）。
+
+    判据是**断言**不是 print（本项目纪律：探针自己也会撒谎）：
+      ① 两种容量形状（`append(panel)` / `insert_after(answer)`）都要回 `300315`，
+         且 msg 里能解析出内层 `300305`；
+      ② 重复 id 也要回 `300315`，但内层码是 `1001` —— 这正是「不能只看外层码」的实测依据。
+    ⚠️ 元素 id 必须**全局递增**（P7 的教训：探针自己的 bug 冒充过「元素上限」的答案）。
+    """
+    import re as _re
+    client, chat = _connect()
+    fresh = {"n": 0}
+
+    def _new_elems(n: int) -> list:
+        out = []
+        for _ in range(n):
+            out.append({"tag": "markdown", "element_id": f"w{fresh['n']}", "content": "y"})
+            fresh["n"] += 1
+        return out
+
+    def _create(card, kind: str, target: str, elems: list, tag: str) -> tuple:
+        r = client.cardkit.v1.card_element.create(
+            CreateCardElementRequest.builder().card_id(card.card_id)
+            .request_body(CreateCardElementRequestBody.builder()
+                          .type(kind).target_element_id(target)
+                          .elements(json.dumps(elems, ensure_ascii=False))
+                          .sequence(card._next()).uuid(f"p-{card.card_id}-{tag}").build()).build())
+        return card._code(r), str(getattr(r, "msg", "") or "")
+
+    def _send_raw(base: dict) -> "tuple":
+        """建实体 + 发消息（不经过 `_Card.open`，因为要自定义卡结构）。"""
+        made = client.cardkit.v1.card.create(
+            CreateCardRequest.builder().request_body(
+                CreateCardRequestBody.builder().type("card_json")
+                .data(json.dumps(base, ensure_ascii=False)).build()).build())
+        card = _Card(client, chat)
+        card.card_id = getattr(getattr(made, "data", None), "card_id", None) or ""
+        sent = client.im.v1.message.create(
+            CreateMessageRequest.builder().receive_id_type("chat_id")
+            .request_body(CreateMessageRequestBody.builder().receive_id(chat)
+                          .msg_type("interactive")
+                          .uuid(f"ld-probe-{card.card_id}")
+                          .content(json.dumps({"type": "card", "data": {"card_id": card.card_id}}))
+                          .build()).build())
+        card.message_id = getattr(getattr(sent, "data", None), "message_id", None) or ""
+        return card
+
+    problems: list = []
+    print("—— ① 容量满：append(panel) 撞 200 墙（附录 F 登记的未测项）——")
+    base = _nested_card(190)
+    print(f"   基线递归元素数={lark_cards.count_elements(base)}")
+    card = _send_raw(base)
+    if not card.card_id or not card.message_id:
+        print("   ❌ 建实体/发消息失败，探针无法继续")
+        return 1
+    code5, msg5 = _create(card, "append", PANEL_ID, _new_elems(5), "cap-a5")
+    print(f"   append +5  ⇒ code={code5} · msg={msg5!r}")
+    code_append, msg_append = _create(card, "append", PANEL_ID, _new_elems(10), "cap-a10")
+    print(f"   append +10 ⇒ code={code_append} · msg={msg_append!r}")
+    code_ins, msg_ins = _create(card, "insert_after", ANSWER_ID, _new_elems(10), "cap-i10")
+    print(f"   insert_after(answer) +10 ⇒ code={code_ins} · msg={msg_ins!r}")
+    card.delete()
+
+    print("\n—— ② 重复 id：拿一个卡里已存在的 id 去 create（P7 副产物的形状）——")
+    card2 = _Card(client, chat)
+    if not card2.open(answer="（基线）", panel="面板：基线"):
+        return 1
+    dup = [{"tag": "markdown", "element_id": PANEL_BODY_ID, "content": "y"}]
+    code_dup, msg_dup = _create(card2, "append", PANEL_ID, dup, "cap-dup")
+    print(f"   复用已存在 id({PANEL_BODY_ID}) ⇒ code={code_dup} · msg={msg_dup!r}")
+    card2.delete()
+
+    inner = _re.compile(r"code\s*:\s*(\d+)", _re.IGNORECASE)      # 尾部的权威内层码
+    desc = _re.compile(r"Code\s+(\d+)\s*:")                       # 方括号里的描述码（1001 = 重复 id）
+
+    def _inner(msg: str):
+        m = inner.search(msg or "")
+        return int(m.group(1)) if m else None
+
+    def _desc(msg: str):
+        m = desc.search(msg or "")
+        return int(m.group(1)) if m else None
+
+    # ⚠️ 期望值是 **2026-09-15 实测的字面形状**，不是从文档抄的；两条容量臂必须**同形**
+    # （append 与 insert_after 都回 300315 + 内层 300305），重复 id 臂的内层码是 **300301**
+    # （不是描述码 1001）—— 这正是「`300315` 只是包装码、真原因在尾部 `code:`」的实测依据。
+    for label, code, msg, want_code, want_inner, want_desc in (
+            ("append +10", code_append, msg_append, 300315, 300305, None),
+            ("insert_after +10", code_ins, msg_ins, 300315, 300305, None),
+            ("重复 id", code_dup, msg_dup, 300315, 300301, 1001)):
+        got_inner, got_desc = _inner(msg), _desc(msg)
+        ok = (code == want_code and got_inner == want_inner and got_desc == want_desc)
+        print(f"   {'✅' if ok else '❌'} {label}: code={code}（期望 {want_code}）· "
+              f"尾部内层码={got_inner}（期望 {want_inner}）· 描述码={got_desc}（期望 {want_desc}）")
+        if not ok:
+            problems.append(f"{label}: code={code} 内层码={got_inner} 描述码={got_desc}"
+                            f"（期望 {want_code}/{want_inner}/{want_desc}）"
+                            "—— 码表与 B2 的解析契约要按实测改")
+    if code5 != 0:
+        problems.append(f"预期「+5 成功」（194 → 199 < 200）实测却 code={code5}："
+                        "说明 200 墙的口径与 P7 记的不一致")
+    if problems:
+        print("\n❌ 与码表/B2 解析契约不一致：")
+        for item in problems:
+            print(f"   - {item}")
+        return 1
+    print("\n✅ 结论：`300315` 是**运行时 create 被拒的包装码**，真原因在 msg 尾部的 `code: NNNNNN` ——"
+          "\n   容量满两种形状（append / insert_after）都是 `300305`，重复 id 是 `300301`"
+          "（方括号里另有一个描述码 `Code 1001`）"
+          "\n   ⇒ `capacity_exceeded()` **必须解析内层码**，只看外层 `300315` 会把重复 id 误判成容量满。")
+    return 0
+
+
 def probe_lanes() -> int:
     """R5 真机探针：两条**必须实测**的语义（决定 R5 的两条车道怎么实现）。
 
@@ -665,6 +787,8 @@ def main(argv) -> int:
         return probe_withdrawn()
     if "--element-limits" in argv:
         return probe_element_limits()
+    if "--capacity-codes" in argv:
+        return probe_capacity_codes()
     return probe_matrix()
 
 

@@ -1154,6 +1154,182 @@ def test_cardkit_golden_trace_is_frozen():
         f"  实得：{json.dumps(got, ensure_ascii=False)[:400]}")
 
 
+def _mk_cardkit_fake(*, fail_write_after=10 ** 9, create_ok=True, fail_answer_only=False,
+             fail_panel_only=False, create_empty_id=False,
+             create_codes=None, answer_codes=None, fail_first_only=False,
+             fail_at=None, fail_at_code=300309, fail_batch=False,
+             fail_batch_code=300309, fail_batch_msg=None, patch_code=0,
+             settings_code=0, settings_msg=None, settings_raises=False):
+    calls = {"create": 0, "send": 0, "reply": 0, "content": [], "patch": 0,
+             "patch_mids": [], "settings": [],
+             "entity": [], "send_req": [], "reply_req": [], "batch": [],
+             "writes": 0}
+
+    class _Resp:
+        def __init__(self, code=0, msg=None, **data):
+            self.code = code
+            # msg 可注入：R5 的「服务端点名坏元素」那条路要求 msg 长得跟真机一样
+            # （真机实测 `ErrMsg: not find elementID : ghost_missing_element; `），
+            # 默认的 "boom" 解析不出 id ⇒ 走「整批标死」那条保守分支。
+            self.msg = msg if msg is not None else ("success" if code == 0 else "boom")
+            self.data = types.SimpleNamespace(**data) if data else None
+
+        def success(self):
+            return self.code == 0
+
+    class _CardRes:
+        def batch_update(self, request):
+            calls["writes"] += 1
+            calls["batch"].append((json.loads(request.request_body.actions),
+                                   request.request_body.sequence))
+            if fail_batch:
+                # 码可配：`300309`（结构性死法）与 `99991400`（限流类 ⇒ 会退避重试）
+                # 在 R2 之后的处置**不一样**，用例要能分别构造；msg 也可配（R5 的
+                # 「服务端点名坏元素」需要一个真机形状的 msg）
+                return _Resp(fail_batch_code, msg=fail_batch_msg)
+            if fail_at is not None and calls["writes"] == fail_at:
+                return _Resp(fail_at_code)
+            return _Resp(0)
+
+        def settings(self, request):
+            """`card.settings`（R7 的会话列表预览）——记下 payload 与序号。
+
+            ⚠️ 这里**也必须计入 `calls["writes"]`**（R7 审计中-2）：这本账是
+            「写入预算」的**观测量**（附录 B 断言②：真跑 N 帧、数一数调用次数）。
+            不计的话，「预览每帧都写」这种实现从这本账上**看不见** —— 实测把
+            「成功但不记账」那一行删掉，四门禁全绿，而限频被彻底废掉。
+            """
+            calls["writes"] += 1
+            calls["settings"].append((json.loads(request.request_body.settings),
+                                      request.request_body.sequence,
+                                      request.request_body.uuid))
+            if settings_raises:
+                # H-1：真机上这条路是 `run_in_executor` + `requests.request`（**一行
+                # try 都没有**）⇒ 连接重置/超时就是这个形状。
+                raise ConnectionError("settings boom")
+            if settings_code:
+                return _Resp(settings_code, msg=settings_msg)
+            return _Resp(0)
+
+        def create(self, request):
+            calls["create"] += 1
+            calls["entity"].append(request.request_body["card_json"])
+            # ⚠️ card_id **按次数递增**（R4 卡链要能分辨第一张/第二张；原来恒为 `ck_1`
+            # 会让「切卡后还在写旧卡」这种缺陷从账本上看不出来）
+            _cid = f"ck_{calls['create']}"
+            calls.setdefault("entity_ids", []).append(_cid)
+            if create_codes:
+                # 按脚本发码：列表用完后重复最后一个（模拟「一直限流」）
+                code = create_codes[min(calls["create"] - 1, len(create_codes) - 1)]
+                return _Resp(code, card_id=_cid) if code == 0 else _Resp(code)
+            if create_empty_id:
+                # code=0 但 data.card_id 是空串：飞书没给实体 id
+                return _Resp(0, card_id="")
+            return _Resp(0, card_id=_cid) if create_ok else _Resp(300305)
+
+    class _ElemRes:
+        def content(self, request):
+            calls["writes"] += 1
+            calls["content"].append((request.element_id, request.request_body.content,
+                                     request.request_body.sequence))
+            # ⚠️ 计数必须**跨 batch 与 content 合计**：两者共用同一个序号账本
+            # （R2 起每帧 = 一次 batch + 一次 content），只看 content 的话
+            # 「第 3 次写入」永远不会发生（R2 落地时这条前提当场红了）。
+            if fail_first_only and calls["writes"] == 1:
+                return _Resp(300309)
+            if fail_at is not None and calls["writes"] == fail_at:
+                # ⚠️ `fail_at_code` 必须可配：`300309`（会话已关）在 R5 起是**可降级的
+                # 卡级死法**，用它当「这一帧真的失败了」的前提已经不成立（用例当场红）。
+                # 测序号账本要用**确定性拒收**类码（附录 A 的 FATAL 那一行）。
+                return _Resp(fail_at_code)
+            if answer_codes and request.element_id == cards.CARDKIT_ANSWER_ID:
+                idx = sum(1 for c in calls["content"]
+                          if c[0] == cards.CARDKIT_ANSWER_ID) - 1
+                return _Resp(answer_codes[min(idx, len(answer_codes) - 1)])
+            if fail_answer_only and request.element_id == cards.CARDKIT_ANSWER_ID:
+                # ⚠️ 故意用**确定性拒收**码（230099）而不是 `300309`：R5 起 `300309`
+                # 是「可降级的卡级死法」（会走 DEGRADE 车道并让帧返回 True），
+                # 拿它当「正文写失败 ⇒ 必须 fail-open」的前提已经不成立。
+                return _Resp(230099, msg="deterministic rejection")
+            if fail_panel_only and request.element_id == cards.CARDKIT_PANEL_BODY_ID:
+                return _Resp(300309)
+            if len(calls["content"]) > fail_write_after:
+                return _Resp(300309)
+            return _Resp(0)
+
+    class _MsgRes:
+        def create(self, request):
+            calls["send"] += 1
+            calls["send_req"].append(request)
+            # ⚠️ 形状必须与替身适配器的 `_finalize_send_result` 一致（它读 dict）
+            return {"code": 0, "data": {"message_id": "om_ck_1"}}
+
+        def reply(self, request):
+            calls["reply"] += 1
+            calls["reply_req"].append(request)
+            return {"code": 0, "data": {"message_id": "om_ck_r1"}}
+
+        def patch(self, request):
+            calls["patch"] += 1
+            # ⚠️ **必须记下目标 message_id**（R5 审计高-2：把它换成别的 id，四门禁曾全绿）
+            calls.setdefault("patch_mids", []).append(
+                getattr(request, "message_id", None))
+            # R4：封旧卡走的是整卡 patch ⇒ 内容要能断言（封的是哪一段、有没有关流式态）
+            calls.setdefault("patch_cards", []).append(
+                json.loads(request.request_body.content))
+            # ⚠️ 形状必须是 **dict**：替身适配器的 `_finalize_send_result` 读
+            # `response["data"]["message_id"]`（与真 SDK 响应的取值路径一致）。
+            # 返回 `_Resp` 对象会让它 AttributeError ⇒ 帧路径吞掉异常 ⇒
+            # 「降级车道」看起来像是没生效（这条断言当场红了一次）。
+            # 码可配：R5 的撤回守卫要构造 `230011 The message was withdrawn.`
+            if patch_code:
+                return {"code": patch_code, "msg": "The message was withdrawn."}
+            return {"code": 0, "data": {"message_id": "om_ck_1"}}
+
+    client = types.SimpleNamespace(
+        cardkit=types.SimpleNamespace(v1=types.SimpleNamespace(
+            card=_CardRes(), card_element=_ElemRes())),
+        im=types.SimpleNamespace(v1=types.SimpleNamespace(message=_MsgRes())))
+    return calls, client
+
+
+# ⚠️ `test_units.py` 是**零 Hermes 依赖**的，所以 SDK 的请求构造必须可注入：
+# 真环境用 `_ld_ck_requests()` 里的 SDK builder，这里换成等价的哑对象。
+def _fake_ck_requests():
+    return types.SimpleNamespace(
+        create_card=lambda card_json: types.SimpleNamespace(
+            request_body={"card_json": card_json}),
+        write_element=lambda cid, eid, content, seq, uuid_value: types.SimpleNamespace(
+            card_id=cid, element_id=eid,
+            request_body=types.SimpleNamespace(content=content, sequence=seq,
+                                               uuid=uuid_value)),
+        batch_update=lambda cid, actions, seq, uuid_value: types.SimpleNamespace(
+            card_id=cid,
+            request_body=types.SimpleNamespace(actions=json.dumps(actions, ensure_ascii=False),
+                                               sequence=seq, uuid=uuid_value)),
+        # ⚠️ R7：帧路径会调 `card.settings`（会话列表预览）——替身少了这一个属性会
+        # AttributeError，被帧路径吞掉后表现为「这一帧失败」，与真实原因无关。
+        settings_card=lambda cid, payload, seq, uuid_value: types.SimpleNamespace(
+            card_id=cid,
+            request_body=types.SimpleNamespace(settings=payload, sequence=seq,
+                                               uuid=uuid_value)),
+        # ⚠️ 锚点/去重键必须能被断言：替身以前**不记录** `reply_to`，于是
+        # 「cardkit 把回复锚点整个丢掉」（第十二路审计实测）四门禁全绿 ——
+        # 翻默认之后这意味着**每次回答都不再挂在提问下面**。
+        send_entity=lambda receive_id, card_id: types.SimpleNamespace(
+            receive_id=receive_id, card_id=card_id,
+            request_body=types.SimpleNamespace(
+                content=json.dumps({"type": "card", "data": {"card_id": card_id}}),
+                msg_type="interactive", uuid=f"ld-msg-{card_id}")),
+        reply_entity=lambda reply_to, card_id: types.SimpleNamespace(
+            reply_to=reply_to, card_id=card_id,
+            request_body=types.SimpleNamespace(
+                content=json.dumps({"type": "card", "data": {"card_id": card_id}}),
+                msg_type="interactive", uuid=f"ld-msg-{card_id}",
+                reply_in_thread=False)),
+    )
+
+
 def test_cardkit_transport_writes_elements_and_falls_open():
     """阶段 9：`native_transport: "cardkit"` 的帧序列 + **任何一步失败都回落**。
 
@@ -1166,179 +1342,9 @@ def test_cardkit_transport_writes_elements_and_falls_open():
     """
     defaults = dict(adapter._DEFAULTS)
     try:
-        def _mk_fake(*, fail_write_after=10 ** 9, create_ok=True, fail_answer_only=False,
-                     fail_panel_only=False, create_empty_id=False,
-                     create_codes=None, answer_codes=None, fail_first_only=False,
-                     fail_at=None, fail_at_code=300309, fail_batch=False,
-                     fail_batch_code=300309, fail_batch_msg=None, patch_code=0,
-                     settings_code=0, settings_msg=None, settings_raises=False):
-            calls = {"create": 0, "send": 0, "reply": 0, "content": [], "patch": 0,
-                     "patch_mids": [], "settings": [],
-                     "entity": [], "send_req": [], "reply_req": [], "batch": [],
-                     "writes": 0}
+        _mk_fake = _mk_cardkit_fake
 
-            class _Resp:
-                def __init__(self, code=0, msg=None, **data):
-                    self.code = code
-                    # msg 可注入：R5 的「服务端点名坏元素」那条路要求 msg 长得跟真机一样
-                    # （真机实测 `ErrMsg: not find elementID : ghost_missing_element; `），
-                    # 默认的 "boom" 解析不出 id ⇒ 走「整批标死」那条保守分支。
-                    self.msg = msg if msg is not None else ("success" if code == 0 else "boom")
-                    self.data = types.SimpleNamespace(**data) if data else None
-
-                def success(self):
-                    return self.code == 0
-
-            class _CardRes:
-                def batch_update(self, request):
-                    calls["writes"] += 1
-                    calls["batch"].append((json.loads(request.request_body.actions),
-                                           request.request_body.sequence))
-                    if fail_batch:
-                        # 码可配：`300309`（结构性死法）与 `99991400`（限流类 ⇒ 会退避重试）
-                        # 在 R2 之后的处置**不一样**，用例要能分别构造；msg 也可配（R5 的
-                        # 「服务端点名坏元素」需要一个真机形状的 msg）
-                        return _Resp(fail_batch_code, msg=fail_batch_msg)
-                    if fail_at is not None and calls["writes"] == fail_at:
-                        return _Resp(fail_at_code)
-                    return _Resp(0)
-
-                def settings(self, request):
-                    """`card.settings`（R7 的会话列表预览）——记下 payload 与序号。
-
-                    ⚠️ 这里**也必须计入 `calls["writes"]`**（R7 审计中-2）：这本账是
-                    「写入预算」的**观测量**（附录 B 断言②：真跑 N 帧、数一数调用次数）。
-                    不计的话，「预览每帧都写」这种实现从这本账上**看不见** —— 实测把
-                    「成功但不记账」那一行删掉，四门禁全绿，而限频被彻底废掉。
-                    """
-                    calls["writes"] += 1
-                    calls["settings"].append((json.loads(request.request_body.settings),
-                                              request.request_body.sequence,
-                                              request.request_body.uuid))
-                    if settings_raises:
-                        # H-1：真机上这条路是 `run_in_executor` + `requests.request`（**一行
-                        # try 都没有**）⇒ 连接重置/超时就是这个形状。
-                        raise ConnectionError("settings boom")
-                    if settings_code:
-                        return _Resp(settings_code, msg=settings_msg)
-                    return _Resp(0)
-
-                def create(self, request):
-                    calls["create"] += 1
-                    calls["entity"].append(request.request_body["card_json"])
-                    # ⚠️ card_id **按次数递增**（R4 卡链要能分辨第一张/第二张；原来恒为 `ck_1`
-                    # 会让「切卡后还在写旧卡」这种缺陷从账本上看不出来）
-                    _cid = f"ck_{calls['create']}"
-                    calls.setdefault("entity_ids", []).append(_cid)
-                    if create_codes:
-                        # 按脚本发码：列表用完后重复最后一个（模拟「一直限流」）
-                        code = create_codes[min(calls["create"] - 1, len(create_codes) - 1)]
-                        return _Resp(code, card_id=_cid) if code == 0 else _Resp(code)
-                    if create_empty_id:
-                        # code=0 但 data.card_id 是空串：飞书没给实体 id
-                        return _Resp(0, card_id="")
-                    return _Resp(0, card_id=_cid) if create_ok else _Resp(300305)
-
-            class _ElemRes:
-                def content(self, request):
-                    calls["writes"] += 1
-                    calls["content"].append((request.element_id, request.request_body.content,
-                                             request.request_body.sequence))
-                    # ⚠️ 计数必须**跨 batch 与 content 合计**：两者共用同一个序号账本
-                    # （R2 起每帧 = 一次 batch + 一次 content），只看 content 的话
-                    # 「第 3 次写入」永远不会发生（R2 落地时这条前提当场红了）。
-                    if fail_first_only and calls["writes"] == 1:
-                        return _Resp(300309)
-                    if fail_at is not None and calls["writes"] == fail_at:
-                        # ⚠️ `fail_at_code` 必须可配：`300309`（会话已关）在 R5 起是**可降级的
-                        # 卡级死法**，用它当「这一帧真的失败了」的前提已经不成立（用例当场红）。
-                        # 测序号账本要用**确定性拒收**类码（附录 A 的 FATAL 那一行）。
-                        return _Resp(fail_at_code)
-                    if answer_codes and request.element_id == cards.CARDKIT_ANSWER_ID:
-                        idx = sum(1 for c in calls["content"]
-                                  if c[0] == cards.CARDKIT_ANSWER_ID) - 1
-                        return _Resp(answer_codes[min(idx, len(answer_codes) - 1)])
-                    if fail_answer_only and request.element_id == cards.CARDKIT_ANSWER_ID:
-                        # ⚠️ 故意用**确定性拒收**码（230099）而不是 `300309`：R5 起 `300309`
-                        # 是「可降级的卡级死法」（会走 DEGRADE 车道并让帧返回 True），
-                        # 拿它当「正文写失败 ⇒ 必须 fail-open」的前提已经不成立。
-                        return _Resp(230099, msg="deterministic rejection")
-                    if fail_panel_only and request.element_id == cards.CARDKIT_PANEL_BODY_ID:
-                        return _Resp(300309)
-                    if len(calls["content"]) > fail_write_after:
-                        return _Resp(300309)
-                    return _Resp(0)
-
-            class _MsgRes:
-                def create(self, request):
-                    calls["send"] += 1
-                    calls["send_req"].append(request)
-                    # ⚠️ 形状必须与替身适配器的 `_finalize_send_result` 一致（它读 dict）
-                    return {"code": 0, "data": {"message_id": "om_ck_1"}}
-
-                def reply(self, request):
-                    calls["reply"] += 1
-                    calls["reply_req"].append(request)
-                    return {"code": 0, "data": {"message_id": "om_ck_r1"}}
-
-                def patch(self, request):
-                    calls["patch"] += 1
-                    # ⚠️ **必须记下目标 message_id**（R5 审计高-2：把它换成别的 id，四门禁曾全绿）
-                    calls.setdefault("patch_mids", []).append(
-                        getattr(request, "message_id", None))
-                    # R4：封旧卡走的是整卡 patch ⇒ 内容要能断言（封的是哪一段、有没有关流式态）
-                    calls.setdefault("patch_cards", []).append(
-                        json.loads(request.request_body.content))
-                    # ⚠️ 形状必须是 **dict**：替身适配器的 `_finalize_send_result` 读
-                    # `response["data"]["message_id"]`（与真 SDK 响应的取值路径一致）。
-                    # 返回 `_Resp` 对象会让它 AttributeError ⇒ 帧路径吞掉异常 ⇒
-                    # 「降级车道」看起来像是没生效（这条断言当场红了一次）。
-                    # 码可配：R5 的撤回守卫要构造 `230011 The message was withdrawn.`
-                    if patch_code:
-                        return {"code": patch_code, "msg": "The message was withdrawn."}
-                    return {"code": 0, "data": {"message_id": "om_ck_1"}}
-
-            client = types.SimpleNamespace(
-                cardkit=types.SimpleNamespace(v1=types.SimpleNamespace(
-                    card=_CardRes(), card_element=_ElemRes())),
-                im=types.SimpleNamespace(v1=types.SimpleNamespace(message=_MsgRes())))
-            return calls, client
-
-        # ⚠️ `test_units.py` 是**零 Hermes 依赖**的，所以 SDK 的请求构造必须可注入：
-        # 真环境用 `_ld_ck_requests()` 里的 SDK builder，这里换成等价的哑对象。
-        def _fake_requests():
-            return types.SimpleNamespace(
-                create_card=lambda card_json: types.SimpleNamespace(
-                    request_body={"card_json": card_json}),
-                write_element=lambda cid, eid, content, seq, uuid_value: types.SimpleNamespace(
-                    card_id=cid, element_id=eid,
-                    request_body=types.SimpleNamespace(content=content, sequence=seq,
-                                                       uuid=uuid_value)),
-                batch_update=lambda cid, actions, seq, uuid_value: types.SimpleNamespace(
-                    card_id=cid,
-                    request_body=types.SimpleNamespace(actions=json.dumps(actions, ensure_ascii=False),
-                                                       sequence=seq, uuid=uuid_value)),
-                # ⚠️ R7：帧路径会调 `card.settings`（会话列表预览）——替身少了这一个属性会
-                # AttributeError，被帧路径吞掉后表现为「这一帧失败」，与真实原因无关。
-                settings_card=lambda cid, payload, seq, uuid_value: types.SimpleNamespace(
-                    card_id=cid,
-                    request_body=types.SimpleNamespace(settings=payload, sequence=seq,
-                                                       uuid=uuid_value)),
-                # ⚠️ 锚点/去重键必须能被断言：替身以前**不记录** `reply_to`，于是
-                # 「cardkit 把回复锚点整个丢掉」（第十二路审计实测）四门禁全绿 ——
-                # 翻默认之后这意味着**每次回答都不再挂在提问下面**。
-                send_entity=lambda receive_id, card_id: types.SimpleNamespace(
-                    receive_id=receive_id, card_id=card_id,
-                    request_body=types.SimpleNamespace(
-                        content=json.dumps({"type": "card", "data": {"card_id": card_id}}),
-                        msg_type="interactive", uuid=f"ld-msg-{card_id}")),
-                reply_entity=lambda reply_to, card_id: types.SimpleNamespace(
-                    reply_to=reply_to, card_id=card_id,
-                    request_body=types.SimpleNamespace(
-                        content=json.dumps({"type": "card", "data": {"card_id": card_id}}),
-                        msg_type="interactive", uuid=f"ld-msg-{card_id}",
-                        reply_in_thread=False)),
-            )
+        _fake_requests = _fake_ck_requests
 
         # ① 全链路成功：建实体 → 四帧（装饰**只在变了的那一帧**发一次 batch，正文每帧一次）
         #    → 收尾走 patch
@@ -8009,6 +8015,157 @@ def test_ck_split_point_respects_budgets_and_avoids_code_fences() -> None:
     # ④ 已经切过（offset > 0）时只从 offset 往后算，且**绝不回头**
     cut3 = adapter._ck_split_point(huge, 1000, seal_budget=seal, tail_budget=tail)
     assert cut3 is None or cut3 > 1000, cut3
+
+
+# --------------------------------------------------------------------------- #
+# R11-B2：元素容量到顶（`300305` / 包装码 `300315`）的**解析契约**与处置
+# --------------------------------------------------------------------------- #
+#: 两条**真机字面形状**（2026-09-15 实测，`tests/probe_ck_stream_ops.py --capacity-codes`；
+#: 两条容量臂与重复 id 臂各跑两遍，字面逐字节一致）。
+#: ⚠️ **不许改写这两个字符串**（例如顺手写成 `Code: 300305`）：它们是解析契约的**输入本身**，
+#: 改一个字符就等于把门禁从「对着真机测」降级成「对着我们的想象测」。
+_CK_CAPACITY_MSG = "ErrMsg: msg: [element exceeds the limit], code: 300305; "
+_CK_DUPLICATE_ID_MSG = ("ErrMsg: msg: [ElementID panel_body: Code 1001: Duplicate ID], "
+                        "code: 300301; ")
+
+
+def test_ck_inner_code_parses_the_two_real_machine_shapes():
+    """`300315` 是**包装码** ⇒ 必须解析内层码，否则两种病会被判成同一种（R11-B2）。
+
+    真机两种形状（都是 `code=300315`）：
+      * 容量满：`... [element exceeds the limit], code: 300305; `
+      * 重复 id：`... [ElementID panel_body: Code 1001: Duplicate ID], code: 300301; `
+    判别力落在**第二形状**上：只看外层码的实现会把「我们自己的 id 炒了」说成「元素到顶」，
+    而这两件事的修法相反（前者要提前算预算，后者是我们的 bug）。
+    """
+    res = adapter._CkResult
+    cap = res(False, 300315, _CK_CAPACITY_MSG)
+    assert cap.inner_code() == 300305, cap.inner_code()
+    assert cap.capacity_exceeded() is True, "容量满的内层码就是 300305"
+
+    dup = res(False, 300315, _CK_DUPLICATE_ID_MSG)
+    assert dup.inner_code() == 300301, \
+        f"尾部 `code:` 才是权威内层码（方括号里的 1001 只是描述码）：{dup.inner_code()}"
+    assert dup.capacity_exceeded() is False, \
+        "**只看外层码**就会把「id 重复」误判成「元素到顶」—— 300315 是包装码，真原因在内层"
+
+    # 建实体时服务端**直接**回 300305（P7 实测：递归 200 收下、204 拒收）⇒ msg 里没有内层码
+    direct = res(False, 300305, "ErrMsg: element exceeds the limit")
+    assert direct.inner_code() is None, direct.inner_code()
+    assert direct.capacity_exceeded() is True, "外层 300305 本身就是容量码"
+
+    # ⚠️ **解析不出必须是 None，绝不能是 0**：0 在飞书语义里是**成功**
+    # （`_ld_response_code(None)` 恰好也返回 0）⇒ 「解析不出来」被读成「成功码」= 把失败判成成功。
+    for msg in ("boom", "", None, "success", "code: 0", "code: abc"):
+        got = res(False, 300315, msg).inner_code()
+        assert got is None, f"msg={msg!r} 解析不出内层码时必须返回 None，实际 {got!r}"
+
+    # `ErrCode:` 是**另一套码空间**（`card.create` 的 230099 用 `ext=ErrCode: 11310;` 记它），
+    # `\b` 故意把它挡在外面 —— 混进来会让「内层码」同时有两种口径。
+    assert res(False, 230099, "ErrCode: 11310; ErrMsg: element exceeds the limit"
+               ).inner_code() is None, "ErrCode 不是 `code:` 标签（前缀粘连必须挡住）"
+    # 取**最后一个**匹配（权威内层码在 msg 末尾）
+    assert res(False, 300315, "code: 999; blah, code: 300305; ").inner_code() == 300305
+
+
+def test_ck_capacity_codes_are_deterministic_never_retried():
+    """容量到顶 = **确定性失败 ⇒ 绝不重试**（R11-B2）。
+
+    两半一起钉：① 码表里没有它们（声明）；② **行为**上真的只发了一次调用（判别力来源）。
+    ② 里带一条**对照臂**（`230020` 限流码必须重试满 4 次）—— 没有它的话，「只发一次」可能只是
+    「这台替身根本不会重试」这个恒真事实（本项目头号缺陷类型：断言写得对、但没有判别力）。
+    """
+    assert 300305 not in adapter._WRITE_RETRY_CODES and 300315 not in adapter._WRITE_RETRY_CODES, \
+        f"容量码不是「服务端拒绝执行」而是「这张卡装不下」：{adapter._WRITE_RETRY_CODES}"
+    raw = _make()
+    old_backoff = adapter._TRANSIENT_BACKOFF
+    adapter._TRANSIENT_BACKOFF = (0.0, 0.0, 0.0)      # 测试里不等真实退避
+    try:
+        for code, msg, want in ((300315, _CK_CAPACITY_MSG, 1),
+                                (300305, "ErrMsg: element exceeds the limit", 1),
+                                (300315, _CK_DUPLICATE_ID_MSG, 1),
+                                (230020, "flood", len(old_backoff) + 1)):   # 对照臂
+            attempts: list = []
+
+            def _make_request():
+                attempts.append("req")
+                return object()
+
+            def _call(_req, code=code, msg=msg):
+                attempts.append("call")
+                return types.SimpleNamespace(code=code, msg=msg)
+
+            _run(raw._ld_write_with_retry(_make_request, _call, "测试"))
+            sent = attempts.count("call")
+            assert sent == want, f"code={code} 应当发 {want} 次调用，实际 {sent}"
+    finally:
+        adapter._TRANSIENT_BACKOFF = old_backoff
+
+
+def test_ck_capacity_on_a_body_write_is_fatal_not_degrade():
+    """正文元素拿到容量码 ⇒ 仍然是 **FATAL**（附录 A），**不许**当卡级死法降级（R11-B2）。
+
+    为什么这两件事不能混：`300309`（会话已关）/`300317`（序号废了）走 `DEGRADE` 是因为
+    **消息还在、换条车道照样能写**；而容量到顶意味着这张卡的正文元素根本写不进去，
+    patch 到同一张满卡也救不回来 —— 硬降级只会让用户盯着一张**永远不再更新**的卡
+    （比 fail-open 掉成纯文本更坏：纯文本至少内容是全的）。
+    """
+    assert 300315 not in adapter._CARD_DEATH_CODES and 300305 not in adapter._CARD_DEATH_CODES, \
+        f"容量码不是卡级死法：{adapter._CARD_DEATH_CODES}"
+    calls, client = _mk_cardkit_fake(fail_at=2, fail_at_code=300315)      # 第 2 次写 = 正文
+    raw = _make()
+    raw._client = client
+    adapter.configure(native_transport="cardkit", unified_panel=True)
+    old_reqs = adapter.LarkDeckMixin._ld_ck_requests
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    adapter.LarkDeckMixin._ld_ck_requests = staticmethod(_fake_ck_requests)
+    try:
+        assert _run(raw.send_stream_frame("", chat_id="oc_ck_cap", turn_id="t-cap")), "seed 帧"
+        assert not _run(raw.send_stream_frame("正文", chat_id="oc_ck_cap", turn_id="t-cap")), \
+            "正文元素撞容量码必须 FATAL（fail-open 交核心回落）"
+        assert calls["patch"] == 0, "容量到顶**不是**卡级死法，绝不走 DEGRADE 车道"
+        state = raw._ld_stream_get("oc_ck_cap:t-cap") or {}
+        assert not state.get("ck_degrade"), f"不许把容量满记成降级：{state.get('ck_degrade')}"
+    finally:
+        adapter.LarkDeckMixin._ld_ck_requests = old_reqs
+        adapter._STREAM_MIN_INTERVAL = old_interval
+
+
+def test_ck_create_rejection_is_traced_with_the_inner_reason():
+    """建实体被拒必须**按内层码点名原因**（R11-B2）—— 以前这里是静默 `return None`。
+
+    两种病的排查方向相反（容量 ⇒ 提前算预算；id 错 ⇒ 我们自己的 bug），
+    在旧代码里却塌成同一句「CardKit 建实体/发实体卡失败」⇒ 归因消失。
+    本地闸门 `_ck_create_wall` 用的是**本地**递归计数，与服务端口径漂移时
+    唯一能留下凭据的就是这条 WARNING（Phase C 的动态元素正是这种情形）。
+    """
+    res = adapter._CkResult
+    assert "元素数到顶" in adapter._ck_reject_reason(res(False, 300315, _CK_CAPACITY_MSG))
+    assert "id" in adapter._ck_reject_reason(res(False, 300315, _CK_DUPLICATE_ID_MSG)), \
+        "重复 id 与容量满必须给两种不同的原因（否则归因等于没做）"
+    assert "元素数到顶" in adapter._ck_reject_reason(res(False, 300305, "element exceeds the limit"))
+    assert "解析不出" in adapter._ck_reject_reason(res(False, 300315, "boom")), \
+        "内层码解析不出时要**如实说解析不出**，不许猜一个原因"
+
+    # 帧级：建实体直接回 300305 ⇒ 这一帧 fail-open，且日志点名「确定性失败：不重试」
+    calls, client = _mk_cardkit_fake(create_codes=[300305])
+    raw = _make()
+    raw._client = client
+    adapter.configure(native_transport="cardkit", unified_panel=True)
+    old_reqs = adapter.LarkDeckMixin._ld_ck_requests
+    adapter.LarkDeckMixin._ld_ck_requests = staticmethod(_fake_ck_requests)
+    adapter._log_ck_reject_once._at = 0.0
+    try:
+        with _LogCapture("larkdeck") as records:
+            assert not _run(raw.send_stream_frame("正文", chat_id="oc_ck_cap2", turn_id="t-cap2")), \
+                "建实体被拒 ⇒ 本帧 fail-open"
+    finally:
+        adapter.LarkDeckMixin._ld_ck_requests = old_reqs
+    text = "\n".join(r.getMessage() for r in records)
+    assert "元素数到顶" in text and "不重试" in text, f"必须留痕并说清处置：{text!r}"
+    assert calls["create"] == 1, f"建实体只该试一次（确定性失败，永不重试）：{calls['create']}"
+
 
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items())

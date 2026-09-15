@@ -117,7 +117,8 @@ R6b 图片与 R11 命令卡已在收尾时定为**不做**（用户确认，理�
 | P7 元素上限口径 | **一次 `card_element.create` 可带多个元素**（实测 1/3/10 个全 `code=0`，之后正文照写）；**墙是 200（递归口径，与服务端一致）**：递归总数 200 收下、204 拒收，建实体时的码是 **`300305 element exceeds the limit`**；**运行时新增的元素同样计入 200**（194 → +5 成功 → 再 +10 被拒），且那次拒绝的码是 **`300315`**，`msg` 里**包着内层 `300305`** |
 | P8 `batch_update` 的码是卡级还是按动作 | **卡级，但 msg 会点名坏 id**：一批里放一个不存在的 id ⇒ `code=300313`、`msg='ErrMsg: not find elementID : <id>; '`，且**之后写元素仍 `code=0`**（坏 id 不是卡级死法）⇒ 「只标死被点名的那个」有实测依据（探针 `--lanes`） |
 | P9（`--lanes` 现在**自带断言**：返回码不符即退出码非 0）整卡 patch 能否覆盖 **CardKit 实体卡**的消息 | **能**：`code=0`，且随后写元素得 `300309`（会话确实被替换掉）⇒ `DEGRADE` 车道可做（探针 `--lanes`） |
-| P7 副产物：`300315` 的另一含义 | 复用一个已存在的元素 id ⇒ **`300315` + `Code 1001: Duplicate ID`**（这是我探针第一版的 bug 暴露出来的：id 没全局递增。**探针自己的 bug 冒充了「元素上限」的答案** —— 又一次「探针会替你撒谎」） |
+| P7 副产物：`300315` 的另一含义 | 复用一个已存在的元素 id ⇒ **`300315` + `Code 1001: Duplicate ID`**（这是我探针第一版的 bug 暴露出来的：id 没全局递增。**探针自己的 bug 冒充了「元素上限」的答案** —— 又一次「探针会替你撒谎」）。**2026-09-15 补精确**（R11-B2）：外层码 `300315`，msg 尾部还有权威内层码 **`300301`**（`... [ElementID panel_body: Code 1001: Duplicate ID], code: 300301; `）⇒ 与附录 A「id 错 `300301`」那一行对上了 |
+| P7 补充（**2026-09-15 R11-B2 实测**，探针 `probe_ck_stream_ops.py --capacity-codes`，两条臂各跑两遍、字面一致） | **两种形状都实测到了**：容量满 `code=300315 · msg='ErrMsg: msg: [element exceeds the limit], code: 300305; '`，**`append(panel)` 与 `insert_after(answer)` 同形**（附录 F 原来把 append 形状登记为未测 ⇒ 现已答）；重复 id 见上一行。⇒ 三条结论：① **`300315` 是运行时 `create` 被拒的包装码**，真原因在 msg **尾部**的 `code: NNNNNN`；② 方括号里的 `Code 1001` 是**描述码**，不是权威内层码；③ 所以 `capacity_exceeded()` **必须解析内层码** —— 只看外层会把「id 重复」误判成「元素到顶」，而两者的修法相反 |
 
 **P7 对 R3/R5 的硬要求**：① 元素预算必须**本地用 `cards.count_elements` 真的数**，不许估算
 （估算撞墙 = 该帧失败 = 上游补 finalize + `_first_send` ⇒ **DM 两张卡**）；② 失败分类**必须解析
@@ -635,6 +636,7 @@ fail-open」「未变化不重写的三条记账规则」「契约违反返回�
 | 会话已关 `300309` | DEGRADE | DEAD + 卡级标记 | DEAD + 卡级标记 | DEAD + 卡级标记 |
 | 元素不存在 `300313` | DEGRADE | DEAD | DEAD | DEAD |
 | 序号冲突 `300317` | DEGRADE（卡级） | DEGRADE | DEGRADE | DEGRADE |
+| **容量到顶** `300305` / 包装码 `300315`（内层 `code:` 是 `300305`） | **FATAL**（`300315`/`300305` 都是**确定性失败：不重试**；容量满意味着这张卡的正文元素写不进去，patch 到同一张满卡也救不回来 ⇒ fail-open 交核心回落） | DEAD + WARNING | DEAD + WARNING | FATAL + **留痕**（`_log_ck_reject_once`，按内层码点名原因） |
 | id 错 `300301` / 确定性拒收 `230025/230099/200621/230001` | FATAL | DEAD | DEAD | DEAD |
 | 撤回类（**待 P4 实测**） | DROP_CARD | DROP_CARD | DROP_CARD | DROP_CARD |
 | 未知码 | FATAL + WARNING | DEAD + WARNING | DEAD + WARNING | DEAD + WARNING |
@@ -644,6 +646,12 @@ fail-open」「未变化不重写的三条记账规则」「契约违反返回�
 > 坏掉时元素通道通常也坏了，而**下一帧的元素写**会自己拿到 `300309` 走 `DEGRADE`；在预览这一路
 > 再判一遍码表就是「同一件事两处真相」。它排在正文写之后（提交点之后），失败只标死 ⇒ 重试的
 > 收益是零、只剩白等最多 ≈1.0s。
+>
+> **容量码的实测出处（R11-B2，缺一条都不许写进表）**：`300305` = 建实体时递归元素数超 200
+> （P7 `--element-limits` Q2：200 收下、204 拒收）；`300315` = **运行时 `card_element.create`
+> 被拒的包装码**（B2 `--capacity-codes`：`append(panel)` 与 `insert_after(answer)` 两种形状
+> **同形**，msg 尾部内层 `code: 300305`；同一个外层码在**复用已存在 id** 时也出现，但内层是
+> `300301`）⇒ **内层码必须解析**（`_CkResult.inner_code()`；解析不出返回 `None`，**绝不返回 0**）。
 
 ## 附录 B：每帧写入预算
 
@@ -756,8 +764,10 @@ R7 起还有**第三次逻辑写**：`card.settings` 写会话列表预览，受
 `uuid` 去重遇到**不同内容**的语义 · 上游在同一回合内是否会**重新启用** native（跨边界状态机我只
 读到一层）· `turn_id` 与钩子数据的对齐关系 · ~~面板 `append` 的落点~~（已答，见 R3 一节） ·
 **运行时 `card_element.create` 是否吃 +1 序号空间**（P5 探针每步后都跟一次 content 且用连续取号，
-但没单独测过「create 吃号而我不 +1」）· **运行时 `append` 撞 200 墙的确切码**（P7 记的是
-`300315` 内包 `300305`，而那是 `insert_after(answer)` 的形状）· 老 SDK 是否缺
+但没单独测过「create 吃号而我不 +1」）· ~~运行时 `append` 撞 200 墙的确切码~~（**已答 2026-09-15，
+R11-B2**：`append(panel)` 与 `insert_after(answer)` **同形** —— 都回 `code=300315`、msg 尾部内层
+`code: 300305`；探针 `probe_ck_stream_ops.py --capacity-codes`，且另一臂实测到同一外层码下
+「重复 id ⇒ 内层 `300301`」这一义）· 老 SDK 是否缺
 `CreateCardElementRequest`（本机有；NAS 没查）· `CallBackCard` 多端语义 ·
 NAS 现网状态（`docs/switch-from-hfc.md` 自述 2026-09-12 连不上）· 官方文档站四个域名在本环境
 **DNS 被拒**（所以凡官方 schema 都只有 SDK 生成模型 + 真机实测两类证据）。
