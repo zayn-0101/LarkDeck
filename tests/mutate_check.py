@@ -1457,8 +1457,8 @@ MUTATIONS = [
      'test_units'),
     ('G2-9-建实体退回「按这一刻有没有数据」决定页脚元素（重启后第一回合永远没有页脚与短码）',
      'core/adapter.py',
-     '        return " " if _cfg("footer") else None',
-     '        return self._ld_footer()',
+     '                                         footer_text=("" if _cfg("footer") else None))',
+     '                                         footer_text=self._ld_footer())',
      'test_units'),
     # ---- 审计 B1/B2 的守卫 ----
     ('G1-17-选项展示标签不再折叠空白（含换行的选项破坏同源 + 行首 markdown 注入）',
@@ -1830,6 +1830,49 @@ def _anchor_problem(rel: str, old: str, text: Optional[str] = None) -> Optional[
     return None
 
 
+def _noop_reason(rel: str, old: str, new: str) -> Optional[str]:
+    """这条变异**根本没改到代码**吗？—— 返回原因，或 ``None``（=它真的改了东西）。
+
+    为什么要单独判（审计 D1/D3）：全量跑现在把「撤掉修复却全绿」一律打印成
+    🟢「**断言没有判别力**」—— 但对下面两类，**真相不是那个**：变异的替换串与原文**逐字节等价**
+    （撤了个寂寞），或锚点整段落在**注释**里（改的是注释，代码一个字节没动）。
+    两种情况都会让报告**把结论写反**（`docs/lessons.md` 推论 ③ 描述的正是这个形态：
+    真发生的是「变异没生效」，报告写的是「断言没判别力」）。
+    ⚠️ 只对 ``MUTATIONS`` 用它 —— ``CONTROLS`` 里的「纯注释改动」是**故意的**等价对照，
+    对它报「没生效」反而是误诊。
+    """
+    if new.strip() == old.strip():
+        return "原文与替换**逐字节等价**（撤了个寂寞 ⇒ 变异不会生效）"
+    import io
+    import tokenize
+    try:
+        src = (REPO / rel).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    first = old.splitlines()[0].strip() if old.splitlines() else ""
+    if not first:
+        return None
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+            if tok.type == tokenize.COMMENT and first in tok.string:
+                return "锚点整段落在**注释**里（改的是注释，代码一个字节没动）"
+    except Exception:                       # tokenize 在畸形输入上会抛 —— 那是别的问题，别吞成结论
+        return None
+    return None
+
+
+def _shape_error(entry) -> Optional[str]:
+    """清单条目的**形状**校验（审计 D1）。
+
+    预检用 `... , *_rest`（容忍任意元数），而全量跑用**恰好 5 元的解包** ⇒ 有人给条目多加一个
+    字段时，预检报 ✅ 而全量跑第一行就 `ValueError: too many values to unpack` ——
+    「一处真相」在**元数**上变成了两处。两处都调这一个函数，形状问题就不可能只被一边发现。
+    """
+    if not isinstance(entry, (tuple, list)) or len(entry) != 5:
+        return f"条目形状不对：期望 (名字, 文件, 原文, 替换, 期望) 共 5 项，实际 {len(entry)} 项"
+    return None
+
+
 def preflight() -> int:
     """**只做纯文本锚点对账**：不跑任何门禁、不建快照目录、约 3 秒。
 
@@ -1842,9 +1885,15 @@ def preflight() -> int:
     也证明不了「撤掉修复真的会变红」。那两件事只有跑门禁才知道，所以它是**前置筛子**，
     不是全量跑的替代品（`AGENTS.md`：跑不到的变异等于没验，而跑得到的变异还得真跑）。
     """
-    picked = [m for m in MUTATIONS] + [m for m in CONTROLS]
+    picked = [(m, "变异") for m in MUTATIONS] + [(m, "对照") for m in CONTROLS]
     bad = []
-    for name, rel, old, _new, *_rest in picked:
+    for entry, kind in picked:
+        shape = _shape_error(entry)
+        if shape:
+            print(f"❓ [{kind}] {shape}")
+            bad.append(f"[{kind}] 第 {picked.index((entry, kind)) + 1} 条 —— {shape}")
+            continue
+        name, rel, old, _new, _rest = entry
         why = _anchor_problem(rel, old)
         if why:
             bad.append(f"{name}: {why}")
@@ -1854,11 +1903,20 @@ def preflight() -> int:
     print(f"\n锚点对账：{len(picked) - len(bad)}/{len(picked)} 可用"
           f"（变异 {len(MUTATIONS)} + 对照 {len(CONTROLS)}）")
     if bad:
-        print("\n结论：清单与源码脱节（或锚点歧义）——**全量跑之前先修这里**。")
+        print("\n结论：清单与源码脱节（或锚点歧义 / 条目形状不对）——**全量跑之前先修这里**。")
         for line in bad:
             print(" -", line)
         return 1
+    # ⚠️ **这条告诫不能省**（审计 D4）：早返回排在基线自校验之前是有意的（否则 0.1 秒的价值就没了），
+    #    代价是「锚点 ✅ + exit 0」与「这棵树根本跑不了」可以**同时成立** —— 实测把
+    #    `core/i18n.py` 弄成语法错误时，这里照样 318/318 ✅、exit 0，而全量跑立刻 `EXIT=2`
+    #    「基线不是绿的」。按本项目自己的纪律（「没记录就写无记录，绝不写正常」），
+    #    别让这个 ✅ 兼作「树是绿的」。
     print("✅ 全部锚点存在且唯一")
+    print("⚠️ 仅此而已：**没跑任何门禁、也没做基线自校验**。它只回答「锚点还在不在、唯不唯一」"
+          "这**一个**问题 ——")
+    print("   锚点落在注释里 / 落在用例不经过的分支上 / 撤掉后压根不会变红，它都看不出来。"
+          "**别拿它当提交前的绿灯**（那是 `tests/mutate_check.py` 全量跑的事）。")
     return 0
 
 
@@ -1867,7 +1925,9 @@ def main() -> int:
     ap.add_argument("-k", default="", help="只跑名字里含该子串的变异")
     ap.add_argument("--keep", action="store_true", help="保留临时目录（排查用）")
     ap.add_argument("--preflight", action="store_true",
-                    help="只做纯文本锚点对账（约 3 秒）后就退出，不跑任何门禁")
+                    help="只做纯文本锚点对账（0.1 秒级）后就退出，不跑任何门禁、"
+                         "也不做基线自校验；⚠️ 不受 -k 影响（有意：它还负责补 -k 子集"
+                         "看不到别处坏锚点的盲区）")
     args = ap.parse_args()
 
     # ⚠️ 必须排在**基线自校验之前** —— 预检的全部价值就是「3 秒」，排在后面就白搭了。
@@ -1876,6 +1936,24 @@ def main() -> int:
 
     picked = [m for m in MUTATIONS if args.k in m[0]]
     controls = [m for m in CONTROLS if args.k in m[0]]
+
+    # ⚠️ **`-k` 一条都没命中 ⇒ 不许报绿**（审计 D7，既有缺陷）：以前会打印
+    #    「全部 0 条变异都被门禁抓住 ✅」+ `exit 0` —— 一个**拼错的 `-k`**（`-k ZZZ`）与
+    #    「真的全绿」长得一模一样。这是本项目最恨的「绿而无判别力」，所以直接算失败。
+    for _entry in picked + controls:
+        _shape = _shape_error(_entry)
+        if _shape:
+            print(f"❌ {_shape}")
+            print("   （预检 `--preflight` 也会报同一个问题：两处共用 `_shape_error`）")
+            return 2
+    if args.k and not picked and not controls:
+        print(f"❌ `-k {args.k!r}` 一条变异/对照都没命中 —— 什么都没验，不给「全绿」结论。")
+        print(f"   （清单里共 {len(MUTATIONS)} 条变异 + {len(CONTROLS)} 条对照；"
+              f"用 `--preflight` 可以看全部名字）")
+        return 2
+    if not args.k and not picked:
+        print("❌ 清单是空的 —— 没有可跑的变异，不给结论。")
+        return 2
 
     # ⚠️ **基线守卫**（第八路审计实测出来的假绿源头）：基线自己就是红的时候，
     # 每条变异当然都「变红」—— 于是这个验证器会满口「全部被门禁抓住 ✅」。
@@ -1899,7 +1977,14 @@ def main() -> int:
             parent.mkdir(parents=True)
             repo = _prepare(parent)
             target = repo / rel
-            text = target.read_text(encoding="utf-8")
+            # ⚠️ 文件不存在要**走逐条记账**，不能让它裸 traceback 把整轮打断（审计 D2：
+            #    以前是 `FileNotFoundError` 直接抛出去，没有逐条 ❓ 行、也没有结论段）。
+            try:
+                text = target.read_text(encoding="utf-8")
+            except OSError as exc:
+                bad.append(f"{name}: 目标文件读不到（{exc.strerror or exc}）：{rel}")
+                print(f"❓ {name}: 目标文件读不到：{rel}")
+                continue
             # ⚠️ 判据与 `--preflight` **共用** `_anchor_problem`（一处真相）：查的是**快照**那份文本。
             # 两种问题都算红 —— 「没找到」= 清单与源码脱节；「出现多次」= `replace(..., 1)`
             # 只换第一处 ⇒ 变异打到别处去，而报告照常打印 🟢（**结论正好写反**）。
@@ -1916,14 +2001,22 @@ def main() -> int:
             crashed = [k for k, (kind, _) in results.items() if kind == "red-crash"]
             evidence = [k for k in red if k not in crashed]
             expect_script = expect if expect.endswith(".py") else expect + ".py"
-            if not red:
+            _noop = _noop_reason(rel, old, new)
+            if not red and _noop:
+                # ⚠️ **真相不是「断言没判别力」，而是「变异没生效」**（审计 D3）：
+                #    替换串与原文等价、或锚点整段在注释里 ⇒ 代码一个字节没动，四门禁当然全绿。
+                #    以前这两种都打印 🟢「断言没有判别力」——**结论正好写反**（本项目的头号误诊形态）。
+                status = f"⚪ 变异没生效（{_noop}）——**不是**断言没判别力"
+            elif not red:
                 status = "🟢 全绿（**断言没有判别力！**）"
             elif not evidence:
                 status = "💥 只有崩溃（语法错误 / import 炸），**不算判别力证据**"
             else:
                 status = "🔴 断言失败"
             print(f"{status} {name}  期望={expect} 实红={red} 断言红={evidence}")
-            if not red:
+            if not red and _noop:
+                bad.append(f"{name}: 变异没生效（{_noop}）—— 这条等于没验，修好它再说")
+            elif not red:
                 bad.append(f"{name}: 撤掉修复后四门禁仍然全绿 —— 断言没有判别力")
             elif not evidence:
                 bad.append(f"{name}: 只有崩溃、没有断言失败 —— 不能算被门禁抓住")

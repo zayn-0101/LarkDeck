@@ -1523,23 +1523,6 @@ class LarkDeckMixin:
         return f"{base} · \U0001f516 {trace}"
 
     @classmethod
-    def _ld_seed_footer_text(cls) -> Optional[str]:
-        """**建卡那一刻**的页脚文本 —— 判据是「要不要这个元素」（配置），不是「这一刻有没有数据」。
-
-        ⚠️ 这是审计 C2 实测的**功能缺陷**（2026-09-15，已修）：`_ld_footer()` 在本进程
-        **第一次 API 调用之前返回 `None`**（页脚指标来自官方钩子），而建实体时把 `None`
-        传下去 ⇒ `cardkit_entity_card` 的纪律是 `footer_text is None ⇒ 页脚元素不进卡`
-        ⇒ **元素不在卡里，之后的帧再也写不进去** ⇒ **重启后第一回合（恰恰是最可能被截图的
-        那一回合）永远没有页脚、也永远没有短码**，而自检行只有一个「页脚=无」，
-        分不出「元素没建」还是「没数据」。
-        ⇒ 配置开着就**总是建**（空串占位），内容留给后续帧写 —— 这正是面板元素已经在用的
-        同一条纪律（``cardkit_entity_card`` 的 docstring 明写「判据是『要不要这个元素』，
-        不是『这一帧有没有内容』」）。元素表由 `_ck_elems_from_card` 从建出来的卡里抽，
-        所以进了卡才写得进去。
-        """
-        return " " if _cfg("footer") else None
-
-    @classmethod
     def _ld_footer(cls) -> Optional[str]:
         """页脚一行：上下文用量（``ctx 45.2k/200k · 23%``）+ 可选的 R7 指标。
 
@@ -2037,8 +2020,7 @@ class LarkDeckMixin:
 
     async def _ld_ck_create(self, chat: str, *, answer: str, panel_text: str,
                             panel_tools_text: str,
-                            reply_to: Optional[str] = None,
-                            footer_text: Optional[str] = None) -> Any:
+                            reply_to: Optional[str] = None) -> Any:
         """建 CardKit 实体 + 发实体卡。返回 ``(result, card_id, card_json)`` 或 ``None``。
 
         ⚠️ 第三个返回值是**建出来的那张卡的 JSON**：回合状态的元素表要从它里面抽
@@ -2047,6 +2029,12 @@ class LarkDeckMixin:
         走的是官方三个接口（真机实测每一步都 ``code=0``，见 `docs/plan-6-effects.md` 阶段 9）：
         ``cardkit.v1.card.create`` → ``im.v1.message.create``（content 是
         ``{"type":"card","data":{"card_id":…}}``）。
+
+        ⚠️ **页脚元素「要不要」的判据在函数体内的那一行（按配置），不是调用方传进来的** ——
+        这里曾经有一个 `footer_text` 形参，而它**从来没被读过**（形参被函数体里那行写死的表达式
+        盖掉了）。2026-09-16 审计实测：那是「同一件事两处真相」的静默形态 —— 调用方以为自己在
+        决定页脚元素的有无，其实一个字节都没影响。形参与它唯一的生产者
+        `_ld_seed_footer_text()` 都已删除，判据只剩这一处。
         """
         reqs = self._ld_ck_requests()
         if reqs is None:
@@ -2057,7 +2045,14 @@ class LarkDeckMixin:
                                          # R3 收窄版：工具块是面板里的第二个元素（建实体时定死）
                                          panel_tools_text=panel_tools_text,
                                          # `footer: false` ⇒ 传 None ⇒ 页脚元素**不进卡**；
-                                         # 开着但这一刻还没数据 ⇒ 空串 ⇒ 元素留在卡里等后续帧更新
+                                         # 开着但这一刻还没数据 ⇒ 空串 ⇒ 元素留在卡里等后续帧更新。
+                                         # ⚠️ **判据是「要不要这个元素」（配置），不是「这一刻有没有
+                                         # 数据」** —— 这里必须是**写死的表达式**，不能是
+                                         # `self._ld_footer()`：那个函数在本进程第一次 API 调用之前
+                                         # 返回 `None`（页脚指标来自官方钩子），而
+                                         # `cardkit_entity_card` 的纪律是 `None ⇒ 元素不进卡`，
+                                         # 元素表在建实体时定死 ⇒ 那一回合**永远没有页脚、也永远
+                                         # 没有短码**（短码就写在页脚里）。变异 `G2-9` 钉这一行。
                                          footer_text=("" if _cfg("footer") else None))
         # ⚠️ **基线闸门（两道墙）**：patch 路径超预算会分级丢装饰（面板→页脚→裸卡），而 cardkit
         # 的结构**在建实体时定死、之后不能改**，超了就是「整卡被飞书拒（230099 / 300305）⇒
@@ -2366,7 +2361,7 @@ class LarkDeckMixin:
         new_body, new_tools = self._ld_panel_parts(chat, now)
         made = await self._ld_ck_create(chat, answer=text[cut:],
                                         panel_text=new_body, panel_tools_text=new_tools,
-                                        reply_to=reply_to, footer_text=self._ld_seed_footer_text())
+                                        reply_to=reply_to)
         if made is None:
             logger.warning("[larkdeck] 卡链：开新卡失败，本帧回落")
             return None
@@ -2562,8 +2557,7 @@ class LarkDeckMixin:
                 # （每帧装饰 / 元素写 / 收尾整卡）页脚就带上短码了。
                 made = await self._ld_ck_create(chat, answer=display, panel_text=panel_text,
                                                 panel_tools_text=panel_tools_text,
-                                                reply_to=reply_to,
-                                                footer_text=self._ld_seed_footer_text())
+                                                reply_to=reply_to)
                 if made is None:
                     # 任何一步失败都交给核心回落（这是**契约**：帧失败 ⇒ 本回合改走 edit/send）
                     return self._ld_stream_fail("CardKit 建实体/发实体卡失败")

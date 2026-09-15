@@ -467,7 +467,8 @@ _REDACT_BEARER_RE = re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._\-+/=]{8,}")
 #: **头部形态**的凭据：``Cookie: …`` / ``Authorization: …`` / ``X-Api-Key: …``。
 #: ⚠️ 这条是审计补的（**A2**）：`cookie` 原先只出现在**JSON 键名**规则里，
 #: 而 `curl -H "Cookie: session=…"` 是第三种形状（引号里包着 `Key: value`），
-#: 四条规则一条都不覆盖 ⇒ **零脱敏**。同一批里 `Authorization: Bearer …` 是被涂掉的，
+#: 当时四条规则一条都不覆盖它 ⇒ **零脱敏**（这条形状是审计 A2 补的第五条规则）。
+#: 同一批里 `Authorization: Bearer …` 是被涂掉的，
 #: 所以格外容易误以为「头都覆盖了」。
 _REDACT_HEADER_RE = re.compile(
     r"(?i)((?:^|[\s\"'(,])(?:cookie|set-cookie|authorization|x-api-key|x-auth-token)"
@@ -498,7 +499,10 @@ _REDACT_HOME_RE = re.compile(r"(?:^|(?<=[\s\"'=(:,]))/(?:Users|home)/[^/\s\"']+"
 def redact_inline_secrets(text: str) -> str:
     """把预览里**明显是凭据**的片段换成 ``***``（纯函数、有界、幂等）。
 
-    四条规则各对应一类真实形状：JSON 键值 / ``Bearer`` 头 / ``KEY=value`` / 家目录前缀。
+    **五条**规则各对应一类真实形状：JSON 键值 / **头部形态**（``Cookie:`` ``Authorization:`` …）/
+    裸 ``Bearer`` / ``KEY=value`` / 家目录前缀。
+    ⚠️ 这里写的是**五条**：`_REDACT_HEADER_RE` 是审计 A2 补的，而 docstring 一度还写着「四条」
+    （README 的功能对照表也照抄了那个数）—— 「同一件事两处真相」的又一个小形态，数一遍就知道了。
     """
     if not text:
         return text

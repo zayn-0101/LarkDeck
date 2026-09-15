@@ -5692,31 +5692,44 @@ def test_status_reports_uptime_fallback_and_error_code_top_n():
 
 
 def test_entity_card_always_gets_a_footer_element_when_the_footer_is_enabled():
-    """**建实体那一刻**必须按**配置**决定要不要页脚元素，而不是按「这一刻有没有数据」（审计 C2）。
+    """**建实体那一刻**页脚元素「要不要」必须按**配置**决定，不是按「这一刻有没有数据」。
 
-    真机症状（已实测）：进程重启后、第一次 API 调用之前，页脚指标还没被钩子填过 ⇒
-    `_ld_footer()` 返回 `None` ⇒ 建实体时 `footer_text=None` ⇒ **页脚元素根本不进卡**
-    （元素表在建实体时定死，之后只能按 id 写内容）⇒ 那一回合**永远没有页脚**，
-    连短码也写不上去（短码就写在页脚里），而自检行只有「页脚=无」——
-    分不出「元素没建」还是「没数据」。判据必须与面板同一条：**要不要这个元素 ≠ 这一刻有没有内容**。
+    ⚠️⚠️ **这一格的历史是一段误诊，值得留着当教材**（2026-09-16 审计实测推翻）：
+    2026-09-15 有一条「修复」声称 —— `_ld_footer()` 在进程第一次 API 调用前返回 `None`，
+    建实体时把 `None` 传下去 ⇒ 页脚元素不进卡 ⇒ 重启后第一回合**永远没有页脚与短码**。
+    **那个缺陷不存在**：`_ld_ck_create` 建卡时用的是函数体里**写死**的
+    `footer_text=("" if _cfg("footer") else None)`（本来就是按配置判的），而调用方传进去的
+    `footer_text=` **形参从来没被读过**（AST 实测：形参未被使用）⇒ 那条「修复」是一次**空转**，
+    而守着它的旧用例恰好是本批次自己点名要消灭的两种无牙形态：
+    **只直接调 helper（验函数不验接线）+ 手工照生产那一行再建一次卡（验表达式不验调用点）**。
+    ⇒ 现在：① 形参 `footer_text` 与它唯一的生产者 `_ld_seed_footer_text()` 都已删除，
+    判据只剩 `_ld_ck_create` 体内那一行（一处真相）；② 这一格**真驱动 `_ld_ck_create`**
+    并断言**建出来的那张卡**里有没有 `CARDKIT_FOOTER_ID`（元素表的来源就是这张卡）。
     """
-    raw = _make()
-    original = dict(adapter._DEFAULTS)
+    defaults = dict(adapter._DEFAULTS)
+    old_reqs = adapter.LarkDeckMixin._ld_ck_requests
     try:
-        adapter.configure(footer=True)
-        assert raw._ld_seed_footer_text() == " ", "页脚开着就必须**先建元素**（空串占位）"
-        # 对照：配置关掉 ⇒ 元素不进卡（这条纪律没变）
-        adapter.configure(footer=False)
-        assert raw._ld_seed_footer_text() is None, "footer: false 时不该建页脚元素"
+        # 真环境里 `_ld_ck_requests()` 会 import 真的 `lark_oapi` 来造请求对象（本仓库的
+        # venv 里**装得有**）⇒ 换成哑对象，这样 `calls["entity"]` 收到的才是能解析的卡 JSON
+        # （与 `test_cardkit_transport_writes_elements_and_falls_open` 同一套做法）。
+        adapter.LarkDeckMixin._ld_ck_requests = staticmethod(_fake_ck_requests)
+        for enabled, should_have in ((True, True), (False, False)):
+            adapter.configure(footer=enabled)
+            calls, client = _mk_cardkit_fake()
+            raw = _make()
+            raw._client = client
+            made = _run(raw._ld_ck_create("oc_footer", answer="正文", panel_text="面板",
+                                          panel_tools_text=""))
+            assert made is not None, f"前提：footer={enabled} 这一格必须真的建出实体卡"
+            assert calls["entity"], "前提：建实体的请求必须被记录下来（否则这一格什么都没验）"
+            elems = adapter._ck_elems_from_card(json.loads(calls["entity"][-1]))
+            assert (cards.CARDKIT_FOOTER_ID in elems) is should_have, (
+                f"footer={enabled} 时页脚元素的有无与配置不一致：{sorted(elems)}"
+                "（判据是**配置**，不是这一刻有没有数据 —— 元素表在建实体时定死，"
+                "漏了它这一回合就永远写不上页脚与短码）")
     finally:
-        adapter.configure(**original)
-    # 空占位必须真的让元素进卡（否则占位没有意义）
-    with_footer = cards.cardkit_entity_card("正文", "面板", footer_text=" ")
-    without_footer = cards.cardkit_entity_card("正文", "面板", footer_text=None)
-    assert cards.CARDKIT_FOOTER_ID in adapter._ck_elems_from_card(with_footer), \
-        "空串占位也必须让 footer 元素进卡 —— 否则后续帧写短码会得 300313"
-    assert cards.CARDKIT_FOOTER_ID not in adapter._ck_elems_from_card(without_footer), \
-        "footer_text=None 仍然不该进卡（配置关闭那条路）"
+        adapter.LarkDeckMixin._ld_ck_requests = old_reqs
+        adapter.configure(**defaults)
 
 
 def test_stop_redraw_and_edit_message_keep_the_trace_id():
