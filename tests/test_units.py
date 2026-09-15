@@ -3167,6 +3167,39 @@ def test_card_action_unrelated_value_falls_through():
     assert raw.calls == [("SUPER.trigger",)], raw.calls
 
 
+def test_probe_click_leaves_the_only_evidence_we_get():
+    """探针卡的那一击**必须真的落进日志** —— 那是「2.0 `button` 行不行」唯一能拿到的凭据。
+
+    为什么要有一条断言守着这条链（2026-09-16 加）：探针 ⑮ 是「**请真人点一次**」的一格，
+    而那一击**只能点一次**。用户点下去之后我们手上只有网关日志里那一行 —— 如果派发链在中途断了
+    （判据键改名 / 提前被澄清分支截走 / 降级成 debug），用户点完**什么都看不到**，
+    而我们只会得出「点击没到服务端」的结论 ⇒ **把一次成功的真机实验误判成失败**，
+    再据此决定「澄清卡不加按钮形态」。这正是本项目最怕的形态：**误诊比没有结论更糟**。
+    ⇒ 本地能证的部分先证掉：`event.action.value` 一进适配器，就**一定**会打出那行。
+
+    ⚠️ 刻意**不 import** `probe_render.py`：真机探针不被任何门禁 import 是一条**有意的隔离**
+    （它一被 import，以后动探针就得跟着重跑一次 65 分钟的全量变异）。这里只造**同形状的值**；
+    卡片那一侧的形状由 `probe_render.probe_card_problems()` 在**发出去之前**自检（发之前就拦）。
+    """
+    raw = _make()
+    with _LogCapture("larkdeck") as recs:
+        raw._on_card_action_trigger(types.SimpleNamespace(
+            event=types.SimpleNamespace(
+                action=types.SimpleNamespace(tag="button", option=None,
+                                             input_value=None,
+                                             value={cards.PROBE_VALUE_KEY: True, "kind": "button"}),
+                operator=types.SimpleNamespace(open_id="ou_probe"),
+                context=types.SimpleNamespace(open_chat_id="oc_probe"))))
+    lines = [r.getMessage() for r in recs]
+    hit = [l for l in lines if "探针点击到达" in l]
+    assert hit, f"探针点击没留下凭据 —— 用户点完将无法判定（这一格就白点了）：{lines}"
+    # `tag=button` 必须**就在那一行里**：那是「2.0 的 button 回调能到服务端」的原话凭据，
+    # 只写「探针点击到达」而不带 tag，事后分不清是 button 还是 select_static 那一格。
+    assert "tag=button" in hit[0], hit[0]
+    # 反向：不许被当成澄清点击（那会去解一个不存在的澄清，用户看到「提交未生效」而困惑）
+    assert raw.calls == [], f"探针点击不该交给内置处理：{raw.calls}"
+
+
 def test_clarify_click_resolves_gateway():
     raw = _make()
     resolved: list = []

@@ -1653,6 +1653,14 @@ MUTATIONS = [
      '                return self._ld_stream_fail(\n'
      '                    f"收尾帧失败（{getattr(result, \'error\', \'unknown\')}）")',
      "test_units"),
+    # ---- 探针 ⑮ 的**凭据链**（2026-09-16）：那一格是「请真人点一次」，而一击只能点一次 ——
+    #      派发断了的话用户点完什么都看不到，而我们会误判成「点击没到服务端」⇒
+    #      **把一次成功的真机实验读成失败**，再据此决定「澄清卡不加按钮形态」。
+    ("Y21-探针点击不再留凭据（真人点完，我们拿不到任何判定依据 ⇒ 会把成功读成失败）",
+     "core/adapter.py",
+     '            if isinstance(value, dict) and value.get(_cards.PROBE_VALUE_KEY):\n                return self._ld_log_probe_click(event=event, action=action)\n',
+     "",
+     "test_units"),
 ]
 
 #: **对照项**：行为等价的改动（合法 YAML 变体等），期望四门禁**全绿**。
