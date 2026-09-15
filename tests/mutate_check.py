@@ -1282,6 +1282,36 @@ MUTATIONS = [
     # ---- R11-B1：滑窗写入守卫（两条边界 + 「稳态不该触发」）-------------------- #
     # ⚠️ 守卫的判据是**墙钟**（1 秒内 ≤10 次逻辑写），所以专用用例是**构造**出顶满的窗口来命中它；
     #    真机稳态 ≈8.2 次/秒 < 10 ⇒ 它当前不可达（那是设计：给 Phase C 的运行时 create 留余量）。
+    # ⚠️ 下面四条是 **B1 审计（高-1 / 高-2 / 中-4）** 补的：审计实测「记账面被摘掉 / 正文被
+    #    顺手跳过 / 守卫被整体撤掉」三种改法**四门禁全绿** —— 消费侧守住了，喂养侧没人管。
+    #    对一个「给 Phase C 预留的闸门」来说，喂养侧悄悄坏掉 = 守卫退化成装饰品。
+    ("B1-0-守卫被整体撤掉（恒为 allow ⇒ 滑窗形同不存在）", "core/adapter.py",
+     '        if fresh and not _ck_window_allow(state_ref, time.monotonic()):',
+     '        if False:',
+     "test_units"),
+    ("B1-4-窗口只修剪不记账（`append` 被摘掉 ⇒ 窗口永远空 ⇒ 守卫永不触发）",
+     "core/adapter.py",
+     '    _ck_window_prune(state_ref, now).append(now)',
+     '    _ck_window_prune(state_ref, now)',
+     "test_units"),
+    ("B1-5-让出装饰的同一帧顺手连正文也不写（跳过提交点 ⇒ 用户永远看不到那一段）",
+     "core/adapter.py",
+     '            _log_ck_window_skip_once([op.element_id for op in fresh],\n'
+     '                                     len(_ck_window(state_ref)))\n',
+     '            _log_ck_window_skip_once([op.element_id for op in fresh],\n'
+     '                                     len(_ck_window(state_ref)))\n'
+     '            return True, seq, None\n',
+     "test_units"),
+    ("B1-6-窗口长度被改小（判据从「1 秒 ≤10」静默缩水 ⇒ 限速失效）", "core/adapter.py",
+     '_CK_WINDOW_SECONDS = 1.0',
+     '_CK_WINDOW_SECONDS = 0.2',
+     "test_units"),
+    ("B1-7-预览那一笔不入账（窗口少记 ≈0.2 次/秒 ⇒ 守卫对真实速率失明）", "core/adapter.py",
+     '        if isinstance(state_ref, dict):\n'
+     '            _ck_window_note(state_ref, time.monotonic())',
+     '        if False:\n'
+     '            _ck_window_note(state_ref, time.monotonic())',
+     "test_units"),
     ("B1-1-让出的写也记账（`ck_decor` 被写上 ⇒ 去重逻辑永久跳过 ⇒ 装饰静默冻结）",
      "core/adapter.py",
      '            state_ref["ck_window_skips"] = int(state_ref.get("ck_window_skips") or 0) + 1\n',

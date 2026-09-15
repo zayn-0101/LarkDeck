@@ -8263,6 +8263,41 @@ def test_empty_panel_diagnostic_reports_only_on_terminal_frames():
         panel.reset()
 
 
+def test_ck_write_window_semantics_are_pinned_by_the_constants():
+    """`_ck_window_*` 的**语义与常量**必须被直接钉住（B1 审计高-1 / 低-1 的收口）。
+
+    为什么单开一条：原来只验「消费侧」（窗口顶满 ⇒ 让出装饰），而**记账侧**（`_ck_window_note`
+    真的 `append`、窗口长度常量、修剪边界）**零门禁** —— 审计实测三种改法都四门禁全绿：
+    ① 摘掉 `.append(now)`（窗口永远空 ⇒ 守卫永不触发）；② `_CK_WINDOW_SECONDS = 1.0 → 0.2`
+    （判据静默缩水）；③ 修剪边界 `<=` 改 `<`。对一个「给 Phase C 预留的闸门」来说，这三条
+    任意一条悄悄发生，守卫都会退化成装饰品，而真机上只看得到「装饰偶尔不更新」。
+    ⚠️ 常量用**字面量**断言（不是 `== adapter._CK_WRITES_PER_SECOND` 那种自比较）。
+    """
+    assert adapter._CK_WINDOW_SECONDS == 1.0, "窗口长度就是「每秒」的口径，改小 = 静默缩小限速"
+    assert adapter._CK_WINDOW_MAXLEN == 64, "窗口容量上界（只关心最近 1 秒）"
+    state: Dict[str, Any] = {}
+    t0 = 1_700_000_000.0
+    # ① 允许到第 10 次，第 11 次必须被拒（`len(win) < 10` ⇒ 窗口内最多 10 条）
+    for i in range(adapter._CK_WRITES_PER_SECOND):
+        assert adapter._ck_window_allow(state, t0) is True, f"第 {i + 1} 次应当被允许"
+        adapter._ck_window_note(state, t0)
+    assert len(adapter._ck_window(state)) == 10, len(adapter._ck_window(state))
+    assert adapter._ck_window_allow(state, t0) is False,         "窗口满了就必须拒 —— 允许的话守卫等于不存在（审计实测摘掉 append 就会变成这样）"
+    # ② 边界：正好 1.0 秒之后，过期的条目**被修剪掉**（判据是 `<=`）⇒ 又能写
+    assert adapter._ck_window_allow(state, t0 + adapter._CK_WINDOW_SECONDS) is True, \
+        "到点就该过期（修剪用 `<=`；改成 `<` 会让窗口永远慢一拍）"
+    # ③ 「只看不记」：allow 不能顺手记账（记了就等于把「打算写」记成「写了」）
+    st2: Dict[str, Any] = {}
+    for _ in range(30):
+        adapter._ck_window_allow(st2, t0)
+    assert len(adapter._ck_window(st2)) == 0, "`_ck_window_allow` 不许记账（记账只在真的发出之后）"
+    # ④ 记账面：note 必须真的把时刻记进去（这条正是审计说的「窗口永远不被喂养」）
+    adapter._ck_window_note(st2, t0)
+    assert list(adapter._ck_window(st2)) == [t0], list(adapter._ck_window(st2))
+    # ⑤ 坏值不许炸：状态里塞非 deque ⇒ 重建一个空窗口（守卫归零重来，不抛）
+    assert len(adapter._ck_window({"ck_window": "不是 deque"})) == 0
+
+
 def test_ck_write_window_guard_skips_the_decor_batch_without_freezing_it():
     """窗口顶满时**让出装饰批量**，但两条边界必须同时守住（R11-B1）。
 
@@ -8305,6 +8340,7 @@ def test_ck_write_window_guard_skips_the_decor_batch_without_freezing_it():
         state = raw._ld_stream_get(_frame_key(chat, turn)) or {}
         state["ck_window"].extend([time.monotonic()] * adapter._CK_WRITES_PER_SECOND)
         batch_before = len(calls["batch"])
+        content_before = len(calls["content"])
         decor_before = dict(state.get("ck_decor") or {})
         adapter._log_ck_window_skip_once._at = 0.0
         with _LogCapture("larkdeck") as records:
@@ -8312,6 +8348,12 @@ def test_ck_write_window_guard_skips_the_decor_batch_without_freezing_it():
                 "跳过装饰 **≠** 失败：这一帧必须照旧算成功（否则本回合的 native 会被停用）"
         assert len(calls["batch"]) == batch_before, \
             f"窗口顶满时不该再发装饰批量（发了 {len(calls['batch']) - batch_before} 次）"
+        # ⚠️ **让出装饰 ≠ 让出正文**（B1 审计高-2）：正文是**提交点**，跳过它用户就永远看不到
+        # 那一段（核心按「这一帧送达」乐观记账，不会再补发）。审计实测：在守卫分支里加一句
+        # `return True, seq, None`（连正文一起跳过）**四门禁全绿** ⇒ 这条断言就是为它加的。
+        assert len(calls["content"]) == content_before + 1, \
+            ("被让出的那一帧**正文必须照旧写**（只让装饰，绝不让提交点）："
+             f"{len(calls['content']) - content_before} 次")
         skipped_text = "\n".join(r.getMessage() for r in records)
         assert "滑窗写入守卫" in skipped_text and "没有被记账" in skipped_text, \
             f"让出装饰必须留痕、且说清「没有记账」：{skipped_text!r}"
@@ -8319,17 +8361,21 @@ def test_ck_write_window_guard_skips_the_decor_batch_without_freezing_it():
         assert state.get("ck_window_skips") == 1, state.get("ck_window_skips")
         assert state.get("ck_decor") == decor_before, \
             f"被让出的写**绝不能记账**（记账 = 去重逻辑永久跳过它们 = 装饰静默冻结）：{state}"
-        skipped_ids = set(re.findall(r"elementID|[\w]+_?\w*", skipped_text.split("跳过的元素")[-1]))
+        # 被让出的元素名单从**日志那句**里精确取出来（`、` 分隔；原来是宽松正则，
+        # 会把整句中文当一个「词」—— 审计低-4），再和下一帧实际补写的 id 对照。
+        seg = skipped_text.split("跳过的元素 ", 1)[-1].split(" **", 1)[0]
+        skipped_ids = {t.strip() for t in seg.split("、") if t.strip()}
+        assert skipped_ids and all(re.fullmatch(r"[A-Za-z0-9_]+", i) for i in skipped_ids), \
+            f"日志里的元素名单必须是我们自己的 id 形状：{seg!r}"
 
         # ② 窗口放开（等价于过了 1 秒）⇒ 下一帧必须把刚才让出的装饰**补上**
-        assert (raw._ld_stream_get(_frame_key(chat, turn)) or {})["ck_window"] is not None
         (raw._ld_stream_get(_frame_key(chat, turn)) or {})["ck_window"].clear()
         assert _run(raw.send_stream_frame("正文一，正文二，正文三", chat_id=chat, turn_id=turn))
         assert len(calls["batch"]) == batch_before + 1, \
             "让出的装饰必须下一帧补写 —— 不补就是静默冻结（用户看到面板/页脚停在旧内容）"
         wrote = {a["params"]["element_id"] for a in calls["batch"][-1][0]}
-        assert wrote & skipped_ids, \
-            f"补写的必须是刚才让出的那些元素（让出 {skipped_ids} / 补写 {wrote}）"
+        assert wrote == skipped_ids, \
+            f"补写的必须**正好**是刚才让出的那些元素（让出 {skipped_ids} / 补写 {wrote}）"
     finally:
         adapter.LarkDeckMixin._ld_ck_requests = old_reqs
         adapter._STREAM_MIN_INTERVAL = old_interval
@@ -8342,12 +8388,20 @@ def test_ck_write_window_guard_skips_the_decor_batch_without_freezing_it():
 
 
 def test_ck_write_window_guard_never_trips_at_production_cadence():
-    """稳态下守卫**不该触发**：每帧 2 次逻辑写 × 4 帧/秒 + 预览 ≈0.2 ⇒ ≈8.2 < 10（R11-B1）。
+    """稳态下守卫**不该触发**，而且**窗口必须逐帧与真实写出数对账**（R11-B1 + B1 审计高-1）。
 
-    这是 B1 的**设计前提**，所以「不可达」本身也要有门禁：把窗口改小、或把上限调低、
-    或让守卫无条件触发，装饰就会在真机上**默默**开始掉帧，而日志只在 60 秒限流里留一句。
-    做法：假时钟**按 0.25s 前进**（= 真实帧节流窗口），跑 12 帧（3 秒 > 1 秒窗口），
-    断言一次都没让出、且每帧该写的都写了。
+    两件事一起钉：
+      * **「稳态不可达」是 B1 的设计前提**：每帧 ≤2 次逻辑写 × 4 帧/秒 + 预览 5 秒限频
+        ⇒ **摊还均值 ≈8.2 次/秒** < 卡级上限 10（⚠️ 摊还均值，不是「任何 1 秒窗口都 ≤10」：
+        正文与预览**不查 allow**，所以理论上窗口内最多能记到 12 条 —— 这是有意的口径，
+        见 `_ck_window_note` 的 docstring）。把窗口改小、把上限调低、或让守卫无条件触发，
+        装饰就会在真机上**默默**掉帧，而日志只在 60 秒限流里留一句；
+      * **记账面**：这一帧窗口里新增的条目数必须**正好等于**这一帧真的发出的逻辑写数
+        （装饰 batch + 正文 content + 预览 settings）。审计实测：摘掉 `_ck_window_note` 的
+        `.append`、或删掉预览那一笔记账，**四门禁全绿** —— 窗口永远空或永远少一笔，
+        守卫就悄悄变成装饰品（本项目点名的「恒假门禁」形态）。
+    做法：假时钟**按 0.25s 前进**（= 真实帧节流窗口），跑 24 帧（6 秒 > 1 秒窗口，且能撞上
+    至少一次预览写入），逐帧与调用账本对账。
     """
     chat, turn = "oc_ck_cadence", "t-cadence"
     calls, client = _mk_cardkit_fake()
@@ -8361,16 +8415,27 @@ def test_ck_write_window_guard_never_trips_at_production_cadence():
     time.monotonic = lambda: clock["t"]          # type: ignore[assignment]
     try:
         assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn)), "seed 帧"
-        for i in range(12):
+        history: list = []          # [(这一帧的时刻, 这一帧真的写出去几次)]
+        prev = {"batch": 0, "content": 0, "settings": 0}
+        for i in range(24):
             clock["t"] += adapter._STREAM_MIN_INTERVAL      # 与生产同节奏（4 帧/秒）
             assert _run(raw.send_stream_frame(f"正文{i}", chat_id=chat, turn_id=turn)), f"第 {i} 帧"
-        state = raw._ld_stream_get(_frame_key(chat, turn)) or {}
-        assert not state.get("ck_window_skips"), \
-            f"稳态（≈8.2 逻辑写/秒 < 10）**不该**让出装饰 —— 让了说明窗口/上限被改错了：{state}"
-        assert len(calls["content"]) == 12, f"每一帧的正文都该照常写：{len(calls['content'])}"
-        window = state.get("ck_window")
-        assert isinstance(window, deque) and len(window) <= adapter._CK_WRITES_PER_SECOND, \
-            f"窗口内条目数不得超过上限：{None if window is None else len(window)}"
+            now_counts = {"batch": len(calls["batch"]), "content": len(calls["content"]),
+                          "settings": len(calls["settings"])}
+            wrote = sum(now_counts[k] - prev[k] for k in prev)
+            prev = now_counts
+            history.append((clock["t"], wrote))
+            state_i = raw._ld_stream_get(_frame_key(chat, turn)) or {}
+            window = adapter._ck_window(state_i)
+            # 窗口里应当**正好**是「最近 1 秒真的写出去的那些次」（修剪判据是 `t <= now - 1.0`）
+            expect = sum(c for (t, c) in history if t > clock["t"] - adapter._CK_WINDOW_SECONDS)
+            assert len(window) == expect, (
+                f"第 {i} 帧：窗口里应当正好有最近 1 秒真的写出去的 {expect} 次，实际 {len(window)} 次"
+                " —— 对不上说明**记账面**漏了/多了（窗口永远空或永远少一笔 ⇒ 守卫静默失效）")
+            assert state_i.get("ck_window_skips") in (None, 0), \
+                f"稳态不该让出装饰（第 {i} 帧）：{state_i.get('ck_window_skips')}"
+        assert calls["settings"], "前提：6 秒里必须至少写一次会话预览（否则覆盖不到预览那一笔记账）"
+        assert len(calls["content"]) == 24, f"每一帧的正文都该照常写：{len(calls['content'])}"
     finally:
         time.monotonic = real_monotonic           # type: ignore[assignment]
         adapter.LarkDeckMixin._ld_ck_requests = old_reqs
