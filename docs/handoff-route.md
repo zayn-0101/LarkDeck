@@ -348,3 +348,57 @@ zstd -dc "$H/<agent-id>/session.jsonl.zstd"     # 事件流；assistant 正文�
 **教训**：机械对账的假阳性会白白消耗信任 —— 报之前先验一遍探针与判据本身对不对。
 
 **仍在 §5 未决**：NAS 部署、Phase C 等。
+
+---
+
+## 10. 交付之后的独立取证（2026-09-16 凌晨）
+
+§9 的结论是「已交付」。下面是**不依赖我自己叙述**的四项复核 —— 每项都能重跑。
+
+### 10.1 推送出去的那份能在**全新克隆**里自证（证明仓库自足）
+
+```bash
+git clone https://github.com/zayn-0101/larkdeck.git /tmp/x/larkdeck   # 目录名必须叫 larkdeck
+cd /tmp/x/larkdeck && <venv>/python3 tests/test_units.py              # 198/198 passed
+# check_override / check_hooks / check_clarify_e2e 三个收尾语齐；--preflight 318/318
+```
+
+为什么要做：工作树里跑绿 ≠ 推出去的能跑绿 —— 只要有**任何一个必要文件没被提交**（忘了 `git add`、
+被 `.gitignore` 吃掉、只在本地存在），四门禁在工作树里照样全绿。实测：**全新克隆全绿**，
+所以这批交付是自足的。这是「二类假绿」（跑是跑了，跑的不是**别人拿到的那份**代码）的反面检查。
+
+### 10.2 硬约束「绝不改 Hermes 核心」的自查（不是承诺，是读数）
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| Hermes 源码树 | 在 `~/.hermes/hermes-agent` 里 `git status --porcelain` | **空**（无改动） |
+| 核心配置 | `ls -la ~/.hermes/config.yaml` | mtime **09-14 19:22**（本轮开工之前） |
+| 凭据文件 | `ls -la ~/.hermes/.env` | mtime 09-07（未动） |
+| 部署方式 | `ls -la ~/.hermes/plugins/` | `larkdeck -> /Users/Zayn/code/larkdeck`（软链，符合 README） |
+
+⚠️ 那条软链写的是**小写** `code`，而仓库实际路径是 `Code` —— macOS 默认大小写不敏感，
+两者 `stat -f %i` **inode 相同**（实测 `253789902`），所以确实是同一个仓库。
+记下来是因为**换个大小写敏感的文件系统（NAS 上的 Linux）这就会指到别处** ——
+`install.sh` 在 NAS 上用的是 `--copy`（`docs/switch-from-hfc.md`），不受影响，但别在 NAS 上照抄这条软链。
+
+### 10.3 fail-closed 钩子的有界性（本轮新增的脱敏链在这条路上）
+
+`pre_tool_call` 是**官方契约里的 fail-closed 回调**：回调慢会拖住整批工具执行。而这一批把
+一条**四条正则**的脱敏链放进了 `_args_preview`（它在这个回调路径上）⇒ 必须实测「不抛 + 有界」。
+对手形状全部实测（`_args_preview` 直接喂）：
+
+| 输入 | 结果 |
+|---|---|
+| `None` / `bytes` / `object()` / 一个 `__repr__` 会抛的对象 | 都返回（后者返回空串），**不抛** |
+| 嵌套 5000 层 / 字典 20 万键 / 列表 100 万项 | ≤ 0.1ms |
+| 单个 **20MB** 字符串（write_file 类工具的真实形态） | 0.1ms |
+| **自引用环**（`d["self"]=d`、列表侧同理） | 不挂起、不崩 |
+| `"token"*4000`、`"KEY="*5000`、10 万个引号 / 反斜杠、`"Bearer "*20000` | 全部 ≤ 0.1ms |
+
+判据是**常量级**（`_shrink` 先做出有界副本 + `_REDACT_SCAN_CHARS` 先截一刀），不是「参数总是很小」
+这个没人写下的假设。⚠️ 这条性质**没有被单测直接钉住**（现有的 `G1-16` 钉的是「扫描限量」这一半）
+—— 登记为**已知的判据缺口**，不假装它已经被守住。
+
+### 10.4 这一轮**唯一**还没做的一件事
+
+用户点一次探针 ⑮（§9.4）。在那之前，「2.0 `button` 可行」仍然只算**官方文档结论**。
