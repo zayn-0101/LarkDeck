@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from collections import deque
@@ -417,12 +418,96 @@ def _args_preview(args: Any) -> str:
     if args is None or args == {}:
         return ""
     try:
-        text = json.dumps(_shrink(args), ensure_ascii=False, default=str)
+        # `default=` 也必须**有界**：`_shrink` 对非 JSON 类型原样返回，`default=str` 会把
+        # 一个 5MB 的自定义对象整段字符串化（审计 A7 实测：这条路径 3053ms，且它**绕过**
+        # `_shrink` 的封顶）⇒ 截到 200 字符，展示用绰绰有余。
+        text = json.dumps(_shrink(args), ensure_ascii=False,
+                          default=lambda _o: str(_o)[:200])
     except Exception:
         return ""
+    # ⚠️ **先按 `_REDACT_SCAN_CHARS` 截一刀再脱敏**（审计 A7）：`_args_preview` 最终只展示
+    #    `_ARGS_PREVIEW_CHARS`（80）个字符 ⇒ 对第 4096 个字符之后的文本做脱敏是**纯成本**。
+    #    这不是优化洁癖：这是 **fail-closed** 钩子（回调慢会拖住整批工具执行），而实测
+    #    1MB 文本上四条规则合计 436ms、其中 ENV 一条占 407ms ——「有界」这条纪律的判据是
+    #    **常量级**，不能依赖「参数总是很小」这个没人写下的假设。
+    #    安全性：脱敏后的前 80 字符才是会被展示的那一段，被砍掉的尾巴**从不展示**。
+    text = redact_inline_secrets(text[: _REDACT_SCAN_CHARS])
     if len(text) > _ARGS_PREVIEW_CHARS:
         return text[: _ARGS_PREVIEW_CHARS] + "…"
     return text
+
+
+#: 预览里的凭据脱敏（R11-C1）。**纯函数、无 I/O、有界、幂等** —— 这条纪律与
+#: :func:`_args_preview` 同源：钩子是 **fail-closed** 的，回调慢会拖住整批工具执行。
+#:
+#: 为什么必须有：钩子拿到的是**原始**工具参数，卡片（群聊里人人可见）会原样印出来 ——
+#: ``export TOKEN=…``、``Authorization: Bearer …``、``{"api_key": "…"}`` 都是真实出现过的形状。
+#: 判据是「**键名以凭据词结尾**」而不是「值长得像随机串」：
+#: 猜值会把正常内容涂掉，那比不脱敏更难查（本项目对「猜」的纪律见 ``docs/lessons.md``）。
+#: ⚠️ **有意的保守**：键名里凭据词出现在**中间**的（如 ``password_hash``、``secret_sauce``）
+#: **不脱敏**；好处是不会误伤 ``max_tokens`` / ``input_tokens`` / ``token_count`` 这类
+#: 正常字段（它们的凭据词后面还跟着字母，被前瞻挡住了）。
+#: 另把家目录前缀折叠成 ``~``：``/Users/<名字>/…`` 会泄露用户名与目录结构。
+#: ⚠️ 脱敏**只作用于预览这一份展示文本**，不改动任何写回核心的数据。
+_REDACT_VALUE = "***"
+#: 键名**以凭据词结尾**才算 —— 这个性质由紧跟的 ``"`` 保证（不是靠前瞻：
+#: 初版写过一个 ``(?![A-Za-z0-9_.\-])``，实测它是**死代码** —— 后面的 ``"`` 已经
+#: 要求凭据词在键名末尾，前瞻一点作用都没有。所以 ``max_tokens`` / ``input_tokens`` /
+#: ``token_count`` 不被误伤靠的是「结尾」这个约束本身）
+#: 一次最多**扫多少个字符**（见 :func:`redact_inline_secrets` 的「成本有界」一段）。
+#: 4096 是「够覆盖被展示的那 80 字符」与「fail-closed 钩子必须廉价」之间的折中。
+_REDACT_SCAN_CHARS = 4096
+
+_REDACT_JSON_RE = re.compile(
+    r'(?i)"([A-Za-z0-9_.\-]*?(?:token|secret|password|passwd|pwd|apikey|api[_-]?key|'
+    r'access[_-]?key|client[_-]?secret|private[_-]?key|credential|cookie|authorization))'
+    r'"\s*:\s*"((?:[^"\\]|\\.)*)"')
+#: ``Bearer <token>``（含 ``Authorization: Bearer …``）
+_REDACT_BEARER_RE = re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._\-+/=]{8,}")
+#: **头部形态**的凭据：``Cookie: …`` / ``Authorization: …`` / ``X-Api-Key: …``。
+#: ⚠️ 这条是审计补的（**A2**）：`cookie` 原先只出现在**JSON 键名**规则里，
+#: 而 `curl -H "Cookie: session=…"` 是第三种形状（引号里包着 `Key: value`），
+#: 四条规则一条都不覆盖 ⇒ **零脱敏**。同一批里 `Authorization: Bearer …` 是被涂掉的，
+#: 所以格外容易误以为「头都覆盖了」。
+_REDACT_HEADER_RE = re.compile(
+    r"(?i)((?:^|[\s\"'(,])(?:cookie|set-cookie|authorization|x-api-key|x-auth-token)"
+    r"\s*:\s*)([^\"\\\n,;]+)")
+#: shell 风格 ``TOKEN=abc``（同一个「键名结尾」判据；这里靠紧跟的 ``=``）。
+#: ⚠️ 两处都是审计逼出来的（**A1**/**A7**）：
+#:   ① 键前缀用 ``{0,32}`` **限长**并套原子组 —— 定长前缀不会在长词上逐位置回溯
+#:      （原先 `[A-Za-z0-9_]*` 无界，1MB 文本上这条规则独占 **407ms**，占四条总成本的 93%）；
+#:   ② 值类必须能吃**转义的引号/反斜杠** —— `_args_preview` 喂进来的是 `json.dumps` 的产物，
+#:      命令里的 `KEY="值"` 到正则眼里是 `KEY=\"值\"`，而旧值类 `[^\s"',;]+` 撞上第一个 `"` 就收尾
+#:      ⇒ 只涂掉那个反斜杠、**凭据原文完整露出**（A1 实测：`export OPENAI_API_KEY="sk-…"` 漏脱）。
+_REDACT_ENV_RE = re.compile(
+#: ⚠️ 前缀用 `{0,32}?`（**限长 + 非贪婪**）而**不是**原子组：原子组会让引擎无法回溯，
+#: 于是 `GITHUB_TOKEN=` 这种「前缀把敏感词整个吃掉」的形状**一次都匹配不上**
+#: （实测：改成原子组后连无引号的 `KEY=value` 都不脱敏 —— 修 bug 反而制造了更大的洞）。
+#: 定长上界已经把回溯钳在 32 次以内，不需要原子性。
+    r"(?i)(?<![A-Za-z0-9_])([A-Za-z0-9_]{0,32}?(?:token|secret|password|passwd|pwd|apikey|"
+    r"api[_-]?key|access[_-]?key|client[_-]?secret|private[_-]?key|credential|cookie))"
+    r"(?![A-Za-z0-9_])=((?:[^\\\s,;'\"]|\\.)*)")
+#: 家目录前缀 → ``~``。
+#: ⚠️ **必须有左边界**（A5）：旧写法 `/(?:Users|home)/…` 没有边界，会把 URL 里的
+#: `/home/…` 当路径 ⇒ `https://example.com/home/dashboard?tab=1` 被**截断成**
+#: `https://example.com~`（用户看到一个**不存在的 URL**，比不脱敏更难查）。
+#: 同时**不再吃掉**用户名的下一级：只把 `/<用户>` 这一段换成 `~`，后面的路径原样保留。
+_REDACT_HOME_RE = re.compile(r"(?:^|(?<=[\s\"'=(:,]))/(?:Users|home)/[^/\s\"']+")
+
+
+def redact_inline_secrets(text: str) -> str:
+    """把预览里**明显是凭据**的片段换成 ``***``（纯函数、有界、幂等）。
+
+    四条规则各对应一类真实形状：JSON 键值 / ``Bearer`` 头 / ``KEY=value`` / 家目录前缀。
+    """
+    if not text:
+        return text
+    text = _REDACT_JSON_RE.sub(
+        lambda m: '"%s": "%s"' % (m.group(1), _REDACT_VALUE), text)
+    text = _REDACT_HEADER_RE.sub(lambda m: m.group(1) + _REDACT_VALUE, text)
+    text = _REDACT_BEARER_RE.sub(lambda m: m.group(1) + _REDACT_VALUE, text)
+    text = _REDACT_ENV_RE.sub(lambda m: m.group(1) + "=" + _REDACT_VALUE, text)
+    return _REDACT_HOME_RE.sub("~", text)
 
 
 #: ``_shrink`` 的预算：每层最多看几个条目、最多下钻几层、单个字符串留多长。

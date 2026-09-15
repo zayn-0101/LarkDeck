@@ -40,6 +40,15 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "clarify.header":     {ZH: "需要你确认", EN: "Needs your input"},
     "clarify.other":      {ZH: "其他（我直接输入）", EN: "Other (I'll type it)"},
     "clarify.hint":       {ZH: "点按钮，或直接回复文字都行。", EN: "Tap a button, or just reply with text."},
+    # 2.0 澄清卡上**没有按钮** ⇒ 脚注不能再说「点按钮」（R11-C1）
+    "clarify.hint_2":     {ZH: "点下拉选择，或直接回复文字都行。", EN: "Pick from the list, or just reply with text."},
+    # R11-C2：`/larkdeck status` 的三条新记录
+    "status.uptime":      {ZH: "⏱ 已运行：{v}", EN: "⏱ Uptime: {v}"},
+    "status.fallback":    {ZH: "🪂 掉回纯文本：{n} 次（最近 {when} · {reason}）",
+                           EN: "🪂 Fell back to plain text: {n} (last {when} · {reason})"},
+    "status.fallback_none": {ZH: "🪂 掉回纯文本：无记录", EN: "🪂 Fell back to plain text: no record"},
+    "status.codes":       {ZH: "❗ 错误码（累计 {n} 次）：{top}", EN: "❗ Error codes ({n} total): {top}"},
+    "status.codes_none":  {ZH: "❗ 错误码：无记录", EN: "❗ Error codes: no record"},
     # 2.0 澄清卡：下拉占位 + 输入框占位（1.0 卡不用这两条）
     "clarify.pick":       {ZH: "选一个（也可在下面直接输入）", EN: "Pick one (or type below)"},
     "clarify.pick_multi": {ZH: "可多选：点开勾选", EN: "Multi-select: tap to pick"},
@@ -99,12 +108,12 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "cmd.scope":          {ZH: "（下面的数字是**进程级累计**：含本进程上全部会话，不只你这一条对话）",
                            EN: "(the counters below are process-wide: every conversation in this process, not just yours)"},
     "cmd.help":           {ZH: "用法：/larkdeck [status|help]\n"
-                               "· status（默认）：本卡 —— 版本 / 生效传输 / 钩子 / 三条心跳记录\n"
+                               "· status（默认）：本卡 —— 版本 / 生效传输 / 钩子 / 六条记录\n"
                                "· help：这段说明\n"
                                "⚠️ 在飞书网关里，**生成回答期间**发的命令会被当成普通输入排队到回合结束"
                                "（命令派发只挂在核心的 idle 路径上）；CLI / TUI 里可以直接执行。",
                            EN: "Usage: /larkdeck [status|help]\n"
-                               "· status (default): this card — version / active transport / hooks / three heartbeat records\n"
+                               "· status (default): this card — version / active transport / hooks / six records\n"
                                "· help: this text\n"
                                "⚠️ In the Feishu gateway, a command sent **while a reply is streaming** is queued as plain "
                                "input until the turn ends (dispatch only runs on the core's idle path); in the CLI / TUI "

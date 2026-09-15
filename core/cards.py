@@ -51,7 +51,7 @@ import re as _re
 import json
 import re
 import unicodedata
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from . import i18n as _i18n
 
@@ -1366,6 +1366,40 @@ def legacy_card(*, elements: Sequence[Dict[str, Any]], template: str = "orange",
     }
 
 
+#: markdown 里会被当成**语法**解释的字符（澄清卡的问题与选项标签要按字面显示）
+_MD_ESCAPE_CHARS = "\\`*_~[]|"
+
+
+def escape_inline_md(text: str) -> str:
+    """把**一句话**（澄清卡的问题 / 选项标签）转义成能安全插进 markdown 的字面量。
+
+    用途很窄、也必须有分寸：只用于澄清卡里那两处「一句话」的位置 —— 它们**不是完整回答**，
+    不该走 :func:`sanitize_markdown`（那一套是给整篇正文做围栏识别 / 加粗平衡 / 标题降级的）。
+    这里只做一件事：把会被当成语法的字符加上反斜杠。
+
+    只转义 ``\`` ``` ` `` ``*`` ``_`` ``~`` ``[`` ``]`` ``|``：这几个在飞书 markdown 里
+    是真语法（加粗 / 斜体 / 删除线 / 链接 / 表格 / 代码）。``#`` ``-`` ``>`` ``.`` **只在行首**
+    才有效，而我们的插入点是 ``❓ 问题`` 与 ``1. 标签``（都在行首标记**之后**），所以不动它们
+    —— 多转义只会让用户看到一堆反斜杠。
+
+    ⚠️ **只改展示那一份**：回调里的 ``question`` / ``answer``（以及选项的 ``value``）
+    必须是**原文** —— 转义过的答案回给核心就对不上了。它**不幂等**（``*`` → ``\*`` →
+    ``\\*``），所以**只在渲染时调一次**。
+    """
+    if not text:
+        return text
+    return "".join(("\\" + ch) if ch in _MD_ESCAPE_CHARS else ch for ch in str(text))
+
+
+def _clarify_question_md(question: str) -> Dict[str, Any]:
+    """澄清卡的**问题行** —— 两个方言共用这一个构造点（R11-C2 收敛）。
+
+    以前 1.0 与 2.0 **各写了一遍** ``md(f"❓ {question}")``：同一个隐患两处真相，
+    改一处漏一处是迟早的事（``*`` / ``[`` 会把渲染搞乱，两个方言同样中招）。
+    """
+    return md(f"\u2753 {escape_inline_md(question)}")
+
+
 def _clarify_elements(question: str, choices: Sequence[str], *, clarify_id: str,
                       session_key: str) -> List[Dict[str, Any]]:
     buttons: List[Dict[str, Any]] = []
@@ -1381,7 +1415,7 @@ def _clarify_elements(question: str, choices: Sequence[str], *, clarify_id: str,
         {"larkdeck_action": "clarify", "clarify_id": clarify_id,
          "session_key": session_key, "question": question, "answer": OTHER_VALUE},
     ))
-    return [md(f"\u2753 {question}"), action_row(buttons)]
+    return [_clarify_question_md(question), action_row(buttons)]
 
 
 def clarify_card(question: str, choices: Sequence[str], *, clarify_id: str,
@@ -1398,32 +1432,59 @@ def clarify_card(question: str, choices: Sequence[str], *, clarify_id: str,
                        title=_i18n.i18n_text("clarify.header"))
 
 
-def _clarify_options(choices: Sequence[str]) -> List[Dict[str, Any]]:
-    """2.0 下拉的选项：显示用带序号，**回调值用原始选项文本**（答案要的是规范标签）。
+def _clarify_choice_pairs(choices: Sequence[str]) -> List[Tuple[str, str]]:
+    """澄清选项的**唯一归一化入口**：(显示标签, 提交值)。
+
+    ⚠️ **卡面上那份可见列表与下拉里的 options 必须都从这里来**（R11-C1）：两处各算一次
+    的话，用户在卡上看到的编号与真正提交的值会不一致 —— 而且那种不一致**四门禁抓不住**
+    （两边都合法，只是不对应），只有用户点错才发现。判据由单测钉住（列表文本 == 下拉标签）。
 
     去重：``select_static`` 的 ``value`` **不可重复**（官方文档明写「否则交互异常、
     服务端无法区分选了哪个」），所以重复的选项只留第一个。
     """
-    options: List[Dict[str, Any]] = []
+    pairs: List[Tuple[str, str]] = []
     seen: set = set()
     for idx, choice in enumerate(choices, start=1):
         text = str(choice)
         if text in seen:
             continue
         seen.add(text)
-        options.append({"text": {"tag": "plain_text", "content": f"{idx}. {text}"},
-                        "value": text})
-    return options
+        # ⚠️ **展示标签先折叠空白**（审计 B1），提交值仍是**原文**：
+        #    选项是模型给的自由文本，多行选项会让「卡面列表 == 下拉标签」这条同源判据失效
+        #    （列表凭空多一行），更糟的是 `# `/`- `/`> ` 落到**行首**就变成 markdown 语法 ——
+        #    而 `escape_inline_md` 不转义这几个字符，前提正是「插入点永远在行首标记之后」。
+        label_text = " ".join(text.split()) or text
+        pairs.append((f"{idx}. {label_text}", text))
+    return pairs
+
+
+def _clarify_options(pairs: Sequence[Tuple[str, str]]) -> List[Dict[str, Any]]:
+    """2.0 下拉的选项：显示用带序号，**回调值用原始选项文本**（答案要的是规范标签）。"""
+    return [{"text": {"tag": "plain_text", "content": label}, "value": value}
+            for label, value in pairs]
+
+
+def _clarify_choice_list(pairs: Sequence[Tuple[str, str]]) -> str:
+    """**卡面上可见**的选项列表（R11-C1）。
+
+    起因：默认方言翻成 2.0 之后，选项文本只活在下拉里 —— **不点开就看不出有哪几个选项**
+    （用户对着截图追问过这件事）。所以下拉之上再放一份同源的纯文本列表。
+    ⚠️ 只能是 ``markdown``：2.0 卡里**不许出现 1.0 的 ``note``/``action`` 行**（飞书拒收，
+    见 AGENTS.md 不变量 5），而 ``footnote()``/``md()`` 都是 2.0 元素。
+    """
+    # 标签是 markdown ⇒ 必须转义；下拉那边是 `plain_text` ⇒ 不转义（同一份 pairs，
+    # 各自按自己的方言渲染，这就是「同源」而不是「同一串字节」）
+    return "\n".join(escape_inline_md(label) for label, _ in pairs)
 
 
 def clarify_card_2(question: str, choices: Sequence[str], *, clarify_id: str,
                    session_key: str, multi: bool = False) -> Dict[str, Any]:
     """带下拉/输入框的澄清卡（**2.0 方言**，组件级 ``behaviors`` 接回调）。
 
-    ⚠️ **默认不启用**（配置 ``clarify_dialect`` 默认 ``"1.0"``）。原因不是它不可行 ——
-    官方文档与 aiduPOP 的实拍都支持这条路 —— 而是这个项目对**要接服务端点击的卡片**
-    有硬纪律：只有真机点一次才算证据（``AGENTS.md`` 不变量 5，这条纪律是被「抄第三方
-    注释」坑出来的）。真机确证后把默认值翻成 ``"2.0"`` 即可，拦截逻辑一行都不用改：
+    ⚠️ **默认方言就是 2.0**（2026-09-13 翻的，前置是真机点过一次 —— ``AGENTS.md`` 不变量 5
+    要求「要接服务端点击的卡片」必须有真机证据，那条纪律是被「抄第三方注释」坑出来的）。
+    本文档上一版还写着「默认不启用 / 默认 1.0」，**已经过期**（2026-09-15 更正）。
+    拦截逻辑一行都不用改：
     ``behaviors`` 的 ``value`` 会**原样**成为 ``event.action.value``，所以
     ``larkdeck_action`` 那个拦截键照旧成立；用户选了什么则在 ``action.option``，
     输入框内容在 ``action.input_value``（见 ``adapter._ld_clarify_answer``）。
@@ -1435,14 +1496,18 @@ def clarify_card_2(question: str, choices: Sequence[str], *, clarify_id: str,
     """
     value: Dict[str, Any] = {"larkdeck_action": "clarify", "clarify_id": clarify_id,
                              "session_key": session_key, "question": question}
+    # ⚠️ 归一化**只做一次**，下拉与卡面列表共用（R11-C1 的同源要求）
+    pairs = _clarify_choice_pairs(choices)
     selector: Dict[str, Any] = {
         "tag": "multi_select_static" if multi else "select_static",
         "placeholder": {"tag": "plain_text",
                         "content": _i18n.t("clarify.pick_multi" if multi else "clarify.pick")},
-        "options": _clarify_options(choices),
+        "options": _clarify_options(pairs),
         "behaviors": [{"type": "callback", "value": dict(value)}],
     }
-    elements: List[Dict[str, Any]] = [md(f"\u2753 {question}"), selector]
+    # 卡面上那份**可见**的选项列表（与下拉同源）：不点开也能看到有哪几个选项
+    elements: List[Dict[str, Any]] = [_clarify_question_md(question),
+                                      md(_clarify_choice_list(pairs)), selector]
     if not multi:
         elements.append({
             "tag": "input",
@@ -1453,14 +1518,16 @@ def clarify_card_2(question: str, choices: Sequence[str], *, clarify_id: str,
             # （2026-09-13 审计：那个键全仓只有写入点、没有读取点）。
             "behaviors": [{"type": "callback", "value": dict(value)}],
         })
-    elements.append(footnote(_i18n.t("clarify.multi_hint" if multi else "clarify.hint")))
+    # 脚注按方言分流（R11-C1）：2.0 卡上**没有按钮**，说「点按钮」就是撒谎
+    elements.append(footnote(_i18n.t(
+        "clarify.multi_hint" if multi else "clarify.hint_2")))
     return card(elements=elements, template="orange",
                 title=_i18n.i18n_text("clarify.header"), summary=question)
 
 
 def clarify_resolved_card_2(*, question: str, answer: Any, user_name: str) -> Dict[str, Any]:
     """2.0 的已答复卡 —— **必须与待答卡同方言**，否则回调里回填的那一帧会被飞书丢弃。"""
-    return card(elements=[md(f"\u2753 {question}"),
+    return card(elements=[_clarify_question_md(question),
                           md(f"\u2705 **{_clarify_answer_label(answer)}**\u3000\u2014\u3000{user_name}")],
                 template="green", title=_i18n.i18n_text("clarify.header"), summary=question)
 
@@ -1486,6 +1553,6 @@ def clarify_resolved_card(*, question: str, answer: str, user_name: str) -> Dict
     """
     label = _clarify_answer_label(answer)
     return legacy_card(
-        elements=[md(f"\u2753 {question}"), md(f"\u2705 **{label}**\u3000\u2014\u3000{user_name}")],
+        elements=[_clarify_question_md(question), md(f"\u2705 **{label}**\u3000\u2014\u3000{user_name}")],
         template="green", title=_i18n.i18n_text("clarify.header"),
     )

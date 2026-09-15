@@ -71,6 +71,12 @@ def _shared_status() -> Dict[str, Any]:
     box = _shared_box()
     if not isinstance(box.get("status"), dict):
         box["status"] = dict(_STATUS_DEFAULTS)
+        # ⚠️ 这两个键**必须在这里换成新对象/新时间**，不能直接沿用 `_STATUS_DEFAULTS` 里的：
+        # ``dict(...)`` 是浅拷贝 ⇒ `"codes": {}` 会被所有副本共享（清一次等于清全部），
+        # 那是本项目最恨的那类静默别名；而 `started_at` 是**进程起点**，
+        # 只能在建盒子这一刻取（它不是「运行期计数」，所以 `_clear_status_locked` 不清它）。
+        box["status"]["codes"] = {}
+        box["status"]["started_at"] = time.time()
     return box["status"]
 
 
@@ -78,7 +84,16 @@ _STATUS_DEFAULTS: Dict[str, Any] = {
     "inbound_at": None, "inbound_count": 0,
     "frame_ok_at": None, "frame_ok_count": 0,
     "frame_fail_at": None, "frame_fail_count": 0, "frame_fail_reason": "",
+    # R11-C2 三条新记录（`/larkdeck status` 要读）
+    "started_at": None,
+    "fallback_at": None, "fallback_count": 0, "fallback_reason": "",
+    "codes": {}, "code_total": 0,
 }
+
+#: 错误码表最多记多少个**不同的**码 —— 超出的**一律并进 `other`**。
+#: ⚠️ 口径：这是「不同的码」的上界，键数上界是 **+1**（多一个 `other` 桶）。
+#: 没有这个上限，一个「每个响应码都不同」的坏上游能让这张表无限长大。
+_MAX_CODE_KEYS = 24
 
 
 #: 最近一次 API 调用的指标快照（进程级）。
@@ -516,10 +531,73 @@ def note_frame_fail(reason: str) -> None:
         logger.debug("[larkdeck] 失败帧记账忽略了一次异常", exc_info=True)
 
 
+def note_plaintext_fallback(reason: str) -> None:
+    """记一次「**本回合的卡片车道被放弃**」—— 核心会改走它的纯文本路径（R11-C2）。
+
+    ⚠️ 口径与 :func:`note_frame_fail` **故意不同**，别混：
+      * ``note_frame_fail`` = 「我们**真的发起过一次写、而它失败了**」；
+      * 本函数        = 「**本回合我们把卡片车道让给了核心**」⇒ 用户**肉眼能看出**「这次没卡片」。
+    ⚠️ **口径以代码为准（2026-09-15 审计 D1 指出这段文字曾与实现相反）**：调用点只有两处，
+    都是「**我们真的发起过一次写、而它失败了**」（`_ld_stream_fail` 与 `send()`），
+    所以在这一版实现里它与 `note_frame_fail` **同点同帧各 +1**；它**不含**「没有活跃流可收尾
+    ⇒ 按契约交还核心」那条**正常路径**（一个写请求都没发，见下一条）。
+    判据是后者、不是前者：核心收到 ``False`` 之后会停用本回合 native、退回 edit/send，
+    所以「掉回纯文本」的用户可见次数 = 本计数，而**不等于**它收到的 ``False`` 个数。
+    ⚠️ **不含那条正常路径**：``send_stream_frame(finalize=True)`` 在**没有活跃流**时返回
+    False（native 没开 / 首帧就没建成卡）—— 一个写请求都没发，消息照常发出去
+    （R9 审计中-2 的口径）。那条**不计**，否则健康回合会凭空多出一次「掉回纯文本」。
+    """
+    # ⚠️ **必须单行归一**（审计 X21）：原因串来自异常字符串 / SDK 返回，里面可以有换行；
+    #    不归一的话 `/larkdeck status` 的卡片会被撑成多行，甚至把 `#` 顶到**行首**变成 markdown
+    #    语法（用户看到的是标题，而它本来是失败原因的一部分）。
+    #    同文件的 `note_frame_fail` 早就是同一写法（`" ".join(str(...).split())`）——
+    #    两处口径本该一致，这里是漏掉的那一处。
+    text = " ".join(str(reason or "").split())[:200]
+    try:
+        with _LOCK:
+            _STATUS["fallback_at"] = time.time()
+            _STATUS["fallback_count"] = int(_STATUS.get("fallback_count") or 0) + 1
+            _STATUS["fallback_reason"] = text
+    except Exception:                      # pragma: no cover - 记账绝不影响主路径
+        logging.getLogger("larkdeck").debug("[larkdeck] 回落计数失败", exc_info=True)
+
+
+def note_response_code(code: Any) -> None:
+    """记一次**非零响应码**（`/larkdeck status` 的错误码 top-N）。
+
+    调用点是**失败判定处**（不是 ``_ld_response_code`` 内部）—— 那个函数每帧被调好几次
+    （包含成功路径），在里面计数会把「帧数」记成「调用数」，正是 AGENTS 里那条
+    「口径是**帧**不是**次**」的纪律要防的事。
+    ``0``（成功）与 ``None``（没拿到响应）都不计；不同的码最多记 :data:`_MAX_CODE_KEYS` 个。
+    """
+    if code in (None, 0, "0", ""):
+        return
+    key = str(code)
+    try:
+        with _LOCK:
+            codes = _STATUS.get("codes")
+            if not isinstance(codes, dict):
+                codes = {}
+                _STATUS["codes"] = codes
+            if key not in codes and len(codes) >= _MAX_CODE_KEYS:
+                key = "other"
+            codes[key] = int(codes.get(key) or 0) + 1
+            _STATUS["code_total"] = int(_STATUS.get("code_total") or 0) + 1
+    except Exception:                      # pragma: no cover
+        logging.getLogger("larkdeck").debug("[larkdeck] 响应码计数失败", exc_info=True)
+
+
 def status_snapshot() -> Dict[str, Any]:
-    """账本快照（测试 / 探针读它）。卡片**不读**它 —— 卡片要的是人读的行。"""
+    """账本快照（测试 / 探针读它）。卡片**不读**它 —— 卡片要的是人读的行。
+
+    ⚠️ **`codes` 必须跟着拷贝一层**（审计 X19 实测）：它是账本里**唯一可变**的那一格，
+    只做 `dict(_STATUS)` 的话快照里的 `codes` 就是**活动账本本身** ——
+    读者（测试 / 探针 / 以后的排障面板）拿 `snap["codes"]["999999"] = 42` 写一下，
+    污染的是**共享账本**，而调用方以为自己只是改了个快照。
+    这与 `_STATUS_DEFAULTS` 那处「浅拷贝导致清一次等于清全部」是同一个病（见 `_shared_status`）。
+    """
     with _LOCK:
-        return dict(_STATUS)
+        return dict(_STATUS, codes=dict(_STATUS.get("codes") or {}))
 
 
 def _when(ts: Any) -> str:
@@ -542,13 +620,23 @@ def _when(ts: Any) -> str:
 
 
 def status_lines() -> List[str]:
-    """三条自检行（markdown 文本），给 ``/larkdeck status`` 卡片用。
+    """自检行（markdown 文本），给 ``/larkdeck status`` 卡片用。
 
     每行都带**累计次数**：只有「最近一次是什么时候」的话，一个刚重启的进程会显示得
     和「跑了三天一直没失败」一模一样；有了次数才能区分「从来没发生过」与「刚刚发生」。
+
+    R11-C2 加了三条（**排障用，用户在卡上看不见**）：
+      * ``status.uptime``   —— 进程已运行多久：区分「刚重启」与「跑很久了」，
+        它也是判「这次故障是不是重启之后就有的」的第一个数；
+      * ``status.fallback`` —— **掉回纯文本的次数**：用户**肉眼能看出**「这次没卡片」的那一类，
+        与 `frame_fail_count`（我们真的发起过一次写而失败）**口径不同**，别混（见
+        :func:`note_plaintext_fallback`）；
+      * ``status.codes``    —— 错误码 top-5：把「失败了很多次」收敛成「失败在哪个码上」，
+        而码表正是处置表的键（``docs/plan-v1.md`` 附录 A）。
     """
     snap = status_snapshot()
     failures = int(snap.get("frame_fail_count") or 0)
+    fallbacks = int(snap.get("fallback_count") or 0)
     return [
         _i18n.t("status.inbound", when=_when(snap.get("inbound_at")),
                 n=int(snap.get("inbound_count") or 0)),
@@ -557,7 +645,57 @@ def status_lines() -> List[str]:
         (_i18n.t("status.frame_fail", when=_when(snap.get("frame_fail_at")), n=failures,
                  reason=str(snap.get("frame_fail_reason") or ""))
          if failures else _i18n.t("status.frame_fail_none")),
+        # ---- R11-C2：三条「用户看不见但排障必须知道」的记录 ----
+        _i18n.t("status.uptime", v=_dur(snap.get("started_at"))),
+        (_i18n.t("status.fallback", when=_when(snap.get("fallback_at")), n=fallbacks,
+                 reason=str(snap.get("fallback_reason") or ""))
+         if fallbacks else _i18n.t("status.fallback_none")),
+        (_i18n.t("status.codes", n=int(snap.get("code_total") or 0), top=_codes_top(snap))
+         if int(snap.get("code_total") or 0) else _i18n.t("status.codes_none")),
     ]
+
+
+def _dur(ts: Any) -> str:
+    """**进程已运行多久**（``2h13m`` / ``45s``）—— 读不到就写「无记录」，绝不编 0。
+
+    ⚠️ 判据与 :func:`_when` **对齐**（R9 低-3 那条：「在一个真实运行时刻的合理范围内」，
+    不是「能转成 float」）。`_dur` 的输出是给**人**看的一句话，编出来的数字比空着更难查。
+    审计 Y5 实测出来的四类脏值 —— 旧版**全都编了一个数字**（或者直接炸出函数外）：
+      * ``nan`` → `int(nan)` 抛 **ValueError**（记账路径上的一个异常源）；
+      * ``inf`` / ``-inf`` → `int(...)` 抛 **OverflowError**（同上，`_as_int` 的 docstring
+        早写过 `int(inf)` 这个坑，这里漏了）；
+      * ``0`` / ``-1`` → ``'497079h14m'`` —— 「已运行 56 年」这种**看着像真数字**的脏值，
+        正是 `_EPOCH_FLOOR` 要消灭的形态；
+      * ``1e18``（未来时间戳）→ ``'0s'`` —— 显示成「刚重启」，而它其实是坏数据。
+    ⇒ 四类一律「无记录」。反面同样钉住：真实时间戳照常算（见 `test_units` 的 ㉚ 一组）。
+    """
+    try:
+        started = float(ts)
+    except (TypeError, ValueError, OverflowError):
+        return _i18n.t("status.none")
+    # NaN 与任何数比较都是 False ⇒ **必须单独判**（`started != started` 是 NaN 的唯一判据）。
+    # ±inf 不用单独写：`inf > now`、`-inf < _EPOCH_FLOOR` 都会落到下面那一句。
+    now = time.time()
+    if started != started or started < _EPOCH_FLOOR or started > now:
+        return _i18n.t("status.none")
+    try:
+        secs = max(0, int(now - started))
+    except (ValueError, OverflowError):     # pragma: no cover - 上面已经拦住，防御性兜底
+        return _i18n.t("status.none")
+    if secs < 60:
+        return f"{secs}s"
+    if secs < 3600:
+        return f"{secs // 60}m"
+    return f"{secs // 3600}h{(secs % 3600) // 60}m"
+
+
+def _codes_top(snap: Dict[str, Any]) -> str:
+    """错误码 top-5（``300309×3 · 300313×1``）；一个都没有时返回空串（调用方换另一句文案）。"""
+    codes = snap.get("codes")
+    if not isinstance(codes, dict) or not codes:
+        return ""
+    top = sorted(codes.items(), key=lambda kv: (-int(kv[1] or 0), str(kv[0])))[:5]
+    return " · ".join(f"{k}\u00d7{v}" for k, v in top)
 
 
 def _clear_status_locked() -> None:
@@ -566,6 +704,10 @@ def _clear_status_locked() -> None:
         "inbound_at": None, "inbound_count": 0,
         "frame_ok_at": None, "frame_ok_count": 0,
         "frame_fail_at": None, "frame_fail_count": 0, "frame_fail_reason": "",
+        # R11-C2 的三条运行时记录跟着一起清 —— 否则测试/探针之间会互相继承上一次的计数，
+        # 断言就没有判别力了。⚠️ `started_at` **不清**：它是**进程起点**，不是运行期计数。
+        "fallback_at": None, "fallback_count": 0, "fallback_reason": "",
+        "codes": {}, "code_total": 0,
     })
 
 

@@ -423,9 +423,20 @@ def _strip_core_progress(text: str, accumulated: str, tool_pending: bool,
     0. **``not finalize``：收尾帧一律不剥。** 这条最强，因为它是**证明**而不是启发式：
        核心的收尾帧发的是**纯累积正文** —— `gateway/stream_consumer.py` 里
        `display_text = self._accumulated` 之后，**只有 ``tick.is_interim``** 才走
-       ``_compose_frame_content()`` 把工具进度块合成进去（``:791-798``）；而**所有** finalize
-       发送点传的都是纯累积全文（``:747``、``:781`` 的切片、``:834``/``:856``/``:862``/``:912``，
-       以及边界收尾的 ``:486``）。⇒ 收尾帧上「累积之后还有内容」这件事**只可能是模型自己写的**
+       ``_compose_frame_content()`` 把工具进度块合成进去（``:791-798``）；而 finalize 发送点里
+       **除了一处例外**，传的都是纯累积全文（``:486``/``:747``/``:781`` 的切片/``:834``/``:856``/
+       ``:862``/``:912``）。⚠️ **那一处例外是审计实测抓出来的（2026-09-15）**：
+       ``gateway/stream_consumer_transport.py:391`` —— 某一帧**确定性失败**之后、关流之前，
+       核心会用**同一个 text** 再发一帧 ``finalize=True``，而那个 text 正是 interim 帧的合成结果
+       （累积 + 分隔符 + 进度行 + 光标）。**所以「所有 finalize 帧都是纯累积」是假的** ——
+       这条注释曾经这么写，被审计当场推翻（它用真核心驱动抓到了
+       ``frame[3] finalize=True text='第一段正文。\n\n---\n⚙️ …▌'``）。
+       代价如实登记：在那条路上，条件 0 会把**本该剥的进度行与光标留在收尾正文里**。
+       这是**有意取舍**：可见的进度行（丑，但一个字都没丢）vs. 不可逆地吞掉模型正文
+       （静默、无法恢复）。要做对需要**形状判据**（尾巴逐行符合核心进度行形状
+       ``{emoji} {tool_name}: "{preview}"``，tool_name 用我们 ``pre_tool_call`` 见过的名字比对），
+       **未做 —— 登记为已知缺口**，见 ``docs/plan-v1.md`` 附录 F。
+       ⇒ 在**其余** finalize 帧上，「累积之后还有内容」仍然只可能是模型自己写的
        （**含它自己写的 ``---``**），核心那一帧根本没有进度块可剥。
        为什么非加不可：我们的累积来自**钩子队列**（异步投递），收尾帧完全可能**早于**最后一个
        正文增量到达我们这里 ⇒ 累积是一个**陈旧的完整前缀**（``complete`` 仍为真），条件 1/3/4
@@ -1219,8 +1230,18 @@ def _log_degrade_once(tier: str, elements: int = 0, size: int = 0) -> None:
                    _cards.CARD_BYTE_BUDGET)
 
 
+def _ld_trace_id(card_ref: Any) -> str:
+    """**本卡短码** —— 取 ``message_id`` / ``card_id`` 的后 6 位（R11-C2）。
+
+    为什么是后 6 位而不是整个 id：它的用途只有一个是「**把用户截图和日志对齐**」
+    —— 印在卡片页脚上、同一串也进每回合自检行，人眼抄 6 位不会抄错，日志里 grep 也够唯一。
+    ⚠️ 它**不是**安全凭据（id 本身在飞书里是本会话可见的），别拿它当鉴权用。
+    """
+    return str(card_ref or "")[-6:]
+
+
 def _log_turn_selfcheck(chat_id: str, transport: str, frames: int,
-                        strips: int = 0) -> None:
+                        strips: int = 0, trace: str = "") -> None:
     """**每回合一条自检汇总**（60 秒限流）：把「这次卡片到底长没长全」变成机器可读。
 
     ⚠️ 为什么必须有（2026-09-14 的教训）：面板为空 / 页脚不显示 / 账本「累计 0 帧」这三个
@@ -1252,10 +1273,11 @@ def _log_turn_selfcheck(chat_id: str, transport: str, frames: int,
         footer_text = ""
     logger.info(
         "[larkdeck] 回合自检：面板=%s（rounds=%s tools=%s）· 页脚=%s（%s）· 写卡帧数=%s · "
-        "传输=%s · 本回合帧=%s · 正文剥进度=%s · 会话桶=%s",
+        "传输=%s · 本回合帧=%s · 正文剥进度=%s · 卡片=%s · 会话桶=%s",
         "有" if panel_ok else "无", info.get("rounds"), info.get("tools"),
         "有" if footer_text else "无", footer_text[:40] or "空",
-        snap.get("frame_ok_count"), transport, frames, strips, info.get("buckets"))
+        snap.get("frame_ok_count"), transport, frames, strips, trace or "无",
+        info.get("buckets"))
 
 
 def _log_empty_panel_once(chat_id: str = "") -> None:
@@ -1482,6 +1504,40 @@ class LarkDeckMixin:
         return _cards.context_indicator(
             snap.get("input_tokens"), snap.get("context_max"), style=style,
         )
+
+    @classmethod
+    def _ld_frame_footer(self, state: Dict[str, Any]) -> Optional[str]:
+        """**帧路径**的页脚：在原有页脚之后接上本卡短码（R11-C2）。
+
+        两条纪律：
+        ① **没有基数页脚就不加短码** —— 短码绝不能把「页脚=无」这个诊断信号抹掉
+           （自检行里的 `页脚=无` 是排查「钩子没喂数据」的入口，见 R9 审计）；
+        ② 短码取自**这一帧的卡**（`message_id` / `card_id`），不是进程级快照 ——
+           多会话并发时不会串台（页脚指标那种串台是**已知取舍**，但短码是**定位**用的，
+           串了就等于没有）。
+        """
+        base = self._ld_footer()
+        trace = _ld_trace_id(state.get("message_id") or state.get("card_id"))
+        if not base or not trace:
+            return base
+        return f"{base} · \U0001f516 {trace}"
+
+    @classmethod
+    def _ld_seed_footer_text(cls) -> Optional[str]:
+        """**建卡那一刻**的页脚文本 —— 判据是「要不要这个元素」（配置），不是「这一刻有没有数据」。
+
+        ⚠️ 这是审计 C2 实测的**功能缺陷**（2026-09-15，已修）：`_ld_footer()` 在本进程
+        **第一次 API 调用之前返回 `None`**（页脚指标来自官方钩子），而建实体时把 `None`
+        传下去 ⇒ `cardkit_entity_card` 的纪律是 `footer_text is None ⇒ 页脚元素不进卡`
+        ⇒ **元素不在卡里，之后的帧再也写不进去** ⇒ **重启后第一回合（恰恰是最可能被截图的
+        那一回合）永远没有页脚、也永远没有短码**，而自检行只有一个「页脚=无」，
+        分不出「元素没建」还是「没数据」。
+        ⇒ 配置开着就**总是建**（空串占位），内容留给后续帧写 —— 这正是面板元素已经在用的
+        同一条纪律（``cardkit_entity_card`` 的 docstring 明写「判据是『要不要这个元素』，
+        不是『这一帧有没有内容』」）。元素表由 `_ck_elems_from_card` 从建出来的卡里抽，
+        所以进了卡才写得进去。
+        """
+        return " " if _cfg("footer") else None
 
     @classmethod
     def _ld_footer(cls) -> Optional[str]:
@@ -1811,9 +1867,11 @@ class LarkDeckMixin:
                 self._ld_track(message_id, chat_id)
                 self._ld_note_text(message_id, content)
                 return result
+            _context.note_plaintext_fallback("send 未成功")
             logger.warning("[larkdeck] 卡片发送未成功（%s），回落纯文本",
                            getattr(result, "error", "unknown"))
         except Exception as exc:  # 卡片是增强，绝不能因为卡片把消息弄丢
+            _context.note_plaintext_fallback(f"send 异常：{type(exc).__name__}")
             logger.warning("[larkdeck] 卡片发送异常，回落纯文本: %s", exc, exc_info=True)
         return await fallback()
 
@@ -1833,11 +1891,13 @@ class LarkDeckMixin:
         try:
             if finalize:
                 content = _sanitize_for_send(content)
+            # ⚠️ 用 `_ld_frame_footer`（审计 C1）：这一帧**手上就有 message_id**，
+            #    用基数页脚会把短码漏掉 —— 而「截图 ↔ 日志」对齐正是短码存在的唯一理由。
             card = self._ld_build_card(
                 content, streaming=not finalize,
                 panel=self._ld_panel(chat_id, state.get("t0"),
                                      report_empty=bool(finalize)),
-                footer=self._ld_footer(),
+                footer=self._ld_frame_footer({"message_id": message_id}),
             )
             result = await self._ld_update_card(chat_id, message_id, card)
             if result is not None and getattr(result, "success", False):
@@ -2306,7 +2366,7 @@ class LarkDeckMixin:
         new_body, new_tools = self._ld_panel_parts(chat, now)
         made = await self._ld_ck_create(chat, answer=text[cut:],
                                         panel_text=new_body, panel_tools_text=new_tools,
-                                        reply_to=reply_to, footer_text=self._ld_footer())
+                                        reply_to=reply_to, footer_text=self._ld_seed_footer_text())
         if made is None:
             logger.warning("[larkdeck] 卡链：开新卡失败，本帧回落")
             return None
@@ -2427,8 +2487,10 @@ class LarkDeckMixin:
 
         三个决策点，都在这里：
           * ``progress_lines_in_body: true`` ⇒ **原样渲染**（用户明确要核心那套：正文区也滚工具行）；
-          * ``finalize=True``（收尾帧）⇒ **原样渲染**（核心那一帧发的就是纯累积正文，
-            没有进度块可剥；多剥一次就是不可逆地吞正文，见 :func:`_strip_core_progress` 条件 0）；
+          * ``finalize=True``（收尾帧）⇒ **原样渲染**（那一帧通常是纯累积正文，没有进度块可剥；
+            多剥一次就是不可逆地吞正文）。⚠️ **例外**：帧失败后核心会拿**同一个合成文本**再发一帧
+            ``finalize=True``（``stream_consumer_transport.py:391``）—— 那一帧确实带进度行，
+            本条件会把它留在正文里（有意取舍与改法见 :func:`_strip_core_progress` 条件 0）；
           * 否则按证据剥掉核心叠加的工具进度块（证明不了就不剥，见 :func:`_strip_core_progress`）。
 
         ⚠️ ``finalize`` 是**必填关键字**（没有默认值）：默认值会让「新调用点忘了传」静默退回
@@ -2468,7 +2530,8 @@ class LarkDeckMixin:
         # ⚠️ 「整帧原样渲染」是 8f81b4d 的安全修复留下的口径；R11-A7 把它收紧成
         # 「按证据剥后缀」：仍然**不做任何正文归档**（不按分隔符切、不改写前缀）。
         # ⚠️ **必须把 ``finalize`` 传下去**（R11-A7 尾巴）：收尾帧是**唯一不可逆**的一帧
-        # （核心对 finalize 乐观记账、不会再补发），而核心那一帧发的是纯累积正文。
+        # （核心对 finalize 乐观记账、不会再补发），而那一帧**通常**是纯累积正文
+        # （例外：帧失败后的重发，见条件 0 —— 那条路上会留下可见的进度行）。
         display = self._ld_body_text(text, chat, finalize=finalize)
         stripped = display != text
         if state is None:
@@ -2493,10 +2556,14 @@ class LarkDeckMixin:
                 # R3 收窄版：面板是**两块**（推理 / 工具），建实体时都定死，之后只改内容
                 panel_text, panel_tools_text = self._ld_panel_parts(
                     chat, now, report_empty=bool(finalize))
+                # ⚠️ 这里**故意**用 `_ld_footer()` 而不是 `_ld_frame_footer(state)`：
+                # 这一帧就是**建卡那一帧**，`message_id`/`card_id` 此刻还不存在 ——
+                # 短码是「本卡的 id 后 6 位」，在 id 诞生之前不可能有。**从下一帧起**
+                # （每帧装饰 / 元素写 / 收尾整卡）页脚就带上短码了。
                 made = await self._ld_ck_create(chat, answer=display, panel_text=panel_text,
                                                 panel_tools_text=panel_tools_text,
                                                 reply_to=reply_to,
-                                                footer_text=self._ld_footer())
+                                                footer_text=self._ld_seed_footer_text())
                 if made is None:
                     # 任何一步失败都交给核心回落（这是**契约**：帧失败 ⇒ 本回合改走 edit/send）
                     return self._ld_stream_fail("CardKit 建实体/发实体卡失败")
@@ -2536,6 +2603,8 @@ class LarkDeckMixin:
                 # 详见 `context.note_frame_ok` 的说明与 README 的「写卡帧数」一条）。
                 _context.note_frame_ok()      # R9：建实体 + 发实体卡 = 这一帧真的有东西发出去了
                 return True
+            # ⚠️ 同理（见上面 CardKit 那处）：**建卡那一帧**还没有 id ⇒ 只能是基数页脚；
+            # 短码从第二帧起才有。
             card = self._ld_build_card(display, streaming=True,
                                        panel=self._ld_panel(chat, now,
                                                             report_empty=bool(finalize)),
@@ -2575,7 +2644,7 @@ class LarkDeckMixin:
             card = self._ld_build_card(tail_visible or " ", streaming=False,
                                        panel=self._ld_panel(chat, state.get("t0"),
                                                             report_empty=True),
-                                       footer=self._ld_footer())
+                                       footer=self._ld_frame_footer(state))
             result = await self._ld_update_card(chat, message_id, card)
             if result is None or not getattr(result, "success", False):
                 return self._ld_stream_fail(
@@ -2589,7 +2658,8 @@ class LarkDeckMixin:
             logger.info("[larkdeck] native 流式收尾：更新 %d 帧（跳过 %d 帧）",
                         int(state.get("frames") or 0) + 1, int(state.get("skipped") or 0))
             _log_turn_selfcheck(chat, self._ld_transport(), int(state.get("frames") or 0) + 1,
-                                strips=int(state.get("strips") or 0) + (1 if stripped else 0))
+                                strips=int(state.get("strips") or 0) + (1 if stripped else 0),
+                                trace=_ld_trace_id(message_id))
             # 记账在 `_ld_update_card` 里（收尾就是一次整卡替换）—— 这里不再重复记。
             return True
         if text == state.get("last"):
@@ -2672,7 +2742,7 @@ class LarkDeckMixin:
             # 用 `*parts` 展开会把工具块塞进 `elems`（实测症状：帧异常 ⇒ 整回合掉 native）。
             _panel_body, _panel_tools = self._ld_panel_parts(
                 chat, state.get("t0"), report_empty=bool(finalize))
-            ops = _ck_plan(visible, _panel_body, live_elems, self._ld_footer(),
+            ops = _ck_plan(visible, _panel_body, live_elems, self._ld_frame_footer(state),
                            panel_tools_text=_panel_tools)
             live_state = dict(state)
             ok, seq_after, failed = await self._ld_ck_apply(card_id, ops, _ck_seq(state),
@@ -2723,7 +2793,7 @@ class LarkDeckMixin:
                 # ⚠️ 降级后写的也是**本卡那一段**（同 R4：写全文会把封掉的几段重放一遍）
                 card = self._ld_build_card(visible, streaming=True,
                                            panel=self._ld_panel(chat, state.get("t0")),
-                                           footer=self._ld_footer())
+                                           footer=self._ld_frame_footer(state))
                 result = await self._ld_update_card(chat, message_id, card)
                 if result is None or not getattr(result, "success", False):
                     self._ld_stream_put(key, {**live_state, "ck_degrade": degrade_code,
@@ -2757,24 +2827,26 @@ class LarkDeckMixin:
                 # 这一条必须**单独留痕**：正文已经写成功了，面板失败意味着那张卡
                 # 会停在「正文新、面板旧」的半更新态 —— 而唯一判据就是这次返回码。
                 _log_ck_panel_write_failed_once()
-            return self._ld_stream_fail(failed.fail_reason() if failed
-                                        else "CardKit 写元素失败（没有可写的元素）")
+            return self._ld_stream_fail(
+                failed.fail_reason() if failed else "CardKit 写元素失败（没有可写的元素）",
+                code=failed.inner_code() if failed else None)
         # ⚠️ 这条车道（patch 传输 / 降级之后）同样只写**本卡那一段**：写整段会让降级后的卡
         # 把已经封掉的几段重放一遍（与元素车道同一条纪律）。
         card = self._ld_build_card(visible, streaming=True,
                                    panel=self._ld_panel(chat, state.get("t0"),
                                                         report_empty=bool(finalize)),
-                                   footer=self._ld_footer())
+                                   footer=self._ld_frame_footer(state))
         result = await self._ld_update_card(chat, message_id, card)
         if result is None or not getattr(result, "success", False):
             return self._ld_stream_fail(
-                f"帧更新失败（{getattr(result, 'error', 'unknown')}）")
+                f"帧更新失败（{getattr(result, 'error', 'unknown')}）",
+                code=getattr(result, "code", None))
         self._ld_stream_put(key, {**state, "last": text, "last_at": now,
                                   "frames": int(state.get("frames") or 0) + 1})
         # 记账在 `_ld_update_card` 里（patch 传输每帧一次整卡替换）—— 不再重复记。
         return True
 
-    def _ld_stream_fail(self, reason: str) -> bool:
+    def _ld_stream_fail(self, reason: str, code: Any = None) -> bool:
         """一帧失败：**必须留下日志**，然后返回 False 让内核回落。
 
         为什么不能只是 ``return False``：失败会让内核**关掉本回合的 native 流式**，
@@ -2785,6 +2857,13 @@ class LarkDeckMixin:
         # R9：失败**每一次都记**（不跟着日志限流）—— 用户问「刚才那回合为什么掉成纯文本」时，
         # 卡片要答得出原因；日志只有 30 秒一条，且用户看不到日志。
         _context.note_frame_fail(reason)
+        # R11-C2：同一个收口点顺手记两条**用户看不见但排障必须知道**的事 ——
+        # ① 非零响应码（→ `/larkdeck status` 的错误码 top-N）；
+        # ② 「本回合卡片车道被放弃」（→ 掉回纯文本的用户可见次数）。
+        # 挂在**这一个**收口点，是因为它正是「帧失败」被记录的地方（12 个调用点共用），
+        # 不在这里记就得在 12 处各记一遍 —— 那是「同一件事两处真相」的标准入口。
+        _context.note_response_code(code)
+        _context.note_plaintext_fallback(reason)
         # A3：失败收口也打一条自检汇总 —— 停在失败上的回合同样要能判定「面板/页脚有没有内容」
         # `strips=-1` 与 `frames=-1` 同义：这条路**没有正文净化可言**（帧没写出去）。
         _log_turn_selfcheck("", self._ld_transport(), -1, strips=-1)
@@ -3060,8 +3139,11 @@ class LarkDeckMixin:
             # 「状态改了、卡片没变、还不报错」。这正是本项目最怕的形态。
             panel = self._ld_panel(chat, started, report_empty=True) or _cards.unified_panel(
                 status=_panel.STATUS_STOPPED)
+            # ⚠️ 同上（审计 C1）：`/stop` 重绘是**用户最可能截图的那一帧**，而且它以前会把
+            #    卡片上**已有的** 🔖 抹掉（用基数页脚重画 ⇒ 短码没了）。这里手上就有 message_id。
             card = self._ld_build_card(_sanitize_for_send(text) or " ", streaming=False,
-                                       panel=panel, footer=self._ld_footer())
+                                       panel=panel,
+                                       footer=self._ld_frame_footer({"message_id": message_id}))
             blob = json.dumps(card, ensure_ascii=False)
             if '"collapsible_panel"' not in blob:
                 # 第十路审计：正文贴着飞书硬上限时，降载阶梯会把承载状态色的面板摘掉 ⇒

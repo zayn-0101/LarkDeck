@@ -257,8 +257,11 @@ MUTATIONS = [
      "check_hooks"),
     # ⚠️ R4 起收尾帧写的是**本卡那一段**（`tail_visible`），锚点跟着改（不然就是「清单与源码脱节」）
     ("SEQ3-收尾帧不关 streaming_mode", "core/adapter.py",
-     "            card = self._ld_build_card(tail_visible or \" \", streaming=False,\n                                       panel=self._ld_panel(chat, state.get(\"t0\"),\n                                                            report_empty=True),\n                                       footer=self._ld_footer())",
-     "            card = self._ld_build_card(tail_visible or \" \", streaming=True,\n                                       panel=self._ld_panel(chat, state.get(\"t0\"),\n                                                            report_empty=True),\n                                       footer=self._ld_footer())",
+     # ⚠️ 锚点在 2026-09-15 晚**重新对准过一次**：短码那批改动把收尾卡的页脚从
+     #    `_ld_footer()` 换成了 `_ld_frame_footer(state)` ⇒ 旧锚点失效（`❓ 锚点没找到` = 红，
+     #    规则上它与假绿同级：跑不到的变异等于没验）。
+     "            card = self._ld_build_card(tail_visible or \" \", streaming=False,\n                                       panel=self._ld_panel(chat, state.get(\"t0\"),\n                                                            report_empty=True),\n                                       footer=self._ld_frame_footer(state))",
+     "            card = self._ld_build_card(tail_visible or \" \", streaming=True,\n                                       panel=self._ld_panel(chat, state.get(\"t0\"),\n                                                            report_empty=True),\n                                       footer=self._ld_frame_footer(state))",
      "check_hooks"),
     ("SEQ4-/stop 重绘不再带中止色", "core/adapter.py",
      "            panel = self._ld_panel(chat, started, report_empty=True) or _cards.unified_panel(\n                status=_panel.STATUS_STOPPED)",
@@ -879,8 +882,7 @@ MUTATIONS = [
      '    return "\\n\\n".join(lines)',
      "test_units"),
     ("R10-4-删掉每回合自检汇总（三个症状又变回只能靠用户截图）", "core/adapter.py",
-     '            _log_turn_selfcheck(chat, self._ld_transport(), int(state.get("frames") or 0) + 1,\n'
-     '                                strips=int(state.get("strips") or 0) + (1 if stripped else 0))',
+     '            _log_turn_selfcheck(chat, self._ld_transport(), int(state.get("frames") or 0) + 1,\n                                strips=int(state.get("strips") or 0) + (1 if stripped else 0),\n                                trace=_ld_trace_id(message_id))',
      '',
      "test_units"),
     ("R10-1-面板状态退回模块局部（插件被加载两次时钩子写一份、卡片读另一份）", "core/panel.py",
@@ -896,11 +898,8 @@ MUTATIONS = [
      '_STATUS: Dict[str, Any] = dict(_STATUS_DEFAULTS)',
      "test_units"),
     ("R3-7-降级车道改用实体卡形状（把面板两块塞进普通卡载荷）", "core/adapter.py",
-     '                card = self._ld_build_card(visible, streaming=True,\n'
-     '                                           panel=self._ld_panel(chat, state.get("t0")),\n'
-     '                                           footer=self._ld_footer())',
-     '                card = _cards.cardkit_entity_card(visible, "", streaming=True,\n'
-     '                                                 panel_tools_text="")',
+     '                card = self._ld_build_card(visible, streaming=True,\n                                           panel=self._ld_panel(chat, state.get("t0")),\n                                           footer=self._ld_frame_footer(state))',
+     '                card = _cards.cardkit_entity_card(visible, "", streaming=True,\n                                                 panel_tools_text="")',
      "test_units"),
     ("R3-6-工具块的裁减方向写反（丢掉最近的、保留最早的）", "core/cards.py",
      '        lines.append(_i18n.t("panel.trimmed", n=len(steps) - max_steps))\n'
@@ -1143,8 +1142,8 @@ MUTATIONS = [
     # ⚠️ 锚点在 R3 收窄版落地时**重对准过一次**（那一行整行被重写成「面板两块按关键字传」）：
     #    锚点失效 = 红（本项目规矩），而它当时确实让全量跑退出码 1 —— 重对准是唯一正确处置。
     ("R4-1-新卡重放整段（用户把前半段再看一遍）", "core/adapter.py",
-     '            ops = _ck_plan(visible, _panel_body, live_elems, self._ld_footer(),',
-     '            ops = _ck_plan(display, _panel_body, live_elems, self._ld_footer(),',
+     '            ops = _ck_plan(visible, _panel_body, live_elems, self._ld_frame_footer(state),',
+     '            ops = _ck_plan(display, _panel_body, live_elems, self._ld_frame_footer(state),',
      "test_units"),
     ("R4-2-封旧卡忘了关流式态（旧卡永远停在「正在生成」）", "core/adapter.py",
      '                                   streaming=False,',
@@ -1416,6 +1415,175 @@ MUTATIONS = [
      '    if finalize or not text or not accumulated or not tool_pending or not complete:',
      '    if not text or not accumulated or not tool_pending or not complete:',
      "test_units"),
+    ('G1-22-条件③放宽成「子串」（帧里含累积就剥 ⇒ 会吞掉前面的正文）', 'core/adapter.py',
+     '    if not text.startswith(accumulated):',
+     '    if accumulated not in text:',
+     'test_units'),
+    ('G1-23-条件④的「分隔符之后还有内容」撤掉（裸分隔符也照剥 = 剥掉模型写的分隔线）',
+     'core/adapter.py',
+     '    if not tail.startswith(_CORE_PROGRESS_SEP) or len(tail) <= len(_CORE_PROGRESS_SEP):',
+     '    if not tail.startswith(_CORE_PROGRESS_SEP):',
+     'test_units'),
+    ('G2-10-`/stop` 重绘退回基数页脚（最可能被截图的那一帧丢掉短码）', 'core/adapter.py',
+     '                                       panel=panel,\n                                       footer=self._ld_frame_footer({"message_id": message_id}))',
+     '                                       panel=panel, footer=self._ld_footer())',
+     'test_units'),
+    # ⚠️ **锚点在 2026-09-15 晚重新对准过一次**（全量跑发现 `G2-11` 是 🟢 全绿）：
+    #    旧锚点是 `if self._ld_transport() == "cardkit":`，那一行在 `state is None` 的
+    #    **非 finalize** 支上，而对应用例喂的是 `finalize=True` —— 它在上面那句
+    #    `if finalize: return False` 就返回了，**根本走不到**这个锚点 ⇒ 变异插进去的那句
+    #    「记一笔」从来没被执行过。这是「锚点唯一、却打在**另一条分支**上」的形态：
+    #    `count(old) == 1` 拦不住它（旧规矩只防歧义，防不住「找对了文件、打错了分支」）。
+    #    ⇒ 锚点必须落在**那条用例真的会经过的语句**上。
+    ('G2-11-正常路径（没有活跃流可收尾）也记一次掉回纯文本（口径与文档相反）', 'core/adapter.py',
+     '                # 就是照这个口径写的；`/stop` 重绘成功后内核若再送 finalize 帧，也落在这一支。\n'
+     '                return False',
+     '                # 就是照这个口径写的；`/stop` 重绘成功后内核若再送 finalize 帧，也落在这一支。\n'
+     '                _context.note_plaintext_fallback("正常交还")\n'
+     '                return False',
+     'test_units'),
+    ('G1-21-帮助文案退回「三条心跳记录」（与状态卡的六条不一致）', 'core/i18n.py',
+     '版本 / 生效传输 / 钩子 / 六条记录',
+     '版本 / 生效传输 / 钩子 / 三条心跳记录',
+     'test_units'),
+    ('G1-19-分隔符常量被改错（判据与实现同源 ⇒ 真机上静默不再剥）', 'core/adapter.py',
+     '_CORE_PROGRESS_SEP = "\\n\\n---\\n"',
+     '_CORE_PROGRESS_SEP = "\\n---\\n"',
+     'test_units'),
+    ('G1-20-自检把每一帧都记成「剥了」（凭据虚高 ⇒ 真机上失去判别力）', 'core/adapter.py',
+     '                                strips=int(state.get("strips") or 0) + (1 if stripped else 0),',
+     '                                strips=int(state.get("strips") or 0) + 1,',
+     'test_units'),
+    ('G2-9-建实体退回「按这一刻有没有数据」决定页脚元素（重启后第一回合永远没有页脚与短码）',
+     'core/adapter.py',
+     '        return " " if _cfg("footer") else None',
+     '        return self._ld_footer()',
+     'test_units'),
+    # ---- 审计 B1/B2 的守卫 ----
+    ('G1-17-选项展示标签不再折叠空白（含换行的选项破坏同源 + 行首 markdown 注入）',
+     'core/cards.py',
+     '        pairs.append((f"{idx}. {label_text}", text))',
+     '        pairs.append((f"{idx}. {text}", text))',
+     'test_units'),
+    ('G1-18-已答复卡的问题行退回不转义（点一下就从按字面显示变成露出语法）', 'core/cards.py',
+     r'''    return card(elements=[_clarify_question_md(question),''',
+     r'''    return card(elements=[md(f"\u2753 {question}"),''',
+     'test_units'),
+    # ---- 审计逼出来的**真泄漏**的守卫（A1/A2/A5/A7）----
+    ('G1-13-ENV 值类退回不吃转义（`KEY="值"` 凭据原文完整露出）', 'core/panel.py',
+     r'''    r"(?![A-Za-z0-9_])=((?:[^\\\s,;'\"]|\\.)*)")''',
+     r'''    r"(?![A-Za-z0-9_])=([^\s\"',;]+)")''',
+     'test_units'),
+    ('G1-14-头部规则撤掉（`Cookie:` / `Authorization:` 整条漏脱）', 'core/panel.py',
+     '''    text = _REDACT_HEADER_RE.sub(lambda m: m.group(1) + _REDACT_VALUE, text)\n''',
+     '', 'test_units'),
+    ('G1-15-家目录规则丢掉左边界（URL 里的 /home/ 被截断成不存在的 URL）', 'core/panel.py',
+     r'''r"(?:^|(?<=[\s\"'=(:,]))/(?:Users|home)/[^/\s\"']+"''',
+     r'''r"/(?:Users|home)/[^/\s\"']+"''',
+     'test_units'),
+    ('G1-16-脱敏扫描不再限量（最坏形状把 fail-closed 钩子拖到几十毫秒）', 'core/panel.py',
+     '''    text = redact_inline_secrets(text[: _REDACT_SCAN_CHARS])''',
+     '''    text = redact_inline_secrets(text)''', 'test_units'),
+    # ⚠️ G1-11/G1-12 也是**审计逼出来的**：它的自制变异台把值类收紧成 `[^"\\]*` 时**全绿**，
+    # 说明原来没有任何用例覆盖「值里带反斜杠的凭据」；而顺着它查下去发现了真正的缺陷
+    # （`[^"]*` 在转义引号处提前收尾 ⇒ 半截凭据外露）。这两条一起把「值类」这件事钉住。
+    ('G1-11-JSON 值类退回 `[^"]*`（转义引号处提前收尾 ⇒ 半截凭据外露）', 'core/panel.py',
+     r'''    r'"\s*:\s*"((?:[^"\\]|\\.)*)"')''',
+     r'''    r'"\s*:\s*"([^"]*)"')''',
+     'test_units'),
+    ('G1-12-JSON 值类收紧成不含反斜杠（带反斜杠的凭据完全不脱敏）', 'core/panel.py',
+     r'''    r'"\s*:\s*"((?:[^"\\]|\\.)*)"')''',
+     r'''    r'"\s*:\s*"([^"\\]*)"')''',
+     'test_units'),
+    ('G1-10-1.0 按钮的编号从 0 开始（另一处 enumerate —— 同一个隐患两处真相）',
+     'core/cards.py',
+     '    buttons: List[Dict[str, Any]] = []\n    for idx, choice in enumerate(choices, start=1):',
+     '    buttons: List[Dict[str, Any]] = []\n    for idx, choice in enumerate(choices, start=0):',
+     'test_units'),
+
+    # ⚠️ G1-9 是**自查补的**：它最初**没有**任何断言守着 —— 卡面与下拉依然「同源」，
+    # 四门禁全绿，而用户照着卡面回「2」会拿到第 1 个选项（核心按 1 基下标解析）。
+    ('G1-9-选项编号从 0 开始（卡面编号与核心的 1 基解析错位 ⇒ 用户照着回数字会答错）', 'core/cards.py',
+     '    pairs: List[Tuple[str, str]] = []\n    seen: set = set()\n    for idx, choice in enumerate(choices, start=1):',
+     '    pairs: List[Tuple[str, str]] = []\n    seen: set = set()\n    for idx, choice in enumerate(choices, start=0):',
+     'test_units'),
+
+    # ---- 第二组（G2）续：status 的 uptime / 掉回纯文本 / 错误码 top-N ----
+    ('G2-5-帧失败不再记「掉回纯文本」（用户可见的掉卡次数永远是 0）', 'core/adapter.py',
+     '        _context.note_response_code(code)\n        _context.note_plaintext_fallback(reason)',
+     '        _context.note_response_code(code)',
+     'test_units'),
+    ('G2-6-帧失败不再记错误码（top-N 永远是空的）', 'core/adapter.py',
+     '        _context.note_response_code(code)\n',
+     '',
+     'test_units'),
+    ('G2-7-`reset()` 把进程起点也清掉（uptime 永远显示「刚重启」）', 'core/context.py',
+     '        "codes": {}, "code_total": 0,\n    })',
+     '        "codes": {}, "code_total": 0, "started_at": time.time(),\n    })',
+     'test_units'),
+    ('G2-8-错误码表没有上限（坏上游能把表撑爆）', 'core/context.py',
+     '            if key not in codes and len(codes) >= _MAX_CODE_KEYS:',
+     '            if key not in codes and len(codes) >= 10 ** 9:',
+     'test_units'),
+
+    # ---- 第二组（G2）：澄清卡 escape + 帧页脚短码 ----
+    ('G2-1-澄清卡的问题不再转义（markdown 语法被解释）', 'core/cards.py',
+     '    return md(f"\\u2753 {escape_inline_md(question)}")',
+     '    return md(f"\\u2753 {question}")',
+     'test_units'),
+    ('G2-2-可见选项列表的标签不再转义', 'core/cards.py',
+     '    return "\\n".join(escape_inline_md(label) for label, _ in pairs)',
+     '    return "\\n".join(label for label, _ in pairs)',
+     'test_units'),
+    ('G2-3-帧页脚不再带本卡短码（截图与日志又对不上）', 'core/adapter.py',
+     '        return f"{base} · \\U0001f516 {trace}"',
+     '        return base',
+     'test_units'),
+    ('G2-4-自检行不再报卡短码', 'core/adapter.py',
+     '        snap.get("frame_ok_count"), transport, frames, strips, trace or "无",',
+     '        snap.get("frame_ok_count"), transport, frames, strips, "",',
+     'test_units'),
+
+    # ---- 第一组（G1）：澄清卡可见选项 + 脚注按方言 + 工具参数脱敏 ----
+    # 三项都是「计划里有 / 对方有，而我们漏了」的呈现与安全缺口，所以每条修复
+    # 都必须有变异守着（撤掉一处 ⇒ 至少一个门禁变红）。
+    # ⚠️ G1-4 曾经是 🟢：断言只直接调 `redact_inline_secrets`，把 `_args_preview`
+    # 里那行调用整个撤掉也照样全绿 —— **验了函数、没验接线**。现在多一条走真实
+    # 入口的断言。G1-5/G1-8 同理：用例原来用数字值（`4096`），JSON 规则本就匹配
+    # 不到 ⇒ 变异与用例同时是空的。
+    ('G1-1-卡面可见选项列表被撤掉（选项又只活在下拉里）', 'core/cards.py',
+     'md(_clarify_choice_list(pairs)), selector]',
+     'selector]',
+     'test_units'),
+    ('G1-2-卡面列表与下拉不同源（列表另算一遍、没去重）', 'core/cards.py',
+     'md(_clarify_choice_list(pairs)), selector]',
+     'md(_clarify_choice_list([(f"{i}. {str(c)}", str(c)) for i, c in enumerate(choices, start=1)])), selector]',
+     'test_units'),
+    ('G1-3-2.0 脚注退回旧文案（没有按钮的卡又说「点按钮」）', 'core/cards.py',
+     '"clarify.multi_hint" if multi else "clarify.hint_2"',
+     '"clarify.multi_hint" if multi else "clarify.hint"',
+     'test_units'),
+    ('G1-4-参数脱敏的**接线**被撤掉（函数还在、预览不调它）', 'core/panel.py',
+     '    text = redact_inline_secrets(text[: _REDACT_SCAN_CHARS])',
+     '    text = text  # 脱敏被撤掉',
+     'test_units'),
+    ('G1-5-脱敏判据从「键名以凭据词结尾」放宽成「键名含凭据词」', 'core/panel.py',
+     "    r'access[_-]?key|client[_-]?secret|private[_-]?key|credential|cookie|authorization))'",
+     "    r'access[_-]?key|client[_-]?secret|private[_-]?key|credential|cookie|authorization)[A-Za-z0-9_.\\-]*?)'",
+     'test_units'),
+    ('G1-6-Bearer 规则撤掉（Authorization 头原样露出）', 'core/panel.py',
+     '    text = _REDACT_BEARER_RE.sub(lambda m: m.group(1) + _REDACT_VALUE, text)\n',
+     '',
+     'test_units'),
+    ('G1-7-家目录前缀折叠撤掉（/Users/<名字>/ 原样露出）', 'core/panel.py',
+     '    return _REDACT_HOME_RE.sub("~", text)',
+     '    return text',
+     'test_units'),
+    ('G1-8-ENV 侧判据同样放宽（MAX_TOKENS=… 这类正常内容被涂）', 'core/panel.py',
+     '    r"api[_-]?key|access[_-]?key|client[_-]?secret|private[_-]?key|credential|cookie))"\n    r"(?![A-Za-z0-9_])=((?:[^\\\\\\s,;\'\\"]|\\\\.)*)")',
+     '    r"api[_-]?key|access[_-]?key|client[_-]?secret|private[_-]?key|credential|cookie)[A-Za-z0-9_]*)"\n    r"(?![A-Za-z0-9_])=((?:[^\\\\\\s,;\'\\"]|\\\\.)*)")',
+     'test_units'),
+
     # ⚠️ 期望门禁是 **check_hooks** 而不是 test_units：这条变异改的是 `hooks.py` 的接线，
     # 而单测是直接调数据层的（它验的是「工具结束**这个事实**不许关窗口」）。
     # 谁改的谁负责 —— 归因写准，才不会被「反正变红了」糊过去（第十路审计的教训）。
@@ -1426,8 +1594,10 @@ MUTATIONS = [
      '        _panel.record_tool_finished(payload.get("session_id", ""),',
      "check_hooks"),
     ("R11-6-自检不再报「剥了几帧」（真机上再没有凭据）", "core/adapter.py",
-     '                                strips=int(state.get("strips") or 0) + (1 if stripped else 0))',
-     '                                strips=0)',
+     '                                strips=int(state.get("strips") or 0) + (1 if stripped else 0),\n'
+     '                                trace=_ld_trace_id(message_id))',
+     '                                strips=0,\n'
+     '                                trace=_ld_trace_id(message_id))',
      "test_units"),
     ("R11-8-配置项 progress_lines_in_body 又变成空转（文档说的与做的不一致）", "core/adapter.py",
      '        if _cfg("progress_lines_in_body"):\n            return text\n',
@@ -1437,6 +1607,51 @@ MUTATIONS = [
      '            _panel.record_answer_delta(session_id, turn_id, payload.get("delta", ""))',
      '            _panel.record_answer_delta(session_id, turn_id)',
      "check_hooks"),
+    # ---- 第十三路审计（效果组 Y1b/X14/X18..Y5/Z）实测出来的断言缺口 ------------------ #
+    # 这一批**全部**是「代码是对的、但没有任何判据守着」—— 撤掉修复四门禁照样全绿。
+    # 共性：判据的作用域**没跨出模块自己**（拿被测常量算上界 / 拿同模块函数比对象 /
+    # 只验函数不验接线 / 输入构造让错误分支恒不可达）。三种形态在本项目反复出现，
+    # 所以每条都配一个变异，不许只写断言。
+    ("X14a-send() 发送未成功不再记「掉回纯文本」（用户看到纯文本的主路径漏账）", "core/adapter.py",
+     '            _context.note_plaintext_fallback("send 未成功")\n',
+     '',
+     "test_units"),
+    ("X14b-send() 抛异常那条支路不再记「掉回纯文本」（且原因里没有异常类型）", "core/adapter.py",
+     '            _context.note_plaintext_fallback(f"send 异常：{type(exc).__name__}")\n',
+     '',
+     "test_units"),
+    ("X18-错误码表上限 24→2（top-N 静默退化成 top-2；原断言拿常量自己算上界）", "core/context.py",
+     "_MAX_CODE_KEYS = 24",
+     "_MAX_CODE_KEYS = 2",
+     "test_units"),
+    ("X19-账本快照退回浅拷贝（读者改快照即污染共享账本）", "core/context.py",
+     '    with _LOCK:\n        return dict(_STATUS, codes=dict(_STATUS.get("codes") or {}))',
+     '    with _LOCK:\n        return dict(_STATUS)',
+     "test_units"),
+    ("X20-账本的 codes 退回与 _STATUS_DEFAULTS 共享（清一次等于清全部）", "core/context.py",
+     '        box["status"]["codes"] = {}\n',
+     '',
+     "test_units"),
+    ("X21-掉回纯文本的原因串不再单行归一（换行把 `#` 顶到行首变成 markdown 语法）", "core/context.py",
+     '    text = " ".join(str(reason or "").split())[:200]',
+     '    text = str(reason or "")[:200]',
+     "test_units"),
+    ("Y5-_dur 的脏值护栏只剩 NaN 那一半（0/-1 编出「已运行 56 年」，未来时间戳显示「刚重启」）", "core/context.py",
+     '    if started != started or started < _EPOCH_FLOOR or started > now:',
+     '    if started != started:',
+     "test_units"),
+    ("Y20-收尾整卡替换退回基数页脚（用户**最后看到**的那张卡丢短码）", "core/adapter.py",
+     '                                       footer=self._ld_frame_footer(state))\n'
+     '            result = await self._ld_update_card(chat, message_id, card)\n'
+     '            if result is None or not getattr(result, "success", False):\n'
+     '                return self._ld_stream_fail(\n'
+     '                    f"收尾帧失败（{getattr(result, \'error\', \'unknown\')}）")',
+     '                                       footer=self._ld_footer())\n'
+     '            result = await self._ld_update_card(chat, message_id, card)\n'
+     '            if result is None or not getattr(result, "success", False):\n'
+     '                return self._ld_stream_fail(\n'
+     '                    f"收尾帧失败（{getattr(result, \'error\', \'unknown\')}）")',
+     "test_units"),
 ]
 
 #: **对照项**：行为等价的改动（合法 YAML 变体等），期望四门禁**全绿**。
@@ -1554,6 +1769,17 @@ def _classify(script: str, proc: "subprocess.CompletedProcess") -> str:
         return "green"
     broken = any(marker in blob for marker in _LOAD_FAIL_MARKERS)
     asserted = any(marker in blob for marker in _FAIL_MARKERS[script])
+    # ⚠️ **结构性判据优先于子串判据**（2026-09-15 实测的误判，方向与假绿相反但同样是错）：
+    #    `test_units.py` 的**正常输出**里就可能出现裸的 `ImportError` —— 它有测试专门覆盖
+    #    「拿不到 SDK ⇒ fail-open」。于是 `broken` 为真，一次**真的断言失败**会被判成
+    #    「💥 只有崩溃、不算判别力证据」⇒ **把有牙的变异记成没牙**（实测：G1-19 就是被这样
+    #    误判的，手工复现明明是干净的 AssertionError + `195/196 passed`）。
+    #    判据改成：**先问「这个门禁到底跑起来了吗」** —— `test_units.py` 跑起来就会打
+    #    `N/M passed` 这个收尾语，三个 `check_*` 则各打自己的 OK 语。没跑起来（源码都没加载）
+    #    时它们**不会**打收尾语，所以上一段那条「加载失败会被当成断言失败」的防线仍然成立。
+    _ran = (_PASS_MARKERS[script] in blob)
+    if asserted and _ran:
+        return "red-assert"
     # 「没跑到断言」有两种：压根没打失败标记，或者源码根本没加载起来（后者会让
     # `check_*` 打出一串看起来像断言的 `FAIL: ` 文案 —— 第十路审计实测的那种假证据）。
     if broken or not asserted:

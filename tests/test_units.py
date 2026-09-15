@@ -677,9 +677,30 @@ def test_send_renders_card_and_tracks():
 
 def test_send_falls_back_to_text_on_card_failure():
     raw = _make(fail_cards=True)
+    context.reset()
     result = _run(raw.send("oc_1", "你好"))
     assert result.message_id == "om_text_1", "卡片失败必须回落纯文本"
     assert any(c[0] == "SUPER.send" for c in raw.calls), raw.calls
+    # ⚠️ **接线判据**（审计 X14）：`send()` 是「用户看到纯文本」的**主路径之一**，
+    #    而它那两处 `note_plaintext_fallback` 原先**一条断言都没有** —— 上面这句已经
+    #    把 `send()` 逼到了失败，却完全不看账本 ⇒ 把那两行整条删掉，四门禁照样全绿。
+    #    同时钉住口径：这一格**该**计（我们真的发起过一次写、而它失败了），
+    #    与 `test_send_empty_content_or_missing_client_falls_back` 那格（一次写都没发）相反。
+    _snap = context.status_snapshot()
+    assert _snap["fallback_count"] == 1 and "send 未成功" in _snap["fallback_reason"], _snap
+    # 异常支路（另一处调用点）：`_ld_send_card` 抛 ⇒ 同样要落实计数，
+    # 而且原因里要带**异常类型**（排障时「抛了什么」比「失败了」有用得多）。
+    raw2 = _make()
+    context.reset()
+
+    async def _boom(*_a, **_kw):
+        raise RuntimeError("卡片构造炸了")
+
+    raw2._ld_send_card = _boom
+    _run(raw2.send("oc_2", "你好"))
+    _snap2 = context.status_snapshot()
+    assert _snap2["fallback_count"] == 1 and \
+        "send 异常：RuntimeError" in _snap2["fallback_reason"], _snap2
 
 
 def test_send_empty_content_or_missing_client_falls_back():
@@ -1467,8 +1488,10 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         # ⚠️ 这里**不许**再写「最后一帧页脚没变，所以 footer_written 最后一项是空列表」这种断言：
         #    同一件事已经由 `batch_ids` 精确钉住（最后一批只含 panel_body），那条断言是**空真**的
         #    —— R2 审计实测：删掉它 132/132 照样全绿，它只会给人一种「页脚去重被多条断言守住」的错觉。
-        assert footer_written[1] == [footer_after], \
-            f"页脚变化的那一帧必须写**当前**页脚内容：{footer_written}"
+        # 帧路径写出去的页脚 = 基数页脚 + **本卡短码**（R11-C2）。期望值在这里**显式拼**
+        # 出来，不再调 `_ld_frame_footer` —— 那样等于「函数等于它自己」，零判别力。
+        assert footer_written[1] == [f"{footer_after} · \U0001f516 m_ck_1"], \
+            f"页脚变化的那一帧必须写**当前**页脚内容（含本卡短码）：{footer_written}"
         assert sorted(batch_seqs + seqs) == [1, 2, 3, 4, 5, 6, 7], \
             f"每次写入共用同一个严格递增序号（既不跳号也不撞号）：{sorted(batch_seqs + seqs)}"
         # 写入预算的**观测量**（附录 B 的第二条断言）：预算里的数字是算出来的，而这里是
@@ -2389,6 +2412,11 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         #      ① 有证据 ⇒ 剥；② 没有工具窗口 ⇒ 不剥；③ 模型自己写的分隔线不许被吃掉；
         #      ④ 累积被上限冻结（不完整）⇒ 不剥；⑤ 工具**已结束**但还没有新正文 ⇒ 仍要剥。
         _SEP = adapter._CORE_PROGRESS_SEP
+        # ⚠️ **判据与实现不许同源**（审计中-4）：上面这行是**自比较** —— 合成帧与剥离判据
+        #    用的是同一个常量，于是把常量改成 `"\n---\n"` 之类，四门禁**全绿**而真机上
+        #    从此静默不再剥（工具行又进正文）。这里用**字面量**把它钉死。
+        assert _SEP == "\n\n---\n", \
+            f"分隔符常量必须与核心的合成式一致（改它=真机静默失效）：{_SEP!r}"
         _PROG = "⚙️ 探针工具行（核心叠加的进度）"
 
         def _a7_run(chat, hook_turn, frame, final_text, prep=None):
@@ -2398,7 +2426,9 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             ``tick.is_interim`` 那一帧才走 ``_compose_frame_content()`` 把工具进度块合成进去
             （``gateway/stream_consumer.py:791-798`` 的 ``display_text = self._accumulated``
             之后那个 ``if tick.is_interim``），**收尾帧发的是纯 ``self._accumulated``**
-            （所有 finalize 发送点都是纯累积：``:747``/``:781``/``:834``/``:856``/``:862``/``:912``）。
+            （finalize 发送点**除一处例外**都是纯累积：``:486``/``:747``/``:781``/``:834``/``:856``/
+            ``:862``/``:912``；例外是 ``stream_consumer_transport.py:391`` 的「失败后重发」——
+            那条路会带进度行+光标，本测试**不模拟**它，已知缺口记在 ``docs/plan-v1.md`` 附录 F）。
             旧版拿**同一个 frame** 发两次 —— 那是按**错误的核心行为**写的测试，它让
             「收尾帧也剥进度」看起来是对的（R11-A7 尾巴的更正，变异 ``R11-9``）。
 
@@ -2450,9 +2480,13 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         assert _mid_a == _body_a, f"有证据时必须只渲染正文（中间帧）：{_mid_a!r}"
         assert "探针工具行" not in _fin_a, \
             f"收尾帧也不许把核心的进度行留在卡里（用户最终看到的就是这一帧）：{_fin_a[-300:]}"
-        assert any(int(re.search(r"正文剥进度=(\d+)", l).group(1)) >= 1 for l in _sc_a
-                   if "正文剥进度=" in l), \
-            f"自检必须报出本回合剥了几帧（真机没有读卡接口，这是唯一凭据）：{_sc_a}"
+        # ⚠️ **必须精确等于 1**（审计中-7）：原来写的是 `>= 1`，于是把自检改成「每帧都记一笔
+        #    剥」（`if True:`）也照样全绿 —— 而这个数是真机上**验证正文净化唯一生效的凭据**，
+        #    虚高就等于凭据失效。本回合只有**中间帧**那一帧真的剥了（收尾帧永不剥）。
+        _strip_counts = [int(re.search(r"正文剥进度=(\d+)", l).group(1)) for l in _sc_a
+                        if "正文剥进度=" in l]
+        assert _strip_counts == [1], \
+            f"自检必须精确报出本回合剥了 1 帧（中间帧那一帧）：{_sc_a}"
 
         # ② 没有工具窗口 ⇒ **不剥**（核心没叠过进度块；这一格守住 `tool_pending` 条件）
         #    ⚠️ 这一格是**合成探针**：`frame` 里那段「像核心进度块」的文字是**模型自己写的**
@@ -2551,6 +2585,55 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             f"⚠️ 收尾帧吃掉了正文 —— 而核心不会再补发（不可逆）：{_fin_g[-300:]}"
         assert _body_g in _fin_g, \
             f"前半段也必须还在（不许整段被换成别的）：{_fin_g[-300:]}"
+
+        # ⑧ **「收尾帧不剥」必须与传输无关**（审计实测的判别力缺口，必须单独钉）。
+        #    审计构造过一个「弱化形态」：把通用护栏从 `_strip_core_progress` 里删掉、
+        #    改成 `_ld_body_text` 里一句「只有 cardkit 才跳过收尾帧」。那个形态**对 cardkit
+        #    而言语义等价于修好了**，于是上面 ①–⑦ 这些**全在 cardkit 上跑**的断言
+        #    全都发现不了它（它一度被误当作「195/195 全绿」的证据）。
+        #    ⇒ 这一格**直接在函数层**钉住护栏本身：不经任何传输、也不依赖状态查找。
+        #      两句缺一不可：头一句钉「收尾帧不剥」，后一句钉「中间帧照剥」
+        #      （否则「把剥离功能整个关掉」也能让前一句通过）。
+        assert adapter._strip_core_progress(_body_a + _SEP + _PROG, _body_a, True, True,
+                                            finalize=True) == _body_a + _SEP + _PROG, \
+            "收尾帧在**函数层**就必须不剥（与传输无关）——别实现成某个传输的特例"
+        assert adapter._strip_core_progress(_body_a + _SEP + _PROG, _body_a, True, True,
+                                            finalize=False) == _body_a, \
+            "中间帧的剥离判据不变（这一句防「把功能整个关掉」也能满足上一句）"
+
+
+        # ⑨ **条件③与条件④各自也要有守卫**（审计中-6 实测：这两条原先撤掉四门禁全绿）。
+        #    ③ 「前缀」不是「子串」：帧文本**包含**累积但**不以它开头**时，尾巴根本不是核心叠加的
+        #       ——拿子串当证据会剥掉**前面那段模型正文**。
+        #
+        #    ⚠️⚠️ **这一格的第一版是恒真的**（2026-09-15 全量跑实测：变异 `G1-22` 把它从
+        #    `startswith` 放宽成 `not in`，四门禁**照样全绿**）。原因不是「断言写松了」，
+        #    而是**探针构造本身**走不到剥离分支：旧探针是 `"宋" + _body_a + _SEP + _PROG`，
+        #    而条件④那一行切片用的是**长度**（`text[len(accumulated):]`），累积前面多出来的
+        #    `"宋"` 让切片**错位一个字符** ⇒ 尾巴以 `"。"` 开头而不是分隔符 ⇒ 连错误实现
+        #    也在条件④上原样返回 ⇒ 断言两边都成立。
+        #    ⇒ 所以探针必须**自己带一条「这条用例真的有判别力」的自证**：帧首长度与累积
+        #      等长，错的切片才会**正对着**分隔符（下面第二句 assert 钉住这件事）。
+        #      这是本项目「恒真断言」的又一个新形态：**输入构造**让错误分支不可达，
+        #      而不是断言写错 —— 只有把这一点也断言下来，下一轮改代码才不会静默退化。
+        _p9_head = "帧首正文。"          # 与下面累积**必须等长**（见下）
+        _p9_acc = "错配累积。"
+        assert len(_p9_head) == len(_p9_acc), \
+            "构造前提：帧首与累积必须等长，否则这一格会退化成恒真（理由见上面的注释）"
+        _p9 = _p9_head + _SEP + _p9_acc + _PROG
+        assert _p9_acc in _p9 and not _p9.startswith(_p9_acc), "构造前提：累积必须是「子串但非前缀」"
+        assert _p9[len(_p9_acc):].startswith(_SEP), \
+            "构造无效：错位切片必须以分隔符开头，否则「子串判据」那条错误实现也走不到剥离分支"
+        assert adapter._strip_core_progress(_p9, _p9_acc, True, True,
+                                            finalize=False) == _p9, \
+            "条件③：累积必须真的是**前缀**（只是子串不算证据，否则会吞掉前面的正文）"
+        #    ④ 尾巴**只有裸分隔符、后面没内容** ⇒ 不许剥：核心的合成式在 `progress` 为空时
+        #      **不会**留下裸分隔符（`"\n\n---\n".join(p for p in (accumulated, progress) if p)`），
+        #      所以裸分隔符只能是**模型自己写的**（那时它已经在累积里了）。
+        assert adapter._strip_core_progress(_body_a + _SEP, _body_a, True, True,
+                                            finalize=False) == _body_a + _SEP, \
+            "条件④：尾巴必须是「分隔符 + 还有内容」；裸分隔符不许剥（那是模型写的）"
+
         # ⑭ **正文长大之后也要守硬上限**（第十二路审计第 5 条）：建实体那道闸门守的是
         #    **空正文**的 seed 帧（核心传 `""`），真正会长大的是后面每一帧的累积全文。
         #    ⚠️ R4 起这一格分**两半**（行为**有意**变了，别再当成回归）：
@@ -3359,6 +3442,32 @@ def test_panel_and_context_state_survive_the_module_being_loaded_twice() -> None
     box = getattr(builtins, "_larkdeck_shared_state")
     assert context._STATUS is context._shared_status(), \
         "写卡账本必须挂在进程级共享容器上（否则「累计 0 帧」那个症状会回来）"
+    # ⚠️⚠️ **上面那一句是恒真的**（审计 Y1b 实测）：它拿「模块绑定的对象」与「同模块函数
+    #    返回的对象」比 —— 只要有人把 `_STATUS` 的初始化（`context.py:146`）**和**
+    #    `_shared_status` 的返回（`:80`）**一起**改成本地对象，这句永远成立（实测两处一起改
+    #    ⇒ 198/198 全绿）。**单点**改坏时它确实能抓（实测 197/198），所以它补的是另一半。
+    #    判据必须跨出模块自己：账本**就是共享盒子里那一格**。
+    assert context._STATUS is box["status"], \
+        "账本必须是**共享盒子里那一格**，不是模块自己的一个 dict（两处一起搬走 = 静默裂脑）"
+    # 更强的判据：照 panel 那条的手法，把 `context.py` **真的 exec 成两份模块对象**，
+    # 再验证「第二份里记的码，第一份必须看得见」。⚠️ `context.py` 有 `from . import i18n`
+    # ⇒ 命名空间**必须**给 `__package__`，否则 exec 直接炸（那就退化成崩溃、不是断言）。
+    _csrc = (_pathlib.Path(_REPO_PARENT) / "larkdeck" / "core" / "context.py").read_text(
+        encoding="utf-8")
+    _c1: dict = {"__name__": "larkdeck_context_copy_1", "__package__": "larkdeck.core"}
+    _c2: dict = {"__name__": "larkdeck_context_copy_2", "__package__": "larkdeck.core"}
+    exec(compile(_csrc, "context_copy_1", "exec"), _c1)     # noqa: S102 —— 故意的：模拟第二份
+    exec(compile(_csrc, "context_copy_2", "exec"), _c2)     # noqa: S102
+    assert _c1["_STATUS"] is _c2["_STATUS"], \
+        "两份模块对象必须共享同一个账本（钩子写 A、卡片读 B ⇒ 卡片恒报「累计 0 帧」）"
+    assert _c1["_LOCK"] is _c2["_LOCK"], "账本的锁同样要跨世代同源（否则互斥从构造上失效）"
+    _c1["reset"]()
+    try:
+        _c2["note_response_code"](300309)
+        assert _c1["status_snapshot"]()["codes"].get("300309") == 1, \
+            "在第二份模块对象里记的错误码，第一份必须看得见"
+    finally:
+        _c1["reset"]()
     for name in ("_LATEST", "_MAX_CACHE", "_RETRY_AFTER", "_ALIASES"):
         assert getattr(context, name) is box["ctx_" + name.lstrip("_").lower()], \
             f"{name} 必须与进程级容器是同一个对象（否则页脚/缓存会被分成两份）"
@@ -4273,7 +4382,13 @@ def test_adapter_panel_wiring() -> None:
         context.record_api_call(model="test-model", usage={"input_tokens": 1})
         with_time = adapter.LarkDeckMixin._ld_panel("", time.monotonic() - 12.3)
         header = with_time["header"]["title"]["content"]
-        assert "🤖 Test Model" in header and "⏱ 12.3s" in header, header
+        # ⚠️ 这里**不能**写死 `⏱ 12.3s`：`time.monotonic() - (time.monotonic() - 12.3)` 会带上
+        #    两次调用之间的**真实间隔**，而负载高时（例如同时跑变异验证器 + 子代理）这个间隔
+        #    能超过 50ms ⇒ 四舍五入成 `12.4s` ⇒ **偶发假红**。
+        #    ⚠️ 假红比不红更危险：变异验证器把「红」当作**判别力证据**，于是某条本来没牙的变异
+        #    会被误判成「被抓住了」—— 结论正好写反（2026-09-15 真机踩到一次：清理后重跑就绿了）。
+        #    判据保留原意（格式 + 数值量级），只是不再钉到小数第二位以后。
+        assert "🤖 Test Model" in header and re.search(r"⏱ 12\.[0-9]s", header), header
         adapter.configure(show_model=False)
         assert "🤖" not in adapter.LarkDeckMixin._ld_panel("", None)["header"]["title"]["content"]
 
@@ -5102,6 +5217,97 @@ def test_clarify_dialect_switch_and_no_dialect_mixing():
         adapter._apply_metrics_config()
 
 
+def test_clarify_card_2_shows_the_choices_and_never_says_tap_a_button():
+    """第一组 · G1：**2.0 澄清卡必须让人看见有哪几个选项**，且脚注不许说「点按钮」。
+
+    起因（用户对着 aiduPOP 的截图追问过这件事）：默认方言翻成 2.0 之后，选项文本
+    **只活在下拉里** —— 不点开就看不出有哪几个选项；而脚注还写着「点按钮，或直接回复
+    文字都行」，可这张卡上**根本没有按钮**。两件事都是「计划里有、实现漏了」，
+    不是权衡（`docs/plan-6-effects.md` 的路径 A 本就写了选项要外显）。
+
+    三条判据缺一条就会退化成「看起来有列表、点下去对不上」：
+      ① 卡面列表**逐条等于**下拉的显示标签（同源）；② 提交值仍是**原始选项文本**
+      （答案要的是规范标签，不是「1. A 方案」）；③ 脚注按方言分流。
+    """
+    choices = ["A 方案", "B 方案", "A 方案"]            # 故意带重复：验同源也验去重
+    card2 = cards.clarify_card_2("选哪个？", choices, clarify_id="c", session_key="s")
+    els = card2["body"]["elements"]
+    # ⚠️ 脚注**也是** markdown（只是带 text_size=notation）⇒ 判据必须把它排除掉，
+    # 否则「数够两个 markdown」会被脚注顺带满足（恒真断言的又一个形态）
+    mds = [e for e in els if e["tag"] == "markdown" and e.get("text_size") != "notation"]
+    assert len(mds) == 2, f"2.0 卡应当是「问题 + 可见选项列表」两个正文 markdown：{[e['tag'] for e in els]}"
+    assert mds[0]["content"].endswith("选哪个？"), mds[0]["content"]
+    sel = [e for e in els if e["tag"] == "select_static"][0]
+    labels = [o["text"]["content"] for o in sel["options"]]
+    values = [o["value"] for o in sel["options"]]
+    assert mds[1]["content"].split("\n") == labels, (
+        f"卡面列表必须与下拉标签**逐条相同**（同源）：{mds[1]['content']!r} vs {labels}")
+    assert values == ["A 方案", "B 方案"], f"去重后提交值必须是原始选项文本：{values}"
+    foot2 = [e["content"] for e in els if e.get("text_size") == "notation"]
+    assert foot2 and "按钮" not in foot2[0], \
+        f"2.0 卡上没有按钮，脚注就不许说「按钮」：{foot2}"
+    # ⚠️ **编号必须从 1 开始、且与原选项顺序一致**（这条断言是补上的，之前确实没有）：
+    #    文字回答那条路是**核心按 1 基下标**解析的（用户回「2」= 第 2 个选项），所以卡面编号
+    #    一旦错位（0 基 / 跳号 / 按去重后重排），用户**照着卡面回数字就会答错** ——
+    #    而卡面与下拉**仍然「同源」**，四门禁全绿。这是「同源」这个判据**覆盖不到**的一面。
+    _plain = cards.clarify_card_2("Q?", ["甲", "乙", "丙"], clarify_id="c", session_key="s")
+    _md_plain = [e for e in _plain["body"]["elements"]
+                 if e["tag"] == "markdown" and e.get("text_size") != "notation"]
+    assert _md_plain[1]["content"].split("\n") == ["1. 甲", "2. 乙", "3. 丙"], \
+        f"卡面编号必须是 1 基且与原顺序一致（文字回答按 1 基下标解析）：{_md_plain[1]['content']!r}"
+    # ⚠️ **1.0 卡那一侧是另一处 `enumerate`** —— 同一个隐患两处真相：按钮文字里的编号也必须是
+    #    1 基（用户回数字由核心按 1 基解析）。只钉 2.0 那侧等于漏掉一半。
+    _legacy = cards.clarify_card("Q?", ["甲", "乙", "丙"], clarify_id="c", session_key="s")
+    _btns = [b["text"]["content"]
+             for el in _legacy["elements"] if el.get("tag") == "action"
+             for b in el["actions"]]
+    assert _btns[:3] == ["1. 甲", "2. 乙", "3. 丙"], \
+        f"1.0 按钮的编号也必须是 1 基：{_btns}"
+    # ⚠️ **选项里含换行**（模型完全可以给出多行选项）会同时坏两件事（审计 B1）：
+    #    ① 「卡面列表与下拉标签**逐条相同**」这条同源判据**不成立**（列表凭空多出一行）；
+    #    ② `# ` / `- ` / `> ` 落到**行首** ⇒ 直接变成 markdown 语法 ——
+    #       而 `escape_inline_md` 不转义 `#`/`-`/`>`，正是以「插入点永远在行首标记**之后**」
+    #       为前提的（那个前提被内嵌换行推翻）。
+    #    ⇒ 展示标签必须**先折叠空白**；提交值仍是**原文**（答案要能对上）。
+    _nl = ["ok", "第一行\n# 我是标题", "第三行"]
+    _nl_card = cards.clarify_card_2("q", _nl, clarify_id="c", session_key="s")
+    _nl_els = _nl_card["body"]["elements"]
+    _nl_mds = [e for e in _nl_els
+               if e["tag"] == "markdown" and e.get("text_size") != "notation"]
+    _nl_sel = [e for e in _nl_els if e["tag"] == "select_static"][0]
+    assert _nl_mds[1]["content"].split("\n") == [o["text"]["content"] for o in _nl_sel["options"]], \
+        f"含换行的选项也必须保持同源（列表行数 == 下拉条数）：{_nl_mds[1]['content']!r}"
+    assert not any(l.lstrip().startswith(("#", "-", ">"))
+                   for l in _nl_mds[1]["content"].split("\n")), \
+        f"折叠之后不许残留行首 markdown 标记（那会被当语法解释）：{_nl_mds[1]['content']!r}"
+    assert [o["value"] for o in _nl_sel["options"]] == _nl, \
+        "提交值必须仍是**原文**（含换行）—— 折叠只作用于展示"
+    # 审计 B2：**已答复卡**的问题行也得转义，否则用户点一下就从「按字面显示」
+    # 变成「露出 markdown 语法」（`*` 变斜体、`[x]` 变链接）
+    _q2 = "选 A*B 还是 C_D？"          # 本地定义：这一格在**本**测试函数里，别借别的函数的变量
+    _res2 = cards.clarify_resolved_card_2(question=_q2, answer="A*B 方案", user_name="u")
+    _res2q = _res2["body"]["elements"][0]["content"]
+    assert "A\\*B" in _res2q, f"2.0 已答复卡的问题同样要转义：{_res2q!r}"
+    _res1 = cards.clarify_resolved_card(question=_q2, answer="A", user_name="u")
+    _res1q = str(_res1["elements"][0].get("content", ""))
+    assert "A\\*B" in _res1q, f"1.0 已答复卡同理：{_res1q!r}"
+    # 1.0 卡**有**真按钮 ⇒ 它的脚注就该说「点按钮」（反向对照，防「两处都改掉」）
+    card1 = cards.clarify_card("选哪个？", choices, clarify_id="c", session_key="s")
+    assert "按钮" in json.dumps(card1, ensure_ascii=False), "1.0 卡的脚注被误改了"
+    # 多选：不给自由输入框（与编号/标签解析打架），但可见列表照旧
+    card_m = cards.clarify_card_2("选哪个？", choices, clarify_id="c", session_key="s",
+                                  multi=True)
+    tags_m = [e["tag"] for e in card_m["body"]["elements"]]
+    assert "multi_select_static" in tags_m and "input" not in tags_m, tags_m
+    body_md_m = [e for e in card_m["body"]["elements"]
+                 if e["tag"] == "markdown" and e.get("text_size") != "notation"]
+    assert len(body_md_m) == 2, f"多选卡同样要有可见列表（问题 + 列表）：{tags_m}"
+    # 新文案必须真的双语（t() 对未知键**原样返回**，所以拿它自己当「键存在」的判据）
+    zh, en = i18n.t("clarify.hint_2", i18n.ZH), i18n.t("clarify.hint_2", i18n.EN)
+    assert zh != "clarify.hint_2" and en != "clarify.hint_2", "clarify.hint_2 这个键不存在"
+    assert zh and en and zh != en, f"clarify.hint_2 必须双语且不同：{zh!r}/{en!r}"
+
+
 def test_clarify_answer_extraction_covers_all_three_shapes():
     """三种载荷各把答案放在不同字段：``value.answer`` / ``action.option`` / ``action.input_value``。
 
@@ -5221,6 +5427,437 @@ def test_clarify_free_text_only_commits_when_the_core_accepts_it():
         adapter._CONFIG.update(defaults)
         adapter._apply_metrics_config()
         panel.reset()
+
+
+def test_tool_args_preview_redacts_credentials_and_keeps_normal_fields():
+    """第一组 · G1：工具参数预览**必须脱敏** —— 卡片会出现在群里，人人可见。
+
+    我们是 raw JSON 预览（只做了有界化），而钩子拿到的是**原始**参数：
+    ``export TOKEN=…`` / ``Authorization: Bearer …`` / ``{"api_key": "…"}`` 都会原样进卡。
+    判据要**两头都钉**：凭据必须被涂掉，**正常字段一个字节都不许动** ——
+    猜值式的脱敏会把正常内容涂掉，那比不脱敏更难查（`docs/lessons.md` 对「猜」的纪律）。
+    另：脱敏必须**幂等**（预览可能被重复处理），否则第二次会把 `***` 再改写一遍。
+    """
+    cases = {
+        json.dumps({"api_key": "sk-live-1234567890"}): '"api_key": "***"',
+        # ⚠️ 期望值在 20:52 变了（**更安全**，不是放松）：新增的「头部形态」规则
+        #    （审计 A2：`Cookie: …` 原先零脱敏）会把 `Authorization: <值>` **整个值**涂掉，
+        #    所以输出是 `Authorization: ***` 而不是旧的 `Authorization: Bearer ***`
+        #    —— 连 scheme 一起藏，比只藏 token 更好。
+        "curl -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc'": "Authorization: ***",
+        "export GITHUB_TOKEN=ghp_abcdefghijklmn": "GITHUB_TOKEN=***",
+        "cat /Users/example/Code/secret/x.py": "cat ~/Code/secret/x.py",
+    }
+    for raw, want in cases.items():
+        got = panel.redact_inline_secrets(raw)
+        assert want in got, f"这类凭据必须被脱敏：{raw!r} → {got!r}"
+        assert got == panel.redact_inline_secrets(got), f"脱敏必须幂等：{got!r}"
+    # ⚠️ **接线判据**（这一条是补上的：初版只直接调 `redact_inline_secrets`，
+    # 于是把 `_args_preview` 里那一行调用整个撤掉，测试**照样全绿** ——
+    # 验的是函数，不是接线。必须有一条走真实入口的断言）。
+    _seen = panel._args_preview({"api_key": "sk-live-1234567890", "path": "a.py"})
+    assert "sk-live-1234567890" not in _seen, f"真实入口必须脱敏：{_seen!r}"
+    assert "***" in _seen and "a.py" in _seen, _seen
+    # ⚠️ 值里带**转义**的凭据（`json.dumps` 会把值里的 `"` 写成 `\"`、`\` 写成 `\\`）——
+    #    这一格是被**审计的自制变异台**逼出来的（它的 `X2`：把值类收紧就全绿 ⇒ 说明没断言守着）。
+    #    顺着它查下去发现的是**比「断言没牙」更严重的真缺陷**：旧的值类 `[^"]*` 会在转义引号处
+    #    **提前收尾** ⇒ 只涂掉前半截、后半截照旧露在卡上。**这比完全不脱敏更危险**：
+    #    看起来像处理过了（半截凭据同样是凭据）。
+    for _raw in (json.dumps({"password": 'zqx"jwt'}),        # 值里有转义引号
+                 json.dumps({"password": "zqx\\jwt"})):      # 值里有反斜杠
+        _out = panel.redact_inline_secrets(_raw)
+        assert "***" in _out and "zqx" not in _out and "jwt" not in _out, \
+            f"带转义的凭据必须**整段**涂掉（半截也是凭据）：{_raw!r} → {_out!r}"
+    # ⚠️ 下面这一组是**审计逼出来的真泄漏**（不是「断言没牙」，是功能本身漏了）：
+    #    ① `KEY="值"` —— `_args_preview` 喂进来的是 `json.dumps` 的产物，命令里的引号会变成
+    #       `\"`，而旧值类撞上第一个 `"` 就收尾 ⇒ **凭据原文完整露出**（生产里最常见的写法）；
+    #    ② `Cookie:` 头 —— 四条规则一条都不覆盖它（`cookie` 原先只出现在 JSON **键名**规则里），
+    #       而同批里 `Authorization: Bearer …` 是被涂掉的 ⇒ 格外容易误以为「头都覆盖了」；
+    #    ③ 家目录规则**把 URL 截断**：`https://x.com/home/dashboard` → `https://x.com~`
+    #       —— 用户看到一个**不存在的 URL**，比不脱敏更难查。
+    for _raw, _must_hide in (
+            (json.dumps({"command": 'export OPENAI_API_KEY="sk-abcdef0123456789"'}),
+             ("sk-abcdef0123456789",)),
+            (json.dumps({"command": 'curl -H "Cookie: session=abcdef1234567890" https://x'}),
+             ("abcdef1234567890",)),
+            (json.dumps({"h": "Set-Cookie: sid=zzz123456789"}), ("zzz123456789",))):
+        _out = panel._args_preview(_raw)
+        assert all(s not in _out for s in _must_hide), \
+            f"这条形状必须被脱敏（审计实测漏过）：{_raw!r} → {_out!r}"
+    # 反向：URL 里的 `/home/`、`/Users/` **不是家目录**，一个字节都不许动
+    for _keep in (json.dumps({"url": "https://example.com/home/dashboard?tab=1"}),
+                  json.dumps({"msg": "see https://github.com/Users/guide for details"})):
+        assert panel.redact_inline_secrets(_keep) == _keep, \
+            f"URL 不许被当成家目录截断（那会造出一个不存在的 URL）：{_keep!r}"
+    # 反向对照：凭据词出现在键名**中间**的正常字段不许被动。
+    # ⚠️ 用例必须用**字符串值**（`4096` 这种数字 JSON 规则本来就匹配不到 ——
+    # 初版就是这么写的，于是「放宽判据」那条变异全绿，用例等于没写）。
+    for raw in (json.dumps({"max_tokens": "4096"}),
+                json.dumps({"token_count": "5", "input_tokens": "900"}),
+                "MAX_TOKENS=4096 python run.py",
+                "echo hello world"):
+        assert panel.redact_inline_secrets(raw) == raw, f"不许误伤正常内容：{raw!r}"
+    # ⚠️ **Bearer 规则的独有贡献**（审计 C3）：上面那句 `Authorization: Bearer …` 断言
+    #    其实**没有**守住 Bearer 规则 —— 「头部形态」规则会把 `Authorization:` 的**整个值**
+    #    涂掉，所以把 Bearer 规则**整条删掉**，那一格照样通过（变异 `G1-6` 实测：四门禁全绿）。
+    #    Bearer 规则真正**独占**的形状是「没有头部名、只有一个裸的 `Bearer <token>`」：
+    #    那一刻它既不是 JSON 键值对、也没有 `Key:` 前缀、更没有 `=`，另外三条规则一条都不覆盖。
+    for _raw, _must_hide in (
+            (json.dumps({"note": "Bearer sk-live-abcdef123456"}), ("sk-live-abcdef123456",)),
+            ("调用方式：Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig 收尾",
+             ("eyJhbGciOiJIUzI1NiJ9.payload.sig",))):
+        _out = panel.redact_inline_secrets(_raw)
+        assert all(s not in _out for s in _must_hide), \
+            f"裸 Bearer 也必须被涂掉（这是 Bearer 规则唯一独占的形状）：{_raw!r} → {_out!r}"
+    # 反面：`Bearer` 后面没有 token（或短于 8 字符）时**一个字节都不许动** —— 那多半是正常英文
+    for _raw in ("the bearer of good news", "Bearer 短", "Bearer ab"):
+        assert panel.redact_inline_secrets(_raw) == _raw, f"不许误伤正常内容：{_raw!r}"
+
+
+def test_clarify_question_and_choices_are_escaped_but_answers_stay_raw():
+    """第二组 · G2：澄清卡的问题与选项标签要按**字面**显示，而提交值必须是**原文**。
+
+    隐患：问题与选项都是模型/用户给的自由文本，``*`` / ``[`` / ``_`` 会被 markdown 当语法，
+    轻则渲染错乱、重则整段吞掉。两个方言**各写了一遍** ``md(f"❓ {question}")``，
+    现在收敛成一个构造点（同一个隐患，两处真相）。
+
+    判据两头都要钉：① 展示的那一份被转义；② 回给核心的 ``value`` / ``answer`` **一个字节
+    都不许改** —— 转义过的答案回给网关就对不上了（那是最难查的形态：卡上看着对、提交无效）。
+    """
+    q = "选 A*B 还是 C_D？"
+    ch = ["A*B 方案", "带[链接]的选项"]
+    card2 = cards.clarify_card_2(q, ch, clarify_id="c", session_key="s")
+    els = card2["body"]["elements"]
+    body_md = [e for e in els if e["tag"] == "markdown" and e.get("text_size") != "notation"]
+    assert "A\\*B" in body_md[0]["content"] and "C\\_D" in body_md[0]["content"], body_md[0]
+    sel = [e for e in els if e["tag"] == "select_static"][0]
+    assert [o["value"] for o in sel["options"]] == ch, \
+        f"⚠️ 提交值必须是**原文**（转义过的答案对不上）：{[o['value'] for o in sel['options']]}"
+    assert all("\\" not in o["text"]["content"] for o in sel["options"]), \
+        "下拉标签是 plain_text ⇒ 不需要转义（转了用户就看见反斜杠）"
+    list_md = body_md[1]["content"]
+    assert "A\\*B" in list_md and "\\[链接\\]" in list_md, list_md
+    # 剥掉转义反斜杠后必须与提交值逐条对上（**同源不受转义影响**）
+    assert [ln.replace("\\", "") for ln in list_md.split("\n")] == \
+        [f"{i}. {c}" for i, c in enumerate(ch, start=1)], list_md
+    # 1.0 卡的问题走**同一个**构造点（收敛的意义就在这里）
+    c1 = cards.clarify_card(q, ch, clarify_id="c", session_key="s")
+    # ⚠️ 看**元素内容**而不是 `json.dumps` 的字符串：JSON 会把反斜杠再转义一层，
+    #    在 dump 上找 `A\*B` 永远找不到（第一版就是这么写的，白红了一次）
+    q1 = c1["elements"][0]["content"]
+    assert "A\\*B" in q1, f"1.0 卡的问题也必须转义：{q1!r}"
+    # 空/None 不许炸（渲染是装饰，不能因为它把整张卡搞坏）
+    assert cards.escape_inline_md("") == "" and cards.escape_inline_md("abc") == "abc"
+
+
+def test_frame_footer_carries_the_card_trace_id():
+    """第二组 · G2：帧页脚带**本卡短码**，让「用户截图 → 日志」有确定的对齐方式。
+
+    起因：用户截图里的卡片与日志**对不上号** —— 日志有 chat/round/turn，卡片上什么都没有，
+    于是只能靠时间戳猜（多会话并发时根本猜不出来）。
+    两条纪律同样重要：**基数页脚为空时不许因为短码就渲染出页脚**（`页脚=无` 是排查
+    「钩子没喂数据」的入口），短码也**只能取本帧的卡**（不能是进程级快照，否则串台）。
+    """
+    assert adapter._ld_trace_id("om_abcdef123456") == "123456"
+    assert adapter._ld_trace_id("m_ck_1") == "m_ck_1"        # 短于 6 位就原样
+    assert adapter._ld_trace_id("") == "" and adapter._ld_trace_id(None) == ""
+    raw = _make()
+    orig = adapter.LarkDeckMixin._ld_footer
+    try:
+        adapter.LarkDeckMixin._ld_footer = classmethod(lambda cls: "ctx 1k/2k")
+        assert raw._ld_frame_footer({"message_id": "om_abcdef123456"}) == \
+            "ctx 1k/2k · \U0001f516 123456", "帧页脚必须接上本卡短码"
+        # 还没建卡（没有 message_id / card_id）⇒ 不加短码，只有基数页脚
+        assert raw._ld_frame_footer({}) == "ctx 1k/2k"
+        assert raw._ld_frame_footer({"card_id": "card_zzz999"}) == "ctx 1k/2k · \U0001f516 zzz999"
+        # ⚠️ 基数页脚为空 ⇒ 仍然是 None（短码不许把「页脚=无」这个诊断信号抹掉）
+        adapter.LarkDeckMixin._ld_footer = classmethod(lambda cls: None)
+        assert raw._ld_frame_footer({"message_id": "om_abcdef123456"}) is None
+    finally:
+        adapter.LarkDeckMixin._ld_footer = orig
+    # 每回合自检行也要带同一串（人眼从卡上抄 6 位，去日志里 grep）
+    adapter._log_turn_selfcheck._at = 0.0
+    with _LogCapture("larkdeck") as recs:
+        adapter._log_turn_selfcheck("oc_trace", "cardkit", 7, 2, trace="abc123")
+    line = [r.getMessage() for r in recs if "回合自检" in r.getMessage()]
+    assert line and "卡片=abc123" in line[0], f"自检行必须报出卡短码：{line}"
+
+
+def test_status_reports_uptime_fallback_and_error_code_top_n():
+    """第二组 · G2：`/larkdeck status` 报 **uptime / 掉回纯文本次数 / 错误码 top-N**。
+
+    三条的口径各不相同，所以三条都要各自钉住：
+      * **uptime** 是**时钟读数**：`reset()` **不许**清它（清了就不是「进程已运行多久」，
+        而会永远显示「刚重启」—— 那正好是排障时最容易误判的一个数）；
+      * **掉回纯文本**记的是「**本回合我们把卡片车道让给了核心**」⇒ 用户**肉眼能看出**「这次没卡片」
+        的那一类；它与 `frame_fail_count`（真的发起过一次写而失败）**口径不同**，两个都留；
+      * **错误码**只数**非零**（`0` 是成功、`None` 是没拿到响应），且不同码有**上限**
+        —— 坏上游不能把这张表撑到无限大。
+    """
+    context.reset()
+    started = context.status_snapshot().get("started_at")
+    assert started, "建盒子时就必须有进程起点（否则 uptime 永远是「无记录」）"
+    context.note_plaintext_fallback("帧失败：测试")
+    for code in (300309, 300309, 300313, 0, None, ""):
+        context.note_response_code(code)
+    snap = context.status_snapshot()
+    assert snap["fallback_count"] == 1 and "测试" in snap["fallback_reason"], snap
+    assert snap["codes"] == {"300309": 2, "300313": 1}, snap["codes"]
+    assert snap["code_total"] == 3, snap["code_total"]
+    text_report = "\n".join(context.status_lines())
+    assert "掉回纯文本：1 次" in text_report, text_report
+    assert "300309\u00d72" in text_report and "300313\u00d71" in text_report, text_report
+    # 上限：不同的码再多也不会让表无限长大（超出的一律并进 other）。
+    # ⚠️ **上限必须用字面量钉**（审计 X18）：原来这里是
+    #    `range(context._MAX_CODE_KEYS + 5)` / `<= context._MAX_CODE_KEYS + 1` ——
+    #    **拿被测常量自己算上界**，于是任何 ≤24 的值都自洽通过（把 24 改成 2 也全绿，
+    #    top-N 静默退化成 top-2）。与 `_CK_WRITE_*` 那套「字面量钉住」是同一条纪律。
+    assert context._MAX_CODE_KEYS == 24, "上限是被有意选定的常量，改了必须当场可见"
+    context.reset()
+    for i in range(24 + 3):
+        context.note_response_code(100000 + i)
+    codes = context.status_snapshot()["codes"]
+    assert len(codes) == 25 and codes["other"] == 3, \
+        f"键数上界 = 24 个不同码 + 一个 other 桶，多出来的 3 个并进 other：{codes}"
+    # ⚠️ **快照必须深到 `codes`**（审计 X19）：它是账本里**唯一可变**的那一格，
+    #    只做 `dict(_STATUS)` 时读者改快照 = 改共享账本。判据必须是**反向**的
+    #    （「改一下看不看得见」）—— 正向读一次抓不住它。
+    _snap = context.status_snapshot()
+    _snap["codes"]["999999"] = 42
+    assert "999999" not in context.status_snapshot()["codes"], \
+        "快照必须深到 codes —— 读者改快照不许污染共享账本"
+    # ⚠️ **`codes` 不许与 `_STATUS_DEFAULTS` 同源**（审计 X20）：`dict(_STATUS_DEFAULTS)` 是
+    #    浅拷贝，一旦共享那一格，`reset()` 之外的任何清空都会波及所有副本（清一次等于清全部）。
+    #    那行代码本来就是为此写的，但**一个判据都没有** —— 纪律没判据就等于没有。
+    #
+    #    ⚠️⚠️ **判据必须逼初始化路径跑一次**（第一版就是这样写漏的，变异 `X20` 照旧 🟢）：
+    #    `_shared_status()` 只在**盒子还没建**时才走初始化分支，而进程启动时早建好了 ⇒
+    #    直接断言「当前那一格的 codes 不是原型」**恒真** —— 撤掉那行初始化代码也照样成立。
+    #    这正是「输入构造让错误分支不可达」那一型（与 `G1-22` 同病），所以先把那一格删掉。
+    import builtins as _builtins
+    _box = getattr(_builtins, "_larkdeck_shared_state")
+    assert context._shared_status()["codes"] is not context._STATUS_DEFAULTS["codes"], \
+        "账本的 codes 不许与 _STATUS_DEFAULTS 的默认 {} 同源（清一次等于清全部）"
+    _saved_status = _box["status"]
+    try:
+        del _box["status"]                       # 逼 `_shared_status()` 走初始化分支
+        _fresh = context._shared_status()
+        assert _fresh is not context._STATUS_DEFAULTS, \
+            "初始化必须给一份**新容器**，不是把那份模块级原型直接挂上去"
+        assert _fresh["codes"] is not context._STATUS_DEFAULTS["codes"], \
+            ("初始化时 `codes` 必须换成**新对象** —— `dict(_STATUS_DEFAULTS)` 是浅拷贝，"
+             "共享那一格就是「清一次等于清全部」（那行 `box[\"status\"][\"codes\"] = {}` 的整条理由）")
+        # 行为面：动这个账本的 codes **不许**波及原型（原型被污染 ⇒ 之后每一份新账本都带着它）
+        _fresh["codes"]["123456"] = 1
+        assert "123456" not in context._STATUS_DEFAULTS["codes"], \
+            "账本与 `_STATUS_DEFAULTS` 同源 ⇒ 记一个码就污染了后续所有副本的原型"
+    finally:
+        _box["status"] = _saved_status
+    # ⚠️ **失败原因必须先单行归一**（审计 X21）：换行会把状态卡撑成多行，行首的 `#`
+    #    还会被解释成 markdown 标题。两处口径（本函数 / `note_frame_fail`）都要钉。
+    context.reset()
+    context.note_plaintext_fallback("帧失败（boom）\n# 我是标题")
+    context.note_frame_fail("帧失败（boom）\n# 我是标题")
+    for _label in ("掉回纯文本", "最近写卡失败"):
+        _rows = [l for l in context.status_lines() if _label in l]
+        assert len(_rows) == 1, f"{_label} 那一行应当正好一行：{_rows}"
+        # ⚠️ 判据只能是「**这一行里不许有换行**」，不能顺手断言「不许出现 `#`」——
+        #    归一之后 `#` 落在**行中间**（`… · 帧失败（boom） # 我是标题）`），那只是个普通字符；
+        #    真正的病是它被换行顶到**行首**、于是被解释成 markdown 标题。
+        #    （第一版就是多写了半句 `"# " not in …`，当场被自己的用例抓出来。）
+        assert "\n" not in _rows[0], \
+            f"原因串必须先单行归一，否则换行会把 `#` 顶到行首变成 markdown 语法：{_rows[0]!r}"
+        assert "我是标题" in _rows[0], f"归一不许把原因整段丢掉：{_rows[0]!r}"
+    # ⚠️ **`_dur` 的「读不到」那一半也要有判据**（审计 Y5）：原来只验了「有值」那半边
+    #    （第 4 行含「已运行」），而 `started_at` 建账本时必写 ⇒ 错误分支**恒不可达**。
+    #    四类脏值实测过的旧行为（编数字 / 直接抛）见 `_dur` 的 docstring。
+    for _dirty in (None, "", "不是数", float("nan"), float("inf"), float("-inf"),
+                   0, -1, 1e18, True):
+        assert context._dur(_dirty) == i18n.t("status.none"), \
+            f"脏值必须写「无记录」，不许编一个数字：_dur({_dirty!r}) = {context._dur(_dirty)!r}"
+    _now = time.time()
+    assert context._dur(_now - 5) == "5s", context._dur(_now - 5)
+    assert context._dur(_now - 90) == "1m", context._dur(_now - 90)
+    assert context._dur(_now - (3600 + 13 * 60)) == "1h13m", context._dur(_now - 4380)
+    # ⚠️ `reset()` 清运行时计数，但**不清**进程起点
+    assert context.status_snapshot().get("started_at") == started, \
+        "`reset()` 不许清 started_at（清了 uptime 就永远是「刚重启」）"
+    # 接线：帧失败的**唯一收口点**必须同时记这两条（不是各调用点各记一遍）
+    raw = _make()
+    context.reset()
+    assert raw._ld_stream_fail("测试：元素写失败", code=300309) is False
+    snap = context.status_snapshot()
+    assert snap["fallback_count"] == 1 and snap["codes"].get("300309") == 1, snap
+    assert snap["frame_fail_count"] == 1, snap
+
+
+def test_entity_card_always_gets_a_footer_element_when_the_footer_is_enabled():
+    """**建实体那一刻**必须按**配置**决定要不要页脚元素，而不是按「这一刻有没有数据」（审计 C2）。
+
+    真机症状（已实测）：进程重启后、第一次 API 调用之前，页脚指标还没被钩子填过 ⇒
+    `_ld_footer()` 返回 `None` ⇒ 建实体时 `footer_text=None` ⇒ **页脚元素根本不进卡**
+    （元素表在建实体时定死，之后只能按 id 写内容）⇒ 那一回合**永远没有页脚**，
+    连短码也写不上去（短码就写在页脚里），而自检行只有「页脚=无」——
+    分不出「元素没建」还是「没数据」。判据必须与面板同一条：**要不要这个元素 ≠ 这一刻有没有内容**。
+    """
+    raw = _make()
+    original = dict(adapter._DEFAULTS)
+    try:
+        adapter.configure(footer=True)
+        assert raw._ld_seed_footer_text() == " ", "页脚开着就必须**先建元素**（空串占位）"
+        # 对照：配置关掉 ⇒ 元素不进卡（这条纪律没变）
+        adapter.configure(footer=False)
+        assert raw._ld_seed_footer_text() is None, "footer: false 时不该建页脚元素"
+    finally:
+        adapter.configure(**original)
+    # 空占位必须真的让元素进卡（否则占位没有意义）
+    with_footer = cards.cardkit_entity_card("正文", "面板", footer_text=" ")
+    without_footer = cards.cardkit_entity_card("正文", "面板", footer_text=None)
+    assert cards.CARDKIT_FOOTER_ID in adapter._ck_elems_from_card(with_footer), \
+        "空串占位也必须让 footer 元素进卡 —— 否则后续帧写短码会得 300313"
+    assert cards.CARDKIT_FOOTER_ID not in adapter._ck_elems_from_card(without_footer), \
+        "footer_text=None 仍然不该进卡（配置关闭那条路）"
+
+
+def test_stop_redraw_and_edit_message_keep_the_trace_id():
+    """**短码在哪几帧出现过**要有断言（审计 C1）：`/stop` 重绘与 `edit_message` 手上都有
+    `message_id`，用基数页脚就把短码漏掉了 —— 而 `/stop` 那一帧恰恰是**最可能被截图**的。
+
+    顺带钉住 D1 的口径边界：那条「**没有活跃流可收尾 ⇒ 按契约交还核心**」的**正常路径**
+    **不许**进「掉回纯文本」账本（一个写请求都没发，消息照常发出去）。
+    """
+    # ① `/stop` 重绘：面板被强制成 stopped，页脚必须带短码。
+    #    ⚠️⚠️ **必须走真路径**（审计 C4）：初版是**手工照生产那一行再建一次卡**
+    #    （`raw._ld_build_card(..., footer=raw._ld_frame_footer({"message_id": "om_…"}))`），
+    #    那验的是「这个表达式会加短码」，**不是**「生产真的用了它」—— 把
+    #    `_ld_redraw_one_stopped` 里那一行换回 `_ld_footer()`，四门禁**照样全绿**
+    #    （变异 `G2-10` 实测）。所以这里改成真驱动 `/stop`，读**真的发出去的那份载荷**。
+    defaults = dict(adapter._DEFAULTS)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    try:
+        raw = _make()
+        adapter.configure(unified_panel=True)
+        panel.reset()
+        context.reset()
+        # ⚠️ 先喂出**真实**的基数页脚：`_ld_frame_footer` 的纪律是「没有基数页脚就不加短码」
+        #    （保住「页脚=无」这个诊断信号）⇒ 不喂数据时它本来就不该有短码，那不是 C1 那个缺陷。
+        context.record_api_call(model="test-model",
+                               usage={"input_tokens": 4242, "output_tokens": 8})
+        context.set_context_override(10000)
+        assert raw._ld_footer(), "前提：这一刻必须真的有基数页脚，否则这一格什么都没验"
+        _ups = _wire_patch(raw)
+        assert _run(raw.send_stream_frame("", finalize=False, chat_id="oc_stop", turn_id="c1"))
+        assert _run(raw.send_stream_frame("正文", finalize=False, chat_id="oc_stop",
+                                          turn_id="c1"))
+        assert _ups, "前提：这一帧必须真的写出去过（否则 /stop 无从重绘）"
+        _n_before = len(_ups)
+        _run(raw.interrupt_session_activity("sk-stop", "oc_stop"))
+        assert len(_ups) == _n_before + 1, "中止后必须**真的**重绘了一次（否则这一格什么都没验）"
+        _mid = _ups[-1]["message_id"]
+        _stop_blob = _ups[-1]["content"]
+        assert f"🔖 {_mid[-6:]}" in _stop_blob, \
+            f"`/stop` 重绘那一帧丢了短码（用户最可能截图的就是它）：mid={_mid!r} 尾部={_stop_blob[-300:]}"
+        # 同一次重绘的另一半：面板必须真的变成中止色（两个断言各钉一个症状）
+        _pn = _find_collapsible(json.loads(_stop_blob))
+        assert _pn is not None and _pn["border"]["color"] == "yellow", _pn
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+    # ①b **收尾整卡替换也要带短码**（审计 Y20）。短码一共三个调用点，原先只钉住两个
+    #     （CardKit 元素帧的字面量、上面的 `/stop` 重绘）—— **收尾那一帧没人看**，
+    #     而它恰恰是**用户最后看到的那张卡**（收尾之后卡片不再变，除非再 /stop）。
+    #     ⇒ 同一型缺陷（「接线没验」）的第三处，与 `G1-4`／`G2-10` 同源。
+    defaults_b = dict(adapter._DEFAULTS)
+    old_interval_b = adapter._STREAM_MIN_INTERVAL
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    try:
+        raw_b = _make()
+        adapter.configure(unified_panel=True)
+        panel.reset()
+        context.reset()
+        context.record_api_call(model="test-model",
+                               usage={"input_tokens": 4242, "output_tokens": 8})
+        context.set_context_override(10000)
+        assert raw_b._ld_footer(), "前提：必须有基数页脚，否则短码本来就不该出现"
+        _ups_b = _wire_patch(raw_b)
+        assert _run(raw_b.send_stream_frame("", finalize=False, chat_id="oc_fin", turn_id="tf"))
+        assert _run(raw_b.send_stream_frame("正文一，正文二", finalize=False,
+                                            chat_id="oc_fin", turn_id="tf"))
+        _n_b = len(_ups_b)
+        assert _run(raw_b.send_stream_frame("正文一，正文二", finalize=True,
+                                            chat_id="oc_fin", turn_id="tf")) is True, \
+            "收尾帧必须成功（否则这一格验的是失败路径）"
+        assert len(_ups_b) == _n_b + 1, "收尾必须**真的**整卡替换一次（否则这一格什么都没验）"
+        _mid_b = _ups_b[-1]["message_id"]
+        assert f"🔖 {_mid_b[-6:]}" in _ups_b[-1]["content"], \
+            (f"收尾整卡替换是用户**最后看到**的那张卡，短码不许丢："
+             f"mid={_mid_b!r} 尾部={_ups_b[-1]['content'][-300:]}")
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval_b
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults_b)
+        adapter._apply_metrics_config()
+    # ② D1：正常路径（没有活跃流可收尾）**不计**掉回纯文本
+    context.reset()
+    _calls, _client = _mk_cardkit_fake()
+    raw2 = _make()
+    raw2._client = _client
+    assert _run(raw2.send_stream_frame("正文", chat_id="oc_none", turn_id="t-none",
+                                       finalize=True)) is False, \
+        "没有活跃流时 finalize 帧按契约返回 False（交还核心）"
+    assert context.status_snapshot()["fallback_count"] == 0, \
+        "⚠️ 那条**正常路径**不许进「掉回纯文本」账本（口径见 note_plaintext_fallback）"
+
+
+def test_help_text_record_count_matches_the_status_card():
+    """`/larkdeck help` 说的记录条数必须与状态卡**真的一样多**（审计 E1）。
+
+    病（已修）：卡上早已是六条（uptime / 掉回纯文本 / 错误码），而帮助文案还写「三条心跳记录」
+    —— 用户按帮助去数卡上的行，会以为自己看错了。判据是**两面**：文案里的数字与
+    `status_lines()` 的真实行数必须一致。
+    """
+    assert len(context.status_lines()) == 6, "状态卡的行数变了？"
+    zh, en = i18n.t("cmd.help", i18n.ZH), i18n.t("cmd.help", i18n.EN)
+    assert "六条" in zh and "six records" in en, \
+        f"帮助文案的记录条数必须与状态卡一致（当前 {len(context.status_lines())} 行）：{zh[:120]!r}"
+
+
+def test_every_python_file_compiles():
+    """**每一个 .py 都要能编译** —— 包括那些**没有任何门禁导入**的真机探针。
+
+    为什么必须有这条（2026-09-15 实测踩出来的洞）：`tests/probe_render.py` 这类真机探针
+    **不被任何门禁 import**（门禁测的是插件本体），所以一个**语法错**能一路穿过五道门禁，
+    直到**真机上要用户配合的那一刻**才炸 —— 而那正是最不该失败的时刻（用户的时间是本项目
+    唯一真正稀缺的资源）。当时那个错是 `f"{'\u2705' if code == 0 else ...}"`：
+    Python 3.11 的 f-string **表达式部分不许含反斜杠** ⇒ SyntaxError，而四门禁全绿。
+
+    判据是「**能编译**」，不是「能 import」—— 后者会执行模块顶层代码
+    （探针会去读凭据、连飞书，门禁里绝不能那么干）。
+    ⚠️ 用内置 `compile()` 而**不是** `py_compile.compile(..., cfile=os.devnull)`：
+    后者在 macOS 上直接抛 `FileExistsError: /dev/null is a non-regular file`（实测），
+    而去掉 `cfile` 又会在树里**落一堆 .pyc**（门禁不该有写副作用）。`compile()` 只编译不落盘。
+    """
+    bad = []
+    # ⚠️ **必须排除 VCS / 缓存目录**：这道门禁在**带 `.git` 的真仓库**里跑，而金标快照里没有 `.git`
+    #    —— 不排除的话，「快照里绿、移植后突然红」这种最讨厌的形态就会出现（本项目栽过同类的坑：
+    #    被测对象与验证对象必须一致，见 `docs/lessons.md` 的二类假绿）。
+    _SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", ".mypy_cache"}
+    for path in sorted(_REPO_ROOT.rglob("*.py")):
+        if _SKIP_DIRS & set(path.parts):
+            continue
+        try:
+            compile(path.read_text(encoding="utf-8"), str(path), "exec")
+        except SyntaxError as exc:
+            bad.append(f"{path.relative_to(_REPO_ROOT)}:{exc.lineno}: {exc.msg}")
+        except Exception as exc:                       # 读不出来（编码坏了）也算不过
+            bad.append(f"{path.relative_to(_REPO_ROOT)}: {type(exc).__name__}: {exc}"[:200])
+    assert not bad, ("有 .py 编译不过（门禁不导入它们，所以只能在这里抓 —— "
+                     "探针类脚本的语法错否则只会等到真机运行时才暴露）：\n  " + "\n  ".join(bad))
 
 
 def test_element_limit_is_enforced_recursively():
@@ -6631,7 +7268,37 @@ def test_args_preview_is_bounded_for_nested_and_long_inputs():
     for label, payload in (("嵌套", nested), ("深层", deep), ("超长列表", huge_list)):
         cost_ms, got = _cost_ms(payload)
         assert cost_ms < 5.0, f"{label}参数预览耗时 {cost_ms:.1f}ms —— 有界序列化失效了"
+
         assert len(got) <= panel._ARGS_PREVIEW_CHARS + 1, (label, len(got))
+    # ⚠️ **契约判据**（审计逼出来的，因为它证明「撤掉扫描上限」原本能全绿）：
+    #    送进 `redact_inline_secrets` 的文本**必须有硬上限**。这条判据**不用墙上时钟** ——
+    #    时间断言在高负载下会飘（本文件上面那段 docstring 就为这件事设计过「取最小值」），
+    #    而这一条要防的是**有人把上限拿掉**，判据必须是确定的。
+    #    实测过的量级：1MB 文本上四条规则合计 436ms（ENV 一条占 407ms）⇒ 上限被拿掉之后，
+    #    fail-closed 钩子会被一个大参数拖住，而钩子慢会拖住**整批工具执行**。
+    _seen: list = []
+    _orig_redact = panel.redact_inline_secrets
+
+    def _spy(text):
+        _seen.append(len(text))
+        return _orig_redact(text)
+
+    _worst = {f"k{i}": {f"m{j}": {f"n{k}": "v" * 120 for k in range(8)} for j in range(8)}
+              for i in range(8)}
+    try:
+        panel.redact_inline_secrets = _spy
+        panel._args_preview(_worst)
+    finally:
+        panel.redact_inline_secrets = _orig_redact
+    assert _seen, "脱敏必须真的被调用（否则这一格什么都没验）"
+    assert max(_seen) <= panel._REDACT_SCAN_CHARS, (
+        f"送进脱敏的文本超过上限（{max(_seen)} > {panel._REDACT_SCAN_CHARS}）—— "
+        "fail-closed 钩子会被大参数拖慢（实测 1MB ⇒ 436ms）")
+    # 同一条上限也要能挡住「最坏嵌套形状」的耗时（这里放宽到 15ms：墙钟只做兜底）
+    _t0 = time.perf_counter()
+    panel._args_preview(_worst)
+    _cost = (time.perf_counter() - _t0) * 1000.0
+    assert _cost < 15.0, f"最坏嵌套形状耗时 {_cost:.1f}ms —— 扫描上限失效了"
     # 自引用结构不许无限递归
     cyc: dict = {}
     cyc["self"] = cyc
@@ -7016,15 +7683,22 @@ def test_plan_progress_table_is_checkable_from_its_own_rows() -> None:
 
 
 def test_status_lines_never_claim_healthy_without_records():
-    """没有记录时，三条自检行**每一行都要说「无记录」**；一张永远说「正常」的自检，
+    """没有记录时，**每一条记录行都要说「无记录」**；一张永远说「正常」的自检，
     与一张坏掉的自检在用户眼里长得一模一样（「绿而无判别力」）。
 
     判别力：变异 `R9-2`（把「无记录」改成「正常」）必须让这条红。
     """
     context.reset()
     lines = context.status_lines()
-    assert len(lines) == 3, lines
-    for line in lines:
+    # R11-C2 起是 6 行：入站 / 写卡 / 写卡失败 + **运行时长 / 掉回纯文本 / 错误码**
+    assert len(lines) == 6, lines
+    for i, line in enumerate(lines):
+        if i == 3:
+            # ⚠️ **运行时长是唯一的例外，而且必须明说**：它是**时钟读数**（建盒子那一刻就有），
+            #    不是「记录」⇒ 永远有值；它也不是健康声明（"已运行 3s" 什么都没断言）。
+            #    把它也要求成「无记录」会让这个字段变成永远无用的装饰。
+            assert "已运行" in line and "无记录" not in line, line
+            continue
         assert "无记录" in line, f"没有记录却没说「无记录」：{line!r}"
     assert "正常" not in "".join(lines), "没有任何证据却给自己发了张健康证明"
     # ⚠️ **累计次数**必须一起显示：只有「最近一次是什么时候」的话，刚重启的进程与
@@ -7039,13 +7713,19 @@ def test_status_lines_never_claim_healthy_without_records():
 
 
 def test_status_lines_report_real_records_with_time_and_count():
-    """有记录时三条行各自带上**时刻 + 累计次数 + 失败原因**（心跳/写卡/写卡失败）。"""
+    """有记录时三条**记录行**各自带上**时刻 + 累计次数 + 失败原因**（心跳/写卡/写卡失败）。
+
+    R11-C2 起 `status_lines()` 返回 6 行（后三行是 uptime / 掉回纯文本 / 错误码），
+    所以这里**按下标取前三行**并显式断言行数 —— 行数变了必须当场红，不能悄悄滑过去。
+    """
     context.reset()
     context.note_inbound()
     context.note_inbound()
     context.note_frame_ok()
     context.note_frame_fail("收尾帧失败（boom）")
-    inbound, written, failed = context.status_lines()
+    _all = context.status_lines()
+    assert len(_all) == 6, _all
+    inbound, written, failed = _all[:3]
     assert re.match(r"^入站心跳：\d\d-\d\d \d\d:\d\d:\d\d · 累计 2 条消息$", inbound), inbound
     # 写卡行：时刻 + **帧数**（口径见中-5）+ 单位说明。用「累计 1 帧」而不是「累计 1 次」，
     # 这样「把帧说成 API 调用次数」那种文案退化会当场红。
@@ -7495,8 +8175,19 @@ def test_command_card_reports_version_transport_and_three_records():
         # 来自**别的会话** —— 不写清楚，用户会拿别人的失败原因去查自己的卡。
         # 判据落在**卡片的文本**上（不是落在 i18n 表上）：写在表里但没拼进卡等于没说。
         assert "进程级" in text, f"卡片没写明这些数字是进程级累计（含全部会话）：{text!r}"
-        for line in context.status_lines():
+        # ⚠️⚠️ **不许整行比对**（审计 X19 实测出来的**假红源**）：`status_lines()` 里有一行是
+        #    `⏱ 已运行：2s` 这种**墙钟读数** —— 卡片是上一次调用渲染的，跨过一秒它就与
+        #    现在这一行不等 ⇒ 这条断言会**随机**变红。而 `mutate_check` 把「假红」当成
+        #    **判别力证据**（结论正好写反），所以它比「断言太松」更危险。
+        #    ⇒ 判据分两层：稳定的行**整行**不许少；uptime 那一行只钉**标签**（不钉秒数）。
+        _lines = context.status_lines()
+        _uptime = [l for l in _lines if "已运行" in l]
+        assert len(_uptime) == 1, f"uptime 行应当正好一行：{_uptime}"
+        for line in _lines:
+            if "已运行" in line:
+                continue
             assert line in text, f"少了自检行：{line!r}"
+        assert "已运行" in text, f"卡片少了 uptime 那一行（只钉标签，不钉秒数）：{text!r}"
         # 没参数与显式 `status` 必须**同一张卡**（不然 `help` 里写的默认值就是假的）
         assert adapter._ld_command_card("status") == text
         assert adapter._ld_command_card(" STATUS ") == text
