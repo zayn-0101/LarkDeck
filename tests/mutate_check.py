@@ -257,11 +257,11 @@ MUTATIONS = [
      "check_hooks"),
     # ⚠️ R4 起收尾帧写的是**本卡那一段**（`tail_visible`），锚点跟着改（不然就是「清单与源码脱节」）
     ("SEQ3-收尾帧不关 streaming_mode", "core/adapter.py",
-     "            card = self._ld_build_card(tail_visible or \" \", streaming=False,\n                                       panel=self._ld_panel(chat, state.get(\"t0\")),\n                                       footer=self._ld_footer())",
-     "            card = self._ld_build_card(tail_visible or \" \", streaming=True,\n                                       panel=self._ld_panel(chat, state.get(\"t0\")),\n                                       footer=self._ld_footer())",
+     "            card = self._ld_build_card(tail_visible or \" \", streaming=False,\n                                       panel=self._ld_panel(chat, state.get(\"t0\"),\n                                                            report_empty=True),\n                                       footer=self._ld_footer())",
+     "            card = self._ld_build_card(tail_visible or \" \", streaming=True,\n                                       panel=self._ld_panel(chat, state.get(\"t0\"),\n                                                            report_empty=True),\n                                       footer=self._ld_footer())",
      "check_hooks"),
     ("SEQ4-/stop 重绘不再带中止色", "core/adapter.py",
-     "            panel = self._ld_panel(chat, started) or _cards.unified_panel(\n                status=_panel.STATUS_STOPPED)",
+     "            panel = self._ld_panel(chat, started, report_empty=True) or _cards.unified_panel(\n                status=_panel.STATUS_STOPPED)",
      "            panel = None",
      "check_hooks"),
     # ---- 第十路审计：真判据 / 崩溃分类 / 口径 / 调用点 / 码表 ------------------ #
@@ -1168,9 +1168,11 @@ MUTATIONS = [
      "test_units"),
     ("R4-6-patch 车道（降级之后）重放整段", "core/adapter.py",
      '        card = self._ld_build_card(visible, streaming=True,\n'
-     '                                   panel=self._ld_panel(chat, state.get("t0")),',
+     '                                   panel=self._ld_panel(chat, state.get("t0"),\n'
+     '                                                        report_empty=bool(finalize)),',
      '        card = self._ld_build_card(display, streaming=True,\n'
-     '                                   panel=self._ld_panel(chat, state.get("t0")),',
+     '                                   panel=self._ld_panel(chat, state.get("t0"),\n'
+     '                                                        report_empty=bool(finalize)),',
      "test_units"),
     ("R4-7-降级分支（元素通道死法）重放整段", "core/adapter.py",
      '                card = self._ld_build_card(visible, streaming=True,',
@@ -1245,6 +1247,32 @@ MUTATIONS = [
      "core/adapter.py",
      '_WRITE_RETRY_CODES = frozenset({230020, 99991400})',
      '_WRITE_RETRY_CODES = frozenset({230020, 99991400, 300315})',
+     "test_units"),
+    # ⚠️ 下面四条是 B2 审计的中-1 补的：审计**手工**验证过「撤掉这几处 ⇒ test_units 变红」，
+    #    但它们当时**没有变异条目** —— 那就等于「行为回归只靠单点断言兜着」，一旦有人重构
+    #    正则或那句文案，没有任何变异会提醒（本项目「先写变异，再写断言」的纪律）。
+    ("B2-5-正则去掉 `\\b`（`ErrCode: 11310` 这种前缀粘连也被当成内层码）", "core/adapter.py",
+     '_CK_INNER_CODE_RE = re.compile(r"\\bcode\\s*:\\s*(\\d+)", re.IGNORECASE)',
+     '_CK_INNER_CODE_RE = re.compile(r"code\\s*:\\s*(\\d+)", re.IGNORECASE)',
+     "test_units"),
+    ("B2-6-内层码取第一个匹配（尾部那个权威码被前面的描述码顶掉）", "core/adapter.py",
+     '        return int(found[-1]) or None',
+     '        return int(found[0]) or None',
+     "test_units"),
+    ("B2-7-内层码解析不出时返回 0 而不是 None（0 = 成功语义 ⇒ 失败被读成成功）",
+     "core/adapter.py",
+     '        return int(found[-1]) or None',
+     '        return int(found[-1])',
+     "test_units"),
+    ("B2-8-被拒原因不再分辨内层码（容量满与 id 错共用一句「被拒」⇒ 归因消失）",
+     "core/adapter.py",
+     '    if res.capacity_exceeded():\n        return "元素数到顶（200 是递归口径的硬墙）"',
+     '    if res.capacity_exceeded():\n        return "被服务端拒绝"',
+     "test_units"),
+    ("尾巴-1-空面板诊断退回「每一帧都报」（建卡 seed 帧必然为空 ⇒ 每回合一条噪声淹没真凭据）",
+     "core/adapter.py",
+     '            if not (_body or _tools_text) and report_empty:',
+     '            if not (_body or _tools_text):',
      "test_units"),
     ("B2-4-容量码当卡级死法（正文列从 FATAL 变 DEGRADE ⇒ 用户盯着一张不再更新的卡）",
      "core/adapter.py",

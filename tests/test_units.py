@@ -37,6 +37,33 @@ if _REPO_PARENT not in sys.path:
 from larkdeck.core import adapter, cards, compat, context, hooks, i18n, panel  # noqa: E402
 
 
+#: 本仓库根目录（`.../larkdeck`，测试文件在它下面的 `tests/` 里）。
+_REPO_ROOT = _pathlib.Path(__file__).resolve().parent.parent
+
+
+def _gate_import_problems(loaded: Any, repo_root: _pathlib.Path) -> list:
+    """门禁**先自证被测的就是这份代码**（R11-B2 审计高-1）：返回问题清单（空 = 合格）。
+
+    为什么这条必要（不是洁癖）：这个脚本靠 `sys.path` 找 `larkdeck` —— 只要搜索路径上更靠前
+    的地方有**另一份** `larkdeck`（`/tmp` 下前一次导出的镜像、别的拷贝、陈旧的
+    `__pycache__`），门禁就会去测那份代码，而**四门禁照常全绿**。这不是推演：R11-B2 的
+    审计实测过「把 `capacity_exceeded()` 整条改坏、在镜像目录里 184/184 全绿」；
+    我自己在起一个临时拷贝做实验时也当场踩到（`import larkdeck` 解析到了 `/tmp` 下
+    前一次审计的导出）。与 `mutate_check.py` 那条「快照目录必须叫 `larkdeck`」同源：
+    都是同一种**二类假绿**（门禁跑了，但跑的不是这份代码）的入口。
+    """
+    got = _pathlib.Path(str(loaded)).resolve()
+    if repo_root.resolve() in got.parents:
+        return []
+    return [f"`import larkdeck` 解析到 {got}，而本仓库是 {repo_root.resolve()}"
+            " —— 先清掉搜索路径上的旧拷贝/镜像（同目录名的那份最容易被漏掉）"]
+
+
+_problems = _gate_import_problems(adapter.__file__, _REPO_ROOT)
+if _problems:
+    raise SystemExit("❌ 门禁测的不是这份代码：" + "；".join(_problems))
+
+
 # --------------------------------------------------------------------------- #
 # 测试替身
 # --------------------------------------------------------------------------- #
@@ -8031,6 +8058,23 @@ _CK_DUPLICATE_ID_MSG = ("ErrMsg: msg: [ElementID panel_body: Code 1001: Duplicat
                         "code: 300301; ")
 
 
+def test_gate_import_guard_rejects_a_foreign_tree():
+    """「门禁先自证被测代码」那条守卫必须**真的会拒绝**（否则它只是一句注释）。
+
+    与 `test_plan_progress_table_is_checkable_from_its_own_rows` 同一手法：门禁自己也要有输入
+    （`docs/lessons.md` 推论 11 —— 「给验证器本身写输入」）。
+    判据是拿一个**明确不属于本仓库**的路径去问它，它必须报出问题；本仓库自己的路径必须通过。
+    """
+    foreign = _pathlib.Path("/tmp/some-other-export/larkdeck/core/adapter.py")
+    problems = _gate_import_problems(foreign, _REPO_ROOT)
+    assert problems and "/tmp/some-other-export" in problems[0], problems
+    assert _gate_import_problems(adapter.__file__, _REPO_ROOT) == [], \
+        "本仓库自己的 adapter 必须通过 —— 否则这条守卫会天天假红"
+    # ⚠️ 反向：**同目录名**的拷贝（`/tmp/xxx/larkdeck`）也必须被认出来不是本仓库
+    assert _gate_import_problems(str(_REPO_ROOT) + "-copy/core/adapter.py", _REPO_ROOT), \
+        "「同目录名的另一份拷贝」正是审计实测踩到的那一种，必须判不合格"
+
+
 def test_ck_inner_code_parses_the_two_real_machine_shapes():
     """`300315` 是**包装码** ⇒ 必须解析内层码，否则两种病会被判成同一种（R11-B2）。
 
@@ -8174,6 +8218,49 @@ def test_ck_create_rejection_is_traced_with_the_inner_reason():
 # --------------------------------------------------------------------------- #
 def _frame_key(chat: str, turn: str) -> str:
     return f"{chat}:{turn}"
+
+
+def test_empty_panel_diagnostic_reports_only_on_terminal_frames():
+    """空面板诊断**只在收尾帧**报（R11 §3.4 的尾巴，真机实测的噪声）。
+
+    两半都要断：
+      * **中间帧**（含建卡 seed 帧 —— 那一刻必然还没有任何过程数据）不许报：旧写法每回合开头
+        都刷一条「面板为空 · 诊断」，而这条 INFO 正是「面板恒空」那个真 bug 的**唯一**排查
+        凭据（2026-09-14 真机就是靠它定的位）⇒ 被正常噪声淹没等于没有凭据；
+      * **收尾帧仍然为空**必须照旧报：否则这条诊断就废了（它存在的理由就是抓「一整个回合
+        都没有过程数据」这种病）。
+    """
+    chat, turn = "oc_ck_diag", "t-diag"
+    calls, client = _mk_cardkit_fake()
+    raw = _make()
+    raw._client = client
+    adapter.configure(native_transport="cardkit", unified_panel=True)
+    old_reqs = adapter.LarkDeckMixin._ld_ck_requests
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    adapter.LarkDeckMixin._ld_ck_requests = staticmethod(_fake_ck_requests)
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    panel.reset()
+    try:
+        adapter._log_empty_panel_once._at = 0.0
+        with _LogCapture("larkdeck") as records:
+            assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn)), "seed 帧"
+            assert _run(raw.send_stream_frame("正文", chat_id=chat, turn_id=turn)), "中间帧"
+        noise = [r.getMessage() for r in records if "面板为空" in r.getMessage()]
+        assert not noise, \
+            f"中间帧（含 seed）的面板为空是**正常**的，不该报诊断（真机噪声实测）：{noise}"
+        adapter._log_empty_panel_once._at = 0.0
+        with _LogCapture("larkdeck") as records:
+            assert _run(raw.send_stream_frame("正文，收尾", finalize=True,
+                                              chat_id=chat, turn_id=turn)), "收尾帧"
+        hit = [r.getMessage() for r in records if "面板为空" in r.getMessage()]
+        assert hit, ("收尾帧仍然为空必须照旧报出来 —— 那是「面板恒空」的唯一凭据"
+                     f"（不报就等于把这条诊断废掉）：{[r.getMessage() for r in records]}")
+        assert "诊断" in hit[0], f"报出来的必须带只读诊断（否则猜不出是哪种成因）：{hit[0]}"
+    finally:
+        adapter.LarkDeckMixin._ld_ck_requests = old_reqs
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        adapter._log_empty_panel_once._at = 0.0
+        panel.reset()
 
 
 def test_ck_write_window_guard_skips_the_decor_batch_without_freezing_it():

@@ -836,8 +836,17 @@ class _CkResult(NamedTuple):
         **成功**的语义 —— 一个「解析不出来」被读成「成功码」会把失败判成成功。本文件已经踩过
         同一个陷阱一次（`_ld_ck_settings` 里「老 SDK 缺模型时抛错而不是返回 None」那段）。
         所以「内层码真的是 0」与「解析不出」都返回 ``None``（0 不携带任何信息）。
+
+        ⚠️ **已知风险面**（B2 审计低-1，**未经真机采样**，只记在这里不许当成实测）：
+        正则只认「`code` 紧跟冒号」这一种标签形状，所以假想形状
+        ``[limit, Code: 300305: exceeded]``（**描述码**后面紧贴冒号）也会被抓到。
+        影响面是**有界的**：真机两条字面里权威内层码都在 msg 末尾，取最后一个匹配就是它
+        （实测 `[... Code: 300305: x], code: 300301; ` ⇒ `300301`）；只有「msg 里根本没有
+        尾部 `code:`」时才会读到描述码，而那时无论读成哪个内层码，**处置都是确定性失败**
+        （不重试、留痕），差别只在 `_ck_reject_reason()` 那句原因怎么写。
+        ⇒ 想收紧就得先拿到真机样本（附录 F 的规矩：不许猜），别照着假想形状改正则。
         """
-        found = _CK_INNER_CODE_RE.findall(self.msg or "")
+        found = _CK_INNER_CODE_RE.findall(str(self.msg or ""))
         if not found:
             return None
         return int(found[-1]) or None
@@ -871,7 +880,9 @@ _CK_BAD_ELEMENT_RE = re.compile(r"elementID\s*:\s*([A-Za-z0-9_]+)")
 #:
 #:       code=300315 · msg='ErrMsg: msg: [ElementID panel_body: Code 1001: Duplicate ID], code: 300301; '
 #:
-#: 三条由此**确定**的结论（都是从这两条字面读出来的，不是推断）：
+#: 两条由此**确定**的结论（都是从这两条字面读出来的，不是推断；第 ③ 条是**已知风险面**，
+#: 不是实测结论 —— 审计构造出 `[limit, Code: 300305: exceeded]` 这种形状会被同一正则吃掉，
+#: 真机没有这个样本，所以只记录、不照着改）：
 #:   ① `300315` 是**包装码**，真原因在 msg **尾部**的 `code: NNNNNN` ⇒ 所以取**最后一个**匹配；
 #:   ② 方括号里的 `Code 1001` 是**描述码**（重复 id），它**不是**尾部的 `300301` ——
 #:      正则 `\bcode\s*:` 恰好只吃尾部那一个（`Code 1001:` 的数字在冒号**前面**，形状不同）；
@@ -1503,8 +1514,8 @@ class LarkDeckMixin:
             return ""
 
     @classmethod
-    def _ld_panel_parts(cls, chat_id: str = "", started: Optional[float] = None
-                        ) -> Tuple[str, str]:
+    def _ld_panel_parts(cls, chat_id: str = "", started: Optional[float] = None,
+                        *, report_empty: bool = False) -> Tuple[str, str]:
         """面板的**两块**内容（CardKit 实体卡用，R3 收窄版）：``(推理块, 工具块)``。
 
         为什么拆两块：推理文本**逐字在长**（轮次标题的耗时每秒还在变）⇒ 装推理的那个元素
@@ -1544,7 +1555,11 @@ class LarkDeckMixin:
                     max_steps=_cfg_int("max_panel_steps", _cards.MAX_PANEL_STEPS),
                 ),
             )
-            if not (_body or _tools_text):
+            if not (_body or _tools_text) and report_empty:
+                # ⚠️ **只在收尾帧报**（R11 §3.4 的真机噪声收口）：`report_empty` 由
+                # 「这一帧是不是终局帧」决定，默认 False —— 因为**建卡 seed 帧必然为空**
+                # （那一刻还没有任何过程数据），旧写法会在每个回合开头都打一条
+                # 「面板为空 · 诊断」，把真正的异常淹掉。判据见 `_log_empty_panel_once`。
                 _log_empty_panel_once(chat_id)
             return _body, _tools_text
         except Exception:
@@ -1592,8 +1607,8 @@ class LarkDeckMixin:
             return ""
 
     @classmethod
-    def _ld_panel(cls, chat_id: str = "", started: Optional[float] = None
-                  ) -> Optional[Dict[str, Any]]:
+    def _ld_panel(cls, chat_id: str = "", started: Optional[float] = None,
+                  *, report_empty: bool = False) -> Optional[Dict[str, Any]]:
         """底部折叠面板：推理过程 + 工具步骤 + 状态色（数据来自 :mod:`larkdeck.core.panel`）。
 
         ``chat_id`` 决定面板归属：由 ``pre_gateway_dispatch`` 观察到的
@@ -1612,7 +1627,9 @@ class LarkDeckMixin:
                 return None
             snap = _panel.snapshot(chat_id)
             if not snap:
-                _log_empty_panel_once(chat_id)
+                if report_empty:
+                    # 同上：只在终局帧报（seed / 中间帧的面板为空是**正常**的）
+                    _log_empty_panel_once(chat_id)
                 return None
             steps = [
                 _cards.tool_step(
@@ -1756,7 +1773,7 @@ class LarkDeckMixin:
             # 判据是「这份文本是不是**完整文本**」，不是「这是哪条路径」（见 cards.sanitize_markdown）。
             content = _sanitize_for_send(content)
             card = self._ld_build_card(content, streaming=False,
-                                       panel=self._ld_panel(chat_id),
+                                       panel=self._ld_panel(chat_id, report_empty=True),
                                        footer=self._ld_footer())
             result = await self._ld_send_card(chat_id, card, reply_to=reply_to, metadata=metadata)
             if result is not None and getattr(result, "success", False):
@@ -1788,7 +1805,8 @@ class LarkDeckMixin:
                 content = _sanitize_for_send(content)
             card = self._ld_build_card(
                 content, streaming=not finalize,
-                panel=self._ld_panel(chat_id, state.get("t0")),
+                panel=self._ld_panel(chat_id, state.get("t0"),
+                                     report_empty=bool(finalize)),
                 footer=self._ld_footer(),
             )
             result = await self._ld_update_card(chat_id, message_id, card)
@@ -2240,7 +2258,8 @@ class LarkDeckMixin:
         sealed = text[offset:cut]
         card = self._ld_build_card(sealed + "\n\n" + _i18n.t("stream.continued"),
                                    streaming=False,
-                                   panel=self._ld_panel(chat, state.get("t0")),
+                                   panel=self._ld_panel(chat, state.get("t0"),
+                                                        report_empty=True),
                                    footer=self._ld_footer())
         result = await self._ld_update_card(chat, old_message_id, card)
         if result is None or not getattr(result, "success", False):
@@ -2431,7 +2450,8 @@ class LarkDeckMixin:
             if self._ld_transport() == "cardkit":
                 # ---- CardKit 实体卡（真打字机）：结构建实体时定死，之后只按 id 写元素 ----
                 # R3 收窄版：面板是**两块**（推理 / 工具），建实体时都定死，之后只改内容
-                panel_text, panel_tools_text = self._ld_panel_parts(chat, now)
+                panel_text, panel_tools_text = self._ld_panel_parts(
+                    chat, now, report_empty=bool(finalize))
                 made = await self._ld_ck_create(chat, answer=display, panel_text=panel_text,
                                                 panel_tools_text=panel_tools_text,
                                                 reply_to=reply_to,
@@ -2476,7 +2496,8 @@ class LarkDeckMixin:
                 _context.note_frame_ok()      # R9：建实体 + 发实体卡 = 这一帧真的有东西发出去了
                 return True
             card = self._ld_build_card(display, streaming=True,
-                                       panel=self._ld_panel(chat, now),
+                                       panel=self._ld_panel(chat, now,
+                                                            report_empty=bool(finalize)),
                                        footer=self._ld_footer())
             result = await self._ld_send_card(chat, card, reply_to=reply_to)
             if result is None or not getattr(result, "success", False):
@@ -2511,7 +2532,8 @@ class LarkDeckMixin:
             tail_offset = int(state.get("ck_offset") or 0)
             tail_visible = _sanitize_for_send(display[tail_offset:])
             card = self._ld_build_card(tail_visible or " ", streaming=False,
-                                       panel=self._ld_panel(chat, state.get("t0")),
+                                       panel=self._ld_panel(chat, state.get("t0"),
+                                                            report_empty=True),
                                        footer=self._ld_footer())
             result = await self._ld_update_card(chat, message_id, card)
             if result is None or not getattr(result, "success", False):
@@ -2607,7 +2629,8 @@ class LarkDeckMixin:
             # 装饰（面板/页脚）与预览（summary）照旧用整回合的语义。
             # ⚠️ 面板那两块**按关键字**传：`_ck_plan` 的第 3 个位置参数是**元素表**，
             # 用 `*parts` 展开会把工具块塞进 `elems`（实测症状：帧异常 ⇒ 整回合掉 native）。
-            _panel_body, _panel_tools = self._ld_panel_parts(chat, state.get("t0"))
+            _panel_body, _panel_tools = self._ld_panel_parts(
+                chat, state.get("t0"), report_empty=bool(finalize))
             ops = _ck_plan(visible, _panel_body, live_elems, self._ld_footer(),
                            panel_tools_text=_panel_tools)
             live_state = dict(state)
@@ -2698,7 +2721,8 @@ class LarkDeckMixin:
         # ⚠️ 这条车道（patch 传输 / 降级之后）同样只写**本卡那一段**：写整段会让降级后的卡
         # 把已经封掉的几段重放一遍（与元素车道同一条纪律）。
         card = self._ld_build_card(visible, streaming=True,
-                                   panel=self._ld_panel(chat, state.get("t0")),
+                                   panel=self._ld_panel(chat, state.get("t0"),
+                                                        report_empty=bool(finalize)),
                                    footer=self._ld_footer())
         result = await self._ld_update_card(chat, message_id, card)
         if result is None or not getattr(result, "success", False):
@@ -2993,7 +3017,7 @@ class LarkDeckMixin:
             # 只靠 `_ld_panel` 会踩到一个实测过的坑 —— 该回合还没有任何过程数据时
             # （模型还在思考、还没调工具），快照里什么都没有 ⇒ 面板为 None ⇒
             # 「状态改了、卡片没变、还不报错」。这正是本项目最怕的形态。
-            panel = self._ld_panel(chat, started) or _cards.unified_panel(
+            panel = self._ld_panel(chat, started, report_empty=True) or _cards.unified_panel(
                 status=_panel.STATUS_STOPPED)
             card = self._ld_build_card(_sanitize_for_send(text) or " ", streaming=False,
                                        panel=panel, footer=self._ld_footer())
