@@ -29,10 +29,12 @@
 | **FC** | 基于 CLS v0.12.0 **独立重写**，全押 CardKit 元素级流式 | **AST patch** | ❌ 机制不可抄，**元素预算调度可抄** |
 | **HLS** | 与 AP 同源（AP 的上游），~18.8k LOC | **monkeypatch**（同批私有方法 + cron + `create_adapter`）| ❌ |
 
-**共同点**：六家**全部**要改 Hermes 运行时（AST 注入或 monkeypatch），**没有一家**是
-`register_platform` 合规插件。这正是本项目的立项理由（Hermes 一升级，注入就被冲掉；
-NAS 上还得挂「每次开机重新注入」的脚本）。**所以我们要抄的是它们解决过的「行为问题」，
-不是它们拿事件的方式。**
+**共同点**：六家**全部**要改 Hermes 运行时，**没有一家**是 `register_platform` 合规插件。
+但**「怎么改」必须分两类**（这一点极易说错，见 6.1）：
+- **改磁盘源码**（HFC / CLS / FC）：`hermes update` 会**覆盖被改过的文件** ⇒ **每次升级都要重跑安装**；
+- **只在运行时 monkeypatch**（AP / ALS / HLS）：升级**什么都不用做**，但内部结构一变就**静默失灵**。
+
+**所以我们要抄的是它们解决过的「行为问题」，不是它们拿事件的方式。**
 
 ## 二、卡片效果：谁有谁没有（对我们有意义的部分）
 
@@ -167,21 +169,22 @@ NAS 上还得挂「每次开机重新注入」的脚本）。**所以我们要�
 **起因**：用户看到 aiduPOP 的截图后追问「是不是我们路线选错了？我们这条路是不是真做不到？」
 本节就是那次追问的答案：**逐条查证「能不能做」，并把结论分成「路线限制」与「我们没做」两类。**
 
-### 6.1 六家路线与升级代价（一句话：**没有一家不需要重装**）
+### 6.1 六家路线与升级代价（**必须分两类，混为一谈就是错的**）
 
-| 项目 | 拿事件的方式 | Hermes 升级后要做什么 | 失灵方式 |
-|---|---|---|---|
-| HFC | **安装期 AST patch 源码**（17 组 + 源码 hash 校验） | **重跑 install 注入**（它 README 自己写的） | 注入被冲掉 ⇒ 卡片消失 |
-| CLS | **AST 注入** `gateway/run.py`（15 个点） | 重新注入 | 注入锚点找不到 ⇒ 静默 |
-| ALS | 运行时 monkeypatch（多私有方法 + 私有属性） | 无自动化，靠人跟版本 | 改名 ⇒ 只 WARNING ⇒ 卡片链路整条消失 |
-| AP | monkeypatch `GatewayRunner` 4 方法 / `AIAgent.run_conversation` / `FeishuAdapter` 4 方法 + **2 条轮询线程赌加载时机** | 无自动化 | 同上；另有 `id(cls)` 去重可被回收复用 ⇒ 静默退回纯文本 |
-| FC | **AST 源码注入** | **重跑 install 注入**（README 明写） | 同上 |
-| HLS | monkeypatch（同批私有方法 + cron + `create_adapter`） | 无自动化 | 同上 |
-| **我们** | `ctx.register_platform()` + 7 个**官方**钩子 + 子类化官方适配器 | **什么都不用做**（`~/.hermes/plugins/` 软链，Hermes 从不动） | **fail-open：退回纯文本 + 留日志，消息永不丢** |
+要分清两件事：**「改磁盘上的源码」**（`hermes update` 会把改动覆盖掉 ⇒ **每次升级都要重跑安装**）
+与**「只在运行时 patch 内存」**（升级**什么都不用做**，但内部结构一变就**静默失灵**）。
 
-> ⚠️ 这张表就是本项目存在的理由，也是**用户最初提的硬要求**
-> （「尽量不要修改 Hermes 的源代码，因为我不想每次升级 Hermes 时都重装一下卡片插件」）。
-> 六家**全部**做不到这一点；**换任何一家都要接受「每次 `hermes update` 后重装」**。
+| 类型 | 谁 | 拿事件的方式 | 升级后要做什么 | 坏的时候什么样 |
+|---|---|---|---|---|
+| **A. 安装期改磁盘源码** | HFC / CLS / FC | AST 注入 Hermes 源码 —— CLS/FC 把 `run.py` 备份成 `run.py.hermes_lark.bak` 再改写（`patcher.py`，目标 `<HERMES_HOME>/hermes-agent/`）；HFC 用 `install/patcher.py` + manifest + recovery | **必须重跑 install**。FC 的 INSTALL 原文表格：「`Hooks gone after Hermes update`｜Hermes update **overwrote patched files**｜`Re-run verify + install`」；CLS 的 Update 段同样是 `uninstall`（remove old injection）→ `verify` → `install` | **明确**：`verify` 报 `Incompatible`（「锚点变了」）或钩子直接消失 |
+| **B. 运行时 monkeypatch** | AP / ALS / HLS | 插件 import 时在内存里替换 `GatewayRunner` / `AIAgent` / `FeishuAdapter` 的私有方法（AP 另有 2 条轮询线程赌加载时机） | **不用重装**（这是它们相对 A 类的**真实优势**） | **静默失灵**：私有方法改名/挪窝 ⇒ 只打一条 WARNING ⇒ **卡片整条链路消失**，不报错也不回落；要等作者发新版 |
+| **C. 官方插件契约** | **我们** | `ctx.register_platform()` + 7 个**官方**钩子 + 子类化官方适配器（`~/.hermes/plugins/` 软链） | **什么都不用做**（Hermes 源码从未被我们碰过） | **fail-open**：退回纯文本 + 留日志，**消息永不丢**；启动自检如实上报缺了哪个能力 |
+
+> ⚠️ **2026-09-15 更正（本文件初版写错了）**：本节初版写成「换任何一家都要接受每次
+> `hermes update` 后重装」—— **那句对 B 类是错的**。B 类（AP/ALS/HLS）升级后**确实什么都不用做**。
+> **我们相对 B 类的优势不是「不用重装」，而是**：① **不依赖任何私有名**，不会随上游内部重构
+> 静默失灵；② 一旦不适配，**必定退化成纯文本并留痕**，而不是无声消失、等上游修。
+> 「每次升级都要动手」只适用于 **A 类**（HFC/CLS/FC），而且 FC 那条是它**自己的 INSTALL 原文**写的。
 
 ### 6.2 两条被截图误导的前提（都已复核）
 
@@ -229,7 +232,10 @@ NAS 上还得挂「每次开机重新注入」的脚本）。**所以我们要�
 
 - **本人当场复核**：选项不外显（`cards.py:1445` 实读）· 脚注「点按钮」文案（`i18n.py:42` 实读）·
   `(Recommended)` 出自核心（核心源码 + AP 全仓 grep）· AP 澄清三态的三重死（子代理实测，结论我已接受）·
-  README/本表 5 行漂移（逐条 grep 复核实现存在）· 六家全部 monkeypatch/AST（源码与 README 已核）。
+  README/本表 5 行漂移（逐条 grep 复核实现存在）· **六家的接入方式分 A/B 两类**（读真源码：
+  CLS/FC 的 `patcher.py` 把 `run.py` 备份成 `.hermes_lark.bak` 后改写磁盘；HFC 的
+  `install/patcher.py`；AP/ALS/HLS 无任何源码写入、只在 import 时 monkeypatch）·
+  FC/CLS 的 INSTALL 原文（「升级覆盖被 patch 的文件 ⇒ 重跑 install」）。
 - **来自子代理报告、我未逐行复核**：AP 的 `/aowen monitor` 与 trace id 的具体字段、
   AP 的脱敏实现细节、ALS 的观测项。这些在动手做第 4/5 条时应**先复核目标文件再实现**。
 - **仍待补**：HLS 的全功能矩阵报告（最后一个子代理）。
