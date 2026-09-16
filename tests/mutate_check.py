@@ -1671,6 +1671,16 @@ MUTATIONS = [
      '    return isinstance(value, dict) and bool(value.get(PROBE_VALUE_KEY))',
      '    return isinstance(value, dict) and PROBE_VALUE_KEY in value',
      "test_units"),
+    ("Y24-脱敏扫描窗口被调到不大于展示窗口（同形状立刻变成**可见的未脱敏凭据**）",
+     "core/panel.py",
+     "_REDACT_SCAN_CHARS = 4096",
+     "_REDACT_SCAN_CHARS = 80",
+     "test_units"),
+    ("Y25-澄清卡编号改成「去重后从 1 重排」（数字连续了，但卡面开始**说谎**）",
+     "core/cards.py",
+     '        pairs.append((f"{idx}. {label_text}", text))',
+     '        pairs.append((f"{len(pairs) + 1}. {label_text}", text))   # 变异：去重后从 1 重排',
+     "test_units"),
 ]
 
 #: **对照项**：行为等价的改动（合法 YAML 变体等），期望四门禁**全绿**。

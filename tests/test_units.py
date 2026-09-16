@@ -2627,6 +2627,7 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         assert adapter._strip_core_progress(_p9, _p9_acc, True, True,
                                             finalize=False) == _p9, \
             "条件③：累积必须真的是**前缀**（只是子串不算证据，否则会吞掉前面的正文）"
+
         #    ④ 尾巴**只有裸分隔符、后面没内容** ⇒ 不许剥：核心的合成式在 `progress` 为空时
         #      **不会**留下裸分隔符（`"\n\n---\n".join(p for p in (accumulated, progress) if p)`），
         #      所以裸分隔符只能是**模型自己写的**（那时它已经在累积里了）。
@@ -5319,6 +5320,22 @@ def test_clarify_card_2_shows_the_choices_and_never_says_tap_a_button():
              for b in el["actions"]]
     assert _btns[:3] == ["1. 甲", "2. 乙", "3. 丙"], \
         f"1.0 按钮的编号也必须是 1 基：{_btns}"
+    # ⚠️ **去重会让可见编号出现「空洞」，但编号必须始终指向它旁边那一项**（2026-09-16 第四轮审计）：
+    #    `_clarify_choice_pairs` 去掉重复项，编号沿用**原始列表的 1 基下标** —— 这是**对的**，
+    #    因为核心按 `choices[n-1]` 解析文字回答（用户回「2」= 第 2 个选项）。
+    #    代价：`["甲","乙","甲","丙"]` 显示成 `1. 甲 / 2. 乙 / 4. 丙`（**没有 3**）。
+    #    ⇒ **绝不许为了让编号连续而重排**：那会让卡面**说谎**（卡面写「3. 丙」而核心给「甲」），
+    #    比跳号严重得多（跳号只是让人困惑，说谎是给出**错误的答案**）。
+    #    这一格钉的就是「卡面数字 → 那一项」这条映射。
+    _dup = ["甲", "乙", "甲", "丙"]
+    for _label, _value in cards._clarify_choice_pairs(_dup):
+        _n = int(_label.split(".")[0])
+        assert _dup[_n - 1] == _value, (
+            f"卡面编号必须指向**同一项**（核心按 `choices[n-1]` 解析文字回答）："
+            f"卡面写 {_label!r}，而 choices[{_n - 1}] = {_dup[_n - 1]!r}")
+    # 反面：不许「去重后从 1 重排」把空洞填上（那会满足「编号连续」却让卡面说谎）
+    assert [lbl.split(".")[0] for lbl, _ in cards._clarify_choice_pairs(_dup)] == ["1", "2", "4"], \
+        "编号必须沿用**原始下标**（去掉重复项后留下的空洞是**已知的观感代价**，见交接单登记）"
     # ⚠️ **选项里含换行**（模型完全可以给出多行选项）会同时坏两件事（审计 B1）：
     #    ① 「卡面列表与下拉标签**逐条相同**」这条同源判据**不成立**（列表凭空多出一行）；
     #    ② `# ` / `- ` / `> ` 落到**行首** ⇒ 直接变成 markdown 语法 ——
@@ -5553,6 +5570,15 @@ def test_tool_args_preview_redacts_credentials_and_keeps_normal_fields():
                 "MAX_TOKENS=4096 python run.py",
                 "echo hello world"):
         assert panel.redact_inline_secrets(raw) == raw, f"不许误伤正常内容：{raw!r}"
+    # ⚠️ **两个窗口的大小关系是「可见的未脱敏凭据 = 0」的**充要前提**（2026-09-16 审计实测）：
+    #    `_args_preview` 的顺序是 `_shrink → json.dumps → text[:_REDACT_SCAN_CHARS] → 脱敏 →
+    #    text[:_ARGS_PREVIEW_CHARS]`。**先截断再脱敏**之所以安全，全靠「扫描窗口 ≥ 展示窗口」
+    #    —— 被展示的那一段必然是脱敏过的。若把 `_REDACT_SCAN_CHARS` 调到 ≤ `_ARGS_PREVIEW_CHARS`，
+    #    同一个形状立刻变成**可见的未脱敏凭据**（审计做了穷举：今天可见未脱敏 0 例，
+    #    而那个「0」是这条不等式换来的，不是设计上的巧合）。⇒ 把不等式本身钉住。
+    assert panel._REDACT_SCAN_CHARS > panel._ARGS_PREVIEW_CHARS, (
+        f"脱敏扫描窗口（{panel._REDACT_SCAN_CHARS}）必须**大于**展示窗口"
+        f"（{panel._ARGS_PREVIEW_CHARS}）：先截断再脱敏的安全性正是由这条不等式保证的")
     # ⚠️ **Bearer 规则的独有贡献**（审计 C3）：上面那句 `Authorization: Bearer …` 断言
     #    其实**没有**守住 Bearer 规则 —— 「头部形态」规则会把 `Authorization:` 的**整个值**
     #    涂掉，所以把 Bearer 规则**整条删掉**，那一格照样通过（变异 `G1-6` 实测：四门禁全绿）。
@@ -5786,6 +5812,53 @@ def test_entity_card_always_gets_a_footer_element_when_the_footer_is_enabled():
     finally:
         adapter.LarkDeckMixin._ld_ck_requests = old_reqs
         adapter.configure(**defaults)
+
+
+def test_strip_core_progress_only_ever_returns_a_prefix_of_the_frame():
+    """**凡真的剥了，剥出来的必须是帧文本的「前缀」** —— 这条性质是 R4 卡链的地基。
+
+    ⚠️ 为什么值得**独立一条**用例（2026-09-16 第四轮审计）：
+    ① 这段性质原先**只在 `_strip_core_progress` 的 docstring 里被论证过，没有任何判据**，
+       而且那段论证的**理由是错的** —— 它写「因为我们只做后缀剥离」，那是**同义反复**
+       （`return accumulated` 只有在 `accumulated` 真是前缀时才叫「剥后缀」）。真正的保证
+       来自条件 ③+④：`tail = text[len(acc):]` 且 `tail.startswith(SEP)`
+       ⇒ `acc == text[:text.index(SEP)]` ⇒ **必然是前缀**。而这一条又依赖一个**外部前提**：
+       我们的累积与核心的累积**逐字节同源**（`agent/stream_delivery.py:314` 把同一个 `text`
+       既投给钩子又累加；`gateway/stream_consumer.py:243` 的 `_accumulated` 从不含进度行）。
+       前提一旦变了，`display` 就可能不再是帧文本的前缀 ⇒ **在切卡接缝上静默吞正文**。
+    ② 放在大用例（㉘）里时它会被**先触发的具体断言遮住** —— 我实测过：施加「返回非前缀」
+       的实现变异后，红的始终是前面那些具体断言，这条从不触发 ⇒ **它的判别力无法被证明**。
+       独立成条之后，同一个变异会让**这一条也变红**（实测 `198/199` → 现在 `198/200`）。
+
+    ⚠️ 自证（本项目对「判据不许恒真」的要求）：下面先断言**这一组输入真的走到了剥离分支**，
+    否则「结果是不是前缀」对全都没剥的输入是**恒真**的。
+    """
+    SEP = "\n\n---\n"
+    PROG = "⚙️ 工具行"
+    acc_a = "A段正文。"
+    acc_c = "A段。" + SEP + "B段（模型自己写的分隔线）。"
+    cases = [
+        (acc_a, acc_a + SEP + PROG),                          # 基本形状
+        (acc_a, acc_a + SEP + PROG + SEP + "尾巴"),            # 尾巴里还有分隔符
+        (acc_c, acc_c + SEP + PROG),                          # 累积里**含模型自己写的分隔符**
+        (acc_a, acc_a + SEP + "x"),                           # 尾巴极短
+        (acc_a, "前缀" + acc_a + SEP + PROG),                  # 累积只是子串（条件③应拦下）
+        (acc_a, acc_a + SEP),                                 # 裸分隔符（条件④应拦下）
+        (acc_a, acc_a),                                       # 没有尾巴
+    ]
+    stripped_any = False
+    for acc, frame in cases:
+        out = adapter._strip_core_progress(frame, acc, True, True, finalize=False)
+        if out != frame:
+            stripped_any = True
+            assert frame.startswith(out), (
+                f"剥完的结果必须是帧文本的**前缀**（否则 `ck_offset` 失效、切卡接缝静默吞正文）："
+                f"{out!r} 不是 {frame!r} 的前缀")
+        else:
+            assert out == frame, "没剥就必须**原样返回**（不许改写）"
+    assert stripped_any, (
+        "构造无效：这一组输入里**至少有一条必须真的走到剥离分支** —— "
+        "否则上面的「是不是前缀」对全都没剥的输入恒真，这一格等于没验")
 
 
 def test_stop_redraw_and_edit_message_keep_the_trace_id():

@@ -460,6 +460,22 @@ def _strip_core_progress(text: str, accumulated: str, tool_pending: bool,
     ⚠️ **只可能剥掉后缀**，这条性质是 R4 卡链的前提：``ck_offset`` 之类的偏移量都指向
     正文内部，剥后缀不会让任何偏移失效（变异 ``R11-3`` 把判据换成「按最后一个分隔符切」，
     那会连正文一起切掉）。
+
+    ⚠️⚠️ **上面那句的「理由」曾经写错了**（2026-09-16 第四轮审计实测指出，已更正）。
+    旧写法把这条性质归因于「我们只做后缀剥离」—— 那是**同义反复**，不是保证：
+    `return accumulated` 只有在 **`accumulated` 真的是 `text` 的前缀**时才等于「剥后缀」。
+    真正的保证来自**条件 ③ + 条件 ④ 合起来**：
+    ``tail = text[len(accumulated):]`` 且 ``tail.startswith(SEP)`` ⇒
+    ``text[:len(accumulated)] == text[:text.index(SEP)] == accumulated`` ⇒
+    **`accumulated` 必然是 `text` 的前缀**（不是猜的，是那两条推出来的）。
+    而这条又依赖一个**外部前提**：我们的累积与核心的累积**逐字节同源**
+    （实测出处：`agent/stream_delivery.py:314` 把**同一个** ``text`` 既投给钩子又累加；
+    `gateway/stream_consumer.py:243` 的 ``_accumulated`` **从不含**进度行）。
+    ⇒ **那个前提没有任何判据守着**：一旦核心改了投递方式（例如把进度行也投给
+    `on_stream_delta`），或者出现「陈旧但仍是前缀」的累积恰好让条件 ①②③④ 全过，
+    `display` 就可能不再是帧文本的前缀 ⇒ 在**切卡**接缝上静默吞正文，而四门禁全绿。
+    判据是 `test_units` 里那条「**display 恒为帧文本的前缀**」（带构造自证），
+    不是这段注释里的推理。**改这一段时把那条断言一起看。**
     """
     if finalize or not text or not accumulated or not tool_pending or not complete:
         return text
