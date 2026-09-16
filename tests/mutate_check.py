@@ -1618,6 +1618,18 @@ MUTATIONS = [
      '            _panel.record_answer_delta(session_id, turn_id, payload.get("delta", ""))',
      '            _panel.record_answer_delta(session_id, turn_id, payload.get("delta", "").strip())',
      "check_hooks"),
+    # ⚠️ PA-2 守的是前提核对的**归属**（2026-09-16 对抗审计中-1 实测出来的缺口）：
+    # 把正文仓库的「按会话分桶」整个拆掉（`_answer_bucket_locked` 里换成一把常量键），
+    # 修改前的前提核对**照样绿** —— 因为它当时用 `answer_state("")` 读，走的是进程级
+    # 「最近活跃」指针，读到的正是「上一个写过正文的桶」。修法：**先绑定 `chat_id -> session_id`
+    # （真机上由 `pre_gateway_dispatch` 绑定）再按 chat 读**，并自证归属落在目标会话上。
+    ("PA-2-正文仓库的按会话分桶被换成一把常量键（跨会话串台）", "core/panel.py",
+     '    item = _ANSWERS.get(sid)\n'
+     '    if not isinstance(item, dict) or str(item.get("turn") or "") != tid:',
+     '    sid = "larkdeck-collapsed"   # 变异：拆掉按会话分桶\n'
+     '    item = _ANSWERS.get(sid)\n'
+     '    if not isinstance(item, dict) or str(item.get("turn") or "") != tid:',
+     "check_hooks"),
     # ---- 第十三路审计（效果组 Y1b/X14/X18..Y5/Z）实测出来的断言缺口 ------------------ #
     # 这一批**全部**是「代码是对的、但没有任何判据守着」—— 撤掉修复四门禁照样全绿。
     # 共性：判据的作用域**没跨出模块自己**（拿被测常量算上界 / 拿同模块函数比对象 /

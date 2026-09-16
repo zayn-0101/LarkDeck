@@ -417,12 +417,24 @@ else:
     # `delta`、或 `record_tool_started` 少调一次 `note_tool_event`，四门禁会全绿而真机上
     # **永远不剥**（症状 = 用户报的那个「正文里混进工具进度行」原样复现）。
     _answer_seen = ""
+    # ⚠️ 归属必须**确定性**地钉在目标会话上（2026-09-16 对抗审计 M1）：`answer_state()` 的第一个
+    # 形参是 `chat_id`，传一个**没绑定**的字符串时它会退回进程级「最近活跃」指针
+    # （`panel._answer_session_for`）—— 那样读到的其实是「上一个写过正文的会话」，
+    # 于是「按会话分桶」这条修复整个被拆掉时，这些断言**照样绿**（审计实测：把
+    # `_answer_bucket_locked` 的 `sid` 换成常量，本门禁仍 `HOOKS OK`/exit 0）。
+    # 真机上这条绑定来自 `pre_gateway_dispatch`，所以这里也走同一条路。
+    _GOLDEN_CHAT = "chat-golden"
+    _panel.bind_chat_session(_GOLDEN_CHAT, _SESSION)
     for _ in range(60):                     # 等 worker 消费（正文增量走的是异步队列）
-        _answer_seen, _armed, _complete = _panel.answer_state(_SESSION)
+        _answer_seen, _armed, _complete = _panel.answer_state(_GOLDEN_CHAT)
         if _answer_seen == "这是正文" and _armed:
             break
         time.sleep(0.05)
     print(f"answer_state = {(_answer_seen, _armed, _complete)}")
+    if _panel._answer_session_for(_GOLDEN_CHAT) != _SESSION:
+        problems.append(
+            f"R11-A7 那一格的归属没落到 {_SESSION}："
+            f"{_panel._answer_session_for(_GOLDEN_CHAT)!r}（读到的是别的会话，断言会假绿）")
     if _answer_seen != "这是正文":
         problems.append(
             f"正文累积没入账（`on_stream_delta` 的 delta 没传进数据层）：{_answer_seen!r}")
@@ -433,7 +445,7 @@ else:
     # 再来一条正文增量 ⇒ 窗口必须**关上**（核心也在这一刻清掉它的进度行）
     _stream("text", "，还没写完")
     for _ in range(60):
-        _answer_seen2, _armed2, _ = _panel.answer_state(_SESSION)
+        _answer_seen2, _armed2, _ = _panel.answer_state(_GOLDEN_CHAT)
         if _answer_seen2 == "这是正文，还没写完" and not _armed2:
             break
         time.sleep(0.05)
@@ -459,13 +471,24 @@ else:
     #   而**同一行代码**把**同一个 text** 交给 `_enqueue_stream_hook`（我们收到的那一份）。
     # 再拿核心真实的 `_compose_frame_content()` 合成一帧，喂给我们真实的 `_strip_core_progress`。
     #
-    # ⚠️ 只桩掉两处，都在这里写明：① **异步 `run()` 循环**（它做的是传输 I/O，不是累积），
-    #    改由我们同步泵一次队列；② **工具轮边界那一个布尔位**（核心自己在
-    #    `agent/turn_tool_round.py:182` / `agent/conversation_loop.py:312` 置位）——
-    #    它换来的是核心自己插的那个 `"\n\n"`，也就是「两边只要有一边多改一个字节就错位」的地方。
-    # ⚠️ 上游若改了这些形状，这一格会**红**并打印原因 —— **这是故意的**：它守的是外部前提，
-    #    前提没了就必须有人看一眼（`docs/lessons.md` 推论 8：探测失效 ≠ 契约齐全）。
+    # ⚠️ **桩掉三处**（2026-09-16 对抗审计低-1 纠正过措辞：以前写「两处」，而宿主类其实盖了
+    #    四个方法），每一处都写在这里，并说明它为什么动不了结论：
+    #    ① **异步 `run()` 循环**（它做的是传输 I/O，不是累积）⇒ 改由我们同步泵一次队列；
+    #    ② **工具轮边界那一个布尔位**（核心自己在 `agent/turn_tool_round.py:182` /
+    #       `agent/conversation_loop.py:312` 置位）—— 它换来的是核心自己插的那个 `"\n\n"`，
+    #       也就是「两边只要有一边多改一个字节就错位」的地方；
+    #    ③ **宿主侧的 `_strip_think_blocks`（identity）** —— 核心的真实现
+    #       （`agent/agent_runtime_helpers.py` 的 `strip_think_blocks`）确实会改写文本，
+    #       但 `stream_delivery.py` 是**洗完之后**才把**同一个局部 `text`** 既给回调又给钩子
+    #       ⇒ 换成 identity 只改输入形状，不改变「两边同源」这个结论。
+    #       （代价如实说：这一格的输入因此进不了 `_filter_and_accumulate` 的 think 分支。）
+    # ⚠️ **上游若改了这些形状，这一格要「红 + 打印原因」，不是「崩掉半张门禁」**
+    #    （2026-09-16 对抗审计中-2 实测：改名会让裸调用抛 `AttributeError`、只打 traceback
+    #    而没有 FAIL 行，并且**这一格之后的断言全部不再执行**）⇒ 整段驱动套一层 try/except，
+    #    退化成一条可读的 FAIL。**它必须红**：这一格守的是外部前提，前提没了就得有人看一眼
+    #    （`docs/lessons.md` 推论 8：探测失效 ≠ 契约齐全）。
     _PSESSION, _PTURN = "sess-premise", "premise-1"
+    _PCHAT = "chat-premise"
     try:
         import queue as _qmod                                   # noqa: E402
         from agent.stream_delivery import StreamDeliveryMixin    # noqa: E402
@@ -473,87 +496,104 @@ else:
     except Exception as _exc:
         problems.append(f"无法核对「正文同源」前提：核心的投递/累积实现取不到（{_exc!r}）")
     else:
-        class _DeliveryHost(StreamDeliveryMixin):
-            """只补 `_fire_stream_delta` 会读到的几个格子，其余全部走真实现。"""
+        try:
+            class _DeliveryHost(StreamDeliveryMixin):
+                """只补 `_fire_stream_delta` 会读到的几个格子（见上面三处桩的说明）。"""
 
-            def __init__(self) -> None:
-                self.stream_delta_callback = None
-                self._stream_callback = None
-                self._stream_needs_break = False
-                self._streamed_assistant_text_parts = []
-                self.session_id = _PSESSION
-                self.model = "deepseek-v4-flash"
-                self.provider = "deepseek"
-                self.platform = "feishu"
-                self._current_turn_id = _PTURN
-                self._api_call_count = 1
+                def __init__(self) -> None:
+                    self.stream_delta_callback = None
+                    self._stream_callback = None
+                    self._stream_needs_break = False
+                    self._streamed_assistant_text_parts = []
+                    self.session_id = _PSESSION
+                    self.model = "deepseek-v4-flash"
+                    self.provider = "deepseek"
+                    self.platform = "feishu"
+                    self._current_turn_id = _PTURN
+                    self._api_call_count = 1
 
-            def _stream_writer_superseded(self) -> bool:
-                return False
+                def _stream_writer_superseded(self) -> bool:
+                    return False
 
-            def _note_dropped_stream_writer(self, where: str) -> None:
-                pass
+                def _note_dropped_stream_writer(self, where: str) -> None:
+                    pass
 
-            def _strip_think_blocks(self, text: str) -> str:
-                return text
+                def _strip_think_blocks(self, text: str) -> str:
+                    return text
 
-        # 不跑 `StreamConsumer.__init__`：那要 cfg / 传输 / 平台适配器；
-        # 这里只补 `_drain_queue` / `_filter_and_accumulate` / `_append_accumulated` 会碰的格子。
-        _consumer = object.__new__(GatewayStreamConsumer)
-        _consumer._queue = _qmod.Queue()
-        _consumer._accumulated = _consumer._stream_ledger = ""
-        _consumer._tool_progress_lines = []
-        _consumer._tool_progress_active = False
-        _consumer._in_think_block = False
-        _consumer._think_buffer = ""
-        _consumer._use_native_streaming = True   # 工具进度覆盖层只在 native 下存在
+            # 不跑 `GatewayStreamConsumer.__init__`：那要 cfg / 传输 / 平台适配器；
+            # 这里只补 `_drain_queue` / `_filter_and_accumulate` / `_append_accumulated` 会碰的格子。
+            _consumer = object.__new__(GatewayStreamConsumer)
+            _consumer._queue = _qmod.Queue()
+            _consumer._accumulated = _consumer._stream_ledger = ""
+            _consumer._tool_progress_lines = []
+            _consumer._tool_progress_active = False
+            _consumer._in_think_block = False
+            _consumer._think_buffer = ""
+            _consumer._use_native_streaming = True   # 工具进度覆盖层只在 native 下存在
 
-        _host = _DeliveryHost()
-        _host.stream_delta_callback = _consumer.on_delta   # ← `gateway/stream_consumer.py:101` 的原话
+            _host = _DeliveryHost()
+            _host.stream_delta_callback = _consumer.on_delta  # ← `gateway/stream_consumer.py:101` 的原话
 
-        _chunks = ["第一段正文。", "第二段。"]
-        for _chunk in _chunks:
-            _host._fire_stream_delta(_chunk)
-        _host._stream_needs_break = True                   # 工具轮边界（核心自己置位的那个布尔位）
-        _chunks.append("工具之后的正文。")
-        _host._fire_stream_delta(_chunks[-1])
-        _consumer._drain_queue()                           # 真实链路：on_delta → 累积
-        _core_acc = _consumer._accumulated
+            _chunks = ["第一段正文。", "第二段。"]
+            for _chunk in _chunks:
+                _host._fire_stream_delta(_chunk)
+            _host._stream_needs_break = True               # 工具轮边界（核心自己置位的那个布尔位）
+            _chunks.append("工具之后的正文。")
+            _host._fire_stream_delta(_chunks[-1])
+            _consumer._drain_queue()                       # 真实链路：on_delta → 累积
+            _core_acc = _consumer._accumulated
 
-        # 自证（本项目对「判据不许恒真」的要求）：这一组输入必须**真的**把核心自己插的那个
-        # 换行带进来 —— 否则「两边逐字节相同」对一段毫无变形的文本是**弱**的（少一个字节也看不出）。
-        if "\n\n" not in _core_acc:
+            # 自证（本项目对「判据不许恒真」的要求）：这一组输入必须**真的**把核心自己插的那个
+            # 换行带进来 —— 否则「两边逐字节相同」对一段毫无变形的文本是**弱**的（少一个字节也看不出）。
+            if "\n\n" not in _core_acc:
+                problems.append(
+                    "前提核对的构造无效：核心没有插工具轮边界那个换行 "
+                    f"（{_core_acc!r}）⇒ 这一格退化成「拼字符串也对得上」")
+            # ⚠️ 归属必须**确定性**地钉住（2026-09-16 对抗审计中-1）：`answer_state()` 的形参是
+            # `chat_id`，传空串会退回进程级「最近活跃」指针 —— 那样「按会话分桶」整条被拆掉时
+            # 这一格照样绿（审计实测：`_answer_bucket_locked` 的 `sid` 换成常量 ⇒ 仍 `HOOKS OK`）。
+            # 真机上这条绑定来自 `pre_gateway_dispatch`，这里走同一条路。
+            _panel.bind_chat_session(_PCHAT, _PSESSION)
+            _our_acc = ""
+            for _ in range(60):
+                _our_acc, _, _ = _panel.answer_state(_PCHAT)
+                if _our_acc == _core_acc:
+                    break
+                time.sleep(0.05)
+            print(f"前提核对：核心累积 {_core_acc!r}")
+            print(f"          我们钩子收到的累积 {_our_acc!r}")
+            if _panel._answer_session_for(_PCHAT) != _PSESSION:
+                problems.append(
+                    f"前提核对的归属没落到 {_PSESSION}："
+                    f"{_panel._answer_session_for(_PCHAT)!r} ⇒ 比的不是目标会话（断言会假绿）")
+            if _our_acc != _core_acc:
+                problems.append(
+                    "核心给正文钩子的文本与给显示回调的文本**不同源**："
+                    f"核心 {_core_acc!r} vs 我们 {_our_acc!r} ⇒ "
+                    "`_strip_core_progress` 的前缀判据不再成立（可能在切卡接缝上静默吞正文）")
+
+            # 形状前提：核心合成的帧必须**就是**「我们的累积 + 分隔符 + 逐行进度行」，且剥得回来。
+            # ⚠️ 断言用**整条相等**（审计低-2：以前只 `startswith(累积 + 分隔符)`，尾巴一个字节
+            # 都没钉住 —— 往分隔符后面拼任意垃圾照样通过，而那正是这一格宣称要守的「形状」）。
+            _consumer._tool_progress_lines = ['⚙️ terminal: "ls -la"']
+            _frame = _consumer._compose_frame_content()
+            _expect = _our_acc + "\n\n---\n" + "\n".join(_consumer._tool_progress_lines)
+            _stripped = _adapter_mod._strip_core_progress(_frame, _our_acc, True, True, finalize=False)
+            print(f"前提核对：核心合成的帧（真实实现） = {_frame!r}")
+            if _frame != _expect:
+                problems.append(
+                    f"核心合成的帧不等于「我们的累积 + 分隔符 + 进度行」：{_frame!r} != {_expect!r}")
+            elif _frame == _our_acc:
+                problems.append("前提核对的构造无效：合成帧没有尾巴，「剥不剥」恒真")
+            elif _stripped != _our_acc:
+                problems.append(
+                    "真实帧过一遍 `_strip_core_progress` 没剥回核心自己的正文："
+                    f"{_stripped!r} != {_our_acc!r}")
+        except Exception as _exc:
             problems.append(
-                "前提核对的构造无效：核心没有插工具轮边界那个换行 "
-                f"（{_core_acc!r}）⇒ 这一格退化成「拼字符串也对得上」")
-        # 等我们这边的钩子 worker 把同一条队列消费完（正文增量走的是异步队列）
-        _our_acc = ""
-        for _ in range(60):
-            _our_acc, _, _ = _panel.answer_state("")
-            if _our_acc == _core_acc:
-                break
-            time.sleep(0.05)
-        print(f"前提核对：核心累积 {_core_acc!r}")
-        print(f"          我们钩子收到的累积 {_our_acc!r}")
-        if _our_acc != _core_acc:
-            problems.append(
-                "核心给正文钩子的文本与给显示回调的文本**不同源**："
-                f"核心 {_core_acc!r} vs 我们 {_our_acc!r} ⇒ "
-                "`_strip_core_progress` 的前缀判据不再成立（可能在切卡接缝上静默吞正文）")
-
-        # 形状前提：核心合成的帧必须**就是**「我们的累积 + 分隔符 + 进度行」，且我们剥得回来
-        _consumer._tool_progress_lines = ['⚙️ terminal: "ls -la"']
-        _frame = _consumer._compose_frame_content()
-        _stripped = _adapter_mod._strip_core_progress(_frame, _our_acc, True, True, finalize=False)
-        print(f"前提核对：核心合成的帧（真实实现） = {_frame!r}")
-        if not _frame.startswith(_our_acc + "\n\n---\n"):
-            problems.append(f"核心合成的帧不是「我们的累积 + 分隔符 + 尾巴」的形状：{_frame!r}")
-        elif _frame == _our_acc:
-            problems.append("前提核对的构造无效：合成帧没有尾巴，「剥不剥」恒真")
-        elif _stripped != _our_acc:
-            problems.append(
-                "真实帧过一遍 `_strip_core_progress` 没剥回核心自己的正文："
-                f"{_stripped!r} != {_our_acc!r}")
+                f"核心投递链路的形状变了（{_exc!r}）⇒ 前提核对无法进行 —— "
+                "`_strip_core_progress` 的前缀判据依赖它，必须有人看一眼")
 
     # ⚠️ 轮次形状依赖**异步** worker：`enqueue_plugin_stream_hook` 每个回调一条队列 + 守护线程，
     # 而 `invoke_hook("pre_tool_call", ...)` 是同步的 —— 若 worker 还没消费掉「再看工具」，

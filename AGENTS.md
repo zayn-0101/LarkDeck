@@ -449,7 +449,9 @@ CHANGELOG 曾写「建实体时页脚元素不进卡（实测的功能缺陷）�
     `consumer.on_delta` → `_drain_queue` → `_filter_and_accumulate` → `_append_accumulated`），
     断言「钩子收到的累积」与「核心 `_accumulated`」**逐字节相同**，并用核心真实的
     `_compose_frame_content()` 合成的帧做一次剥离回环；变异 `PA-1` 实测必红。
-    只桩掉两处（异步 `run()` 循环、工具轮边界那个布尔位），都在代码里写明。
+    桩掉三处（异步 `run()` 循环、工具轮边界那个布尔位、宿主侧 `_strip_think_blocks` 的 identity），
+    都在代码里写明；正文按**绑定后的 chat** 读（不是「最近活跃」指针），整段驱动套 try/except
+    ⇒ 上游改名时是一条可读的 FAIL，不会吃掉后面的断言。变异 `PA-1`/`PA-2` 各钉一处。
     ⚠️ **仍未覆盖**：`run()` 自己的分支与传输层、以及回合边界的 `_adopt_final_text`
     （核心可能把 `_accumulated` 整段换成权威终稿 ⇒ 两边分叉；失败方向是 **fail-open**，
     只会「不剥」不会吞正文）。登记在 `docs/plan-v1.md` 附录 F 末尾。

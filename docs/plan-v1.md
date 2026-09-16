@@ -811,8 +811,13 @@ NAS 现网状态（`docs/switch-from-hfc.md` 自述 2026-09-12 连不上）· �
   （`_fire_stream_delta` → 核心自己 docstring 写明的 `consumer.on_delta` → `_drain_queue`
   → `_filter_and_accumulate` → `_append_accumulated`），断言「钩子收到的累积」与
   「核心 `_accumulated`」逐字节相同，并用核心真实的 `_compose_frame_content()` 合成的帧
-  做一次剥离回环；变异 `PA-1` 实测必红。只桩掉两处：异步 `run()` 循环（同步泵一次队列）
-  与工具轮边界那个布尔位（核心自己在 `turn_tool_round.py:182` 置位）。
+  做一次剥离回环；变异 `PA-1`、`PA-2` 实测必红。桩掉三处：异步 `run()` 循环（同步泵一次队列）、
+  工具轮边界那个布尔位（核心自己在 `turn_tool_round.py:182` 置位）、宿主侧 `_strip_think_blocks`
+  （identity；核心真实现会改写文本，但同一局部 `text` 洗完才分发给两边 ⇒ 不动结论）。
+  ⚠️ 对抗审计中-1/中-2（2026-09-16）：这一格原先按「最近活跃」指针读正文（拆掉按会话分桶它照样绿）
+  ⇒ 改为**绑定 `chat_id -> session_id` 再读**并自证归属（变异 `PA-2`）；上游改名原先会抛
+  `AttributeError` 且吃掉这一格之后的断言 ⇒ 整段驱动套 try/except，实测 `EXIT=7` + 一行 FAIL、
+  后续断言照常跑。
   ⚠️ **仍未覆盖**：① `run()` 自己的分支（`_clean_for_display` 等显示前加工）与传输层；
   ② **回合边界**的 `_adopt_final_text`（核心可能把 `_accumulated` **整段换成**权威终稿 ⇒
   两边分叉）。②的失败方向是 **fail-open**（前缀判据不成立 ⇒ 不剥 ⇒ 只是进度行可见），

@@ -471,11 +471,18 @@ def _strip_core_progress(text: str, accumulated: str, tool_pending: bool,
     而这条又依赖一个**外部前提**：我们的累积与核心的累积**逐字节同源**
     （实测出处：`agent/stream_delivery.py:314` 把**同一个** ``text`` 既投给钩子又累加；
     `gateway/stream_consumer.py:243` 的 ``_accumulated`` **从不含**进度行）。
-    ⇒ **那个前提没有任何判据守着**：一旦核心改了投递方式（例如把进度行也投给
-    `on_stream_delta`），或者出现「陈旧但仍是前缀」的累积恰好让条件 ①②③④ 全过，
-    `display` 就可能不再是帧文本的前缀 ⇒ 在**切卡**接缝上静默吞正文，而四门禁全绿。
-    判据是 `test_units` 里那条「**display 恒为帧文本的前缀**」（带构造自证），
-    不是这段注释里的推理。**改这一段时把那条断言一起看。**
+    ⇒ **这个前提现在有判据守着了**（2026-09-16 补；此前确实只有上面这段推理）：
+    `tests/check_hooks.py` 的**前提核对**那一格**驱动核心真实的投递链路**
+    （`_fire_stream_delta` → 核心自己 docstring 写明的 `consumer.on_delta` → `_drain_queue`
+    → `_filter_and_accumulate` → `_append_accumulated`），断言「钩子收到的累积」与
+    「核心 `_accumulated`」**逐字节相同**（以及帧的形状与剥离回环）。
+    它守的是**外部前提**，所以**上游改了那几个形状时它会红并打印原因** —— 那是故意的。
+    另一半（我们自己的性质）由 `test_units` 那条「**display 恒为帧文本的前缀**」守（带构造自证）；
+    变异 `PA-1`（入账的 delta 被 `.strip()`）与 `PA-2`（正文仓库的按会话分桶被拆掉）各钉一处。
+    ⚠️ 仍未覆盖：`run()` 自己的分支与传输层、回合边界的 `_adopt_final_text`
+    （核心可能把 `_accumulated` **整段换成**权威终稿 ⇒ 两边分叉；失败方向是 **fail-open**，
+    只会「不剥」，不会吞正文）—— 登记在 `docs/plan-v1.md` 附录 F。
+    **改这一段时，上面那两条判据一起看。**
     """
     if finalize or not text or not accumulated or not tool_pending or not complete:
         return text
