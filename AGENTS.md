@@ -125,7 +125,9 @@ core/         插件本体（Hermes 加载器以 hermes_plugins.larkdeck.core.* 
 install.sh    安装脚本（默认软链；NAS 用 --copy，其 FILES 数组是手动的，新增模块要同步）
 docs/         踩坑与开工索引（lessons）、指标钩子原理、部署与迁移步骤、
               同类插件横向对比与 ROI（plugins-compare）、
-              当前分阶段方案（plan-v1，已过三路审计）
+              当前分阶段方案（plan-v1，已过三路审计）、
+              **交接单 handoff-route（新会话从这里开始：§13 当前坐标 + 待办队列 + 提交纪律）**、
+              全量变异验证的留档账本（verify-log）
 tests/        见「验证」
 ```
 
