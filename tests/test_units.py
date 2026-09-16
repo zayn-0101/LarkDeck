@@ -8285,6 +8285,46 @@ def test_frame_failure_ledger_keeps_the_reason():
         adapter._apply_metrics_config()
 
 
+def test_cardkit_answer_write_failure_keeps_specific_reason_and_code():
+    """CardKit 正文写失败必须保留**具体元素 + 返回码**，不能被外层吞成通用异常。
+
+    病因（P1a）：`_CkOp` 是 NamedTuple，只有 `fail_reason()`；`inner_code()` 只在
+    `_CkResult` 上。帧路径把失败 op 当 `_CkResult` 调 ⇒ AttributeError 被
+    `send_stream_frame` 外层接住，状态卡只剩「帧处理异常：...」，具体是哪个元素、
+    什么码全丢。判据必须两边都钉：① reason 点名 `answer`；② 230099 进错误码账本。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    old_reqs = adapter.LarkDeckMixin._ld_ck_requests
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    context.reset()
+    panel.reset()
+    try:
+        _calls, client = _mk_cardkit_fake(fail_answer_only=True)
+        raw = _make()
+        raw._client = client
+        adapter._STREAM_MIN_INTERVAL = 0.0
+        adapter.LarkDeckMixin._ld_ck_requests = staticmethod(_fake_ck_requests)
+        adapter.configure(native_transport="cardkit")
+        assert _run(raw.send_stream_frame("", chat_id="oc_p1a", turn_id="t-p1a")), "seed 帧"
+        assert not _run(raw.send_stream_frame("正文", chat_id="oc_p1a", turn_id="t-p1a")), \
+            "正文元素写失败必须 fail-open 返回 False"
+        snap = context.status_snapshot()
+        reason = str(snap.get("frame_fail_reason") or "")
+        assert "正文" in reason and "answer" in reason, (
+            f"失败原因必须点名正文元素，而不是被外层吞成通用异常：{reason!r}")
+        assert "帧处理异常" not in reason, reason
+        assert int((snap.get("codes") or {}).get("230099", 0)) >= 1, snap
+    finally:
+        adapter.LarkDeckMixin._ld_ck_requests = old_reqs
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        context.reset()
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+
 def _manifest_version() -> str:
     """**独立**解析 plugin.yaml 的版本行（不用被测代码那个正则 —— 那等于自己证自己）。"""
     manifest = _pathlib.Path(_REPO_PARENT) / "larkdeck" / "plugin.yaml"
@@ -8357,6 +8397,132 @@ def test_command_card_says_so_when_the_version_is_unreadable():
         adapter._PLUGIN_MANIFEST = saved
     # 对偶：清单读得到时**不许**出现「版本读不到」（否则这句话会变成一句噪音）
     assert "版本读不到" not in adapter._ld_command_card("")
+
+
+def test_command_card_surfaces_probe_report_and_never_calls_it_healthy():
+    """`/larkdeck status` 必须把能力探测结论上到用户可见渠道。
+
+    P1a 的判据（对应 `plugins-compare.md` §7.6/§7.8 的 S1–S7 可见性）：
+      * 未探测 ⇒ 写「未探测」，绝不写「正常」；
+      * 已探测且接管成功 ⇒ 覆盖全部 `compat.PROBE_REPORT_KEYS` 的可读摘要；
+      * 必需接口缺失 / 覆盖层构造失败 / 报告缺键 ⇒ 分别明说，不能静默。
+
+    ⚠️ 键集合从 `compat.PROBE_REPORT_KEYS` **派生**，不再手写第二份清单 —— 项目裁过
+    「同一份键清单抄两处」的跟头（compat.py 的注释就是为此写的）。
+    """
+    saved = dict(adapter.PROBE_REPORT)
+    context.reset()
+    try:
+        adapter.PROBE_REPORT.clear()
+        text = adapter._ld_command_card("status")
+        assert "能力探测：未探测" in text, f"未探测时必须说出来：{text!r}"
+        assert "正常" not in text, f"没有探测结论时绝不能说「正常」：{text!r}"
+
+        # 从唯一事实来源派生 fixture；新增第 11 个契约键会立刻在这里显现。
+        adapter.PROBE_REPORT.update({key: [] for key in compat.PROBE_REPORT_KEYS})
+        adapter.PROBE_REPORT.update({
+            "hermes_version": "0.21.1",
+            "adapter_class": "example.FeishuAdapter",
+            "ok": True,
+            "adopted": True,
+            "missing_optional": ["edit_message"],
+            "session_attribution_ok": True,
+        })
+        text = adapter._ld_command_card("status")
+        for token in ("能力探测", "已接管", "Hermes 0.21.1", "example.FeishuAdapter",
+                      "edit_message", "会话归属", "探测契约", "完整"):
+            assert token in text, f"探测摘要少了 {token!r}：{text!r}"
+        assert "正常" not in text, f"探测摘要不许写「正常」：{text!r}"
+
+        # 覆盖层构造失败：探测跑了，但没接管 —— 不能说「已接管」。
+        adapter.PROBE_REPORT["adopted"] = False
+        text = adapter._ld_command_card("status")
+        assert "未接管（覆盖层构造失败）" in text, text
+        assert "已接管" not in text, text
+
+        # 必需接口缺失：headline 必须是「未接管（必需接口缺失）」，并列出缺失项。
+        adapter.PROBE_REPORT.update({"ok": False,
+                                     "missing_required": ["_feishu_send_with_retry"]})
+        text = adapter._ld_command_card("status")
+        assert "未接管（必需接口缺失）" in text and "_feishu_send_with_retry" in text, text
+
+        # 契约缺键：从键集合删一个，显示层必须自己求差集，而不是只依赖 contract_violation。
+        adapter.PROBE_REPORT.pop("missing_signal", None)
+        text = adapter._ld_command_card("status")
+        assert "缺键" in text and "missing_signal" in text, \
+            f"探测契约缺键必须明说：{text!r}"
+    finally:
+        adapter.PROBE_REPORT.clear()
+        adapter.PROBE_REPORT.update(saved)
+        context.reset()
+
+
+def test_build_adapter_missing_required_stores_probe_snapshot_without_adopting():
+    """必需接口缺失的**负结论**也必须进快照，status 才能显示「未接管」。
+
+    Phase 1a 审计 A 的 P2：`build_adapter()` 原先在 `if not ok` 早退，快照没写，
+    于是 `/larkdeck status` 只能说「未探测（无记录）」——最关键的负面结论反而上不了卡。
+    这条用例真的驱动 `build_adapter()`，不复用 `_probe_status_lines` 的手工快照。
+    """
+    saved_report = dict(adapter.PROBE_REPORT)
+    saved_probe = adapter._compat.probe_adapter_class
+    saved_bases = dict(adapter._BASE_CLASSES)
+    saved_merged = dict(adapter._MERGED_CLASSES)
+
+    def _fake_probe_adapter_class(_cls):
+        return False, ["_feishu_send_with_retry"]
+
+    adapter._compat.probe_adapter_class = _fake_probe_adapter_class
+    try:
+        instance = adapter.build_adapter(StubAdapter, _StubConfig())
+        assert type(instance) is StubAdapter, "必需接口缺失时必须原样退回内置适配器"
+        report = dict(adapter.PROBE_REPORT)
+        assert report.get("ok") is False, report
+        assert report.get("adopted") is False, report
+        assert "_feishu_send_with_retry" in (report.get("missing_required") or []), report
+        text = adapter._ld_command_card("status")
+        assert "未接管（必需接口缺失）" in text, text
+        assert "_feishu_send_with_retry" in text, text
+        assert "未探测（无记录）" not in text, text
+    finally:
+        adapter._compat.probe_adapter_class = saved_probe
+        adapter.PROBE_REPORT.clear()
+        adapter.PROBE_REPORT.update(saved_report)
+        adapter._BASE_CLASSES.clear()
+        adapter._BASE_CLASSES.update(saved_bases)
+        adapter._MERGED_CLASSES.clear()
+        adapter._MERGED_CLASSES.update(saved_merged)
+        context.reset()
+
+
+def test_build_adapter_success_stores_probe_snapshot():
+    """成功接管后快照必须标记 `adopted=True`，否则 status 会把「没接管」说成「未探测」。
+
+    这条用例真的跑 `build_adapter(StubAdapter, ...)`；如果成功路径的
+    `PROBE_REPORT.clear()/update(report)` 被撤掉，状态卡会永远显示「未探测」。
+    """
+    saved_report = dict(adapter.PROBE_REPORT)
+    saved_bases = dict(adapter._BASE_CLASSES)
+    saved_merged = dict(adapter._MERGED_CLASSES)
+    try:
+        instance = adapter.build_adapter(StubAdapter, _StubConfig())
+        assert type(instance) is not StubAdapter, "覆盖层必须真的接管成功"
+        report = dict(adapter.PROBE_REPORT)
+        assert report.get("ok") is True, report
+        assert report.get("adopted") is True, report
+        assert set(compat.PROBE_REPORT_KEYS) <= set(report), \
+            f"成功快照必须包含全部契约键：{sorted(set(compat.PROBE_REPORT_KEYS) - set(report))}"
+        text = adapter._ld_command_card("status")
+        assert "已接管" in text, text
+    finally:
+        adapter.PROBE_REPORT.clear()
+        adapter.PROBE_REPORT.update(saved_report)
+        adapter._BASE_CLASSES.clear()
+        adapter._BASE_CLASSES.update(saved_bases)
+        adapter._MERGED_CLASSES.clear()
+        adapter._MERGED_CLASSES.update(saved_merged)
+        context.reset()
+
 
 
 def test_command_card_help_states_the_queue_caveat():

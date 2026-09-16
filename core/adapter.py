@@ -562,6 +562,11 @@ HOOKS: Dict[str, bool] = _panel.shared_box()["adapter_hooks"]
 LARKDECK_COMMAND = "larkdeck"
 COMMAND: Dict[str, Any] = _panel.shared_box()["adapter_command"]
 
+#: P1a：`compat.probe_report()` 的**只读快照**（进程级共享，避免世代裂脑）。
+#: `build_adapter()` 在算出报告的同一处写入；`/larkdeck status` 只读它。
+#: 绝不在命令路径上重新探测：命令可能来自旧世代，而探测读的是「当时接管的那一个基类」。
+PROBE_REPORT: Dict[str, Any] = _panel.shared_box()["adapter_probe_report"]
+
 #: ``plugin.yaml`` 的位置与版本行。版本**每次现读**，不复制成常量 —— 常量会漂
 #: （改了清单忘了改常量，卡片就会自信地报一个错的版本号）。
 _PLUGIN_MANIFEST = os.path.join(
@@ -961,11 +966,17 @@ class _CkOp(NamedTuple):
 
     ``element_id`` 必须是**建实体时就存在**的那个（写不存在的 id 得 ``300313``，见
     ``docs/plan-v1.md`` 的 R0 结论）。``role`` 决定失败语义，不是装饰性字段。
+
+    ``code`` 是**失败时**由 :meth:`_ld_ck_apply` 回填的服务端返回码（默认 ``None``）。
+    ⚠️ 它是为了修 P1a 的类型错配：调用方原先把失败 op 当 ``_CkResult`` 调
+    ``inner_code()`` ⇒ 写正文失败时抛 ``AttributeError``，具体元素与返回码一起丢。
+    现在失败 op 通过 ``_replace(code=...)`` 带回返回码；成功/未写出时保持 ``None``。
     """
 
     element_id: str
     content: str
     role: str
+    code: Optional[int] = None
 
     def fail_reason(self) -> str:
         """失败文案**必须点名角色**：三条文案互不相同，且各自带自己的 element_id。
@@ -2341,7 +2352,10 @@ class LarkDeckMixin:
                 # 这里负责「不吞掉这个事实」。
                 if wrote.code in _CARD_DEATH_CODES:
                     state_ref["ck_degrade"] = wrote.code
-                return False, seq, answer
+                # P1a：把服务端返回码**回填到失败 op** 上。调用方原先把它当 `_CkResult`
+                # 调 `inner_code()` ⇒ AttributeError ⇒ 外层只留「帧处理异常」，具体元素
+                # 与返回码一起丢。失败 op 仍是 `_CkOp`（角色/元素名不能丢），额外带 code。
+                return False, seq, answer._replace(code=wrote.code)
         return True, seq, None
 
     async def _ld_ck_split(self, chat: str, text: str, state: Dict[str, Any],
@@ -2846,7 +2860,7 @@ class LarkDeckMixin:
                 _log_ck_panel_write_failed_once()
             return self._ld_stream_fail(
                 failed.fail_reason() if failed else "CardKit 写元素失败（没有可写的元素）",
-                code=failed.inner_code() if failed else None)
+                code=(failed.code if failed else None))
         # ⚠️ 这条车道（patch 传输 / 降级之后）同样只写**本卡那一段**：写整段会让降级后的卡
         # 把已经封掉的几段重放一遍（与元素车道同一条纪律）。
         card = self._ld_build_card(visible, streaming=True,
@@ -3819,21 +3833,29 @@ def build_adapter(base_factory: Any, config: Any) -> Any:
     零参 ``super()`` 正常工作）。代价是首轮多造一个实例——它的 ``__init__`` 只读配置和
     去重文件，没有副作用，所以这个代价是可接受的。
     """
+    # P1a：每次 build 先清掉旧快照 —— 若基类发现就抛，状态卡必须落到「未探测」，
+    # 而不是展示上一世代/上一次的过时结论。探测结论只由本次 build 写入。
+    PROBE_REPORT.clear()
     try:
         base_cls = _discover_base_class(base_factory, config)
     except Exception as exc:
         _remember_selfcheck(False, f"无法解析内置适配器类: {exc}")
         return base_factory(config)
 
-    ok, missing = _compat.probe_adapter_class(base_cls)
-    if not ok:
-        _remember_selfcheck(False, "内置适配器缺少所需接口: " + ", ".join(missing))
-        return base_factory(config)
-
     # 完整能力快照 —— 点击回调路径与可选接口**只有这里能看见**。
     # 缺了不阻断卡片，但必须在日志里留痕：这些名字官方一改，澄清按钮就静默失灵
     # （点下去没有任何反应，也不报错），没有别的地方会给出信号。
-    _log_probe_report(_compat.probe_report(base_cls))
+    # `adopted` 表示「覆盖层真的构造成功了」，不是「探测跑了」——用于状态卡区分
+    # 「已接管」「必需接口缺失」「覆盖层构造失败」三种状态，避免把没做成的说成做成了。
+    report = _compat.probe_report(base_cls)
+    report["adopted"] = False
+    PROBE_REPORT.clear()
+    PROBE_REPORT.update(report)
+    _log_probe_report(report)
+    if not report.get("ok"):
+        missing = ", ".join(str(x) for x in (report.get("missing_required") or []))
+        _remember_selfcheck(False, "内置适配器缺少所需接口: " + (missing or "未知"))
+        return base_factory(config)
 
     try:
         adapter = merged_class(base_cls)(config)
@@ -3842,6 +3864,11 @@ def build_adapter(base_factory: Any, config: Any) -> Any:
         _remember_selfcheck(False, f"卡片层构造失败: {exc}")
         logger.error("[larkdeck] 卡片层构造失败，退回内置适配器: %s", exc, exc_info=True)
         return base_factory(config)
+
+    # 只有走到这里才算「覆盖层接管成功」；状态卡据此显示「已接管」，而不是「探测跑了」。
+    report["adopted"] = True
+    PROBE_REPORT.clear()
+    PROBE_REPORT.update(report)
 
     logger.debug("[larkdeck] 已接管适配器: %s", [c.__name__ for c in type(adapter).__mro__[:3]])
     return adapter
@@ -3864,6 +3891,58 @@ def _ld_plugin_version() -> str:
         return ""
     match = _PLUGIN_VERSION_RE.search(text)
     return match.group(1) if match else ""
+
+
+def _probe_status_lines() -> List[str]:
+    """`/larkdeck status` 的能力探测摘要（P1a）。
+
+    数据只来自 `build_adapter()` 时存下的 `PROBE_REPORT` 快照 —— 命令路径**不重新探测**：
+    那时接管用的基类可能已经不在了，而且探测不应在命令线程上做 IO。
+    未探测/探测本身失败 ⇒ 写「未探测」；已探测 ⇒ 按「状态 / 缺失 / 契约」三行给可读摘要。
+    覆盖 `compat.PROBE_REPORT_KEYS` 全部键；不把原始键名列表直接堆给用户，也绝不写「正常」。
+    """
+    report = dict(PROBE_REPORT)
+    if not report or "error" in report:
+        return [_i18n.t("probe.none")]
+
+    def _names(key: str) -> str:
+        value = report.get(key)
+        if not isinstance(value, (list, tuple)):
+            return _i18n.t("probe.unknown")
+        names = ", ".join(str(x) for x in value if str(x))
+        return names or _i18n.t("probe.none_list")
+
+    # 先按**唯一事实来源**求缺键（不能只信 `contract_violation`：producer 回归时它可能
+    # 自己就不写；显示层必须自证）。`adopted` 区分「探测跑了」与「覆盖层真的接管了」。
+    absent = [key for key in _compat.PROBE_REPORT_KEYS if key not in report]
+    for extra in (report.get("contract_violation") or []):
+        if str(extra) and str(extra) not in absent:
+            absent.append(str(extra))
+    if absent:
+        state = _i18n.t("probe.incomplete")
+    elif not report.get("ok"):
+        state = _i18n.t("probe.blocked_required")
+    elif not report.get("adopted"):
+        state = _i18n.t("probe.blocked_build")
+    else:
+        state = _i18n.t("probe.covered")
+    version = str(report.get("hermes_version") or _i18n.t("probe.unknown"))
+    adapter_class = str(report.get("adapter_class") or _i18n.t("probe.unknown"))
+    session = (_i18n.t("probe.session_ok") if report.get("session_attribution_ok")
+              else _i18n.t("probe.session_bad"))
+    lines = [
+        _i18n.t("probe.line", state=state, version=version,
+                adapter=adapter_class, session=session),
+        _i18n.t("probe.missing",
+                required=_names("missing_required"), optional=_names("missing_optional"),
+                callback=_names("missing_callback"), signal=_names("missing_signal"),
+                reactions=_names("missing_reactions"), chrome=_names("missing_display_chrome")),
+    ]
+    contract = (_i18n.t("probe.contract_bad", keys=", ".join(absent))
+                if absent else _i18n.t("probe.contract_ok"))
+    lines.append(_i18n.t("probe.contract", contract=contract))
+    return lines
+
 
 
 def _ld_command_card(raw_args: str) -> str:
@@ -3899,7 +3978,11 @@ def _ld_command_card(raw_args: str) -> str:
         # 不说清楚，用户会拿别人的失败去查自己的卡 —— 正是本轮要消灭的「静默误诊」。
         # 放在**数据行之上**（不是之后）：用户是从上往下读的，先看到口径再看到数字才不会误解；
         # 而且它在三行全是「无记录」时也在（那种时刻同样需要知道这些数是全进程的）。
-        return "\n".join([header, _i18n.t("cmd.scope")] + _context.status_lines())
+        # P1a：能力探测摘要紧随口径说明，先向用户交代「插件到底有没有接管、哪些接口缺了」，
+        # 再进入运行时账本。未探测时这里只有一行「未探测」，不会假装健康。
+        return "\n".join([header, _i18n.t("cmd.scope")]
+                          + _probe_status_lines()
+                          + _context.status_lines())
     except Exception as exc:  # pragma: no cover - 防御性：处理器绝不能抛
         logger.warning("[larkdeck] `/larkdeck` 状态读取失败: %s", exc, exc_info=True)
         # ⚠️ 兜底里的 `str(exc)` **自己也会抛**（R9 审计低-4：`__str__` 抛异常的异常，

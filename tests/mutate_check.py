@@ -1084,8 +1084,10 @@ MUTATIONS = [
      '    if not isinstance(ts, (int, float)) or isinstance(ts, bool) or ts <= 0:',
      "test_units"),
     ("R9-20-卡片不再说清数字是进程级累计（用户拿别人会话的失败原因查自己的卡）", "core/adapter.py",
-     '        return "\\n".join([header, _i18n.t("cmd.scope")] + _context.status_lines())',
-     '        return "\\n".join([header] + _context.status_lines())',
+     '        return "\\n".join([header, _i18n.t("cmd.scope")]\n'
+     '                          + _probe_status_lines()\n'
+     '                          + _context.status_lines())',
+     '        return "\\n".join([header] + _probe_status_lines() + _context.status_lines())',
      "check_override"),
     ("R9-21-启动自检硬编码「命令已注册」（不看真实注册结果，而运维会信这句话）", "core/adapter.py",
      '        _cmd_registered = bool(COMMAND.get("registered"))',
@@ -1702,6 +1704,36 @@ MUTATIONS = [
      "core/cards.py",
      '        pairs.append((f"{idx}. {label_text}", text))',
      '        pairs.append((f"{len(pairs) + 1}. {label_text}", text))   # 变异：去重后从 1 重排',
+     "test_units"),
+    ("P1a-1-把 `_CkOp` 失败码回填撤掉，改回对失败 op 调 `_CkResult.inner_code()`（具体元素与码丢失）",
+     "core/adapter.py",
+     '                code=(failed.code if failed else None))',
+     '                code=(failed.inner_code() if failed else None))',
+     "test_units"),
+    ("P1a-2-`/larkdeck status` 不再输出能力探测摘要（探测结论重新变回被动日志）",
+     "core/adapter.py",
+     '                          + _probe_status_lines()\n'
+     '                          + _context.status_lines())',
+     '                          + []\n'
+     '                          + _context.status_lines())',
+     "test_units"),
+    ("P1a-3-成功接管后不写 probe 快照（status 永远显示「未探测」，已接管状态不可达）",
+     "core/adapter.py",
+     '    report["adopted"] = True\n'
+     '    PROBE_REPORT.clear()\n'
+     '    PROBE_REPORT.update(report)',
+     '    report["adopted"] = True',
+     "test_units"),
+    ("P1a-4-必需接口缺失早退时不写 probe 快照（最关键的负面结论上不了卡）",
+     "core/adapter.py",
+     '    report["adopted"] = False\n'
+     '    PROBE_REPORT.clear()\n'
+     '    PROBE_REPORT.update(report)\n'
+     '    _log_probe_report(report)\n'
+     '    if not report.get("ok"):',
+     '    report["adopted"] = False\n'
+     '    _log_probe_report(report)\n'
+     '    if not report.get("ok"):',
      "test_units"),
 ]
 

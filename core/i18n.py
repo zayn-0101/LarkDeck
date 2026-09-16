@@ -123,6 +123,25 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "cmd.failed":         {ZH: "状态读取失败：{error}", EN: "Status read failed: {error}"},
     # 兜底里的兜底（R9 审计低-4）：连 `str(异常)` 都抛时用它，绝不把「读不出原因」装成成功。
     "cmd.failed_no_reason": {ZH: "（读不出失败原因）", EN: "(reason unreadable)"},
+    # P1a：能力探测摘要（`/larkdeck status` 用）。纪律：「未探测」与「缺了哪些接口」必须能区分；
+    # 没有结论时不许写「正常」。覆盖 `compat.PROBE_REPORT_KEYS` 的全部键。
+    "probe.none":         {ZH: "能力探测：未探测（无记录）",
+                           EN: "Capability probe: not probed (no record)"},
+    "probe.line":         {ZH: "能力探测：{state} · Hermes {version} · 适配器 {adapter} · 会话归属 {session}",
+                           EN: "Capability probe: {state} · Hermes {version} · adapter {adapter} · session attribution {session}"},
+    "probe.missing":      {ZH: "探测缺失：必需[{required}] · 可选[{optional}] · 点击[{callback}] · 信号[{signal}] · reactions[{reactions}] · chrome[{chrome}]",
+                           EN: "Probe gaps: required[{required}] · optional[{optional}] · callback[{callback}] · signal[{signal}] · reactions[{reactions}] · chrome[{chrome}]"},
+    "probe.contract":     {ZH: "探测契约：{contract}", EN: "Probe contract: {contract}"},
+    "probe.contract_ok":  {ZH: "完整", EN: "complete"},
+    "probe.contract_bad": {ZH: "缺键 {keys}", EN: "missing keys {keys}"},
+    "probe.covered":      {ZH: "已接管", EN: "adopted"},
+    "probe.blocked_required": {ZH: "未接管（必需接口缺失）", EN: "not adopted (required interface missing)"},
+    "probe.blocked_build": {ZH: "未接管（覆盖层构造失败）", EN: "not adopted (card layer construction failed)"},
+    "probe.incomplete":   {ZH: "探测报告缺键", EN: "probe report incomplete"},
+    "probe.session_ok":   {ZH: "就绪", EN: "ready"},
+    "probe.session_bad":  {ZH: "未就绪（多会话可能串台）", EN: "not ready (multi-session may mix up)"},
+    "probe.unknown":      {ZH: "未知", EN: "unknown"},
+    "probe.none_list":    {ZH: "无", EN: "none"},
     "status.inbound":     {ZH: "入站心跳：{when} · 累计 {n} 条消息",
                            EN: "Inbound heartbeat: {when} · {n} messages"},
     # ⚠️ 口径（R9 审计中-5）：数的是「有多少帧**真的有东西写出去**」，不是 API 调用次数 ——

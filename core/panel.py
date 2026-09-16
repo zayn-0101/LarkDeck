@@ -114,6 +114,10 @@ _SHARED_BOX_FACTORY: Dict[str, Any] = {
     # ⚠️ 适配器的**类缓存**（`_BASE_CLASSES`/`_MERGED_CLASSES`）**故意不在**这里 ——
     # 它们缓存的是代码而不是结论，共享会把活适配器冻在上一世代的代码上（见 adapter.py 的说明）。
     "adapter_hooks": {}, "adapter_command": {},
+    # P1a：能力探测快照。`build_adapter()` 在 **register/build 时**算一次并存进盒子；
+    # `/larkdeck status` 只读这份快照，绝不在渲染卡片的线程里重新探测（基类可能已经不是
+    # 当初接管的那一个，而且探测不应在命令路径上做 IO）。缺失 ⇒ 状态卡写「未探测」。
+    "adapter_probe_report": {},
     # ⚠️ **明确不共享**的一项：各 `_log_*_once` 的限流戳挂在**函数对象**上（`fn._at`），
     # 而函数对象是每个世代的模块自己的 ⇒ 换世代后限流窗口会重置一次（最多多打一条同样的
     # 限流日志）。它**不影响任何行为与数据**，而为它搬家要把 ~10 处调用点改成查表 ——
