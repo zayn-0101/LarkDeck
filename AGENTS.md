@@ -38,8 +38,10 @@
    核心在 `/stop`、`/new` 路径**主动调我们**的 `interrupt_session_activity`，
    缺了不致命但「中止后卡片不变色」是静默失灵 —— ⚠️ **2026-09-16 补充：探的是基类有没有它，
    而真正的契约是核心的查找名（`gateway/run_agent_cache.py:415` 的
-   `getattr(type(adapter), "interrupt_session_activity", None)`）—— 那个名字改了，探测结构上
-   看不见**）；**处理生命周期 1 个**
+   `getattr(type(adapter), "interrupt_session_activity", None)`）—— 那个名字改了，合并类属性
+   探测结构上看不见。P1b 已加**静态 best-effort 源码字面量探测**（status「信号契约」行 +
+   False 时 WARNING），但运行期派发仍未由它验证；核心等价重构/局部变量改名会误报 False，
+   残余盲区仍在 `docs/plugins-compare.md` §7.6 如实登记**）；**处理生命周期 1 个**
    （`REACTION_ADAPTER_ATTRS` —— `_reactions_enabled`，覆盖它必须**尊重父类**语义，
    缺了 `reactions: false` 静默失效）；澄清网关内部结构
    （`_lock` / `_entries` / `entry.multi_select` / `mark_awaiting_text` / `resolve_gateway_clarify`，
@@ -54,7 +56,9 @@
    * ⇒ 当时上面每一处「探测上报」，实际含义都是「**往日志里写一行**」，**不是**「用户能问出来」；
      唯一真正上到用户可见渠道的是 `OBSERVED_HOOKS`（状态卡显示 `钩子 N/7`）。
    * 已登记 **7 条静默路径（S1–S7）**，其中 S7（`interrupt_session_activity` 的**核心查找名**）
-     连日志都没有。修复项与优先级见 §7.8 —— **登记不等于开工**。
+     原先连日志都没有。**P1b 已加静态 best-effort 源码字面量探测 + `/larkdeck status`
+     「信号契约」行 + False 时 WARNING；但运行期派发仍未由它验证，残余盲区如实保留**。
+     修复项与优先级见 §7.8 —— **登记不等于开工**。
    * ✅ **2026-09-16 P1a 更新（已实现并过门禁）**：`probe_report` 的 10 个契约键
      已按「状态 / 缺失 / 探测契约」三行摘要上到 `/larkdeck status`；`build_adapter()` 存
      进程级只读快照，状态卡区分「未探测」「已接管」「必需接口缺失」「覆盖层构造失败」
