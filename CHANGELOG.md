@@ -198,6 +198,26 @@
   布尔位、宿主侧 `_strip_think_blocks` 的 identity），都在代码里写明；**仍未覆盖**的是 `run()` 自己的分支 / 传输层与回合边界的
   `_adopt_final_text`（失败方向是 fail-open，只会「不剥」不会吞正文），已登记在附录 F。
 
+### 验证（探针 ⑮ 真机点击 —— **效果债的最后一块拼图**，2026-09-16 16:12）
+
+**2.0 卡里「组件级 `behaviors` 的 `button`」能不能把点击送到服务端 —— 现在有真机答案了：能。**
+
+```
+2026-09-16 16:12:37,131 INFO larkdeck: [larkdeck] 探针点击到达 ✅ tag=button option=None
+  input_value=None value={'kind': 'button', 'larkdeck_probe': True} open_id=… chat_id=… token=True
+```
+
+- 判定用的是**点击之前写死的协议**（`docs/handoff-route.md` §12），不是事后解释：
+  `tag=button`（飞书报的组件类型）＋ `value={'kind': 'button', …}`（**我们自己的回声载荷**，
+  证明 `behaviors` 里的 `value` 原样到达 `event.action.value`）＋ 点击时刻平台 `connected`。
+- ⇒ `AGENTS.md` 不变量 5 里那一格**从「只有官方文档」升格为「真机已证」**：
+  `select_static` / `multi_select_static` / `input` / **`button`** 四种**全部真机点过**。
+  ⚠️ 这段措辞的历史要一起读：R11 发现它写得**比证据强** ⇒ 按证据强度**降级** + 留探针 ⑮ ⇒
+  **补完才升回来**（`docs/lessons.md` 推论 38 的通用形态）。
+- 用户当时的反馈是「**界面上没有任何反馈**」—— **那是预期的**：这张探针卡刻意不带任何改卡逻辑，
+  它唯一的产物就是上面那行日志（卡片文案本身也写着「应产生一个日志」）。
+- 顺带：这一格**不是**「澄清卡该不该加按钮形态」的决策 —— 点击到达只是这个决策的**前置**。
+
 ### 修复（第五轮对抗审计 · **新加的那格门禁自身**的五个缺口，2026-09-16）
 
 这一轮审的对象是**上一轮刚补的那格门禁**（`check_hooks.py` 的「前提核对」）。审计全程**只读**
