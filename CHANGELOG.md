@@ -8,8 +8,12 @@
 > 正文净化（**有证据**才剥核心叠加的工具进度行）、`300315` 容量码的解析契约、滑窗写入守卫。
 > 配置键**零改名、零默认值翻转**（所以还不到 1.0.0 —— 那条判据还要求跨过一次上游升级）。
 > 真机项目另附真机探针结果。
+> **v0.5.0（2026-09-17）**：效果债交付（脱敏 / 澄清卡外显 / 卡片短码 / status 三条）+
+> P1/P2/P3（设备字号、能力探测可见、AP-lite 主题、聚合诊断、只读配置刷新、cron standalone
+> 卡片投递）。**新增 `theme` 默认值，属于用户可见默认观感变化**；配置键无改名。
+> 已知待验：`text_profile` / `ap_lite` 真机视觉、无网关 cron 真机投递。
 
-## [Unreleased] - 2026-09-15（效果债 · 未发布）
+## [0.5.0] - 2026-09-17（效果债 + AP-lite + cron）
 
 ### 安全（**新增能力** + 开发中审计现场抓到的三处漏脱）
 
@@ -124,7 +128,7 @@
 - **P2 门禁**：`test_units.py` **216/216**；`check_override.py` / `check_hooks.py` /
   `check_clarify_e2e.py` 全绿；golden trace 已按默认 `ap_lite` 重生成（diff 只含符号/图标）。
   新增/改锚 **16 条 P2 变异**（`P2-1..P2-8` · `P2-11..P2-13` · `P2-15..P2-19`），逐条实测变红；
-  `--preflight` **354/354** 锚点可用。⚠️ 全量变异留到发布前统一跑。
+  `--preflight` **354/354** 锚点可用。
 - **P2 对抗审计**：3 个不同子 Agent 独立审计（`deepseek-v4.1-flash` / `glm-5.3-flash` /
   `omen-alpha`）先给 `PASS WITH ISSUES`，经讨论统一后按修复集改完并 delta 复审**全部 PASS**。
   修掉的真问题：`context_max_override` 归零/删键不清运行时覆盖（A1）；「原子重读」措辞与实际
@@ -134,13 +138,16 @@
 - **P3 门禁**：`test_units.py` **218/218**；`check_override.py`（含 fresh-process
   `standalone client init: ok`）/ `check_hooks.py` / `check_clarify_e2e.py` 全绿；
   新增 **3 条 P3 变异**（P3-1 卡片工厂、P3-2 媒体回落、P3-3 SDK client 初始化）逐条实测变红；
-  `--preflight` **356/356** 锚点可用。⚠️ 全量变异仍留到发布前统一跑。
+  `--preflight` **356/356** 锚点可用。
 - **P3 对抗审计**：3 个不同子 Agent 独立审计（`deepseek-v4.1-flash` / `glm-5.3-flash` /
   `omen-alpha`）。其中一路用 fresh-process + 真 Hermes 加载器复现出**阻断项**：standalone
   sender 没补官方同款 SDK client ⇒ 文本 cron 得到 `Not connected`，相对 HEAD 透传是回退。
   修复为 `compat.ensure_standalone_client()`（私有名集中 compat）并在 `check_override.py` 加
   fresh-process 断言；另两路指出的文档口径、媒体缺失兜底、uuid4 残余都一并收口；delta 复审
   三路全部 **PASS**。真机 `hermes cron run` 无网关投递仍待验证，已在 README/CHANGELOG/§8 标注。
+- **发布前全量变异（P4）**：`349/349` 定向变异全部被门禁抓住，`🟢0 / 💥0 / ❓0`，
+  8/8 对照全绿，基线四门禁全绿（`218/218`）；收在 v0.5.0 发布候选树上。
+  留档 `docs/verify-log.md`（本次因会话沙箱日志在 `/tmp/fullrun10b.log`；复跑命令见该文件）。
 
 ### 修复（第三轮对抗审计，2026-09-16 凌晨）
 
