@@ -690,6 +690,16 @@ def _dur(ts: Any) -> str:
     return f"{secs // 3600}h{(secs % 3600) // 60}m"
 
 
+def age_text(ts: Any) -> str:
+    """**公开入口**：把一个 epoch 时刻渲染成「N 秒/分钟/小时前」的相对量。
+
+    与 `_dur` 同源（同一个函数实现），存在的唯一理由是让聚合诊断不必去戳模块私有名；
+    `_dur` 的名字保留不动 —— 现有调用点与变异锚点都挂在它上面，改名只会制造无谓的
+    行为声明。语义与脏值判据见 `_dur` 的 docstring（读不到一律 i18n 的「无记录」）。
+    """
+    return _dur(ts)
+
+
 def _codes_top(snap: Dict[str, Any]) -> str:
     """错误码 top-5（``300309×3 · 300313×1``）；一个都没有时返回空串（调用方换另一句文案）。"""
     codes = snap.get("codes")

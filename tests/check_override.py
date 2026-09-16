@@ -379,7 +379,7 @@ else:
         else:
             # 关键词取自**三条记录 + 传输自报**：少了任何一段，这张自检卡就答不了
             # 「插件在不在动」这个问题（而它存在的唯一理由就是回答这个）。
-            for _need in ("传输", "入站心跳", "写卡"):
+            for _need in ("传输", "入站心跳", "写卡", "聚合", "能力探测"):
                 if _need not in _cmd_text:
                     problems.append(f"`/larkdeck status` 少了「{_need}」这一段：{_cmd_text!r}")
             if _effective not in _cmd_text:
@@ -390,6 +390,22 @@ else:
             if "进程级" not in _cmd_text:
                 problems.append(f"`/larkdeck status` 没说清数字是进程级累计（含全部会话）："
                                 f"{_cmd_text!r}")
+        # P2 配置刷新：`config` 必须真能在核心派发的处理器里读到官方设置（不是单测替身）。
+        # 这里只跑**只读**路径；聊天侧写入命令已按安全审计 B1 移除，不会有写动作。
+        _cfg_text = str(_run_cmd("config"))
+        for _need in ("生效配置", "context_style", "clarify_cards"):
+            if _need not in _cfg_text:
+                problems.append(f"`/larkdeck config` 少了「{_need}」：{_cfg_text!r}")
+        _reload_text = str(_run_cmd("config reload"))
+        if not any(_w in _reload_text for _w in ("已刷新", "无法刷新", "取消")):
+            problems.append(f"`/larkdeck config reload` 没有给出可判定的结果：{_reload_text!r}")
+        # 真加载器必须证明官方只读句柄真的被 register() 采集到了；并且不得再采集写句柄。
+        _ctx_box = getattr(_caretaker, "PLUGIN_CTX", None) or {}
+        if not callable(_ctx_box.get("get_config")):
+            problems.append(f"register() 没有把官方 ctx.get_config 放进共享盒：{_ctx_box!r}")
+        if "set_config" in _ctx_box:
+            problems.append(f"共享盒里仍有 set_config（聊天侧写入路径没删干净）：{_ctx_box!r}")
+
         _help_text = _run_cmd("help")
         # ⚠️ 判据是「**排队这条提醒还在**」，不是某个字面短语（R9 审计低-1 之后改的）：
         # 旧文案「仅空闲态可用」在 **CLI / TUI 里不成立**（那边由 `cli.py::_run_plugin_slash_command`

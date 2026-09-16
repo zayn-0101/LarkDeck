@@ -104,8 +104,8 @@ _STRINGS: Dict[str, Dict[str, str]] = {
                                   EN: "The card plugin is temporarily unavailable; please retry later"},
     # /larkdeck 自检卡（R9）。三条状态行由 context.status_lines() 组装；没记录写「无记录」，
     # **绝不写「正常」** —— 一个永远说「正常」的自检与一个坏掉的自检，用户分辨不出来。
-    "cmd.description":    {ZH: "larkdeck 状态：版本 / 生效传输 / 钩子 / 心跳",
-                           EN: "larkdeck status: version / transport / hooks / heartbeats"},
+    "cmd.description":    {ZH: "larkdeck 状态 / 配置：版本 / 生效传输 / 钩子 / 心跳",
+                           EN: "larkdeck status / config: version / transport / hooks / heartbeats"},
     "cmd.header":         {ZH: "{name} · 传输 {transport} · 钩子 {wired}/{total} 已挂",
                            EN: "{name} · transport {transport} · hooks {wired}/{total} wired"},
     # ⚠️ 版本读不到时**必须看得出来**（R9 审计低-2）：以前版本段整段消失，卡片看起来跟一切正常一样。
@@ -114,19 +114,23 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     # 不写清楚，多会话并发时用户会拿**别人会话**的失败原因来查自己的卡。
     "cmd.scope":          {ZH: "（下面的数字是**进程级累计**：含本进程上全部会话，不只你这一条对话）",
                            EN: "(the counters below are process-wide: every conversation in this process, not just yours)"},
-    "cmd.help":           {ZH: "用法：/larkdeck [status|help]\n"
-                               "· status（默认）：本卡 —— 版本 / 生效传输 / 钩子 / 六条记录\n"
+    "cmd.help":           {ZH: "用法：/larkdeck [status|config|help]\n"
+                               "· status（默认）：本卡 —— 聚合诊断 / 版本 / 生效传输 / 钩子 / 六条记录\n"
+                               "· config：只读查看本进程生效配置；config reload 从官方设置重读；"
+                               "聊天侧没有写入命令（写配置用官方 Hermes CLI / 配置文件）\n"
                                "· help：这段说明\n"
                                "⚠️ 在飞书网关里，**生成回答期间**发的命令会被当成普通输入排队到回合结束"
                                "（命令派发只挂在核心的 idle 路径上）；CLI / TUI 里可以直接执行。",
-                           EN: "Usage: /larkdeck [status|help]\n"
-                               "· status (default): this card — version / active transport / hooks / six records\n"
+                           EN: "Usage: /larkdeck [status|config|help]\n"
+                               "· status (default): this card — aggregate diagnosis / version / active transport / hooks / six records\n"
+                               "· config: read-only effective in-process settings; config reload re-reads official settings; "
+                               "there is no chat-side write command (use official Hermes CLI / config file)\n"
                                "· help: this text\n"
                                "⚠️ In the Feishu gateway, a command sent **while a reply is streaming** is queued as plain "
                                "input until the turn ends (dispatch only runs on the core's idle path); in the CLI / TUI "
                                "it runs right away."},
-    "cmd.unknown":        {ZH: "不认识的参数：{arg}（可用：status / help）",
-                           EN: "Unknown argument: {arg} (available: status / help)"},
+    "cmd.unknown":        {ZH: "不认识的参数：{arg}（可用：status / config / help）",
+                           EN: "Unknown argument: {arg} (available: status / config / help)"},
     "cmd.failed":         {ZH: "状态读取失败：{error}", EN: "Status read failed: {error}"},
     # 兜底里的兜底（R9 审计低-4）：连 `str(异常)` 都抛时用它，绝不把「读不出原因」装成成功。
     "cmd.failed_no_reason": {ZH: "（读不出失败原因）", EN: "(reason unreadable)"},
@@ -134,6 +138,7 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     # 没有结论时不许写「正常」。覆盖 `compat.PROBE_REPORT_KEYS` 的全部键。
     "probe.none":         {ZH: "能力探测：未探测（无记录）",
                            EN: "Capability probe: not probed (no record)"},
+    "probe.short_none":   {ZH: "未探测", EN: "not probed"},
     "probe.line":         {ZH: "能力探测：{state} · Hermes {version} · 适配器 {adapter} · 会话归属 {session}",
                            EN: "Capability probe: {state} · Hermes {version} · adapter {adapter} · session attribution {session}"},
     "probe.missing":      {ZH: "探测缺失：必需[{required}] · 可选[{optional}] · 点击[{callback}] · 信号[{signal}] · reactions[{reactions}] · chrome[{chrome}]",
@@ -156,6 +161,57 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "probe.signal_unknown": {ZH: "未取证（核心源码不可读）", EN: "unverified (core source unreadable)"},
     "probe.unknown":      {ZH: "未知", EN: "unknown"},
     "probe.none_list":    {ZH: "无", EN: "none"},
+    # P2 聚合诊断（`/larkdeck status` 顶部两行）。只报事实、不做「健康/正常」结论；
+    # 有明确异常时前缀 ⚠️，其余只列读数。入站年龄与 status.inbound 同源（`context.age_text`）。
+    "diag.capability":    {ZH: "🩺 聚合（能力/链路）：探测={probe} · 钩子={wired}/{total} · 命令={command} · 世代={gen}/{latest}",
+                           EN: "🩺 Aggregate (capability/wiring): probe={probe} · hooks={wired}/{total} · command={command} · generation={gen}/{latest}"},
+    "diag.runtime":       {ZH: "📊 聚合（运行/账本）：入站={inbound} · 写卡={writes} 帧 · 写卡失败={fail} · 掉回纯文本={fallback} · 错误码={codes}",
+                           EN: "📊 Aggregate (runtime/ledger): inbound={inbound} · card writes={writes} frames · write failures={fail} · plain-text fallbacks={fallback} · error codes={codes}"},
+    # 聚合渲染自身失效时**不许静默少两行**（R9 低-2）：把失败原因放到卡上。
+    "diag.failed":        {ZH: "🩺 聚合诊断渲染失败：{error}（其余状态行仍可用）",
+                           EN: "🩺 Aggregate diagnosis failed to render: {error} (other status lines are still available)"},
+    "diag.command_ok":    {ZH: "已注册", EN: "registered"},
+    "diag.command_bad":   {ZH: "未注册", EN: "not registered"},
+    "diag.inbound_ago":   {ZH: "{age}前", EN: "{age} ago"},
+    "diag.inbound_none":  {ZH: "无记录", EN: "no record"},
+    # P2 `/larkdeck config`：只读视图 + `config reload` 热刷新；聊天侧没有写入命令
+    # （安全审计 B1：handler 拿不到发送者身份，无法安全授权）。
+    "config.header":      {ZH: "⚙️ 生效配置（来源优先级：环境变量 > 官方插件设置 > 默认值）：\n"
+                               "（只读视图；用 `config reload` 重读官方设置，本命令不写任何文件）",
+                           EN: "⚙️ Effective config (precedence: env > official plugin settings > defaults):\n"
+                               "(read-only view; `config reload` re-reads official settings — this command writes no files)"},
+    "config.no_reader":   {ZH: "ℹ️ 当前 Hermes 未提供 ctx.get_config()：只能显示本进程内存值 / 环境变量，无法核对官方设置。",
+                           EN: "ℹ️ This Hermes does not provide ctx.get_config(): only in-process / env values can be shown; official settings cannot be checked."},
+    "config.item":        {ZH: "· {name} = `{value}`（{source}{note}）",
+                           EN: "· {name} = `{value}` ({source}{note})"},
+    "config.source_env":  {ZH: "环境变量", EN: "env"},
+    "config.source_official": {ZH: "官方插件设置", EN: "official plugin setting"},
+    "config.source_default": {ZH: "默认值", EN: "default"},
+    "config.needs_reload": {ZH: "⚠️ 官方文件已改，本进程仍是旧值，执行 `config reload` 生效",
+                            EN: "⚠️ official file changed; this process still uses the old value — run `config reload`"},
+    "config.read_errors": {ZH: "⚠️ 以下键读取失败（未参与判断）：{keys}",
+                           EN: "⚠️ failed to read these keys (not used for judgement): {keys}"},
+    "config.none":        {ZH: "无", EN: "none"},
+    "config.reload_ok":   {ZH: "✅ 配置已刷新：{n} 个键变化（{keys}）",
+                           EN: "✅ Config reloaded: {n} key(s) changed ({keys})"},
+    "config.reload_failed": {ZH: "❌ 配置刷新取消（以下键读取失败，内存保持原样）：{keys}",
+                             EN: "❌ Config reload cancelled (failed keys; memory unchanged): {keys}"},
+    "config.reload_no_reader": {ZH: "❌ 当前 Hermes 未提供 ctx.get_config()，无法刷新官方设置。",
+                                EN: "❌ This Hermes does not provide ctx.get_config(); nothing to reload."},
+    "config.reload_apply_failed": {ZH: "❌ 配置已读到，但应用失败（内存已回滚）：{error}",
+                                   EN: "❌ Config read succeeded but apply failed (memory rolled back): {error}"},
+    "config.read_only_set": {ZH: "🛑 聊天侧没有配置写入命令（插件层拿不到发送者身份，无法安全授权）。"
+                                  "请用官方 Hermes CLI / 配置文件修改 `plugins.entries.larkdeck.settings`，"
+                                  "再执行 `/larkdeck config reload` 热刷新。",
+                              EN: "🛑 There is no chat-side config write command (the plugin layer has no sender "
+                                  "identity, so writes cannot be authorized safely). Change "
+                                  "`plugins.entries.larkdeck.settings` via the official Hermes CLI / config file, "
+                                  "then run `/larkdeck config reload`."},
+    "config.reload_env_shadowed": {ZH: "⚠️ 以下键仍被环境变量优先覆盖，reload 不会改变它们的本进程生效值：{keys}",
+                                    EN: "⚠️ these keys are still shadowed by env vars; reload does not change their "
+                                        "effective in-process values: {keys}"},
+    "config.unknown_action": {ZH: "不认识的 config 子命令：{arg}（可用：show / reload）",
+                              EN: "Unknown config subcommand: {arg} (available: show / reload)"},
     "status.inbound":     {ZH: "入站心跳：{when} · 距上次 {age} · 累计 {n} 条消息",
                            EN: "Inbound heartbeat: {when} · last {age} ago · {n} messages"},
     # ⚠️ 口径（R9 审计中-5）：数的是「有多少帧**真的有东西写出去**」，不是 API 调用次数 ——

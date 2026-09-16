@@ -538,6 +538,8 @@ _DEFAULTS: Dict[str, Any] = {
     # | compact（紧凑）| large（整体放大）。只写 config.style.text_size 的 token 映射 +
     # 给 markdown 元素加 text_size 引用；不改流式结构，不在流式中途做结构性 patch。
     "text_profile": "off",
+    # P2：观感主题。neutral=原符号；ap_lite=抽象 emoji（用户选定默认）；ap_bubble=AP 泡波全量。
+    "theme": "ap_lite",
     "model_aliases": "",      # 模型别名："真名=显示名, ..." 或 dict
     "max_reasoning_chars": _cards.MAX_REASONING_CHARS,
     "max_tool_result_chars": _cards.MAX_TOOL_RESULT_CHARS,
@@ -571,6 +573,13 @@ COMMAND: Dict[str, Any] = _panel.shared_box()["adapter_command"]
 #: 绝不在命令路径上重新探测：命令可能来自旧世代，而探测读的是「当时接管的那一个基类」。
 PROBE_REPORT: Dict[str, Any] = _panel.shared_box()["adapter_probe_report"]
 
+#: P2：官方插件上下文的**只读句柄**（`ctx.get_config` 的绑定方法）。
+#: 与 `PROBE_REPORT` 同一条纪律：register() 在最新世代写入，命令路径只从共享盒子取；
+#: 命令处理器可能与注册不在同一个模块世代里，两代各存一份会读到不同的配置源。
+#: ⚠️ 审计 security B1 后**不再保存 `set_config`**：聊天侧写入路径已移除（handler 拿不到
+#: 发送者身份，进程级 env 开关无法安全授权）。写配置走官方 Hermes CLI/文件 + `config reload`。
+PLUGIN_CTX: Dict[str, Any] = _panel.shared_box()["adapter_plugin_ctx"]
+
 #: ``plugin.yaml`` 的位置与版本行。版本**每次现读**，不复制成常量 —— 常量会漂
 #: （改了清单忘了改常量，卡片就会自信地报一个错的版本号）。
 _PLUGIN_MANIFEST = os.path.join(
@@ -588,8 +597,10 @@ def _apply_metrics_config() -> None:
         env = os.environ.get("LARKDECK_MODEL_ALIASES", "")
         _context.set_aliases({}, spec=f"{spec},{env}" if env else spec)
     pinned = _cfg_int("context_max_override", 0)
-    if pinned:
-        _context.set_context_override(pinned)
+    # ⚠️ **无条件**推下去（pinned=0 ⇒ None=取消覆盖）。审计 A1 实测：只在 `if pinned`
+    # 时调用，会让「官方删键 / 归零 reload」在内存里显示成功、运行时却仍钉着旧上限，
+    # 直到重启进程 —— 正是「卡片不许撒谎」要消灭的形态。
+    _context.set_context_override(pinned or 0)
 
 
 def configure(**kwargs: Any) -> None:
@@ -598,6 +609,25 @@ def configure(**kwargs: Any) -> None:
         if key in _DEFAULTS:
             _CONFIG[key] = value
     _apply_metrics_config()
+
+
+def _remember_plugin_ctx(ctx: Any) -> None:
+    """把官方插件上下文的**只读**配置方法存进进程级共享盒子（P2）。
+
+    只拿 `get_config`，拿不到就记 ``None``；`set_config` 不再采集 —— 聊天侧写入路径已
+    在审计（security B1）后整体移除：命令处理器只收 `raw_args`，拿不到发送者身份，
+    进程级 env 开关无法把「写权限」绑定到操作者。写配置请走官方 Hermes CLI / 配置文件，
+    再用 `/larkdeck config reload` 热刷新。
+    """
+    def _method(name: str) -> Any:
+        try:
+            value = getattr(ctx, name, None)
+        except Exception:
+            return None
+        return value if callable(value) else None
+
+    PLUGIN_CTX.clear()
+    PLUGIN_CTX.update({"get_config": _method("get_config")})
 
 
 def _apply_ctx_settings(ctx: Any) -> None:
@@ -1409,6 +1439,37 @@ def _remember_selfcheck(ok: bool, detail: str) -> None:
 # --------------------------------------------------------------------------- #
 # 覆盖层
 # --------------------------------------------------------------------------- #
+def _ld_theme() -> str:
+    """当前生效主题名；认不出的配置值退回 neutral 并**限流留痕**（审计 C2）。
+
+    为什么不能静默：用户把 `theme` 写成笔误（`ap_late`）时，卡片观感会退回旧符号，
+    但没有任何信号说明「是你配错了」还是「主题功能坏了」—— 这正是本项目最忌讳的
+    静默失灵。日志限流复用 `_log_*_once` 的既定手法（60 秒一条），不在每帧热路径刷。
+    """
+    raw = _cfg_raw("theme")
+    name = _cards.theme_name(raw)
+    try:
+        text = str(raw or "").strip().lower()
+    except Exception:                           # pragma: no cover - 防御性
+        text = ""
+    if text and text != name:
+        _log_theme_once(raw, name)
+    return name
+
+
+def _log_theme_once(raw: Any, fallback: str) -> None:
+    now = time.monotonic()
+    if now - getattr(_log_theme_once, "_at", 0.0) < 60.0:
+        return
+    _log_theme_once._at = now  # type: ignore[attr-defined]
+    try:
+        shown = repr(raw)
+    except Exception:                           # pragma: no cover - 防御性
+        shown = type(raw).__name__
+    logger.warning("[larkdeck] theme=%s 不是可用主题，已退回 %s（可选：neutral / ap_lite / "
+                   "ap_bubble）", shown, fallback)
+
+
 class LarkDeckMixin:
     """叠在内置 FeishuAdapter 之上的卡片渲染层。
 
@@ -1591,6 +1652,7 @@ class LarkDeckMixin:
                 api=snap.get("api_call_count") if mode in ("basic", "full") else None,
                 ttfb=(None if snap.get("ttfb_ms") is None else float(snap["ttfb_ms"]) / 1000.0)
                 if mode == "full" else None,
+                theme=_ld_theme(),
             )
         except Exception:
             logger.debug("[larkdeck] 页脚渲染失败，跳过", exc_info=True)
@@ -1615,6 +1677,7 @@ class LarkDeckMixin:
                 rounds=len(snap.get("rounds") or []),
                 tools=len(snap.get("tools") or []),
                 duration=duration,
+                theme=_ld_theme(),
             ) or ""
         except Exception:
             logger.debug("[larkdeck] 面板标题渲染失败，跳过", exc_info=True)
@@ -1647,6 +1710,7 @@ class LarkDeckMixin:
                     status=str(t.get("status") or "ok"),
                     duration_ms=t.get("duration_ms"),
                     preview=str(t.get("preview") or ""),
+                    theme=_ld_theme(),
                 )
                 for t in (snap.get("tools") or [])
             ]
@@ -1696,6 +1760,7 @@ class LarkDeckMixin:
                     status=str(t.get("status") or "ok"),
                     duration_ms=t.get("duration_ms"),
                     preview=str(t.get("preview") or ""),
+                    theme=_ld_theme(),
                 )
                 for t in (snap.get("tools") or [])
             ]
@@ -1744,6 +1809,7 @@ class LarkDeckMixin:
                     status=str(t.get("status") or "ok"),
                     duration_ms=t.get("duration_ms"),
                     preview=str(t.get("preview") or ""),
+                    theme=_ld_theme(),
                 )
                 for t in (snap.get("tools") or [])
             ]
@@ -3909,6 +3975,40 @@ def _ld_plugin_version() -> str:
     return match.group(1) if match else ""
 
 
+def _probe_absent_keys(report: Dict[str, Any]) -> List[str]:
+    """探测契约里缺失的键（**从唯一事实来源求差集**，不只信 `contract_violation`）。
+
+    显示层必须自证：producer 回归时可能连 `contract_violation` 自己都不写了。
+    """
+    absent = [key for key in _compat.PROBE_REPORT_KEYS if key not in report]
+    extras = report.get("contract_violation") or []
+    if isinstance(extras, str):
+        extras = [extras]
+    for extra in extras:
+        if str(extra) and str(extra) not in absent:
+            absent.append(str(extra))
+    return absent
+
+
+def _probe_state_key(report: Dict[str, Any]) -> str:
+    """探测结论 → i18n 键。判别顺序：缺键 > 必需接口 > 覆盖层构造 > 已接管。"""
+    if not report or "error" in report:
+        return "probe.none"
+    if _probe_absent_keys(report):
+        return "probe.incomplete"
+    if not report.get("ok"):
+        return "probe.blocked_required"
+    if not report.get("adopted"):
+        return "probe.blocked_build"
+    return "probe.covered"
+
+
+def _probe_state_label(report: Dict[str, Any]) -> str:
+    """探测结论的**短标签**（供聚合诊断在一行里嵌入，不携带整句前缀）。"""
+    key = _probe_state_key(report)
+    return _i18n.t("probe.short_none" if key == "probe.none" else key)
+
+
 def _probe_status_lines() -> List[str]:
     """`/larkdeck status` 的能力探测摘要（P1a）。
 
@@ -3918,7 +4018,8 @@ def _probe_status_lines() -> List[str]:
     覆盖 `compat.PROBE_REPORT_KEYS` 全部键；不把原始键名列表直接堆给用户，也绝不写「正常」。
     """
     report = dict(PROBE_REPORT)
-    if not report or "error" in report:
+    state_key = _probe_state_key(report)
+    if state_key == "probe.none":
         return [_i18n.t("probe.none")]
 
     def _names(key: str) -> str:
@@ -3928,20 +4029,8 @@ def _probe_status_lines() -> List[str]:
         names = ", ".join(str(x) for x in value if str(x))
         return names or _i18n.t("probe.none_list")
 
-    # 先按**唯一事实来源**求缺键（不能只信 `contract_violation`：producer 回归时它可能
-    # 自己就不写；显示层必须自证）。`adopted` 区分「探测跑了」与「覆盖层真的接管了」。
-    absent = [key for key in _compat.PROBE_REPORT_KEYS if key not in report]
-    for extra in (report.get("contract_violation") or []):
-        if str(extra) and str(extra) not in absent:
-            absent.append(str(extra))
-    if absent:
-        state = _i18n.t("probe.incomplete")
-    elif not report.get("ok"):
-        state = _i18n.t("probe.blocked_required")
-    elif not report.get("adopted"):
-        state = _i18n.t("probe.blocked_build")
-    else:
-        state = _i18n.t("probe.covered")
+    absent = _probe_absent_keys(report)
+    state = _i18n.t(state_key)
     version = str(report.get("hermes_version") or _i18n.t("probe.unknown"))
     adapter_class = str(report.get("adapter_class") or _i18n.t("probe.unknown"))
     session = (_i18n.t("probe.session_ok") if report.get("session_attribution_ok")
@@ -3968,23 +4057,245 @@ def _probe_status_lines() -> List[str]:
     return lines
 
 
+def _ld_diag_inbound(snap: Dict[str, Any]) -> str:
+    """入站心跳的**相对年龄**；没有可用记录就如实写「无记录」。"""
+    age = _context.age_text(snap.get("inbound_at"))
+    if age == _i18n.t("status.none"):
+        return _i18n.t("diag.inbound_none")
+    return _i18n.t("diag.inbound_ago", age=age)
+
+
+def _ld_diagnosis_lines() -> List[str]:
+    """P2 聚合诊断：把跨模块的健康事实压成两行，给 `/larkdeck status` 顶部用。
+
+    与 AP 的 `doctor` 同一目的，但只报**本进程手上有证据的事实**，不做结论性健康声明：
+      * 能力/链路行：探测结论、钩子挂载数、命令注册、模块世代；
+      * 运行/账本行：入站心跳年龄、写卡帧数、写卡失败、掉回纯文本、错误码总数。
+
+    两行在**有明确异常**（未接管 / 钩子不全 / 命令未注册 / 世代裂脑 / 有失败计数）时
+    以 ``⚠️`` 开头；其余情况只列事实，**不写「正常」「健康」** —— 一个永远说健康的诊断
+    与一个坏掉的诊断在卡上没有区别（`docs/lessons.md` 推论 6）。
+    """
+    try:
+        report = dict(PROBE_REPORT)
+        state_key = _probe_state_key(report)
+        wired = sum(1 for ok in HOOKS.values() if ok)
+        total = len(_hooks.SUBSCRIPTIONS)
+        command_ok = bool(COMMAND.get("registered"))
+        generation = int(_panel.load_seq())
+        latest = int(_panel.latest_load_seq())
+        snap = _context.status_snapshot() or {}
+        writes = int(snap.get("frame_ok_count") or 0)
+        failures = int(snap.get("frame_fail_count") or 0)
+        fallbacks = int(snap.get("fallback_count") or 0)
+        codes = int(snap.get("code_total") or 0)
+        capability_bad = (state_key != "probe.covered" or wired < total
+                          or not command_ok or generation != latest)
+        runtime_bad = failures > 0 or fallbacks > 0 or codes > 0
+        return [
+            ("⚠️ " if capability_bad else "") + _i18n.t(
+                "diag.capability",
+                probe=_probe_state_label(report),
+                wired=wired,
+                total=total,
+                command=_i18n.t("diag.command_ok" if command_ok else "diag.command_bad"),
+                gen=generation,
+                latest=latest,
+            ),
+            ("⚠️ " if runtime_bad else "") + _i18n.t(
+                "diag.runtime",
+                inbound=_ld_diag_inbound(snap),
+                writes=writes,
+                fail=failures,
+                fallback=fallbacks,
+                codes=codes,
+            ),
+        ]
+    except Exception as exc:
+        # ⚠️ 不许静默少两行（R9 低-2 同源）：聚合失败必须让用户在卡上看到，
+        # 否则「聚合行不见了」与「一切正常」在用户眼里一样。
+        # 日志只记异常**类型名**：病态异常对象的 `__str__` 可能在 logger 格式化时再抛，
+        # 那会把「诊断失败」升级成「命令处理器穿透」（审计 A6）。
+        logger.warning("[larkdeck] 聚合诊断渲染失败: %s", type(exc).__name__, exc_info=True)
+        try:
+            reason = str(exc)
+        except Exception:
+            reason = _i18n.t("cmd.failed_no_reason")
+        return [_i18n.t("diag.failed", error=reason)]
+
+
+# --------------------------------------------------------------------------- #
+# P2 `/larkdeck config`：只读视图 + 官方 ctx.get_config() 热刷新。
+# ⚠️ 审计 security B1 后**没有聊天侧写入命令**：写配置走官方 Hermes CLI / 配置文件，
+# 再用 `config reload` 刷新。插件从不直接写宿主 config.yaml，也不保存 ctx.set_config。
+# --------------------------------------------------------------------------- #
+def _official_cfg_getter() -> Any:
+    getter = PLUGIN_CTX.get("get_config")
+    return getter if callable(getter) else None
+
+
+def _cfg_canonical(value: Any) -> str:
+    """配置值比较用（诊断「官方文件与本进程内存是否分叉」）。"""
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        return repr(value)
+
+
+def _cfg_text(value: Any) -> str:
+    """配置值上卡前的短文本（单行、有界；预览不是倾倒）。"""
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False)
+        except Exception:
+            text = repr(value)
+    text = str(text).replace("\n", " ").replace("\r", " ").replace("\t", " ")
+    return text if len(text) <= 80 else text[:77] + "..."
+
+
+def _ld_config_show() -> str:
+    """只读视图：每个键的**本进程生效值** + 来源（env / 官方 settings / 默认）。
+
+    另外对「官方 settings 已改、本进程内存还是旧值」给一行显式提示（必须 `/larkdeck
+    config reload` 才会换血）—— 这正是「配置刷新」要解决的那个静默窗口。
+    """
+    getter = _official_cfg_getter()
+    official: Dict[str, Any] = {}
+    read_errors: List[str] = []
+    if getter:
+        for key in _DEFAULTS:
+            try:
+                value = getter(key, None)
+            except Exception:
+                read_errors.append(key)
+            else:
+                if value is not None:
+                    official[key] = value
+    lines = [_i18n.t("config.header")]
+    if not getter:
+        lines.append(_i18n.t("config.no_reader"))
+    for key in sorted(_DEFAULTS):
+        default = _DEFAULTS[key]
+        env = os.environ.get("LARKDECK_" + key.upper())
+        env_active = env is not None and env.strip() != ""
+        if env_active:
+            source = _i18n.t("config.source_env")
+        elif key in official:
+            source = _i18n.t("config.source_official")
+        else:
+            source = _i18n.t("config.source_default")
+        value = _cfg_raw(key, default)
+        note = ""
+        # ⚠️ 判据必须与 source 的非空判断一致（审计 A5）：`LARKDECK_THEME=""` 在 `_cfg_raw`
+        # 里等效「未设」，如果用 `env is None` 判 note，官方已变时提示会静默消失。
+        if (key in official and not env_active
+                and _cfg_canonical(value) != _cfg_canonical(official[key])):
+            note = " " + _i18n.t("config.needs_reload")
+        lines.append(_i18n.t("config.item", name=key, value=_cfg_text(value),
+                             source=source, note=note))
+    if read_errors:
+        lines.append(_i18n.t("config.read_errors", keys=", ".join(sorted(read_errors))))
+    return "\n".join(lines)
+
+
+def _ld_config_reload() -> str:
+    """从官方 `ctx.get_config()` **重新读取全部键**并替换内存配置（只读路径）。
+
+    **异常时全有全无**：任何一个键读取抛异常 ⇒ 整次刷新取消、内存保持原样，不会留下
+    「读了一半」的配置。⚠️ 这**不是文件系统事务**：官方 `get_config` 每个键都是一次独立的
+    `load_config_readonly()`，外部进程在读取过程中原子替换配置/并发写时，可能读到跨代的
+    混合快照（本函数只能保证异常时不改内存，不能锁住官方读取）。需要强一致时请先停止
+    外部写入再做 reload。
+    """
+    getter = _official_cfg_getter()
+    if not getter:
+        return _i18n.t("config.reload_no_reader")
+    found: Dict[str, Any] = {}
+    errors: List[str] = []
+    for key in _DEFAULTS:
+        try:
+            value = getter(key, None)
+        except Exception:
+            errors.append(key)
+        else:
+            if value is not None:
+                found[key] = value
+    if errors:
+        return _i18n.t("config.reload_failed", keys=", ".join(sorted(errors)))
+    previous = {key: _CONFIG.get(key, _DEFAULTS[key]) for key in _DEFAULTS}
+    fresh = dict(_DEFAULTS)
+    fresh.update(found)
+    try:
+        _CONFIG.clear()
+        _CONFIG.update(fresh)
+        _apply_metrics_config()
+    except Exception as exc:
+        _CONFIG.clear()
+        _CONFIG.update(previous)
+        try:
+            _apply_metrics_config()
+        except Exception:                       # pragma: no cover - 防御性回滚
+            logger.debug("[larkdeck] 配置刷新回滚后仍无法应用指标配置", exc_info=True)
+        try:
+            reason = str(exc)
+        except Exception:
+            reason = _i18n.t("cmd.failed_no_reason")
+        return _i18n.t("config.reload_apply_failed", error=reason)
+    changed = [key for key in sorted(_DEFAULTS)
+               if _cfg_canonical(previous[key]) != _cfg_canonical(fresh[key])]
+    result = _i18n.t("config.reload_ok", n=len(changed),
+                     keys=", ".join(changed) or _i18n.t("config.none"))
+    # ⚠️ 环境变量优先：reload 成功 ≠ 这些键的本进程生效值变了（审计 C3/L2）。
+    shadowed = [key for key in sorted(_DEFAULTS)
+                if (os.environ.get("LARKDECK_" + key.upper()) or "").strip()]
+    if shadowed:
+        result += "\n" + _i18n.t("config.reload_env_shadowed", keys=", ".join(shadowed))
+    return result
+
+
+def _ld_config_card(raw_args: str) -> str:
+    """`/larkdeck config [show|reload]` 的分发（**只读**；写入入口已按安全审计移除）。"""
+    text = str(raw_args or "").strip()
+    if not text:
+        return _ld_config_show()
+    head = text.split(maxsplit=1)
+    action = head[0].strip().lower()
+    if action in ("show", "list"):
+        return _ld_config_show()
+    if action in ("reload", "refresh"):
+        return _ld_config_reload()
+    if action in ("set", "write"):
+        # 明确说「不提供聊天侧写入」，而不是含糊地报「不认识」：用户要的是知道怎么做。
+        return _i18n.t("config.read_only_set")
+    return "\n".join([_i18n.t("config.unknown_action", arg=action), _i18n.t("cmd.help")])
+
 
 def _ld_command_card(raw_args: str) -> str:
-    """``/larkdeck [status|help]`` 的处理器（**模块级函数**：命令 API 要的是可调用对象）。
+    """``/larkdeck [status|config|help]`` 的处理器（**模块级函数**：命令 API 要的是可调用对象）。
 
     返回值是 markdown 文本，由核心发回 —— 那条路径经过我们的 ``send()``，
     所以它自动成一张卡；这里只管「写什么」，不碰卡片 JSON。
 
-    四条纪律：
+    纪律：
       * **绝不抛** —— 抛出去会把「查一次状态」变成用户侧的错误提示；读不到就如实写读不到；
       * **只报有证据的事** —— 没记录就写「无记录」（见 :func:`larkdeck.core.context.status_lines`）；
       * **写明飞书网关里生成期间会被排队**（CLI / TUI 里可直接执行）—— 命令派发挂核心 idle 路径；
-      * **写明数字是进程级累计** —— 多会话并发时它含**别的会话**的那部分（见下面那句口径说明）。
+      * **写明数字是进程级累计** —— 多会话并发时它含**别的会话**的那部分（见下面那句口径说明）；
+      * **config 默认只读** —— `/larkdeck config` 与 `config reload` 都只读；聊天侧没有写入
+        命令（安全审计 B1：handler 拿不到发送者身份，进程级开关无法授权）。写配置走官方
+        Hermes CLI / 配置文件，再用 `config reload` 热刷新。
     """
     try:
-        arg = str(raw_args or "").strip().lower()
+        raw = str(raw_args or "").strip()
+        arg = raw.lower()
         if arg in ("help", "-h", "--help"):
             return _i18n.t("cmd.help")
+        head = raw.split(maxsplit=1)
+        token = head[0].lower() if head else ""
+        if token == "config":
+            return _ld_config_card(head[1] if len(head) > 1 else "")
         if arg not in ("", "status"):
             return "\n".join([_i18n.t("cmd.unknown", arg=arg), _i18n.t("cmd.help")])
         version = _ld_plugin_version()
@@ -4002,15 +4313,18 @@ def _ld_command_card(raw_args: str) -> str:
         # 不说清楚，用户会拿别人的失败去查自己的卡 —— 正是本轮要消灭的「静默误诊」。
         # 放在**数据行之上**（不是之后）：用户是从上往下读的，先看到口径再看到数字才不会误解；
         # 而且它在三行全是「无记录」时也在（那种时刻同样需要知道这些数是全进程的）。
-        # P1a：能力探测摘要紧随口径说明，先向用户交代「插件到底有没有接管、哪些接口缺了」，
-        # 再进入运行时账本。未探测时这里只有一行「未探测」，不会假装健康。
+        # P2：聚合诊断紧跟口径说明，把「能力 / 链路 / 运行 / 账本」压成两行总览；随后才是
+        # P1a 的能力探测详情与 R9 的逐条账本。顺序 = 先总后分，用户扫一眼就能判断要不要细看。
         return "\n".join([header, _i18n.t("cmd.scope")]
+                          + _ld_diagnosis_lines()
                           + _probe_status_lines()
                           + _context.status_lines())
     except Exception as exc:  # pragma: no cover - 防御性：处理器绝不能抛
-        logger.warning("[larkdeck] `/larkdeck` 状态读取失败: %s", exc, exc_info=True)
+        # 日志只记类型名（A6）：`%s` 直接格式化病态异常会在 logger 里再抛一次。
+        logger.warning("[larkdeck] `/larkdeck` 状态读取失败: %s", type(exc).__name__,
+                       exc_info=True)
         # ⚠️ 兜底里的 `str(exc)` **自己也会抛**（R9 审计低-4：`__str__` 抛异常的异常，
-        # 例如 `arg = str(raw_args)` 抛出的那个；外层 except 再 `str(exc)` 一次就穿透了）。
+        # 例如 `raw = str(raw_args)` 抛出的那个；外层 except 再 `str(exc)` 一次就穿透了）。
         # 穿透的后果是「用户什么也看不到」（核心只记一条 WARNING）—— 又一处静默。
         # 所以这里再兜一层：读不出原因就如实写「读不出原因」，绝不假装成功。
         try:
@@ -4031,6 +4345,9 @@ def register(ctx: Any) -> None:
         return
 
     # 0) 读官方插件配置（plugins.entries.larkdeck.settings.*）—— 环境变量仍优先。
+    #    同时把官方 ctx 的配置读写方法记进共享盒子：`/larkdeck config` 与 `config reload`
+    #    可能要跨模块世代执行，句柄必须与 `PROBE_REPORT` 一样是进程级共享的。
+    _remember_plugin_ctx(ctx)
     _apply_ctx_settings(ctx)
 
     # 1) 先把内置 feishu 解析出来（这一步会触发它的 deferred loader）。
@@ -4107,7 +4424,8 @@ def register(ctx: Any) -> None:
         else:
             handle_cmd = register_command(
                 LARKDECK_COMMAND, _ld_command_card,
-                description=_i18n.t("cmd.description"), args_hint="[status|help]")
+                description=_i18n.t("cmd.description"),
+                args_hint="[status|config|help]")
             COMMAND.update({"registered": bool(handle_cmd),
                             # ⚠️ 归因必须**可判定**（R9 审计低-6）：真核心的语义是
                             # 「与**内置命令**重名 ⇒ 跳过并返回 None」，而**同名插件命令

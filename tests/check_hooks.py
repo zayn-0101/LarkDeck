@@ -649,8 +649,10 @@ else:
                 if node.get("border", {}).get("color") != "green":
                     problems.append(f"黄金路径：边框不是绿色 {node.get('border')!r}")
                 title = node.get("header", {}).get("title", {}).get("content", "")
-                if "🧠 3" not in title or "🔧 1" not in title:
-                    problems.append(f"黄金路径：面板标题行不对（期望含「🧠 3 / 🔧 1」）：{title!r}")
+                # P2 起默认主题是 ap_lite ⇒ 轮数 / 工具数符号是 🌊 / 🧰。这条门禁验的是
+                # 「标题段有没有丢」，不是主题常量自身；常量由单测与 golden trace 冻结。
+                if "🌊 3" not in title or "🧰 1" not in title:
+                    problems.append(f"黄金路径：面板标题行不对（期望含「🌊 3 / 🧰 1」）：{title!r}")
                 print(f"黄金路径面板：{title!r}")
 
             # ⚠️ 面板标题里的**耗时段**（`⏱ 12.3s`）此前无人验：上面那次调用传的是
@@ -667,7 +669,7 @@ else:
                     problems.append(f"黄金路径：面板标题没有耗时段（期望「⏱ 12.3s」）：{t_title!r}")
                 elif "12.3s" not in t_title:
                     problems.append(f"黄金路径：耗时段的数值不对（期望 12.3s）：{t_title!r}")
-                if "🧠 3" not in t_title or "🔧 1" not in t_title:
+                if "🌊 3" not in t_title or "🧰 1" not in t_title:
                     problems.append(f"黄金路径：耗时段的出现把它它段挤掉了：{t_title!r}")
         except Exception as exc:  # pragma: no cover - 防御性
             problems.append(f"黄金路径：渲染异常 {exc!r}")

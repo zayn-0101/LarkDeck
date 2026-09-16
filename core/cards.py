@@ -439,10 +439,16 @@ def format_elapsed(seconds: float) -> str:
     return f"{int(seconds // 60)}m{int(seconds % 60):02d}s"
 
 
+#: P2 主题名常量。完整主题表在下方；`footer_line` 的默认形参在定义期就需要这个名字，
+#: 所以这里先给出常量（模块加载完成后表一定可见）。
+THEME_NEUTRAL = "neutral"
+
+
 def footer_line(*, duration: Optional[float] = None, model: str = "",
                 tools: Optional[int] = None, rounds: Optional[int] = None,
                 context: str = "", cache: Optional[float] = None,
-                api: Optional[int] = None, ttfb: Optional[float] = None) -> Optional[str]:
+                api: Optional[int] = None, ttfb: Optional[float] = None,
+                theme: Any = THEME_NEUTRAL) -> Optional[str]:
     """「符号 + 数字 + 英文缩写」拼成的信息行 —— 天然无需翻译（不依赖 i18n）。
 
     两个调用点：**面板标题行**（``model + rounds + tools + duration``，决策 D2 把这些
@@ -464,13 +470,14 @@ def footer_line(*, duration: Optional[float] = None, model: str = "",
         要 < 0.5ms 才会四舍五入成 `0.0s` —— 两者出现 0 都只可能是脏数据。
     """
     parts: List[str] = []
+    syms = _THEME_SYMBOLS[theme_name(theme)]
     if model:
-        parts.append(f"🤖 {model}")
+        parts.append(f"{syms['model']} {model}")
     # 注意排除 bool：Python 里 isinstance(True, int) 为真，不排会拼出「🧠 True」。
     if isinstance(rounds, int) and not isinstance(rounds, bool) and rounds > 0:
-        parts.append(f"🧠 {rounds}")
+        parts.append(f"{syms['rounds']} {rounds}")
     if isinstance(tools, int) and not isinstance(tools, bool) and tools > 0:
-        parts.append(f"🔧 {tools}")
+        parts.append(f"{syms['tools']} {tools}")
     if context:
         parts.append(context)
     if cache is not None and not isinstance(cache, bool):
@@ -479,13 +486,13 @@ def footer_line(*, duration: Optional[float] = None, model: str = "",
         except (TypeError, ValueError):
             pct = None
         if pct is not None:
-            parts.append(f"⚡ {pct:.0f}%")
+            parts.append(f"{syms['cache']} {pct:.0f}%")
     if isinstance(api, int) and not isinstance(api, bool) and api > 0:
-        parts.append(f"🔁 {api}")
+        parts.append(f"{syms['api']} {api}")
     if isinstance(ttfb, (int, float)) and not isinstance(ttfb, bool) and ttfb > 0:
-        parts.append(f"🐢 {format_elapsed(float(ttfb))}")
+        parts.append(f"{syms['ttfb']} {format_elapsed(float(ttfb))}")
     if isinstance(duration, (int, float)) and duration >= 0.1:
-        parts.append(f"⏱ {format_elapsed(float(duration))}")
+        parts.append(f"{syms['duration']} {format_elapsed(float(duration))}")
     return " · ".join(parts) or None
 
 
@@ -511,18 +518,81 @@ _HEADING_CLOSING_RE = _re.compile(r"\s+#+$")
 #: 工具步骤状态符号（符号语言无关，无需 i18n；未知状态用「•」兜底）。
 _TOOL_STATUS_MARKS = {"running": "⏳", "ok": "✅", "error": "❌", "blocked": "⛔"}
 
+#: P2 主题层：只改「符号 + 文案」的观感，不碰卡片结构。
+#: neutral = 原观感；ap_lite = 抽象 emoji（用户选定的默认风格）；ap_bubble = AP 泡波全量。
+THEME_AP_LITE = "ap_lite"
+THEME_AP_BUBBLE = "ap_bubble"
+_THEME_SYMBOLS: Dict[str, Dict[str, str]] = {
+    THEME_NEUTRAL: {"model": "🤖", "rounds": "🧠", "tools": "🔧", "duration": "⏱",
+                    "cache": "⚡", "api": "🔁", "ttfb": "🐢"},
+    THEME_AP_LITE: {"model": "🤖", "rounds": "🌊", "tools": "🧰", "duration": "⏱",
+                    "cache": "⚡", "api": "🔁", "ttfb": "🐢"},
+    THEME_AP_BUBBLE: {"model": "👸🏻", "rounds": "🌊", "tools": "🫧", "duration": "✨",
+                      "cache": "⚡", "api": "🔁", "ttfb": "🐢"},
+}
+_TOOL_ICONS: Dict[str, Dict[str, str]] = {
+    THEME_NEUTRAL: {},
+    THEME_AP_LITE: {"read": "📖", "write": "✍️", "search": "🔍", "web": "🌐",
+                    "terminal": "⌨️", "skill": "🧩", "agent": "🤝", "image": "🖼️",
+                    "default": "🧰"},
+    # AP 原版是人物 emoji；这一档是可选项，默认 ap_lite 不启用，避免「过度卡通」。
+    THEME_AP_BUBBLE: {"read": "👩🏻‍🏫", "write": "👩🏻‍🎨", "search": "🕵🏻‍♀️", "web": "👩🏻‍🚀",
+                      "terminal": "👩🏻‍💻", "skill": "🤹🏻‍♀️", "agent": "👷🏻‍♀️", "image": "🖼️",
+                      "default": "👩🏻‍🔧"},
+}
+#: 工具类别识别表。**按 token 精确匹配，不做子串包含**（否则 `ls` 会命中 `false`、
+#: `cat` 会命中 `catalog`）；同一类别里的多个 token 命中任意一个即可。
+#: 顺序 = 优先级：更具体的类别放前面（`create_image` 必须归 image、不能被 write 的
+#: `create` 抢走；`run_skill` 必须归 skill、不能被 terminal 的 `run` 抢走）。
+#: `read` 必须在 `terminal` 前：真实工具 `read_terminal` / `close_terminal` 的语义是
+#: 「读/关终端输出」，归 📖 比归 ⌨️ 更接近用户心智（审计 C1）。
+_TOOL_CATEGORIES = (
+    ("web", ("web", "http", "https", "fetch", "url", "browser")),
+    ("search", ("search", "grep", "glob", "find")),
+    ("image", ("image", "img", "photo", "picture")),
+    ("skill", ("skill",)),
+    ("agent", ("agent", "delegate", "subagent")),
+    ("write", ("write", "edit", "patch", "save", "create")),
+    ("read", ("read", "cat", "head", "tail", "open", "ls")),
+    ("terminal", ("bash", "shell", "exec", "execute", "command", "terminal", "run")),
+)
+
+
+def theme_name(theme: Any) -> str:
+    """配置主题名归一：认不出的值退回 neutral（不猜、不放大）。"""
+    name = str(theme or "").strip().lower()
+    return name if name in _THEME_SYMBOLS else THEME_NEUTRAL
+
+
+def _tool_icon(name: str, theme: str) -> str:
+    """工具类别图标（neutral 没有图标，保持原观感）。返回带尾随空格或空串。"""
+    icons = _TOOL_ICONS.get(theme_name(theme)) or {}
+    if not icons:
+        return ""
+    # `read_file` → ["read", "file"]；非字母数字一律当分隔符。token 精确匹配而不是
+    # 子串包含：`ls` 不该命中 `false`，`cat` 不该命中 `catalog`。
+    tokens = [tok for tok in _re.split(r"[^0-9a-z]+", str(name or "").lower()) if tok]
+    for category, keys in _TOOL_CATEGORIES:
+        if any(token in tokens for token in keys):
+            return f"{icons.get(category) or icons.get('default', '')} "
+    return f"{icons.get('default', '')} " if icons.get("default") else ""
+
 
 def tool_step(name: str, *, status: str = "ok", duration_ms: Any = None,
-              preview: str = "") -> str:
+              preview: str = "", theme: Any = THEME_NEUTRAL) -> str:
     """一步工具调用的单行摘要，供 :func:`unified_panel` 的 ``tools`` 参数使用。
 
     形如 ``✅ read_file · 2.3s · `` ``{"path": "…"}``。耗时毫秒转秒复用
     :func:`format_elapsed`（不足 0.1s 显示 ``0.1s``，避免难看的 ``0.0s``）；
     参数预览包成行内代码 —— 预览是 JSON，可能有 markdown 特殊字符，
     内部的反引号会被换成单引号，避免破坏行内代码的边界。
+
+    P2 起外部可传 ``theme``；**未传时仍是 neutral**，所以直接调本函数的既有测试/调用
+    一个字节不变。适配器会传配置里的当前主题。
     """
     mark = _TOOL_STATUS_MARKS.get(str(status or ""), "•")
-    line = f"{mark} {name or 'tool'}"
+    icon = _tool_icon(name, theme)
+    line = f"{mark} {icon}{name or 'tool'}"
     if isinstance(duration_ms, (int, float)) and not isinstance(duration_ms, bool):
         ms = max(0.0, float(duration_ms))
         if ms > 0:

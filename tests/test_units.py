@@ -1185,6 +1185,8 @@ def test_cardkit_golden_trace_is_frozen():
     这句措辞别写成「每次写入都含 uuid」。）
     其中「装饰**只在内容变了时**才写」这条 R2 规则也在域内：夹具里第二帧的装饰没变 ⇒
     只有一次 batch（序号 1），两帧的正文是 2、3 号。
+    **P2 起默认主题是 `ap_lite`**（面板标题 🌊/🧰、工具行带 📖/⌨️ 图标），所以主题层的符号
+    与图标也在夹具的定义域里；换默认主题就是换用户可见行为，必须重跑夹具并在提交信息里声明。
     **它覆盖不到的**（这些地方「逐字节不变」不成立，别假装成立）：所有失败路径、
     `patch` 传输的分支、帧节流跳过、字节闸门、`settings`(summary)，
     以及**一切时间派生值**（时钟在采集期间被冻结 ⇒ 耗时/首字延迟这类字段不进夹具）。
@@ -1403,7 +1405,7 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         raw._client = client
         raw._ld_send_card = lambda *a, **k: (_ for _ in ()).throw(
             AssertionError("cardkit 模式不该走 _ld_send_card"))
-        adapter.configure(native_transport="cardkit")
+        adapter.configure(native_transport="cardkit", theme="neutral")
         old_reqs = adapter.LarkDeckMixin._ld_ck_requests
         old_interval = adapter._STREAM_MIN_INTERVAL
         adapter._STREAM_MIN_INTERVAL = 0.0        # 帧节流窗口：测试里连发两帧要都能过
@@ -3428,6 +3430,138 @@ def test_tool_step_formatting() -> None:
     assert cards.tool_step("x", preview="a`b") == "✅ x · `a'b`", "预览里的反引号不能破坏行内代码"
 
 
+
+def test_theme_symbols_and_tool_icons_are_pinned():
+    """P2 主题层：符号/图标是**默认观感**的一部分，必须逐字冻结。
+
+    这条同时钉三件事：
+      * ``footer_line`` / ``tool_step`` 的**缺省仍是 neutral**（直接调用者一个字节不变）；
+      * ``ap_lite`` 只换符号与工具图标，不改状态符号、数字格式、预览转义；
+      * 工具分类是 **token 精确匹配**，不是子串包含（`false` / `catalog` 不许被 read 抢走，
+        `create_image` 必须归 image、`run_skill` 必须归 skill）。
+    """
+    assert cards.THEME_NEUTRAL == "neutral"
+    assert cards.THEME_AP_LITE == "ap_lite"
+    assert cards.THEME_AP_BUBBLE == "ap_bubble"
+    # 缺省 = neutral：既有调用点（探针、单测、任何未传 theme 的直接调用）零变化
+    assert cards.footer_line(model="m", rounds=3, tools=2, duration=1.2) == \
+        "🤖 m · 🧠 3 · 🔧 2 · ⏱ 1.2s"
+    assert cards.tool_step("read_file", status="running") == "⏳ read_file"
+    # ap_lite：只动模型/轮次/工具数/耗时这几格
+    assert cards.footer_line(model="m", rounds=3, tools=2, duration=1.2,
+                             theme="ap_lite") == "🤖 m · 🌊 3 · 🧰 2 · ⏱ 1.2s"
+    assert cards.footer_line(rounds=1, tools=1, cache=75.0, api=7, ttfb=0.4,
+                             theme="ap_lite") == "🌊 1 · 🧰 1 · ⚡ 75% · 🔁 7 · 🐢 0.4s"
+    # ap_bubble：可选档，人物 emoji 只在显式选择时出现
+    assert cards.footer_line(model="m", rounds=1, tools=1, duration=1.2,
+                             theme="ap_bubble") == "👸🏻 m · 🌊 1 · 🫧 1 · ✨ 1.2s"
+    assert cards.tool_step("read_file", status="running",
+                           theme="ap_bubble").startswith("⏳ 👩🏻‍🏫 read_file")
+    # 工具图标：每个类别至少一条；同一条里状态符号 / 名称 / 预览全部保持原语义
+    icon_cases = {
+        "read_file": "📖", "write_file": "✍️", "run_command": "⌨️",
+        "web_search": "🌐", "grep": "🔍", "skill_view": "🧩",
+        "delegate_task": "🤝", "create_image": "🖼️",
+        # 审计 C1：读取类必须优先于 terminal，`read_terminal` 归 📖；`close_terminal`
+        # 没有 read token，仍归 ⌨️（关闭终端是终端动作）。
+        "read_terminal": "📖", "close_terminal": "⌨️",
+    }
+    for name, icon in icon_cases.items():
+        got = cards.tool_step(name, status="ok", duration_ms=100, preview='{"a": 1}',
+                              theme="ap_lite")
+        assert got.startswith(f"✅ {icon} {name} · 0.1s"), f"{name}: {got!r}"
+    # token 精确匹配：短键不许在更长单词里误命中；未知工具退回默认工具图标
+    for name in ("false", "catalog", "results", "tool"):
+        got = cards.tool_step(name, status="ok", theme="ap_lite")
+        assert got == f"✅ 🧰 {name}", f"{name} 被误分类：{got!r}"
+    assert cards.tool_step("ls", status="ok", theme="ap_lite") == "✅ 📖 ls"
+    # 认不出的主题退回 neutral（不猜、不放大）
+    assert cards.theme_name("nonsense") == "neutral"
+    assert cards.theme_name(None) == "neutral"
+    assert cards.tool_step("read_file", status="ok", theme="nonsense") == "✅ read_file"
+
+
+def test_plugin_manifest_declares_theme_default_ap_lite():
+    """默认主题必须同时写进代码默认值与 `plugin.yaml`；两处分叉时测试必须红。"""
+    assert adapter._DEFAULTS["theme"] == "ap_lite"
+    manifest = (_pathlib.Path(_REPO_PARENT) / "larkdeck" / "plugin.yaml").read_text(
+        encoding="utf-8")
+    match = re.search(r"^  theme:\n(?:    .*\n)+", manifest, re.M)
+    assert match, "plugin.yaml 缺少 theme 配置块"
+    block = match.group(0)
+    assert 'type: string' in block, block
+    assert 'default: "ap_lite"' in block, block
+
+
+def test_adapter_theme_wiring_uses_default_ap_lite_and_neutral_fallback():
+    """P2 主题必须真的接进三条渲染路径，不能只让纯函数自己绿。
+
+    三条路径 = `_ld_panel`（普通卡 / patch 收尾）、`_ld_panel_parts`（CardKit 两块）、
+    `_ld_panel_markdown`（对拍基准 / 降级车道）。判据是**渲染出来的内容**，
+    不是「调用了 theme=」这句源码声明。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    panel.reset()
+    context.reset()
+    try:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(adapter._DEFAULTS)
+        panel.record_reasoning("s1", "t1", "先看文件。")
+        panel.record_tool_started("s1", "t1", "read_file", {"path": "/tmp/a.txt"}, "c1")
+        node = adapter.LarkDeckMixin._ld_panel()
+        assert node is not None
+        title = node["header"]["title"]["content"]
+        assert "🌊 1" in title and "🧰 1" in title, title
+        body, tools = adapter.LarkDeckMixin._ld_panel_parts()
+        assert "先看文件。" in body and "📖 read_file" in tools, (body, tools)
+        assert "📖 read_file" in adapter.LarkDeckMixin._ld_panel_markdown(),             adapter.LarkDeckMixin._ld_panel_markdown()
+
+        adapter.configure(theme="neutral")
+        title = adapter.LarkDeckMixin._ld_panel()["header"]["title"]["content"]
+        assert "🧠 1" in title and "🔧 1" in title, title
+        _, tools = adapter.LarkDeckMixin._ld_panel_parts()
+        assert "read_file" in tools and "📖" not in tools, tools
+
+        adapter.configure(theme="nonsense")
+        title = adapter.LarkDeckMixin._ld_panel()["header"]["title"]["content"]
+        assert "🧠 1" in title and "🔧 1" in title, f"未知主题必须退回 neutral：{title!r}"
+
+        adapter.configure(theme="ap_bubble")
+        _, tools = adapter.LarkDeckMixin._ld_panel_parts()
+        assert "👩🏻‍🏫 read_file" in tools, tools
+    finally:
+        panel.reset()
+        context.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_plugin_ctx_handle_is_recorded_in_the_shared_box():
+    """官方 ctx 句柄必须与探测快照同源共享：命令可能来自旧世代模块对象。"""
+    saved = dict(adapter.PLUGIN_CTX)
+
+    class _Ctx:
+        def get_config(self, key, default=None):
+            return default
+
+        def set_config(self, key, value):
+            return None
+
+    try:
+        adapter._remember_plugin_ctx(_Ctx())
+        assert callable(adapter.PLUGIN_CTX.get("get_config")), adapter.PLUGIN_CTX
+        # 审计 B1：聊天侧写入口整体移除，set_config 不再被采集（哪怕 ctx 提供了它）。
+        assert "set_config" not in adapter.PLUGIN_CTX, adapter.PLUGIN_CTX
+        # 盒子里是**同一份**容器（两代模块对象任一从盒子里取，都是同源）
+        assert panel.shared_box()["adapter_plugin_ctx"] is adapter.PLUGIN_CTX
+        adapter._remember_plugin_ctx(object())
+        assert adapter.PLUGIN_CTX == {"get_config": None}, adapter.PLUGIN_CTX
+    finally:
+        adapter.PLUGIN_CTX.clear()
+        adapter.PLUGIN_CTX.update(saved)
+
+
 def test_panel_tools_block_truncates_and_keeps_the_most_recent() -> None:
     """R3 收窄版：**工具块**的截断与裁减方向。
 
@@ -4393,7 +4527,10 @@ def test_adapter_footer_wiring() -> None:
 
         context.record_api_call(model="test-model",
                                 usage={"input_tokens": 1000, "output_tokens": 5})
-        context.set_context_override(10000)
+        # ⚠️ 用配置设置上限（而不是直接戳 `context.set_context_override`）：`configure()`
+        # 会调用 `_apply_metrics_config()`，现在它无条件把配置值推给 context（审计 A1），
+        # 直接戳的临时值会被正确覆盖掉。
+        adapter.configure(context_max_override=10000)
         assert adapter.LarkDeckMixin._ld_footer() == "ctx 1k/10k · 10%"
         # 同一屏里不重复：模型名与耗时只在面板标题行出现
         assert "🤖" not in adapter.LarkDeckMixin._ld_footer()
@@ -4418,7 +4555,7 @@ def test_adapter_panel_wiring() -> None:
     defaults = dict(adapter._DEFAULTS)
     try:
         panel.reset()
-        adapter.configure(unified_panel=True)
+        adapter.configure(unified_panel=True, theme="neutral")
         assert adapter.LarkDeckMixin._ld_panel() is None, "没有数据不该渲染面板"
 
         panel.record_reasoning("s1", "t1", "先想一下。")
@@ -8334,6 +8471,267 @@ def _manifest_version() -> str:
         if line.startswith("version:"):
             return line.split(":", 1)[1].strip()
     raise AssertionError("plugin.yaml 里没有 version 行")
+
+
+
+def test_aggregate_diagnosis_reports_facts_without_claiming_healthy():
+    """P2 聚合诊断：把跨模块事实压成两行，但**不做「健康/正常」结论**。
+
+    判据分三组（每组都必须有判别力）：
+      * 能力/链路行：探测结论、钩子数、命令注册、模块世代；
+      * 运行/账本行：入站心跳年龄、写卡帧数、写卡失败、掉回纯文本、错误码；
+      * 异常时的 ``⚠️`` 前缀只由**明确事实**触发（未接管 / 钩子不全 / 命令未注册 /
+        世代裂脑 / 有失败计数），不作为「一切正常」的反面承诺。
+    """
+    saved_report = dict(adapter.PROBE_REPORT)
+    saved_hooks = dict(adapter.HOOKS)
+    saved_command = dict(adapter.COMMAND)
+    context.reset()
+    try:
+        def _full_report():
+            adapter.PROBE_REPORT.clear()
+            adapter.PROBE_REPORT.update({key: [] for key in compat.PROBE_REPORT_KEYS})
+            adapter.PROBE_REPORT.update({
+                "hermes_version": "0.21.1",
+                "adapter_class": "example.FeishuAdapter",
+                "ok": True,
+                "adopted": True,
+                "session_attribution_ok": True,
+                "core_interrupt_lookup": True,
+            })
+
+        _full_report()
+        adapter.HOOKS.clear()
+        adapter.HOOKS.update({name: True for name in hooks.SUBSCRIPTIONS})
+        adapter.COMMAND.clear()
+        adapter.COMMAND.update({"registered": True, "why": ""})
+
+        lines = adapter._ld_diagnosis_lines()
+        assert len(lines) == 2, lines
+        card_text = adapter._ld_command_card("status")
+        assert lines[0] in card_text and lines[1] in card_text, card_text
+        total = len(hooks.SUBSCRIPTIONS)
+        assert lines[0].startswith("🩺"), lines[0]
+        for token in ("探测=已接管", f"钩子={total}/{total}", "命令=已注册",
+                      f"世代={panel.load_seq()}/{panel.latest_load_seq()}"):
+            assert token in lines[0], f"聚合能力行少了 {token!r}：{lines[0]!r}"
+        assert lines[1].startswith("📊"), lines[1]
+        assert "入站=无记录" in lines[1], lines[1]
+        assert "写卡=0 帧" in lines[1] and "写卡失败=0" in lines[1], lines[1]
+        assert "正常" not in "".join(lines) and "健康" not in "".join(lines), lines
+
+        # 入站心跳的年龄与 status.inbound 同源；这里把记录改成 90 秒前，必须显示「1m前」。
+        context.note_inbound()
+        context._shared_status()["inbound_at"] = time.time() - 90
+        line = adapter._ld_diagnosis_lines()[1]
+        assert "1m前" in line, f"入站年龄没有进入聚合行：{line!r}"
+
+        # 运行异常：三种失败计数各自进账本，聚合行必须带 ⚠️ 且如实列数。
+        context.note_frame_fail("写卡炸了")
+        context.note_plaintext_fallback("fallback 了")
+        context.note_response_code(300309)
+        line = adapter._ld_diagnosis_lines()[1]
+        assert line.startswith("⚠️ 📊"), line
+        assert "写卡失败=1" in line and "掉回纯文本=1" in line and "错误码=1" in line, line
+
+        # 能力异常：四种探测负结论 + 钩子不全 + 命令未注册 + 世代裂脑都必须是 ⚠️。
+        adapter.PROBE_REPORT["adopted"] = False
+        line = adapter._ld_diagnosis_lines()[0]
+        assert line.startswith("⚠️ 🩺") and "未接管（覆盖层构造失败）" in line, line
+        adapter.PROBE_REPORT["ok"] = False
+        line = adapter._ld_diagnosis_lines()[0]
+        assert "未接管（必需接口缺失）" in line, line
+        adapter.PROBE_REPORT.pop("missing_signal", None)
+        line = adapter._ld_diagnosis_lines()[0]
+        assert "探测报告缺键" in line, line
+
+        _full_report()
+        first_hook = next(iter(adapter.HOOKS))
+        adapter.HOOKS.pop(first_hook)
+        line = adapter._ld_diagnosis_lines()[0]
+        assert line.startswith("⚠️ 🩺") and f"钩子={total - 1}/{total}" in line, line
+        adapter.HOOKS[first_hook] = True
+        adapter.COMMAND["registered"] = False
+        line = adapter._ld_diagnosis_lines()[0]
+        assert line.startswith("⚠️ 🩺") and "命令=未注册" in line, line
+
+        # 世代裂脑：本模块加载序号与进程内最新序号不一致时必须报出来。
+        saved_load = panel.load_seq
+        saved_latest = panel.latest_load_seq
+        panel.load_seq = lambda: 1
+        panel.latest_load_seq = lambda: 2
+        try:
+            line = adapter._ld_diagnosis_lines()[0]
+            assert line.startswith("⚠️ 🩺") and "世代=1/2" in line, line
+        finally:
+            panel.load_seq = saved_load
+            panel.latest_load_seq = saved_latest
+
+        # 年龄函数的公开入口与 `_dur` 同源；脏值仍然是「无记录」。
+        assert context.age_text(None) == i18n.t("status.none")
+        assert context.age_text(context._EPOCH_FLOOR - 1) == i18n.t("status.none")
+        assert context.age_text(time.time() - 5) in ("4s", "5s"), context.age_text(time.time() - 5)
+
+        # 聚合自身失败时**不许静默少两行**：把失败原因放到卡上（R9 低-2 同源）。
+        saved_snapshot = context.status_snapshot
+        def _boom_snapshot():
+            raise RuntimeError("snapshot boom")
+
+        context.status_snapshot = _boom_snapshot
+        try:
+            failed = adapter._ld_diagnosis_lines()
+            assert len(failed) == 1, failed
+            assert "聚合诊断渲染失败" in failed[0] and "snapshot boom" in failed[0], failed
+        finally:
+            context.status_snapshot = saved_snapshot
+    finally:
+        adapter.PROBE_REPORT.clear()
+        adapter.PROBE_REPORT.update(saved_report)
+        adapter.HOOKS.clear()
+        adapter.HOOKS.update(saved_hooks)
+        adapter.COMMAND.clear()
+        adapter.COMMAND.update(saved_command)
+        context.reset()
+
+
+def test_config_command_is_read_only_and_reload_is_all_or_nothing():
+    """P2 配置刷新：`config` / `config reload` 只读，读失败时整次取消而不是半刷新。"""
+    saved_cfg = dict(adapter._CONFIG)
+    saved_ctx = dict(adapter.PLUGIN_CTX)
+    try:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(adapter._DEFAULTS)
+        official = {"theme": "neutral"}
+        adapter.PLUGIN_CTX.clear()
+        adapter.PLUGIN_CTX.update({
+            "get_config": lambda key, default=None: official.get(key, default),
+        })
+        text = adapter._ld_command_card("config")
+        assert "生效配置" in text, text
+        assert "theme = `ap_lite`" in text, text
+        # 官方文件是 neutral、本进程内存是 ap_lite ⇒ 必须提示需要 reload，而不是假装一致
+        assert "官方文件已改" in text, text
+
+        # 没有官方读取接口：如实说，不假装知道官方设置
+        adapter.PLUGIN_CTX["get_config"] = None
+        text = adapter._ld_command_card("config")
+        assert "未提供 ctx.get_config" in text, text
+        assert "无法刷新" in adapter._ld_command_card("config reload"), \
+            adapter._ld_command_card("config reload")
+
+        # 异常时全有全无：任一键读取失败 ⇒ 整次取消，内存保持原样（不是文件系统事务）
+        def _partially_bad(key, default=None):
+            if key == "footer":
+                raise OSError("config read failed")
+            return official.get(key, default)
+
+        adapter.PLUGIN_CTX["get_config"] = _partially_bad
+        before = dict(adapter._CONFIG)
+        text = adapter._ld_command_card("config reload")
+        assert "取消" in text and "footer" in text, text
+        assert dict(adapter._CONFIG) == before, "读失败时不许留下半套新配置"
+
+        # 成功路径：官方设置覆盖默认值；不存在的键回默认值
+        adapter._CONFIG["cards"] = False      # 模拟「官方已删掉这个键」的陈旧内存
+        adapter.PLUGIN_CTX["get_config"] = (
+            lambda key, default=None: {"theme": "neutral", "footer": False}.get(key, default))
+        text = adapter._ld_command_card("config reload")
+        assert "已刷新" in text, text
+        assert adapter._cfg_raw("theme") == "neutral", adapter._cfg_raw("theme")
+        assert adapter._cfg("footer") is False, adapter._cfg("footer")
+        assert adapter._cfg("cards") is True, "官方已删掉的键必须回默认值（否则陈旧值永远留在内存）"
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_cfg)
+        adapter.PLUGIN_CTX.clear()
+        adapter.PLUGIN_CTX.update(saved_ctx)
+        adapter._apply_metrics_config()
+
+
+def test_config_set_has_no_chat_write_path():
+    """P2 安全收口（审计 B1）：聊天侧不存在配置写入命令；`config set` 只得到解释，绝不写。"""
+    saved_cfg = dict(adapter._CONFIG)
+    saved_ctx = dict(adapter.PLUGIN_CTX)
+    calls = []
+    try:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(adapter._DEFAULTS)
+        adapter.PLUGIN_CTX.clear()
+        adapter.PLUGIN_CTX.update({
+            "get_config": lambda key, default=None: default,
+            # 故意放一个可调用的写接口：代码若偷偷调用，这里会记下来。
+            "set_config": lambda key, value: calls.append((key, value)),
+        })
+        before = dict(adapter._CONFIG)
+        text = adapter._ld_command_card("config set footer false")
+        assert "没有配置写入命令" in text, text
+        assert calls == [], calls
+        assert dict(adapter._CONFIG) == before, "聊天侧 set 竟然改了内存配置"
+        for arg in ("config SET footer false", "config write footer false"):
+            text = adapter._ld_command_card(arg)
+            assert "没有配置写入命令" in text, text
+            assert calls == [], text
+        help_text = adapter._ld_command_card("help")
+        assert "config set" not in help_text, help_text
+        assert "没有写入命令" in help_text or "只读" in help_text, help_text
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_cfg)
+        adapter.PLUGIN_CTX.clear()
+        adapter.PLUGIN_CTX.update(saved_ctx)
+        adapter._apply_metrics_config()
+
+
+def test_reload_clears_context_override_and_discloses_env_shadow():
+    """P2 审计 A1/A5/C3：reload 要清掉真实的运行时覆盖；空 env 不能吞提示；env 遮蔽要说清。"""
+    saved_cfg = dict(adapter._CONFIG)
+    saved_ctx = dict(adapter.PLUGIN_CTX)
+    saved_footer = os.environ.get("LARKDECK_FOOTER")
+    saved_theme = os.environ.get("LARKDECK_THEME")
+    try:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(adapter._DEFAULTS)
+        adapter._CONFIG["theme"] = "ap_lite"
+        official = {"theme": "neutral", "footer": False}
+        adapter.PLUGIN_CTX.clear()
+        adapter.PLUGIN_CTX.update({
+            "get_config": lambda key, default=None: official.get(key, default),
+            "set_config": lambda key, value: (_ for _ in ()).throw(
+                AssertionError("read-only reload 不许调用 set_config")),
+        })
+        # A5：空字符串 env 在 `_cfg_raw` 里等效「未设」，不能因此吞掉「官方已改」提示。
+        # ⚠️ 让**只有 theme** 这一个键与官方不同：否则 footer 的差异也会让卡片出现同一句提示，
+        # 这条判据就失去判别力（变异 P2-19 实测全绿）。
+        adapter._CONFIG["footer"] = False
+        os.environ["LARKDECK_THEME"] = ""
+        text = adapter._ld_command_card("config")
+        assert "官方文件已改" in text, f"空 env 抑制了 reload 提示（A5）：{text!r}"
+
+        # A1：先制造一个真实的运行时覆盖，reload 必须把它清掉（而不是只改内存值）。
+        adapter._CONFIG["context_max_override"] = 12345
+        adapter._apply_metrics_config()
+        assert context._MAX_OVERRIDE_BOX[0] == 12345, context._MAX_OVERRIDE_BOX
+        # C3：footer 被非空 env 遮蔽时，reload 必须披露「本进程生效值不变」。
+        os.environ["LARKDECK_FOOTER"] = "1"
+        text = adapter._ld_command_card("config reload")
+        assert context._MAX_OVERRIDE_BOX[0] is None, \
+            f"reload 没有清除运行时 context override（A1）：{context._MAX_OVERRIDE_BOX!r}"
+        assert adapter._CONFIG["context_max_override"] == 0, adapter._CONFIG
+        assert "环境变量" in text, f"reload 没有披露 env 遮蔽（C3）：{text!r}"
+        assert "footer" in text, text
+    finally:
+        for name, value in (("LARKDECK_FOOTER", saved_footer),
+                            ("LARKDECK_THEME", saved_theme)):
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        context.set_context_override(None)
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_cfg)
+        adapter.PLUGIN_CTX.clear()
+        adapter.PLUGIN_CTX.update(saved_ctx)
+        adapter._apply_metrics_config()
 
 
 def test_command_card_reports_version_transport_and_three_records():

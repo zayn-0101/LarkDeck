@@ -199,8 +199,8 @@ MUTATIONS = [
      "                duration=duration,", "                duration=None,",
      "check_hooks"),
     ("T4-footer_line 不再渲染耗时", "core/cards.py",
-     "    if isinstance(duration, (int, float)) and duration >= 0.1:\n        parts.append(f\"⏱ {format_elapsed(float(duration))}\")",
-     "    if False:\n        parts.append(f\"⏱ {format_elapsed(float(duration or 0))}\")",
+     "    if isinstance(duration, (int, float)) and duration >= 0.1:\n        parts.append(f\"{syms['duration']} {format_elapsed(float(duration))}\")",
+     "    if False:\n        parts.append(f\"{syms['duration']} {format_elapsed(float(duration or 0))}\")",
      "check_hooks"),
     ("T5-每轮耗时标题不再渲染", "core/cards.py",
      "        return f\"{base} · {format_elapsed(max(0.1, elapsed_ms / 1000.0))}\"",
@@ -964,7 +964,8 @@ MUTATIONS = [
     ("R9-1-`/larkdeck` 命令不再注册（自检入口整条消失）", "core/adapter.py",
      '            handle_cmd = register_command(\n'
      '                LARKDECK_COMMAND, _ld_command_card,\n'
-     '                description=_i18n.t("cmd.description"), args_hint="[status|help]")',
+     '                description=_i18n.t("cmd.description"),\n'
+     '                args_hint="[status|config|help]")',
      '            handle_cmd = None',
      "check_override"),
     ("R9-2-没有记录时写「正常」（一张永远说健康的自检卡）", "core/context.py",
@@ -1085,9 +1086,13 @@ MUTATIONS = [
      "test_units"),
     ("R9-20-卡片不再说清数字是进程级累计（用户拿别人会话的失败原因查自己的卡）", "core/adapter.py",
      '        return "\\n".join([header, _i18n.t("cmd.scope")]\n'
+     '                          + _ld_diagnosis_lines()\n'
      '                          + _probe_status_lines()\n'
      '                          + _context.status_lines())',
-     '        return "\\n".join([header] + _probe_status_lines() + _context.status_lines())',
+     '        return "\\n".join([header]\n'
+     '                          + _ld_diagnosis_lines()\n'
+     '                          + _probe_status_lines()\n'
+     '                          + _context.status_lines())',
      "check_override"),
     ("R9-21-启动自检硬编码「命令已注册」（不看真实注册结果，而运维会信这句话）", "core/adapter.py",
      '        _cmd_registered = bool(COMMAND.get("registered"))',
@@ -1791,6 +1796,112 @@ MUTATIONS = [
      '        # P1b：设备字号档位只改 config.style + 元素 text_size 引用；off/未知档位不动卡片。\n'
      '        card = _cards.apply_text_profile(card, _cfg_raw("text_profile"))\n',
      '',
+     "test_units"),
+    # ---- P2：AP-lite 主题 / 聚合诊断 / 配置刷新 ------------------------------ #
+    ("P2-1-默认主题退回 neutral（用户点单的 ap_lite 静默消失）",
+     "core/adapter.py",
+     '    "theme": "ap_lite",',
+     '    "theme": "neutral",',
+     "test_units"),
+    ("P2-2-neutral 也强行加工具图标（缺省 tool_step 调用不再逐字不变）",
+     "core/cards.py",
+     '    if not icons:\n        return ""',
+     '    if False:\n        return ""',
+     "test_units"),
+    ("P2-3-未知主题不再退回 neutral（把用户笔误当合法主题用）",
+     "core/cards.py",
+     '    return name if name in _THEME_SYMBOLS else THEME_NEUTRAL',
+     '    return name if name in _THEME_SYMBOLS else THEME_AP_BUBBLE',
+     "test_units"),
+    ("P2-4-工具分类退回子串包含（`false` 会被误判成 read，图标与语义分叉）",
+     "core/cards.py",
+     '        if any(token in tokens for token in keys):',
+     '        if any(key in str(name or "").lower() for key in keys):',
+     "test_units"),
+    ("P2-5-面板标题不接主题（标题退回 neutral，正文工具行仍 ap_lite）",
+     "core/adapter.py",
+     '                duration=duration,\n                theme=_ld_theme(),\n            ) or ""',
+     '                duration=duration,\n                theme="neutral",\n            ) or ""',
+     "test_units"),
+    ("P2-6-status 卡不再渲染聚合诊断（新看板只活在被测函数里）",
+     "core/adapter.py",
+     '        return "\\n".join([header, _i18n.t("cmd.scope")]\n'
+     '                          + _ld_diagnosis_lines()\n'
+     '                          + _probe_status_lines()\n'
+     '                          + _context.status_lines())',
+     '        return "\\n".join([header, _i18n.t("cmd.scope")]\n'
+     '                          + _probe_status_lines()\n'
+     '                          + _context.status_lines())',
+     "test_units"),
+    ("P2-7-能力异常不再加 ⚠️（坏掉的链路看起来和健康一样）",
+     "core/adapter.py",
+     '            ("⚠️ " if capability_bad else "") + _i18n.t(\n'
+     '                "diag.capability",',
+     '            ("" if capability_bad else "") + _i18n.t(\n'
+     '                "diag.capability",',
+     "test_units"),
+    ("P2-8-运行失败不再加 ⚠️（失败计数和零失败看起来一样）",
+     "core/adapter.py",
+     '            ("⚠️ " if runtime_bad else "") + _i18n.t(\n'
+     '                "diag.runtime",',
+     '            ("" if runtime_bad else "") + _i18n.t(\n'
+     '                "diag.runtime",',
+     "test_units"),
+    ("P2-11-配置刷新读失败不再整次取消（留下半套新配置）",
+     "core/adapter.py",
+     '    if errors:\n        return _i18n.t("config.reload_failed", keys=", ".join(sorted(errors)))',
+     '    if False:\n        return _i18n.t("config.reload_failed", keys=", ".join(sorted(errors)))',
+     "test_units"),
+    ("P2-12-刷新不再回写默认值（被官方删掉的键永远留在内存里）",
+     "core/adapter.py",
+     '    fresh = dict(_DEFAULTS)\n    fresh.update(found)',
+     '    fresh = dict(previous)\n    fresh.update(found)',
+     "test_units"),
+    ("P2-13-聚合行不再显示入站年龄（静默断连失去唯一相对信号）",
+     "core/adapter.py",
+     '    age = _context.age_text(snap.get("inbound_at"))\n'
+     '    if age == _i18n.t("status.none"):\n'
+     '        return _i18n.t("diag.inbound_none")\n'
+     '    return _i18n.t("diag.inbound_ago", age=age)',
+     '    return _i18n.t("diag.inbound_none")',
+     "test_units"),
+    ("P2-15-read_terminal 被画成键盘（读取类工具与图标语义分叉）",
+     "core/cards.py",
+     '    ("read", ("read", "cat", "head", "tail", "open", "ls")),',
+     '    ("read", ("cat", "head", "tail", "open", "ls")),',
+     "test_units"),
+    ("P2-16-context override 归零不传下去（reload/set 谎报生效）",
+     "core/adapter.py",
+     '    pinned = _cfg_int("context_max_override", 0)\n'
+     '    # ⚠️ **无条件**推下去（pinned=0 ⇒ None=取消覆盖）。审计 A1 实测：只在 `if pinned`\n'
+     '    # 时调用，会让「官方删键 / 归零 reload」在内存里显示成功、运行时却仍钉着旧上限，\n'
+     '    # 直到重启进程 —— 正是「卡片不许撒谎」要消灭的形态。\n'
+     '    _context.set_context_override(pinned or 0)',
+     '    pinned = _cfg_int("context_max_override", 0)\n'
+     '    if pinned:\n'
+     '        _context.set_context_override(pinned)',
+     "test_units"),
+    ("P2-17-聊天侧只读拒绝被绕过（config set 重新摸到写入路径）",
+     "core/adapter.py",
+     '    if action in ("set", "write"):\n'
+     '        # 明确说「不提供聊天侧写入」，而不是含糊地报「不认识」：用户要的是知道怎么做。\n'
+     '        return _i18n.t("config.read_only_set")',
+     '    if action in ("set", "write"):\n'
+     '        return _i18n.t("config.unknown_action", arg=action)',
+     "test_units"),
+    ("P2-18-reload 不披露 env 遮蔽（用户以为刷新后生效了）",
+     "core/adapter.py",
+     '    if shadowed:\n'
+     '        result += "\\n" + _i18n.t("config.reload_env_shadowed", keys=", ".join(shadowed))',
+     '    if False:\n'
+     '        result += "\\n" + _i18n.t("config.reload_env_shadowed", keys=", ".join(shadowed))',
+     "test_units"),
+    ("P2-19-空 env 吞掉 reload 提示（官方已改但卡片不提示）",
+     "core/adapter.py",
+     '        if (key in official and not env_active\n'
+     '                and _cfg_canonical(value) != _cfg_canonical(official[key])):',
+     '        if (key in official and env is None\n'
+     '                and _cfg_canonical(value) != _cfg_canonical(official[key])):',
      "test_units"),
 ]
 

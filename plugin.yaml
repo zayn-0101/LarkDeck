@@ -80,6 +80,10 @@ config_schema:
     type: string
     default: "off"
     description: "CardKit 设备字号档位：off（默认）/ mobile_friendly（PC 小、手机大）/ compact（面板/脚注更小，正文不变）/ large（正文更大）"
+  theme:
+    type: string
+    default: "ap_lite"
+    description: "观感主题：neutral（原符号）/ ap_lite（默认，抽象 emoji）/ ap_bubble（AP 泡波风格，含人物 emoji，可选）"
   model_aliases:
     type: string
     default: ""

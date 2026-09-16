@@ -80,6 +80,18 @@
 - **设备字号档位（P1b，默认 off）**：新增 `text_profile` 配置（`off` / `mobile_friendly`
   / `compact` / `large`），在建卡期写 `config.style.text_size` 设备映射 + 元素 `text_size`
   引用；不做流式期结构写。`mobile_friendly` 为 PC 小、手机大。
+  - **观感主题（P2，默认 `ap_lite`）**：新增 `theme` 配置（`neutral` 原符号 / `ap_lite`
+    抽象 emoji / `ap_bubble` AP 泡波风可选）。只改面板标题与工具行的符号、图标，不碰卡片结构；
+    `neutral` 直接调用 `footer_line` / `tool_step` 时仍是逐字不变的旧观感。默认主题变更已同步
+    到 golden trace（面板标题 🌊/🧰、工具行 📖/⌨️ 等）。
+  - **聚合诊断上卡（P2）**：`/larkdeck status` 顶部新增两行「能力/链路 + 运行/账本」总览：
+    探测结论 / 钩子数 / 命令注册 / 模块世代 / 入站年龄 / 写卡与失败计数 / 掉回纯文本 / 错误码；
+    有明确异常才带 `⚠️`，**从不写「正常」「健康」**，渲染失败也把原因留在卡上而不是静默消失。
+  - **配置查看与热刷新（P2）**：`/larkdeck config` 只读展示每个键的本进程生效值与来源；
+    `config reload` 从官方 `ctx.get_config()` 重读（**任一键失败整次取消**；外部并发写入时
+    可能读到混合快照，不是文件系统事务）。**聊天侧没有写入命令**：handler 拿不到发送者
+    身份，无法安全授权（安全审计 B1）⇒ 插件从不直接写 `config.yaml`、也不调用
+    `ctx.set_config()`；写配置走官方 Hermes CLI / 配置文件，再 `config reload` 热刷新。
 
 ### 验证
 
@@ -95,6 +107,16 @@
   其中 **12 条是「改坏却全绿」逼出来的**，编号可查：
   `G1-22` / `G2-10` / `G2-11` / `G1-6`（4 条**无牙变异**重做）
   ＋ `X14a` / `X14b` / `X18` / `X19` / `X20` / `X21` / `Y5` / `Y20`（8 条**断言缺口**）。
+- **P2 门禁**：`test_units.py` **216/216**；`check_override.py` / `check_hooks.py` /
+  `check_clarify_e2e.py` 全绿；golden trace 已按默认 `ap_lite` 重生成（diff 只含符号/图标）。
+  新增/改锚 **16 条 P2 变异**（`P2-1..P2-8` · `P2-11..P2-13` · `P2-15..P2-19`），逐条实测变红；
+  `--preflight` **354/354** 锚点可用。⚠️ 全量变异留到发布前统一跑。
+- **P2 对抗审计**：3 个不同子 Agent 独立审计（`deepseek-v4.1-flash` / `glm-5.3-flash` /
+  `omen-alpha`）先给 `PASS WITH ISSUES`，经讨论统一后按修复集改完并 delta 复审**全部 PASS**。
+  修掉的真问题：`context_max_override` 归零/删键不清运行时覆盖（A1）；「原子重读」措辞与实际
+  逐键读取不符（A2）；聊天侧 `config set` 无发送者身份可授权（B1，**整体移除写入路径**）；
+  `read_terminal` 图标误分类（C1）；未知主题静默回退（C2）；reload 不披露 env 遮蔽（C3）；
+  空 env 吞提示（A5）；异常日志格式化病态异常（A6）。
 
 ### 修复（第三轮对抗审计，2026-09-16 凌晨）
 
