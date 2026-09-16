@@ -146,6 +146,18 @@ else:
     if not _meta:
         problems.append("核心的 _accepts_keyword 认为我们的方法不接受 metadata（签名不对称）")
 
+# P1b：核心是否仍按 `getattr(type(adapter), "interrupt_session_activity")` 查找。
+# 这是**静态 best-effort** 证据；签名对拍是运行期证据，两者一起才能覆盖「改名」这一种失灵。
+if ld_mod is None:
+    problems.append("拿不到 larkdeck.core.adapter 模块，无法核对核心中断查找名")
+else:
+    _signal_lookup = ld_mod._compat.core_interrupt_lookup_ok()
+    print(f"core interrupt lookup: {_signal_lookup!r}")
+    if _signal_lookup is not True:
+        problems.append(
+            "核心源码里找不到 getattr(type(adapter), 'interrupt_session_activity') 的查找点"
+            "（False=已改名/缺失，None=源码不可读）—— `/stop` 后卡片可能静默不变色")
+
 # 订阅钩子清单的单一事实来源：compat.OBSERVED_HOOKS 必须与 hooks.SUBSCRIPTIONS 一一对应，
 # 否则「文档说订阅了 N 个」与「真订阅了哪几个」会各说各话。
 _hooks_mod = sys.modules.get("hermes_plugins.larkdeck.core.hooks") or sys.modules.get("larkdeck.core.hooks")

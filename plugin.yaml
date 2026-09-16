@@ -76,6 +76,10 @@ config_schema:
     type: string
     default: "text"
     description: "上下文用量样式：text | bar | both"
+  text_profile:
+    type: string
+    default: "off"
+    description: "CardKit 设备字号档位：off（默认）/ mobile_friendly（PC 小、手机大）/ compact（面板/脚注更小，正文不变）/ large（正文更大）"
   model_aliases:
     type: string
     default: ""

@@ -182,9 +182,9 @@ MUTATIONS = [
      "test_units"),
     ("E37-PROBE_REPORT_KEYS 少一项", "core/compat.py",
      '    "missing_callback", "missing_signal", "missing_reactions", "missing_display_chrome",\n'
-     '    "session_attribution_ok",\n)',
+     '    "session_attribution_ok", "core_interrupt_lookup",\n)',
      '    "missing_callback", "missing_signal", "missing_display_chrome",\n'
-     '    "session_attribution_ok",\n)',
+     '    "session_attribution_ok", "core_interrupt_lookup",\n)',
      "test_units"),
     # ---- 第十五轮：首帧占位 + 面板耗时段 -------------------------------------- #
     ("T1-建卡不再显示占位（空白卡）", "core/cards.py",
@@ -1734,6 +1734,63 @@ MUTATIONS = [
      '    report["adopted"] = False\n'
      '    _log_probe_report(report)\n'
      '    if not report.get("ok"):',
+     "test_units"),
+    ("P1b-1-缺 clarify_id 的点击退回静默（用户点下去没有任何反应）",
+     "core/adapter.py",
+     '            return self._ld_toast_or_noop(kind="error", text_key="clarify.toast_missing_id")',
+     '            return self._ld_card_response_safe()',
+     "test_units"),
+    ("P1b-2-未授权点击退回静默（用户不知道自己的点击被拒）",
+     "core/adapter.py",
+     '            return self._ld_toast_or_noop(kind="error", text_key="clarify.toast_unauthorized")',
+     '            return self._ld_card_response_safe()',
+     "test_units"),
+    ("P1b-3-loop 未就绪退回静默（用户点了没反应、也没有提示）",
+     "core/adapter.py",
+     '            return self._ld_toast_or_noop(kind="error", text_key="clarify.toast_unavailable")',
+     '            return self._ld_card_response_safe()',
+     "test_units"),
+    ("P1b-4-status 心跳行不再显示「距上次多久」（渠道静默断连失去年龄信号）",
+     "core/context.py",
+     '        _i18n.t("status.inbound", when=_when(snap.get("inbound_at")),\n'
+     '                age=_dur(snap.get("inbound_at")),\n'
+     '                n=int(snap.get("inbound_count") or 0)),',
+     '        _i18n.t("status.inbound", when=_when(snap.get("inbound_at")),\n'
+     '                n=int(snap.get("inbound_count") or 0)),',
+     "test_units"),
+    ("P1b-5-核心查找名探测永远返回 True（核心改名后 status 仍报「在位」）",
+     "core/compat.py",
+     '    return bool(_CORE_INTERRUPT_LOOKUP_RE.search(source))',
+     '    return True',
+     "test_units"),
+    ("P1b-6-status 不再显示核心中断查找名状态（改名静默失灵重新无信号）",
+     "core/adapter.py",
+     '        _i18n.t("probe.signal", state=lookup_state),\n'
+     '    ]',
+     '    ]',
+     "test_units"),
+    ("P1b-7-字号档位不给元素加 text_size 引用（配置了档位但正文不变）",
+     "core/cards.py",
+     '            if tag in ("markdown", "lark_md"):\n'
+     '                if "text_size" not in node:\n'
+     '                    node["text_size"] = tokens[role]\n'
+     '                return',
+     '            if tag in ("markdown", "lark_md"):\n'
+     '                if False:\n'
+     '                    node["text_size"] = tokens[role]\n'
+     '                return',
+     "test_units"),
+    ("P1b-8-CardKit 建实体不接字号档位（配置了但流式卡不变）",
+     "core/adapter.py",
+     '        # P1b：设备字号档位（建实体时定死 text_size；之后只写内容，不做结构性 patch）。\n'
+     '        card = _cards.apply_text_profile(card, _cfg_raw("text_profile"))\n',
+     '',
+     "test_units"),
+    ("P1b-9-普通卡建卡不接字号档位（收尾/回退卡与流式卡字号不一致）",
+     "core/adapter.py",
+     '        # P1b：设备字号档位只改 config.style + 元素 text_size 引用；off/未知档位不动卡片。\n'
+     '        card = _cards.apply_text_profile(card, _cfg_raw("text_profile"))\n',
+     '',
      "test_units"),
 ]
 

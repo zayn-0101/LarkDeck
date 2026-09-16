@@ -55,6 +55,9 @@
   当 `_CkResult` 调 `inner_code()` ⇒ 正文写失败抛 `AttributeError`，被外层接成通用「帧处理异常」，
   具体失败元素与返回码一起丢。现在失败 op 回填 `code`，状态卡保留「正文元素失败（answer）」并把
   `230099` 计入错误码 top-N。变异 `P1a-1` 实测「撤掉即红」。
+- **澄清点击的三条静默路径补 toast（P1b）**：缺 `clarify_id`、未授权、适配器 loop 未就绪
+  原先都只写 WARNING、用户屏幕无变化；现在各回一条错误 toast，且仍然不换卡、不抛。
+  变异 `P1b-1/2/3` 实测「撤掉即红」。
 
 ### 新增
 
@@ -70,6 +73,13 @@
   `compat.PROBE_REPORT_KEYS` 全部 10 键；`build_adapter()` 存进程级只读快照，状态卡区分
   「未探测」「已接管」「必需接口缺失」「覆盖层构造失败」「报告缺键」，且**从不写「正常」**。
   变异 `P1a-2/3/4` 实测「撤掉即红」。
+- **核心中断查找名静态探测（P1b）**：`probe_report` 新增 `core_interrupt_lookup` 键，
+  `check_override.py` 在真实 Hermes 上核对 `getattr(type(adapter), "interrupt_session_activity")`
+  的源码查找点；`/larkdeck status` 增加「信号契约」行。它是 best-effort 静态证据，
+  不替代运行期派发核对。
+- **设备字号档位（P1b，默认 off）**：新增 `text_profile` 配置（`off` / `mobile_friendly`
+  / `compact` / `large`），在建卡期写 `config.style.text_size` 设备映射 + 元素 `text_size`
+  引用；不做流式期结构写。`mobile_friendly` 为 PC 小、手机大。
 
 ### 验证
 

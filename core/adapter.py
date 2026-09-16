@@ -534,6 +534,10 @@ _DEFAULTS: Dict[str, Any] = {
     "footer": True,           # 页脚：只放上下文用量（模型/耗时已并入面板标题行）
     "show_model": True,       # 面板标题行里显示模型名
     "context_style": "text",  # 上下文用量样式：text（默认）| bar | both
+    # P1b：CardKit 设备字号档位。off（默认，跟现状）| mobile_friendly（PC 小、手机大）
+    # | compact（紧凑）| large（整体放大）。只写 config.style.text_size 的 token 映射 +
+    # 给 markdown 元素加 text_size 引用；不改流式结构，不在流式中途做结构性 patch。
+    "text_profile": "off",
     "model_aliases": "",      # 模型别名："真名=显示名, ..." 或 dict
     "max_reasoning_chars": _cards.MAX_REASONING_CHARS,
     "max_tool_result_chars": _cards.MAX_TOOL_RESULT_CHARS,
@@ -1775,6 +1779,8 @@ class LarkDeckMixin:
             # 客户端打字机（只对流式帧有意义）：0 = 不带这个字段
             print_frequency_ms=_print_frequency_ms(),
         )
+        # P1b：设备字号档位只改 config.style + 元素 text_size 引用；off/未知档位不动卡片。
+        card = _cards.apply_text_profile(card, _cfg_raw("text_profile"))
         if tier != "ok":
             # 把元素数一起打出来：降载可能是**字节**触发的、也可能是**元素数**触发的
             # （飞书硬上限 200，真机实测 202 就被 230099/11310 拒），
@@ -2088,6 +2094,8 @@ class LarkDeckMixin:
                                          # 元素表在建实体时定死 ⇒ 那一回合**永远没有页脚、也永远
                                          # 没有短码**（短码就写在页脚里）。变异 `G2-9` 钉这一行。
                                          footer_text=("" if _cfg("footer") else None))
+        # P1b：设备字号档位（建实体时定死 text_size；之后只写内容，不做结构性 patch）。
+        card = _cards.apply_text_profile(card, _cfg_raw("text_profile"))
         # ⚠️ **基线闸门（两道墙）**：patch 路径超预算会分级丢装饰（面板→页脚→裸卡），而 cardkit
         # 的结构**在建实体时定死、之后不能改**，超了就是「整卡被飞书拒（230099 / 300305）⇒
         # 这一帧什么都没了」。所以这里守**实测硬上限**，超了就 fail-open 交给核心回落。
@@ -3545,8 +3553,8 @@ class LarkDeckMixin:
         """
         clarify_id = str(value.get("clarify_id") or "")
         if not clarify_id:
-            logger.warning("[larkdeck] 澄清点击缺少 clarify_id，忽略")
-            return self._ld_card_response_safe()
+            logger.warning("[larkdeck] 澄清点击缺少 clarify_id，回一条 toast（P1b：不再静默）")
+            return self._ld_toast_or_noop(kind="error", text_key="clarify.toast_missing_id")
         answer, mode = self._ld_clarify_answer(action, value)
         if mode == "none":
             # ⚠️ **以前这里是完全静默的**（R8 审计中-2，本项目头号失败模式）。
@@ -3570,13 +3578,14 @@ class LarkDeckMixin:
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
         if not self._is_interactive_operator_authorized(open_id):
-            logger.warning("[larkdeck] 未授权的澄清点击 by %s", open_id or "<unknown>")
-            return self._ld_card_response_safe()
+            logger.warning("[larkdeck] 未授权的澄清点击 by %s，回一条 toast（P1b）",
+                           open_id or "<unknown>")
+            return self._ld_toast_or_noop(kind="error", text_key="clarify.toast_unauthorized")
 
         loop = self._loop
         if not self._loop_accepts_callbacks(loop):
-            logger.warning("[larkdeck] 适配器 loop 未就绪，丢弃澄清点击")
-            return self._ld_card_response_safe()
+            logger.warning("[larkdeck] 适配器 loop 未就绪，回一条 toast（P1b：不再静默）")
+            return self._ld_toast_or_noop(kind="error", text_key="clarify.toast_unavailable")
 
         is_other = answer == _cards.OTHER_VALUE
         question = str(value.get("question") or "")
@@ -3729,6 +3738,13 @@ def _log_probe_report(report: Dict[str, Any]) -> None:
     if missing_signal:
         logger.warning("[larkdeck] 能力探测：内置适配器缺少 %s —— "
                        "`/stop` 之后卡片不会变成中止色（而且不会有别的提示）", missing_signal)
+    # P1b：核心查找名的静态 best-effort 探测。True=在位，False=改名/缺失，None=未取证。
+    # 不改任何行为，只在启动日志里把「/stop 后卡片可能不变色」的另一种失灵说清楚。
+    core_lookup = report.get("core_interrupt_lookup")
+    if core_lookup is False:
+        logger.warning("[larkdeck] 能力探测：核心源码里找不到 "
+                       "getattr(type(adapter), %r) 的查找点 —— `/stop` 后卡片可能不会变色",
+                       _compat.CORE_INTERRUPT_LOOKUP)
     if missing_reactions:
         logger.warning("[larkdeck] 能力探测：内置适配器缺少 %s —— "
                        "`reactions: false` 会静默失效（「处理中」表情照旧）", missing_reactions)
@@ -3930,6 +3946,13 @@ def _probe_status_lines() -> List[str]:
     adapter_class = str(report.get("adapter_class") or _i18n.t("probe.unknown"))
     session = (_i18n.t("probe.session_ok") if report.get("session_attribution_ok")
               else _i18n.t("probe.session_bad"))
+    lookup = report.get("core_interrupt_lookup")
+    if lookup is True:
+        lookup_state = _i18n.t("probe.signal_ok")
+    elif lookup is False:
+        lookup_state = _i18n.t("probe.signal_bad")
+    else:
+        lookup_state = _i18n.t("probe.signal_unknown")
     lines = [
         _i18n.t("probe.line", state=state, version=version,
                 adapter=adapter_class, session=session),
@@ -3937,6 +3960,7 @@ def _probe_status_lines() -> List[str]:
                 required=_names("missing_required"), optional=_names("missing_optional"),
                 callback=_names("missing_callback"), signal=_names("missing_signal"),
                 reactions=_names("missing_reactions"), chrome=_names("missing_display_chrome")),
+        _i18n.t("probe.signal", state=lookup_state),
     ]
     contract = (_i18n.t("probe.contract_bad", keys=", ".join(absent))
                 if absent else _i18n.t("probe.contract_ok"))

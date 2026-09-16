@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
+import re
+import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("larkdeck.compat")
@@ -148,6 +151,56 @@ def probe_adapter_class(cls: type) -> Tuple[bool, List[str]]:
     return (not missing), missing
 
 
+#: 核心在 ``/stop``、``/new`` 路径上取我们覆盖方法的**查找名**。
+#: 核心的取法（`gateway/run_agent_cache.py`）是
+#: ``getattr(type(adapter), "interrupt_session_activity", None)`` ——
+#: 「合并类有没有这个方法」探测不出**核心把查找名改了**，所以 P1b 用静态源码
+#: best-effort 探测这个字面量；核心源码不可读时返回 ``None``（**未取证**），不猜。
+CORE_INTERRUPT_LOOKUP = "interrupt_session_activity"
+_CORE_INTERRUPT_LOOKUP_RE = re.compile(
+    r"getattr\s*\(\s*type\s*\(\s*adapter\s*\)\s*,\s*['\"]interrupt_session_activity['\"]"
+)
+
+
+def _core_source_text() -> Optional[str]:
+    """只读地取核心 ``gateway/run_agent_cache.py`` 的源码文本；取不到返回 ``None``。
+
+    **不 import** 核心模块（遵守本文件头「只读探测，不导入 Hermes 私有模块」的原则）：
+    从已经在 ``sys.modules`` 里的 ``gateway`` 包路径拼出文件位置再读文本。上游把模块
+    搬走/改路径时返回 ``None``（未取证），由调用方决定怎么显示。
+    """
+    gateway_mod = sys.modules.get("gateway")
+    paths = getattr(gateway_mod, "__path__", None)
+    if not paths:
+        return None
+    try:
+        path = os.path.join(next(iter(paths)), "run_agent_cache.py")
+    except Exception:
+        return None
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    except Exception:
+        return None
+
+
+def core_interrupt_lookup_ok() -> Optional[bool]:
+    """核心源码里是否仍按 ``getattr(type(adapter), "interrupt_session_activity")`` 查找。
+
+    返回 ``True`` / ``False`` / ``None``（不可读，未取证）。
+    这是 **best-effort 静态探测**，不是运行期契约验证：它只能发现「核心改了查找名/换了
+    文件写法」，不能证明核心真的会调到我们；真正的运行期证据由 `check_override.py` 的
+    interrupt 派发核对提供。核心做等价重构（例如先把方法取到局部变量）时可能误报 False，
+    因此 status 文案也必须标明这是静态证据。
+    """
+    source = _core_source_text()
+    if source is None:
+        return None
+    return bool(_CORE_INTERRUPT_LOOKUP_RE.search(source))
+
+
 #: :func:`probe_report` **必须**产出的键（契约本身）。这是唯一事实来源 ——
 #: 门禁、启动自检的告警都从它派生，**不再各自抄一份字面量**。
 #: 第八路审计实测：`check_override.py` 里那份手写的键清单被删掉一项，四个门禁全绿
@@ -155,7 +208,7 @@ def probe_adapter_class(cls: type) -> Tuple[bool, List[str]]:
 PROBE_REPORT_KEYS: Tuple[str, ...] = (
     "hermes_version", "adapter_class", "ok", "missing_required", "missing_optional",
     "missing_callback", "missing_signal", "missing_reactions", "missing_display_chrome",
-    "session_attribution_ok",
+    "session_attribution_ok", "core_interrupt_lookup",
 )
 
 
@@ -185,6 +238,8 @@ def probe_report(cls: Optional[type]) -> Dict[str, Any]:
     report["missing_display_chrome"] = [n for n in DISPLAY_CHROME_ATTRS if not _has(cls, n)]
     # 会话归属是「卡片能否确定属于哪个会话」的前提，缺了只是退回旧行为（不阻断卡片）
     report["session_attribution_ok"] = session_attribution_available()
+    # P1b：核心中断查找名的静态 best-effort 探测；None = 源码不可读，未取证。
+    report["core_interrupt_lookup"] = core_interrupt_lookup_ok()
     # 自检：契约里的键一个都不能少（改这个函数时忘同步 PROBE_REPORT_KEYS 就会被抓）
     absent = [key for key in PROBE_REPORT_KEYS if key not in report]
     if absent:

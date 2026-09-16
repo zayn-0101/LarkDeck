@@ -214,6 +214,7 @@ plugins:
         footer: true             # 页脚（只放上下文用量）
         show_model: true         # 面板标题里显示模型名
         context_style: text      # 上下文用量样式：text | bar | both
+        text_profile: "off"      # CardKit 设备字号：off（默认）/ mobile_friendly（PC 小、手机大）/ compact（面板/脚注更小，正文不变）/ large（正文更大）
         model_aliases: ""        # "真名=显示名, 真名2=显示名2"
         max_reasoning_chars: 1200   # 推理文本上限（超出截断并留痕；写 0 视为用默认值，不是不设限）
         max_tool_result_chars: 600  # 单条工具步骤行上限；面板显示的是参数预览，预览已被截到 80 字符，所以这项现实里几乎不会触发

@@ -7868,7 +7868,8 @@ def test_status_lines_report_real_records_with_time_and_count():
     _all = context.status_lines()
     assert len(_all) == 6, _all
     inbound, written, failed = _all[:3]
-    assert re.match(r"^入站心跳：\d\d-\d\d \d\d:\d\d:\d\d · 累计 2 条消息$", inbound), inbound
+    assert re.match(r"^入站心跳：\d\d-\d\d \d\d:\d\d:\d\d · 距上次 \d+[smh] · 累计 2 条消息$",
+                    inbound), inbound
     # 写卡行：时刻 + **帧数**（口径见中-5）+ 单位说明。用「累计 1 帧」而不是「累计 1 次」，
     # 这样「把帧说成 API 调用次数」那种文案退化会当场红。
     assert re.match(r"^最近写卡：\d\d-\d\d \d\d:\d\d:\d\d · 累计 1 帧真的有写出"
@@ -8378,6 +8379,127 @@ def test_command_card_reports_version_transport_and_three_records():
         adapter.HOOKS.update(saved_hooks)
 
 
+def test_clarify_silent_paths_emit_toasts_instead_of_nothing():
+    """P1b：澄清点击的三条失败路径必须给用户可见反馈，而不是只写 WARNING。
+
+    三条路径：缺 clarify_id / 未授权 / 适配器 loop 未就绪。判据是「调用了 toast 且 key 正确」，
+    不是「没抛异常」——本项目已经裁过「恒真空断言」的跟头（lessons 推论 8）。
+    """
+    raw = _make()
+    recorded: list = []
+
+    def _record_toast(*, kind, text_key):
+        recorded.append((kind, text_key))
+        return {"toast": text_key}
+
+    raw._ld_toast_or_noop = _record_toast          # type: ignore[method-assign]
+    action = types.SimpleNamespace(option=None, input_value=None)
+
+    missing = raw._ld_handle_clarify_click(
+        event=types.SimpleNamespace(operator=types.SimpleNamespace(open_id="ou_bad")),
+        action=action, value={})
+    assert missing == {"toast": "clarify.toast_missing_id"}, missing
+
+    unauthorized = raw._ld_handle_clarify_click(
+        event=types.SimpleNamespace(operator=types.SimpleNamespace(open_id="ou_bad")),
+        action=action, value={"clarify_id": "cid", "answer": "A"})
+    assert unauthorized == {"toast": "clarify.toast_unauthorized"}, unauthorized
+
+    raw._loop = None
+    unavailable = raw._ld_handle_clarify_click(
+        event=types.SimpleNamespace(operator=types.SimpleNamespace(open_id="ou_ok")),
+        action=action, value={"clarify_id": "cid", "answer": "A"})
+    assert unavailable == {"toast": "clarify.toast_unavailable"}, unavailable
+    assert recorded == [("error", "clarify.toast_missing_id"),
+                        ("error", "clarify.toast_unauthorized"),
+                        ("error", "clarify.toast_unavailable")], recorded
+
+
+def test_core_interrupt_lookup_detects_renamed_lookup():
+    """P1b：核心查找名的静态探测必须能区分在位 / 改名 / 源码不可读。
+
+    这是「核心把 `interrupt_session_activity` 改名 ⇒ `/stop` 后卡片静默不变色」的
+    唯一预警信号；不能只是永远 True（那等于没有探测）。
+    """
+    orig = compat._core_source_text
+    try:
+        compat._core_source_text = lambda: (
+            'def f(adapter):\n'
+            '    return getattr(type(adapter), "interrupt_session_activity", None)\n')
+        assert compat.core_interrupt_lookup_ok() is True
+
+        compat._core_source_text = lambda: (
+            'def f(adapter):\n    return getattr(type(adapter), "renamed_hook", None)\n')
+        assert compat.core_interrupt_lookup_ok() is False
+
+        compat._core_source_text = lambda: None
+        assert compat.core_interrupt_lookup_ok() is None
+    finally:
+        compat._core_source_text = orig
+
+
+def test_text_profile_applies_device_tokens_to_entity_card():
+    """P1b：设备字号档位在建卡期写入 config.style + 元素 text_size 引用；off 不动卡片。"""
+    card = cards.cardkit_entity_card("正文", "面板推理", panel_tools_text="面板工具",
+                                     panel=True, footer_text="ctx 1k/20k")
+    original = json.dumps(card, ensure_ascii=False)
+    assert cards.apply_text_profile(card, "off") == card
+    assert json.dumps(card, ensure_ascii=False) == original, "off 档不许改一个字节"
+
+    assert cards.apply_text_profile(card, "mobile_friendly") is card
+    style = card["config"]["style"]["text_size"]
+    assert style["ld_body"] == {"default": "normal", "pc": "small", "mobile": "large"}, style
+    assert style["ld_panel"] == {"default": "notation", "pc": "notation", "mobile": "notation"}
+    assert style["ld_notice"] == {"default": "notation", "pc": "notation", "mobile": "notation"}
+    by_id = {}
+    def _collect(node):
+        if isinstance(node, dict):
+            if node.get("element_id"):
+                by_id[node["element_id"]] = node
+            for value in node.values():
+                _collect(value)
+        elif isinstance(node, (list, tuple)):
+            for item in node:
+                _collect(item)
+    _collect(card)
+    assert by_id[cards.CARDKIT_ANSWER_ID].get("text_size") == "ld_body"
+    assert by_id[cards.CARDKIT_PANEL_BODY_ID].get("text_size") == "ld_panel"
+    assert by_id[cards.CARDKIT_PANEL_TOOLS_ID].get("text_size") == "ld_panel"
+    assert by_id[cards.CARDKIT_FOOTER_ID].get("text_size") == "ld_notice"
+
+    unknown = cards.cardkit_entity_card("正文", "面板", panel_tools_text="工具",
+                                        panel=True, footer_text="f")
+    before = json.dumps(unknown, ensure_ascii=False)
+    assert cards.apply_text_profile(unknown, "no_such_profile") == unknown
+    assert json.dumps(unknown, ensure_ascii=False) == before, "未知档位必须 fail-open 不动卡片"
+
+
+def test_card_builders_apply_text_profile_not_just_the_helper():
+    """P1b：字号档位必须真的接到两条建卡路径（普通卡 + CardKit 实体卡），不能只有 helper 自证。"""
+    defaults = dict(adapter._DEFAULTS)
+    saved_reqs = adapter.LarkDeckMixin._ld_ck_requests
+    try:
+        adapter.configure(text_profile="mobile_friendly")
+        card = adapter.LarkDeckMixin._ld_build_card(
+            "正文", streaming=False, panel=None, footer=None)
+        assert card["config"]["style"]["text_size"]["ld_body"]["mobile"] == "large", card["config"]
+
+        calls, client = _mk_cardkit_fake()
+        raw = _make()
+        raw._client = client
+        adapter.LarkDeckMixin._ld_ck_requests = staticmethod(_fake_ck_requests)
+        adapter.configure(native_transport="cardkit")
+        assert _run(raw.send_stream_frame("", chat_id="oc_tp", turn_id="t-tp"))
+        entity = json.loads(calls["entity"][0])
+        assert entity["config"]["style"]["text_size"]["ld_body"]["pc"] == "small", entity["config"]
+        assert entity["body"]["elements"][0]["text_size"] == "ld_body", entity["body"]["elements"][0]
+    finally:
+        adapter.LarkDeckMixin._ld_ck_requests = saved_reqs
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
 def test_command_card_says_so_when_the_version_is_unreadable():
     """版本读不到时必须**说出来**（R9 审计低-2）。
 
@@ -8427,10 +8549,12 @@ def test_command_card_surfaces_probe_report_and_never_calls_it_healthy():
             "adopted": True,
             "missing_optional": ["edit_message"],
             "session_attribution_ok": True,
+            "core_interrupt_lookup": True,
         })
         text = adapter._ld_command_card("status")
         for token in ("能力探测", "已接管", "Hermes 0.21.1", "example.FeishuAdapter",
-                      "edit_message", "会话归属", "探测契约", "完整"):
+                      "edit_message", "会话归属", "探测契约", "完整", "信号契约",
+                      "静态查到核心查找名字面量"):
             assert token in text, f"探测摘要少了 {token!r}：{text!r}"
         assert "正常" not in text, f"探测摘要不许写「正常」：{text!r}"
 

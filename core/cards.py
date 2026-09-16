@@ -204,6 +204,99 @@ def md(content: str) -> Dict[str, Any]:
     return {"tag": "markdown", "content": content if content else " "}
 
 
+# --------------------------------------------------------------------------- #
+# P1b：CardKit 设备字号档位（AP 对齐的 PC/手机差异化字号）
+# --------------------------------------------------------------------------- #
+#: 支持的档位名。配置值不认识时**不猜**，整体退回 off（保持现状）。
+TEXT_PROFILE_OFF = "off"
+_TEXT_PROFILE_STYLES: Dict[str, Dict[str, Dict[str, str]]] = {
+    # 正文：PC 小一档、手机大一档；面板/脚注保持 notation，不跟着正文放大。
+    "mobile_friendly": {
+        "body": {"default": "normal", "pc": "small", "mobile": "large"},
+        "panel": {"default": "notation", "pc": "notation", "mobile": "notation"},
+        "notice": {"default": "notation", "pc": "notation", "mobile": "notation"},
+    },
+    # 整体紧凑：正文 normal，面板/脚注 x-small。
+    "compact": {
+        "body": {"default": "normal", "pc": "normal", "mobile": "normal"},
+        "panel": {"default": "x-small", "pc": "x-small", "mobile": "x-small"},
+        "notice": {"default": "x-small", "pc": "x-small", "mobile": "x-small"},
+    },
+    # 整体放大：正文 large、面板 normal、脚注 notation（脚注保持小字）。
+    "large": {
+        "body": {"default": "large", "pc": "large", "mobile": "large"},
+        "panel": {"default": "normal", "pc": "normal", "mobile": "normal"},
+        "notice": {"default": "notation", "pc": "notation", "mobile": "notation"},
+    },
+}
+#: token 名固定（同一张卡只启用一个档位），元素用 `text_size` 引用 token。
+_TEXT_PROFILE_TOKENS = {
+    "mobile_friendly": {"body": "ld_body", "panel": "ld_panel", "notice": "ld_notice"},
+    "compact": {"body": "ld_body", "panel": "ld_panel", "notice": "ld_notice"},
+    "large": {"body": "ld_body", "panel": "ld_panel", "notice": "ld_notice"},
+}
+
+
+def text_profile(profile: Any) -> Any:
+    """把配置档位名解析成 ``(config.style.text_size 映射, 元素 token 映射)``。
+
+    不认识的档位返回 ``({}, {})`` —— 调用方据此完全不动卡片（fail-open）。
+    """
+    name = str(profile or "").strip().lower()
+    styles = _TEXT_PROFILE_STYLES.get(name)
+    tokens = _TEXT_PROFILE_TOKENS.get(name)
+    if not styles or not tokens:
+        return {}, {}
+    return ({tokens[role]: value for role, value in styles.items() if role in tokens}, tokens)
+
+
+def apply_text_profile(card: Dict[str, Any], profile: Any) -> Dict[str, Any]:
+    """在**建卡期**把设备字号写进 2.0 卡：``config.style.text_size`` + 元素引用 token。
+
+    只改内容/样式，不做任何流式期结构写；因此不会破坏「建实体时结构定死」的不变量。
+    markdown 元素按位置分角色：面板子元素 -> panel，footer 元素 -> notice，其余 -> body。
+    """
+    styles, tokens = text_profile(profile)
+    if not styles:
+        return card
+    config = card.setdefault("config", {})
+    if not isinstance(config, dict):
+        return card
+    if styles:
+        config["style"] = {"text_size": styles}
+
+    def _walk(node: Any, role: str) -> None:
+        if isinstance(node, dict):
+            if node.get("element_id") == CARDKIT_FOOTER_ID:
+                # footer 建卡时自带 notation；档位要覆盖它，否则 ld_notice 永远不生效。
+                node["text_size"] = tokens["notice"]
+                return
+            tag = node.get("tag")
+            if tag == "collapsible_panel":
+                header = node.get("header")
+                if isinstance(header, dict):
+                    _walk(header, "panel")
+                for child in node.get("elements") or []:
+                    _walk(child, "panel")
+                return
+            if tag in ("markdown", "lark_md"):
+                if "text_size" not in node:
+                    node["text_size"] = tokens[role]
+                return
+            if tag in ("note",):
+                # 1.0 的 note 没有 text_size 字段；保持不动（字号档位主要面向 2.0 / CardKit）。
+                return
+            for value in node.values():
+                _walk(value, role)
+        elif isinstance(node, (list, tuple)):
+            for item in node:
+                _walk(item, role)
+
+    _walk(card, "body")
+    return card
+
+
+
 def note(content: str) -> Dict[str, Any]:
     """**1.0 专属**小字脚注行 —— 放进 2.0 卡会被飞书拒（请用 :func:`footnote`）。"""
     return {"tag": "note", "elements": [{"tag": "plain_text", "content": content}]}

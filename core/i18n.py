@@ -95,6 +95,13 @@ _STRINGS: Dict[str, Dict[str, str]] = {
                              EN: "Type your answer in the box (or just reply with text)"},
     "clarify.toast_typing_text": {ZH: "请直接回复文字把你的答案告诉我",
                                   EN: "Just reply with text to give me your answer"},
+    # P1b：三条此前完全静默的失败路径（只有 WARNING，用户屏幕无变化）。
+    "clarify.toast_missing_id": {ZH: "这条点击缺少澄清标识，无法处理；请重新发起澄清后再试",
+                                 EN: "This click has no clarification id; start a new clarification and try again"},
+    "clarify.toast_unauthorized": {ZH: "你没有权限操作这张卡片",
+                                   EN: "You are not allowed to use this card"},
+    "clarify.toast_unavailable": {ZH: "卡片插件暂时不可用，请稍后再试",
+                                  EN: "The card plugin is temporarily unavailable; please retry later"},
     # /larkdeck 自检卡（R9）。三条状态行由 context.status_lines() 组装；没记录写「无记录」，
     # **绝不写「正常」** —— 一个永远说「正常」的自检与一个坏掉的自检，用户分辨不出来。
     "cmd.description":    {ZH: "larkdeck 状态：版本 / 生效传输 / 钩子 / 心跳",
@@ -140,10 +147,17 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "probe.incomplete":   {ZH: "探测报告缺键", EN: "probe report incomplete"},
     "probe.session_ok":   {ZH: "就绪", EN: "ready"},
     "probe.session_bad":  {ZH: "未就绪（多会话可能串台）", EN: "not ready (multi-session may mix up)"},
+    "probe.signal":       {ZH: "信号契约（静态源码，不替代运行期）：{state}",
+                           EN: "Interrupt contract (static source, not runtime): {state}"},
+    "probe.signal_ok":    {ZH: "静态查到核心查找名字面量（不替代运行期）",
+                           EN: "static core lookup literal found (not runtime proof)"},
+    "probe.signal_bad":   {ZH: "静态未命中（未必等于运行期一定坏；请复跑 check_override）",
+                           EN: "static literal not found (may not mean runtime failure; rerun check_override)"},
+    "probe.signal_unknown": {ZH: "未取证（核心源码不可读）", EN: "unverified (core source unreadable)"},
     "probe.unknown":      {ZH: "未知", EN: "unknown"},
     "probe.none_list":    {ZH: "无", EN: "none"},
-    "status.inbound":     {ZH: "入站心跳：{when} · 累计 {n} 条消息",
-                           EN: "Inbound heartbeat: {when} · {n} messages"},
+    "status.inbound":     {ZH: "入站心跳：{when} · 距上次 {age} · 累计 {n} 条消息",
+                           EN: "Inbound heartbeat: {when} · last {age} ago · {n} messages"},
     # ⚠️ 口径（R9 审计中-5）：数的是「有多少帧**真的有东西写出去**」，不是 API 调用次数 ——
     #    cardkit 一帧最多 3 次逻辑写（装饰 batch + 正文 content + 限频的会话预览）、
     #    seed 帧是 2 次网络调用、一次逻辑写撞限流最多重发 4 次 HTTP，全都只 +1。

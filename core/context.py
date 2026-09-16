@@ -639,6 +639,7 @@ def status_lines() -> List[str]:
     fallbacks = int(snap.get("fallback_count") or 0)
     return [
         _i18n.t("status.inbound", when=_when(snap.get("inbound_at")),
+                age=_dur(snap.get("inbound_at")),
                 n=int(snap.get("inbound_count") or 0)),
         _i18n.t("status.frame_ok", when=_when(snap.get("frame_ok_at")),
                 n=int(snap.get("frame_ok_count") or 0)),
