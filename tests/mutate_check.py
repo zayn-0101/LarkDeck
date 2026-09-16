@@ -1903,6 +1903,31 @@ MUTATIONS = [
      '        if (key in official and env is None\n'
      '                and _cfg_canonical(value) != _cfg_canonical(official[key])):',
      "test_units"),
+    # ---- P3：cron / 无网关 standalone sender ------------------------------- #
+    ("P3-1-standalone sender 不再走卡片工厂（cron 投递退回纯文本）",
+     "core/adapter.py",
+     '            adapter = factory(pconfig)\n',
+     '            adapter = (fallback(pconfig) if callable(fallback) else None)\n',
+     "test_units"),
+    ("P3-2-媒体附件被静默丢弃（有附件时不回落内置 sender）",
+     "core/adapter.py",
+     '        media = list(media_files or [])\n'
+     '        if media:\n'
+     '            # 媒体附件不在本阶段内：整条交给内置 sender（不静默丢附件）。\n'
+     '            return await _fallback("larkdeck standalone media fallback unavailable")',
+     '        media = list(media_files or [])\n'
+     '        if False:\n'
+     '            return await _fallback("larkdeck standalone media fallback unavailable")',
+     "test_units"),
+    ("P3-3-standalone 不补 SDK client（真机 cron 文本投递返回 Not connected）",
+     "core/adapter.py",
+     '        if _compat.ensure_standalone_client(adapter) is None:\n'
+     '            _log_standalone_client_fallback_once()\n'
+     '            return await _fallback("larkdeck standalone SDK client unavailable")',
+     '        if False:\n'
+     '            _log_standalone_client_fallback_once()\n'
+     '            return await _fallback("larkdeck standalone SDK client unavailable")',
+     "test_units"),
 ]
 
 #: **对照项**：行为等价的改动（合法 YAML 变体等），期望四门禁**全绿**。

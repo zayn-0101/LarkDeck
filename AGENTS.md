@@ -166,6 +166,13 @@ tests/        见「验证」
   命令：handler 拿不到发送者身份，无法安全授权（安全审计 B1）⇒ 插件**从不**直接写
   `config.yaml`、也不调用 `ctx.set_config()`；写配置走官方 Hermes CLI / 配置文件，再 reload。
   官方 ctx 的**只读**句柄存进程级共享盒子 `adapter.PLUGIN_CTX`（命令可能来自旧世代模块对象）。
+- **平台 entry 字段从 dataclass 派生透传**（`_IDENTITY_ENTRY_FIELDS` 除外），新增字段自动跟随；
+  唯一**有意覆盖**的是 `standalone_sender_fn`（P3）：内置 sender 自己 new 官方适配器 ⇒ cron /
+  无网关进程只有纯文本；我们换成经 `_factory` 的卡片 sender，发送前用
+  `compat.ensure_standalone_client()` 补官方同款 SDK client，**带媒体附件的那一块回落内置**
+  （附件不丢；分块非末块仍可能走卡片路径，卡片硬异常会在末块附件前停下）。`check_override.py`
+  对字段的判据是「可调用且不是内置那一枚」，并核对 fresh process 真能建出 client。⚠️ 无网关
+  cron 真机投递仍待验证；自动定时 cron 仍需 gateway 进程（ticker 只在那儿）。
 - **钩子清单有两处，必须一一对应**：`hooks.SUBSCRIPTIONS`（真正订阅的）与
   `compat.OBSERVED_HOOKS`（登记/文档/自检读的）。新增或删除观察型钩子时**两处一起改**，
   由 `check_override.py` 核对（不一致直接失败）—— 只改一处的结果是「文档说有、代码没订阅」
@@ -500,6 +507,10 @@ CHANGELOG 曾写「建实体时页脚元素不进卡（实测的功能缺陷）�
 `/Users/Zayn/.hermes/hermes-agent/venv/bin/python3`（系统 `python3` 少了 Hermes 的依赖：
 `lark_oapi` 导不进来 ⇒ CardKit 那几条用例会**假红** —— 它们的前提断言（「拿不到 SDK 就
 fail-open」）被顺带满足，报出来的失败信息与真实原因无关。2026-09-14 实测踩过一次）。
+⚠️ 这几个脚本必须用**它们自己的 `__main__` runner** 跑；`pytest -q tests/test_units.py` 不是
+支持的入口：pytest 的 logging/全局状态让一批 CardKit/ledger 用例出现**既有**失败（与本次改动
+无关，HEAD 同样复现；审计从 `git archive` 到 /tmp 验证过）。看到 pytest 失败先换回
+`python3 tests/...` 再判断，别把运行器差异当成代码回归。
 
 - **门禁先自证「测的就是这份代码」**（R11-B2 审计高-1）：`test_units.py` 开跑时会比对
   `larkdeck.core.adapter.__file__` 是否在本仓库目录下，不在就 `SystemExit`。为什么必须有：

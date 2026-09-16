@@ -538,6 +538,61 @@ def lookup_session_id(store: Any, session_key: str) -> str:
     return ""
 
 
+def ensure_standalone_client(adapter: Any) -> Any:
+    """给 `standalone_sender_fn` 的合并适配器补上官方同款 SDK client。
+
+    为什么必须在这里做：官方 `FeishuAdapter.__init__` 只把 ``_client`` 置 ``None``，
+    真正建 client 的是它的私有 `_build_lark_client` / `_domain_name`（内置 standalone sender
+    也自己走这两步）。这些名字按不变量 3 集中在本文件；拿不到 SDK / 建不出来就返回
+    ``None``，由调用方回落内置 sender，绝不猜一个能用的 client。
+    """
+    try:
+        existing = getattr(adapter, "_client", None)
+    except Exception:
+        existing = None
+    if existing is not None:
+        return existing
+    # 官方 Feishu 模块把 SDK 绑定惰性加载进模块全局；不先跑它的 loader，
+    # `_build_lark_client` 会在 `lark.Client` 上拿 None 抛 AttributeError（真机复现）。
+    # `_load_lark_oapi` 是官方同步函数，名字按不变量 3 集中在这里。
+    loader = None
+    for cls in type(adapter).__mro__:
+        module = sys.modules.get(getattr(cls, "__module__", ""))
+        candidate = getattr(module, "_load_lark_oapi", None)
+        if callable(candidate):
+            loader = candidate
+            break
+    if loader is not None:
+        try:
+            if not loader():
+                return None
+        except Exception:
+            logger.debug("[larkdeck] 加载 lark SDK 失败，将回落内置 sender", exc_info=True)
+            return None
+    builder = getattr(adapter, "_build_lark_client", None)
+    if not callable(builder):
+        return None
+    try:
+        from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
+    except Exception:
+        return None
+    domain = (LARK_DOMAIN if str(getattr(adapter, "_domain_name", "feishu")
+                                 or "feishu").strip().lower() == "lark"
+              else FEISHU_DOMAIN)
+    try:
+        client = builder(domain)
+    except Exception:
+        logger.debug("[larkdeck] 构造 standalone SDK client 失败，将回落内置 sender", exc_info=True)
+        return None
+    if client is None:
+        return None
+    try:
+        setattr(adapter, "_client", client)
+    except Exception:
+        return None
+    return client
+
+
 def _has(cls: type, name: str) -> bool:
     try:
         return hasattr(cls, name)

@@ -92,6 +92,20 @@
     可能读到混合快照，不是文件系统事务）。**聊天侧没有写入命令**：handler 拿不到发送者
     身份，无法安全授权（安全审计 B1）⇒ 插件从不直接写 `config.yaml`、也不调用
     `ctx.set_config()`；写配置走官方 Hermes CLI / 配置文件，再 `config reload` 热刷新。
+  - **cron / 无网关投递走卡片层（P3，代码级；无网关真机投递待验）**：通过官方
+    `PlatformEntry.standalone_sender_fn` 字段把内置纯文本 sender 换成「先经合并适配器
+    卡片层、补官方同款 SDK client、失败 fail-open 到内置、**带媒体附件的那一块回落内置**」的
+    sender；cron / `send_message` 在没有常驻网关的进程里会尝试卡片，附件不丢（分块长文里
+    非末块仍可能走卡片路径；卡片硬异常会在末块附件前停下）。不改 Hermes 源码、不 monkeypatch；`check_override.py` 在真加载器
+    里核对 entry 字段为可调用卡片 sender，并验证 `compat.ensure_standalone_client()` 能真的
+    建出 SDK client（真机审计复现过“不补 client ⇒ `Not connected`”的阻断项）。
+    边界：**自动定时 cron 仍需要 gateway 进程在跑**（ticker 只在那儿）；standalone 车道覆盖
+    `hermes cron run` 与无常驻网关时的 `send_message`。
+  - **P3 六家候选 go/no-go（如实登记，不硬做）**：见 `docs/plugins-compare.md` §8 ——
+    表格降级 no-go（官方核心明确保留 markdown 表格）、**结果不明保护 partial**（我们 CardKit
+    实体/元素写 uuid 确定性；但**卡片首发与文本发送一样**继承官方 `_send_raw_message` 的
+    每次 uuid4 重试，已送达但响应丢失时仍可能重复；覆盖它要碰官方私有名，登记待上游）、
+    动态结构写/图片上传/命令卡分别因 Phase C 前置、无点名需求与范围外而 defer/no-go。
 
 ### 验证
 
@@ -117,6 +131,16 @@
   逐键读取不符（A2）；聊天侧 `config set` 无发送者身份可授权（B1，**整体移除写入路径**）；
   `read_terminal` 图标误分类（C1）；未知主题静默回退（C2）；reload 不披露 env 遮蔽（C3）；
   空 env 吞提示（A5）；异常日志格式化病态异常（A6）。
+- **P3 门禁**：`test_units.py` **218/218**；`check_override.py`（含 fresh-process
+  `standalone client init: ok`）/ `check_hooks.py` / `check_clarify_e2e.py` 全绿；
+  新增 **3 条 P3 变异**（P3-1 卡片工厂、P3-2 媒体回落、P3-3 SDK client 初始化）逐条实测变红；
+  `--preflight` **356/356** 锚点可用。⚠️ 全量变异仍留到发布前统一跑。
+- **P3 对抗审计**：3 个不同子 Agent 独立审计（`deepseek-v4.1-flash` / `glm-5.3-flash` /
+  `omen-alpha`）。其中一路用 fresh-process + 真 Hermes 加载器复现出**阻断项**：standalone
+  sender 没补官方同款 SDK client ⇒ 文本 cron 得到 `Not connected`，相对 HEAD 透传是回退。
+  修复为 `compat.ensure_standalone_client()`（私有名集中 compat）并在 `check_override.py` 加
+  fresh-process 断言；另两路指出的文档口径、媒体缺失兜底、uuid4 残余都一并收口；delta 复审
+  三路全部 **PASS**。真机 `hermes cron run` 无网关投递仍待验证，已在 README/CHANGELOG/§8 标注。
 
 ### 修复（第三轮对抗审计，2026-09-16 凌晨）
 

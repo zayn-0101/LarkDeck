@@ -8734,6 +8734,125 @@ def test_reload_clears_context_override_and_discloses_env_shadow():
         adapter._apply_metrics_config()
 
 
+def test_standalone_sender_uses_card_factory_and_falls_back_for_media():
+    """P3 cron / 无网关投递：`standalone_sender_fn` 必须先经我们的工厂走卡片层。
+
+    判据分三半（任何一半撤掉都要变红）：
+      * 纯文本投递：`factory` 被调用一次、`adapter.send` 收到原 chat / 文本 / thread metadata；
+      * 媒体附件：**回落内置 sender**（不静默丢附件），工厂不参与；
+      * 任何异常 / 失败结果：按官方契约返回 `{"error": ...}`，绝不抛进 cron 调度器。
+    """
+    calls: list = []
+    factory_calls: list = []
+    media_calls: list = []
+
+    class _Res:
+        success = True
+        message_id = "om_cron"
+        error = None
+
+    class _Adapter:
+        # 官方 `__init__` 后 `_client` 是 None，standalone 必须先补 client；
+        # 这里给一个非 None 值，模拟 `compat.ensure_standalone_client()` 已成功。
+        _client = object()
+
+        async def send(self, chat_id, message, metadata=None):
+            calls.append((chat_id, message, metadata))
+            return _Res()
+
+    def factory(pconfig):
+        factory_calls.append(pconfig)
+        return _Adapter()
+
+    async def fallback(pconfig, chat_id, message, *, thread_id=None,
+                       media_files=None, force_document=False):
+        media_calls.append((chat_id, message, thread_id, list(media_files or [])))
+        return {"success": True, "channel": "fallback"}
+
+    sender = adapter._make_standalone_sender(factory, fallback)
+    out = _run(sender(object(), "oc_1", "hello", thread_id="th_1"))
+    assert out.get("success") is True and out.get("message_id") == "om_cron", out
+    assert out.get("platform") == "feishu", out
+    assert calls == [("oc_1", "hello", {"thread_id": "th_1"})], calls
+    assert len(factory_calls) == 1, factory_calls
+
+    # 媒体附件：内置 sender 收完整载荷；工厂不再建第二个适配器
+    out = _run(sender(object(), "oc_2", "cap", thread_id=None,
+                      media_files=["/tmp/a.png"], force_document=True))
+    assert out.get("channel") == "fallback", out
+    assert media_calls == [("oc_2", "cap", None, ["/tmp/a.png"])], media_calls
+    assert len(factory_calls) == 1, factory_calls
+
+    # 工厂构造失败：error dict，异常正文不泄漏
+    def bad_factory(pconfig):
+        raise RuntimeError("boom-secret")
+
+    out = _run(adapter._make_standalone_sender(bad_factory, None)(object(), "oc_3", "x"))
+    assert "error" in out and "boom-secret" not in out["error"], out
+
+    class _BadAdapter:
+        _client = object()          # 过了 client 门，专门验「发送成功但返回失败」这一支
+
+        async def send(self, chat_id, message, metadata=None):
+            return types.SimpleNamespace(success=False, error="rejected by feishu",
+                                         message_id="")
+
+    out = _run(adapter._make_standalone_sender(lambda pconfig: _BadAdapter(), None)(
+        object(), "oc_4", "y"))
+    assert "error" in out and "rejected by feishu" in out["error"], out
+
+    # 空文本且无媒体：与内置契约同形的 error dict
+    out = _run(sender(object(), "oc_5", "   "))
+    assert "error" in out, out
+
+
+
+def test_standalone_client_init_is_required_and_falls_back():
+    """P3 blocker 回归：standalone 必须补官方同款 SDK client；补不上就先回落内置 sender。
+
+    审计真机复现：官方 `FeishuAdapter.__init__` 把 `_client` 置 None，直接 `adapter.send()`
+    返回 `Not connected`。这条同时钉两件事：
+      * `compat.ensure_standalone_client()` 真建 client 并写回实例（且幂等）；
+      * wrapper 在 client 补不上时**回落内置 sender**，而不是把文本投递整条切断。
+    """
+    built = []
+
+    class _NoClient:
+        _client = None
+        _domain_name = "lark"
+
+        def _build_lark_client(self, domain):
+            built.append(domain)
+            return object()
+
+    fake = _NoClient()
+    first = compat.ensure_standalone_client(fake)
+    assert first is not None and fake._client is first, fake.__dict__
+    assert len(built) == 1, built
+    # 幂等：已有 client 不再建第二个
+    assert compat.ensure_standalone_client(fake) is first and len(built) == 1, built
+
+    # wrapper：没有可建的 client ⇒ 回落内置；内置返回成功即算送达
+    class _Unbuildable:
+        _client = None          # 没有 `_build_lark_client`，helper 必然返回 None
+
+    fallback_calls = []
+
+    async def fallback(pconfig, chat_id, message, *, thread_id=None,
+                       media_files=None, force_document=False):
+        fallback_calls.append((chat_id, message, thread_id, list(media_files or [])))
+        return {"success": True, "channel": "builtin"}
+
+    out = _run(adapter._make_standalone_sender(lambda pconfig: _Unbuildable(), fallback)(
+        object(), "oc_c", "hello", thread_id="th_c"))
+    assert out.get("channel") == "builtin", out
+    assert fallback_calls == [("oc_c", "hello", "th_c", [])], fallback_calls
+
+    # media + 无内置 sender：必须有 error（不许静默丢附件，也不许走只发文本的路径）
+    out = _run(adapter._make_standalone_sender(lambda pconfig: _Unbuildable(), None)(
+        object(), "oc_m", "caption", media_files=["/tmp/x.png"]))
+    assert "error" in out and "media" in out["error"], out
+
 def test_command_card_reports_version_transport_and_three_records():
     """`/larkdeck status`：版本**现读清单** + 传输自报 + 钩子 + 三条记录。
 

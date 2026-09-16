@@ -4334,6 +4334,75 @@ def _ld_command_card(raw_args: str) -> str:
         return _i18n.t("cmd.failed", error=reason)
 
 
+def _log_standalone_client_fallback_once() -> None:
+    """standalone client 建不出来导致回落内置时的限流告警（绝不静默降级）。"""
+    now = time.monotonic()
+    if now - getattr(_log_standalone_client_fallback_once, "_at", 0.0) < 60.0:
+        return
+    _log_standalone_client_fallback_once._at = now  # type: ignore[attr-defined]
+    logger.warning("[larkdeck] standalone 适配器的 SDK client 建不出来 —— cron / send_message "
+                   "本次投递回落内置 sender（用户可能收到纯文本而不是卡片）")
+
+
+def _make_standalone_sender(factory: Any, fallback: Any) -> Any:
+    """构造 `standalone_sender_fn`：让 cron / `send_message` 的无网关进程也走卡片层。
+
+    官方 `PlatformEntry.standalone_sender_fn` 的契约是异步发一条文本：
+    ``(pconfig, chat_id, message, *, thread_id, media_files, force_document) -> dict``。
+    内置实现自己 new 一个**官方** ``FeishuAdapter``（不走我们的子类）⇒ cron 投递永远只有纯文本；
+    这里把它换成先经 ``factory`` 构造我们的合并适配器，再调 ``adapter.send()``（卡片 + fail-open
+    到内置纯文本）。**媒体附件仍回落到内置 sender**：上传/文档车道不在 Phase 3 范围内，
+    静默丢掉附件比多一条纯文本更糟。
+
+    纪律：
+      * 只走官方 `register_platform(..., standalone_sender_fn=...)` 字段；SDK client 的初始化
+        依赖官方私有名，已按不变量 3 集中封进 `compat.ensure_standalone_client()`；
+      * 任何一步异常 / client 建不出来都**先回落内置 sender**（不丢消息），
+        内置也没有才返回 ``{"error": ...}``，绝不抛进 cron 调度器；
+      * 返回结构与内置实现同形，调用方（`send_message_senders`）无需分支。
+    """
+    async def _send(pconfig: Any, chat_id: str, message: str, *,
+                    thread_id: Optional[str] = None,
+                    media_files: Optional[list] = None,
+                    force_document: bool = False) -> Dict[str, Any]:
+        async def _fallback(reason: str = "") -> Dict[str, Any]:
+            if callable(fallback):
+                try:
+                    return await fallback(pconfig, chat_id, message, thread_id=thread_id,
+                                          media_files=media_files, force_document=force_document)
+                except Exception as exc:
+                    return {"error": f"larkdeck standalone fallback failed: {type(exc).__name__}"}
+            return {"error": reason or "larkdeck standalone sender unavailable"}
+
+        media = list(media_files or [])
+        if media:
+            # 媒体附件不在本阶段内：整条交给内置 sender（不静默丢附件）。
+            return await _fallback("larkdeck standalone media fallback unavailable")
+        if not str(message or "").strip():
+            return {"error": "No deliverable text or media remained after processing MEDIA tags"}
+        try:
+            adapter = factory(pconfig)
+        except Exception as exc:
+            return await _fallback(f"larkdeck standalone adapter build failed: {type(exc).__name__}")
+        # ⚠️ 官方 __init__ 不建 SDK client；没有它 adapter.send() 会直接返回
+        # `SendResult(success=False, error='Not connected')`（审计 P3 真机复现的 blocker）。
+        if _compat.ensure_standalone_client(adapter) is None:
+            _log_standalone_client_fallback_once()
+            return await _fallback("larkdeck standalone SDK client unavailable")
+        try:
+            result = await adapter.send(
+                chat_id, str(message or ""),
+                metadata=({"thread_id": thread_id} if thread_id else None))
+        except Exception as exc:
+            return {"error": f"larkdeck standalone send failed: {type(exc).__name__}"}
+        if not getattr(result, "success", False):
+            return {"error": f"Feishu send failed: {getattr(result, 'error', 'unknown')}"}
+        return {"success": True, "platform": PLATFORM_NAME, "chat_id": chat_id,
+                "message_id": getattr(result, "message_id", "") or ""}
+
+    return _send
+
+
 def register(ctx: Any) -> None:
     """插件入口：抢占 ``feishu`` 平台名，并把卡片层叠到内置适配器上。"""
     try:
@@ -4377,7 +4446,11 @@ def register(ctx: Any) -> None:
     #    所以键集改成**从 dataclass 字段派生**：只排除「身份/覆盖类」字段（那些必须由我们
     #    自己给值），其余一律照抄。新增字段时自动跟随，不会再出现「升级后静默丢能力」。
     #    门禁：`tests/check_override.py` 拿注册前后的 entry **逐字段比对**，漏一个即红。
+    #    ⚠️ P3 的唯一**有意覆盖**字段是 `standalone_sender_fn`：官方内置 sender 自己 new
+    #    官方适配器 ⇒ cron / 无网关进程只能收到纯文本；我们换成经 `_factory` 的卡片 sender
+    #    （媒体附件仍回落内置），因此 check_override 对这一个字段的判据是「可调用 + 非内置同名」。
     passthrough: Dict[str, Any] = {}
+    builtin_standalone = getattr(builtin, "standalone_sender_fn", None)
     for field in _dc_fields(PlatformEntry):
         if field.name in _IDENTITY_ENTRY_FIELDS:
             continue
@@ -4385,6 +4458,12 @@ def register(ctx: Any) -> None:
         if value is None or value == [] or value == "":
             continue                      # 内置也没设 ⇒ 不必显式传（传了也是默认值）
         passthrough[field.name] = value
+    try:
+        passthrough["standalone_sender_fn"] = _make_standalone_sender(
+            _factory, builtin_standalone)
+    except Exception as exc:  # pragma: no cover - 防御性：构造不出就退回内置
+        logger.warning("[larkdeck] 构造 cron 卡片发送器失败，退回内置：%s",
+                       type(exc).__name__)
 
     handle = ctx.register_platform(
         name=PLATFORM_NAME, label=LABEL, adapter_factory=_factory,

@@ -58,8 +58,8 @@
 | 撤回/删除后停止更新 | ✅ | ✅ 30min TTL | ✅ | ✅ 卡片 TTL | ✅ `unavailable_guard` | ✅ | ✅ `_WITHDRAWN_CODES`（`230011`/`99992354`）标死+清追踪+不补发 |
 | 渠道活性监控（WS 静默断连可诊断） | ✅ `/health` | ❌ | ✅ `/aowen monitor` | ✅ status 卡 | ❌ | ❌ | ✅ `/larkdeck status` 顶部聚合诊断含**入站心跳相对年龄**（与 status.inbound 同源）；异常链路与失败计数带 ⚠️。**没有**自动阈值告警（年龄多大算断连需要真机数据，先不做猜测） |
 | 运维/诊断命令（`doctor` / `status`） | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ | ✅ `/larkdeck status`（版本/传输/钩子 7/7 + **P2 聚合诊断** + 六条账本记录）+ `/larkdeck config`（只读视图 / `config reload` 热刷新；聊天侧无写入命令） |
-| cron / 后台任务推卡片 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌（我们的钩子面里没有 cron 路径） |
-| 幂等投递（UUID + 有界重试 + 结果不明不重发） | ✅ 最完整 | ❌ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ✅ 每次发送 uuid 唯一（真机踩过「固定 uuid ⇒ 拿到已删 message_id」的坑） |
+| cron / 后台任务推卡片 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ **P3 已实现**：通过官方 `PlatformEntry.standalone_sender_fn` 接管，cron / `send_message` 在无网关进程也走卡片层；**带媒体的末块回落内置 sender，非末块仍可能走卡片路径**（见 §8） |
+| 幂等投递（UUID + 有界重试 + 结果不明不重发） | ✅ 最完整 | ❌ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ **Partially**：CardKit 实体/元素写用确定性 uuid（限流重试幂等）；内置文本发送每次 `uuid.uuid4()` 是官方行为，覆盖它要碰私有名（见 §8 第 3 条） |
 | 远端图片/非法属性被拒的兜底 | ✅ | ✅ | ✅ 300315 提取属性名 | ✅ | ✅ `200570` strip | ✅ | ⚠️ 元素 id 类码有专用车道（R5 + `300315` 内层码解析），**远端图片上传没有** |
 
 > 说明：我们列里标 ⚠️/❌ 的**不代表人家做得更好**，而是「人家有、我们暂时没有」；
@@ -478,4 +478,23 @@
 
 **未决**：**路线本身不必换**（7.7 第 2/3/4 条：B 没有效果优势，两边同样没有契约保护）。
 但「**公开契约覆盖了我们要的东西**」这个叙事**不能再讲**（7.4）。
+
+
+## 八、P3 六家候选的 go / no-go 实验记录（2026-09-17）
+
+> 结论先行：**只落地了 cron / 无网关 standalone sender**；其余五条都有**可复跑的反证或明确阻塞条件**，
+> 按用户要求**如实登记，不硬做**。判据优先级仍是真机 > 官方源码 > 本地代码 > 推理。
+
+| # | 候选 | 出处 | 实验 / 证据 | 结论 |
+|---|---|---|---|---|
+| 1 | **markdown 表格超限降级** | AP / HLS / HFC | 官方核心 `plugins/platforms/feishu/adapter.py:3468-3477` **明确保留表格为 markdown `post`**：注释与 #26841 记录显示「按表格强制转 text」的旧分支被删掉，因为那会让用户看到 pipe-and-dash 原文；核心没有「单卡最多 N 表」的限制。我们的字节闸门/元素墙已覆盖真实的 128000 字节风险；`docs/plan-v1.md` R6a 也记过「不做表格降载」（语义会变、收益不抵风险） | **NO-GO**（无实测到的失败面；不做语义改写） |
+| 2 | **cron / 后台任务推卡片** | HFC / CLS | 官方 `PlatformEntry.standalone_sender_fn` 是对外契约字段；内置 Feishu sender 自己 new 官方适配器（`plugins/platforms/feishu/adapter.py:4130`）⇒ cron 永远纯文本。P3 用 `_make_standalone_sender()` 把它换成经我们的 `_factory` 构造的合并适配器，并在发送前用 `compat.ensure_standalone_client()` 补官方同款 SDK client（真机审计复现过漏这一步 ⇒ `Not connected` ⇒ 文本投递整条丢）。文本走卡片、失败 fail-open 到内置；**带媒体附件的那一块回落内置**（附件不丢；分块长文里非末块仍可能走卡片路径，卡片硬异常会在末块附件前停下）。`check_override.py` 真实加载器核对 entry 字段被有意覆盖为可调用卡片 sender，且 SDK client 能真的建出来 | **GO · 代码级已实现；无网关 cron 真机投递待验** |
+| 3 | **结果不明保护（不重发）** | HFC 最完整 | ✅ 我们的 CardKit 实体/元素写已有**确定性 uuid**（`ld-msg-{card_id}` / `ld-{card_id}-{element}-{seq}`），限流重试幂等；⚠️ 但**卡片首发也走**内置 `_ld_send_card` → 官方 `_feishu_send_with_retry` → `_send_raw_message`，后者在 `plugins/platforms/feishu/adapter.py:3600/3612` 每次尝试 `uuid.uuid4()` ⇒ 「已送达但响应丢失」时官方重试可能重复；`send()` 的 fail-open 还可能造成卡片+文本双份。修复要覆盖官方私有 `_send_raw_message`，与「私有名只在 `compat.py`」冲突且会改变核心文本路径 | **PARTIAL · 登记残余**（CardKit 元素写幂等；消息级首发/文本均继承官方非幂等重试；等上游） |
+| 4 | **流式期间动态结构写**（每工具一个元素） | AP / HLS / FC / CLS | 早前真机已证 `card_element.create` 在流式期间可用（§5）；但当前卡片是**固定 5 元素结构**，动态加元素要新状态机 + 元素预算 + sequence/失败回收，属于 `docs/plan-r11.md` 的 Phase C 前置 | **DEFER**（条件：Phase C 前置缺口补齐） |
+| 5 | **图片 URL→上传→`img_key`** | CLS / AP | 官方核心只保证 `MEDIA:` 文本路径；卡片元素要 `im.v1.image.create` + `img_key` 缓存 + 上传配额/失败回落，属于新的网络/存储故障面；当前没有用户点单 | **DEFER**（无点名需求） |
+| 6 | **`/model` 两级选择 / `/new` 命令卡** | HFC | 需要介入网关命令分发/状态，超出当前「只读观察型 7 钩子 + 适配器覆盖」范围；且需要用户实际在飞书里用这些命令才有收益 | **NO-GO（当前范围）** |
+
+> 边界说明：**自动定时 cron 仍需要 gateway 进程在跑**（ticker 只挂在 gateway）；standalone
+> 车道覆盖 `hermes cron run` 与无常驻网关进程时的 `send_message`。真机 `hermes cron run`
+> 无网关投递（卡片渲染、失败回落、媒体混合）本次未验证，已在 README/CHANGELOG 如实标注。
 

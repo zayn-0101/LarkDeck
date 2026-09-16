@@ -59,7 +59,23 @@ print(f"adapter class  : {cls.__module__}.{cls.__qualname__}")
 print(f"MRO            : {' -> '.join(mro_names[:4])}")
 print(f"REQUIRES_EDIT_FINALIZE = {getattr(adapter, 'REQUIRES_EDIT_FINALIZE', None)}")
 
+# P3：standalone sender 必须在**无网关进程**里能初始化 SDK client；官方 __init__ 只把 `_client`
+# 置 None，真机审计复现过「不补 client ⇒ adapter.send() 返回 Not connected ⇒ cron 文本投递整条丢」。
+_standalone_problems: list = []
+_compat_mod = (sys.modules.get("hermes_plugins.larkdeck.core.compat")
+               or sys.modules.get("larkdeck.core.compat"))
+if _compat_mod is None:
+    _standalone_problems.append("找不到 larkdeck.core.compat，standalone client 初始化无法核对")
+else:
+    _standalone_client = _compat_mod.ensure_standalone_client(adapter)
+    if _standalone_client is None or getattr(adapter, "_client", None) is None:
+        _standalone_problems.append("standalone client 初始化失败（cron 文本投递会变成 "
+                                    "SendResult(success=False, error='Not connected')）")
+    else:
+        print("standalone client init: ok")
+
 problems = []
+problems.extend(_standalone_problems)
 if cls.__name__ != "LarkDeckFeishuAdapter":
     problems.append(f"适配器类名不是 LarkDeckFeishuAdapter，而是 {cls.__name__}")
 if "LarkDeckMixin" not in mro_names:
@@ -238,6 +254,9 @@ else:
     except Exception as exc:
         problems.append(f"内置 register() 调不通，entry 保真检查失效：{exc!r}")
     _IDENTITY = {"name", "label", "adapter_factory", "check_fn", "source", "plugin_name"}
+    #: P3 的有意覆盖：内置 standalone sender 只能发纯文本；我们换成经合并适配器的卡片 sender。
+    #: 这个字段的判据不是「同一个函数」，而是「可调用 + 不是内置那一枚」。
+    _OVERRIDABLE = {"standalone_sender_fn"}
     _live = platform_registry.get("feishu")
     if _live is None:
         problems.append("注册后拿不到 feishu entry")
@@ -248,6 +267,13 @@ else:
                 continue
             _checked += 1
             _got = getattr(_live, _key, None)
+            if _key in _OVERRIDABLE:
+                if not callable(_got):
+                    _missing.append(f"{_key}: 被覆盖成不可调用对象 {_got!r}")
+                elif _got is _want:
+                    _missing.append(f"{_key}: 应覆盖为卡片 sender，实际仍是内置对象")
+                print(f"entry 字段覆盖：{_key} 已换成卡片 sender（可调用）")
+                continue
             # ⚠️ 判据要分两类：**可调用对象按身份比**（必须是同一个函数），
             # 其余（列表/字符串/数字/布尔）按值比 —— 一律用 `is` 会把
             # `required_env=["FEISHU_APP_ID", …]` 这种等值列表误报成「丢了」。
