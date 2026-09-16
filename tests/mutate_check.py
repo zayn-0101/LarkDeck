@@ -1608,6 +1608,16 @@ MUTATIONS = [
      '            _panel.record_answer_delta(session_id, turn_id, payload.get("delta", ""))',
      '            _panel.record_answer_delta(session_id, turn_id)',
      "check_hooks"),
+    # ⚠️ PA-1 与 R11-7 打的是**同一行**，但病不一样：R11-7 是「没传」，
+    # PA-1 是「传了、但顺手规整了一下」—— 后者才是最难发现的那种：累积看着有内容、
+    # 前缀判据也在跑，只是**不再与核心逐字节同源**（核心在工具轮边界会自己插一个
+    # `"\n\n"`，`.strip()` 正好把它吃掉）⇒ 剥的时候少一个字节就对不上，
+    # 而真机症状是「进度行偶尔留在正文里」这种看起来像玄学的东西。
+    # 抓它的是 `check_hooks` 里新增的**前提核对**那一格（驱动核心真实投递链路做对照）。
+    ("PA-1-正文增量入账前被「顺手规整」（累积与核心不再逐字节同源）", "core/hooks.py",
+     '            _panel.record_answer_delta(session_id, turn_id, payload.get("delta", ""))',
+     '            _panel.record_answer_delta(session_id, turn_id, payload.get("delta", "").strip())',
+     "check_hooks"),
     # ---- 第十三路审计（效果组 Y1b/X14/X18..Y5/Z）实测出来的断言缺口 ------------------ #
     # 这一批**全部**是「代码是对的、但没有任何判据守着」—— 撤掉修复四门禁照样全绿。
     # 共性：判据的作用域**没跨出模块自己**（拿被测常量算上界 / 拿同模块函数比对象 /

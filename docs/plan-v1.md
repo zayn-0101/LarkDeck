@@ -801,18 +801,21 @@ NAS 现网状态（`docs/switch-from-hfc.md` 自述 2026-09-12 连不上）· �
   `{emoji} {tool_name}: "{preview}"`，其中 `tool_name` 用我们 `pre_tool_call` 见过的名字比对
   （形状 + 白名单，而不是「尾部长得像」）—— **未做**。
 
-**下面这条是 2026-09-16 第四轮审计补登记的**（`docs/lessons.md` 推论 37 的残留）：
+**下面这条是 2026-09-16 第四轮审计登记、当天下午就补上门禁的**（`docs/lessons.md` 推论 37）：
 
-* **`_strip_core_progress` 的外部前提没有判据（未做）**：那五个条件的**推导**
+* **`_strip_core_progress` 的外部前提**：那五个条件的**推导**
   （条件 ③+④ ⇒ 剥出来的必是帧文本的前缀）依赖一个**外部前提** ——
   「**我们的正文累积与核心的累积逐字节同源**」（`agent/stream_delivery.py:314` 把同一个 `text`
   既投给插件钩子、又累加进 `gateway/stream_consumer.py` 的 `_accumulated`）。
-  今天这句话**只有一段引用核心行号的论证**（写在
-  `tests/test_units.py::test_strip_core_progress_only_ever_returns_a_prefix_of_the_frame`
-  的 docstring 里），**一条断言都没有**；核心哪天改了投递方式（比如给钩子投**另一个**文本、
-  或让 `_accumulated` 含进度行），`display` 就可能不再是帧文本的前缀 ⇒ 在**切卡接缝**上静默吞正文，
-  而四门禁全绿。已独立成条的是**我们自己**的性质（剥出来的必是帧前缀，带构造自证），
-  不是这个前提。要真钉住它得**驱动核心的投递路径**（假客户端跑一轮真流式，比对
-  「钩子收到的 text」与「核心 `_accumulated`」）—— **未做**。
+  ✅ **已补判据**：`tests/check_hooks.py` 的**前提核对**一格驱动核心真实投递链路
+  （`_fire_stream_delta` → 核心自己 docstring 写明的 `consumer.on_delta` → `_drain_queue`
+  → `_filter_and_accumulate` → `_append_accumulated`），断言「钩子收到的累积」与
+  「核心 `_accumulated`」逐字节相同，并用核心真实的 `_compose_frame_content()` 合成的帧
+  做一次剥离回环；变异 `PA-1` 实测必红。只桩掉两处：异步 `run()` 循环（同步泵一次队列）
+  与工具轮边界那个布尔位（核心自己在 `turn_tool_round.py:182` 置位）。
+  ⚠️ **仍未覆盖**：① `run()` 自己的分支（`_clean_for_display` 等显示前加工）与传输层；
+  ② **回合边界**的 `_adopt_final_text`（核心可能把 `_accumulated` **整段换成**权威终稿 ⇒
+  两边分叉）。②的失败方向是 **fail-open**（前缀判据不成立 ⇒ 不剥 ⇒ 只是进度行可见），
+  不会吞正文 —— 所以这条**不阻塞**，但要知道它。
   ⚠️ 顺带一条**已修**的旧账（同一轮）：那个 docstring 原先把「只剥后缀」归因于
   「因为我们只做后缀剥离」，是**同义反复**，已改写成上面那条真正的推导。
