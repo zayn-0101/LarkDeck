@@ -30,16 +30,31 @@
    **不是**「正文干净」的活杠杆 —— 后者是 R11-A7 的正文净化（下一节）。
    探测照旧上报：缺了不致命，但那时连保险也没了）；
    点击回调路径 5 个类属性（`CALLBACK_ADAPTER_ATTRS`）+ 2 个实例属性
-   （`CALLBACK_INSTANCE_ATTRS` —— 实例属性在类上探不到，只在运行时 `AttributeError` 时回落）；
+   （`CALLBACK_INSTANCE_ATTRS` —— ⚠️ **2026-09-16 实测更正**：这组**根本没有探测键**
+   （`probe_report` 不读它，全仓只有 `compat.py:50` 的定义、一条测试、和本行），
+   且 `_loop` 在 `adapter.py:3562` 是**裸访问、无局部回落** ——
+   旧文「只在运行时 `AttributeError` 时回落」**对 `_loop` 不成立**）；
    **信号型契约 1 个**（`SIGNAL_ADAPTER_ATTRS` ——
    核心在 `/stop`、`/new` 路径**主动调我们**的 `interrupt_session_activity`，
-   缺了不致命但「中止后卡片不变色」是静默失灵）；**处理生命周期 1 个**
+   缺了不致命但「中止后卡片不变色」是静默失灵 —— ⚠️ **2026-09-16 补充：探的是基类有没有它，
+   而真正的契约是核心的查找名（`gateway/run_agent_cache.py:415` 的
+   `getattr(type(adapter), "interrupt_session_activity", None)`）—— 那个名字改了，探测结构上
+   看不见**）；**处理生命周期 1 个**
    （`REACTION_ADAPTER_ATTRS` —— `_reactions_enabled`，覆盖它必须**尊重父类**语义，
    缺了 `reactions: false` 静默失效）；澄清网关内部结构
    （`_lock` / `_entries` / `entry.multi_select` / `mark_awaiting_text` / `resolve_gateway_clarify`，
    已封装成 `clarify_multi_select()` 等函数）；会话归属公开面
    （`SESSION_ATTRIBUTION_API`）。订阅的钩子清单也在本文件（`OBSERVED_HOOKS`，
    文档/门禁/自检都读它，同步规矩见「约定」）。新增依赖一律先登记。
+   🔴 **2026-09-16 独立复核：本条里的「探测上报」比实际强得多，别按字面读。**
+   已核实（完整清单见 `docs/plugins-compare.md` §7.6）：
+   * 探测结论的**唯一出口是被动日志**（`~/.hermes/logs/agent.log`）；启动自检写的 `SELFCHECK`
+     在**生产代码里没有任何读者**（读者只有 `tests/check_override.py`）；`/larkdeck status`
+     卡上**一个 `probe_report` 键都没有**（`adapter.py:3902` 只有 6 个账本计数 + 「钩子 N/7」）。
+   * ⇒ 上面每一处「探测上报」，实际含义都是「**往日志里写一行**」，**不是**「用户能问出来」。
+     **唯一**真正上到用户可见渠道的是 `OBSERVED_HOOKS`（状态卡显示 `钩子 N/7`）。
+   * 已登记 **7 条静默路径（S1–S7）**，其中 S7（`interrupt_session_activity` 的**核心查找名**）
+     连日志都没有。修复项与优先级见 §7.8 —— **登记不等于开工**。
 4. **不假设版本。** Mac 与 NAS 都跑 Hermes 0.21.1（NAS 是镜像内固定版本），升级随时会发生。
    能力一律运行时探测，不写死版本号分支。
 5. **卡片方言不可混用 —— 但「2.0 的回调到不了服务端」是错的，2026-09-12 更正。**
