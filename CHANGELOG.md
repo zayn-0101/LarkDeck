@@ -13,7 +13,12 @@
 > 卡片投递）。**新增 `theme` 默认值，属于用户可见默认观感变化**；配置键无改名。
 > 已知待验：`text_profile` / `ap_lite` 真机视觉、无网关 cron 真机投递。
 
-## [未发布]
+## [0.6.0] - 2026-09-17
+
+> CLS 观感改造：面板摘要、工具行与页脚重做；模型名/回合耗时移入状态优先页脚；
+> markdown i18n 边界写清；`panel_color_tags` 因真机 `<font color>` 视觉未确认而默认
+> **false**（无色降级，确认后可显式打开）。全量变异 run 3 + 颜色翻转后的定向 32 条
+> 均通过；D1 维持方案 c（不做生产 header 局部更新）。
 
 ### 变更（CLS 观感）
 
@@ -24,6 +29,8 @@
   耗时 + **带颜色的状态词**（绿色 `Succeeded` / 青绿 `Running` / 红色 `Failed`·`Blocked`·
   `Timed out` / 灰 `Cancelled`·`Skipped`）；命令或 skill 名另起一行灰色小字。
   被上游 80 字符截断的 JSON 预览改为**有界 key 提取**，不再整段丢细节、也不倒原文。
+- **颜色默认关闭**：`panel_color_tags` 默认从 `true` 改为 **`false`**，状态词/灰色标题/
+  细节行走无色降级；`<font color>` 真机三类消费者视觉确认后，可在配置中显式打开。
 - 展开面板内新增 `💭 思考` / `🛠️ 工具执行` 两个分区小标题。
 - 未知工具状态（`cancelled`/`timeout`/`skipped`）不再让面板整块渲染失败；
   ±Inf/NaN/超大 duration 与 elapsed 已做有界处理。
@@ -40,11 +47,16 @@
   审计 C 发现的 6 条隐藏 `ERROR` 已由严格分类器与测试断言修复；日志
   `docs/audits/cls-ui/phase-2/logs/fullrun_phase2_run3.log`，结论见
   `docs/audits/cls-ui/phase-2/consensus.md`。
+- 颜色默认翻转（`panel_color_tags: false`）后在 release 候选树上重跑：`test_units.py`
+  **225/225**、`check_override` / `check_hooks` / `check_clarify_e2e` 全绿、
+  `--preflight` **389/389**、定向 `-k CLS` **32/32 断言红**；日志
+  `docs/audits/cls-ui/phase-4/logs/mutCLS_color_false.log`。
 - golden trace 按本次**有意**的行为变化重新生成。
 - ⚠️ `<font color>` 真机渲染与 header 局部更新的**视觉**结论仍为 pending：
   接口探针已发送（`card.create` / `content` / `batch_update` / `content` 全 `code=0`），
-  但“标题真的变了 / 颜色真的画出来了”需要用户真机截图确认（见
-  `docs/audits/cls-ui/phase-0/consensus.md` 的 Phase 1 探针记录）。
+  但“标题真的变了 / 颜色真的画出来了”需要用户真机截图确认；因此本版默认
+  `panel_color_tags: false`，D1 维持方案 c（生产不写 header 局部更新）。确认颜色后可
+  在配置显式打开（见 `docs/audits/cls-ui/phase-0/consensus.md` 与 `phase-1/probe-header.md`）。
 - 详细数字与留档以 `docs/verify-log.md` / `docs/audits/cls-ui/` 的实跑日志为准。
 
 ## [0.5.0] - 2026-09-17（效果债 + AP-lite + cron）

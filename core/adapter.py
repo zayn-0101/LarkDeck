@@ -540,9 +540,10 @@ _DEFAULTS: Dict[str, Any] = {
     "text_profile": "off",
     # P2：观感主题。neutral=原符号；ap_lite=抽象 emoji（用户选定默认）；ap_bubble=AP 泡波全量。
     "theme": "ap_lite",
-    # 2026-09-17 D3：是否在 markdown 里使用 <font color>。默认 true（CLS 观感）；
-    # 真机不认/希望纯文本时置 false，会走 cards._colorize 的无色降级路径。
-    "panel_color_tags": True,
+    # 2026-09-17 D3：是否在 markdown 里使用 <font color>。Phase 4 真机视觉未确认前
+    # 默认 false（无色降级），避免客户端不认时把标签原样画给用户；真机确认三类消费者
+    # 都能渲染后，可在配置里显式打开 `panel_color_tags: true`。
+    "panel_color_tags": False,
     "model_aliases": "",      # 模型别名："真名=显示名, ..." 或 dict
     "max_reasoning_chars": _cards.MAX_REASONING_CHARS,
     "max_tool_result_chars": _cards.MAX_TOOL_RESULT_CHARS,

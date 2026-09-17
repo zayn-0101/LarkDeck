@@ -48,6 +48,7 @@
 | **09-17 14:05–16:47（Phase 2 run 1）** | **381** | **375** | 0 | 0 | **6** | 0 | **8/8** | **EXIT=1 ❌** —— 6 条被归类为「只有崩溃、没有断言失败」（`R7-D2`/`R9-22`/`R8-6`/`R12-6`/`P1b-8`/`P1b-9`）；测试把病态异常直接抛出，已改为断言失败（commit `76c0e68`） | `docs/audits/cls-ui/phase-2/logs/fullrun_phase2_failed_6crash.log`（sha256 `ec35bf55…`） |
 | **09-17 16:57–18:24（Phase 2 run 2，已被 run 3 取代）** | **381** | **381** | 0 | 0 | 0 | 0 | **8/8** | **EXIT=0 ✅（口径不足）** —— 审计 C 发现 6 条变异在 test_units 内既有 FAIL 又有未捕获 `ERROR`，旧分类器仍记断言红；树 `755eda35…`。保留作历史，结论以 run 3 为准 | `docs/audits/cls-ui/phase-2/logs/fullrun_phase2_run2.log`（sha256 `6cbe3898…`） |
 | **09-17 19:14–20:45（Phase 2 run 3，最终）** | **381** | **381** | 0 | 0 | 0 | 0 | **8/8** | **EXIT=0 ✅** —— 冻结树 `fd96f90f839f6621d83aff46006622d90ff27c1f`（commit `ecf11df`）；`_classify` 已把 test_units 行首 `ERROR ` 一律判 red-crash，6 条隐藏 ERROR 测试全部改成 AssertionError；control-only `-k` 改为 EXIT=2；preflight 389/389；末行「全部 381 条变异都被门禁抓住 ✅」 | `docs/audits/cls-ui/phase-2/logs/fullrun_phase2_run3.log`（sha256 `6cbe3898…`，64,517 B） |
+| **09-17 23:29–23:38（Phase 4 release 候选）** | **32（`-k CLS` 定向）** | **32** | 0 | — | 0 | 0 | — | 颜色默认翻转为 `false` 后重跑：四门禁全绿（`test_units 225/225`）、preflight 389/389、CLS-1..32 全断言红；发布物见 `docs/releases/v0.6.0.md` | `docs/audits/cls-ui/phase-4/logs/mutCLS_color_false.log` |
 
 
 

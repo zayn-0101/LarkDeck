@@ -218,7 +218,8 @@ tests/        见「验证」
     倒回卡上**。CardKit 实体卡的外层折叠面板 header 建卡时定死；Phase 1 header
     局部更新探针的最终结论是 **c：不实现生产代码**，收尾/降级/`/stop` 仍走整卡替换
     （见 `docs/audits/cls-ui/phase-1/consensus.md`）。`<font color>` 在 `markdown` 元素上的
-    真机渲染待截图确认。
+    真机渲染待截图确认；确认前 v0.6.0 默认 `panel_color_tags: false`（无色降级），
+    确认后才可显式打开；不要把它写成“默认已开启”。
     每帧**元素写**预算 2 次（常量 `_CK_WRITES_PER_FRAME`；卡级上限 10 次/秒 × 帧窗口 0.25s）；
     R7 起再加一次**会话预览**写（`card.settings`，`_CK_SUMMARY_INTERVAL = 5s` 限频 ⇒ 平均
     ≈0.2 次/秒，且**不重试**）⇒ 折算 ≈8.2 逻辑写/秒 < 卡级上限 10 次/秒；

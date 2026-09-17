@@ -888,7 +888,14 @@ def _run(install: Path, python: Path, enabled: bool) -> tuple[int, str]:
         (home / "plugins" / "larkdeck").symlink_to(REPO, target_is_directory=True)
         enabled_yaml = "    - larkdeck\n" if enabled else ""
         (home / "config.yaml").write_text(
-            f"plugins:\n  enabled:\n{enabled_yaml}", encoding="utf-8"
+            "plugins:\n"
+            "  enabled:\n"
+            f"{enabled_yaml}"
+            "  entries:\n"
+            "    larkdeck:\n"
+            "      settings:\n"
+            "        panel_color_tags: true\n",
+            encoding="utf-8",
         )
         env = dict(os.environ)
         env["HERMES_HOME"] = str(home)

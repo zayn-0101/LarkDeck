@@ -889,6 +889,9 @@ def _golden_trace() -> dict:
     收尾整卡 patch 的 JSON、每一帧的返回值。
     """
     calls = {"content": [], "patch": [], "entity": [], "batch": [], "settings": []}
+    # Release default is `panel_color_tags: false` until the real-device colour
+    # gate is confirmed; keep the golden trace pinned to that production default.
+    cards.set_color_tags_enabled(False)
 
     class _Resp:
         def __init__(self, code=0, **data):
@@ -3456,6 +3459,7 @@ def test_tool_step_unknown_and_cancelled_statuses_never_crash():
     ``TypeError``，``_ld_panel`` 的列表推导整块失败 ⇒ 一个被取消的工具就能让面板、推理和
     状态色全部消失。这里钉「未知状态有兜底词」与「中性主题仍走旧 ``•`` 兜底」两条。
     """
+    cards.set_color_tags_enabled(True)  # this case asserts the coloured AP-lite rows
     cases = {
         "cancelled": ("Cancelled", "grey"),
         "canceled": ("Cancelled", "grey"),
@@ -3476,10 +3480,12 @@ def test_tool_step_unknown_and_cancelled_statuses_never_crash():
     # neutral 主题仍保持旧行为（cancelled 现在有 ⛔ 兜底，不再是未知 •）
     assert cards.tool_step("read_file", status="cancelled") == "⛔ read_file"
     assert cards.tool_step("read_file", status="skipped") == "⏭ read_file"
+    cards.set_color_tags_enabled(False)
 
 
 def test_tool_duration_and_section_heading_helpers_are_dirty_data_safe():
     """坏 hook 数据（NaN / Inf / 超大 int / 非 int）不能让面板整块消失。"""
+    cards.set_color_tags_enabled(True)  # this case asserts the coloured heading/status rows
     assert cards._format_tool_duration(25) == "25 ms"
     assert cards._format_tool_duration(1200) == "1.2 s"
     assert cards._format_tool_duration(float("nan")) == ""
@@ -3511,6 +3517,7 @@ def test_tool_duration_and_section_heading_helpers_are_dirty_data_safe():
     huge_round = cards.unified_panel(rounds=[{"text": "a", "elapsed_ms": 10 ** 400}])
     assert huge_round is not None
     assert "1440m00s" in " ".join(e.get("content", "") for e in huge_round["elements"])
+    cards.set_color_tags_enabled(False)
 
 
 def test_json_fragment_unescape_and_preview_value_are_not_fooled():
@@ -3536,13 +3543,17 @@ def test_json_fragment_unescape_and_preview_value_are_not_fooled():
 
 def test_small_tool_char_limit_never_cuts_font_tag():
     """小 max_tool_result_chars 下先剥标签再截断，不能留下半个 `<font>`。"""
-    item = cards.tool_step("read_file", status="ok", duration_ms=120,
-                           preview='{"path": "/tmp/a.txt"}', theme="ap_lite")
-    out = cards.panel_tools_markdown(tools=[item], max_tool_chars=40)
-    # 分区标题本身也是 `<font>`，这里只看工具行那一块；工具行必须先剥标签再截断
-    tool_part = out.split("\n\n", 1)[-1]
-    assert "<font" not in tool_part, tool_part
-    assert "已省略" in out, out
+    cards.set_color_tags_enabled(True)  # colour path is explicit; release default is false
+    try:
+        item = cards.tool_step("read_file", status="ok", duration_ms=120,
+                               preview='{"path": "/tmp/a.txt"}', theme="ap_lite")
+        out = cards.panel_tools_markdown(tools=[item], max_tool_chars=40)
+        # 分区标题本身也是 `<font>`，这里只看工具行那一块；工具行必须先剥标签再截断
+        tool_part = out.split("\n\n", 1)[-1]
+        assert "<font" not in tool_part, tool_part
+        assert "已省略" in out, out
+    finally:
+        cards.set_color_tags_enabled(False)
 
 
 def test_color_tag_fallback_covers_status_heading_and_detail():
@@ -3573,6 +3584,7 @@ def test_theme_symbols_and_tool_icons_are_pinned():
       * 工具分类是 **token 精确匹配**，不是子串包含（`false` / `catalog` 不许被 read 抢走，
         `create_image` 必须归 image、`run_skill` 必须归 skill）。
     """
+    cards.set_color_tags_enabled(True)  # this case asserts the coloured AP-lite rows
     assert cards.THEME_NEUTRAL == "neutral"
     assert cards.THEME_AP_LITE == "ap_lite"
     assert cards.THEME_AP_BUBBLE == "ap_bubble"
@@ -3647,6 +3659,7 @@ def test_theme_symbols_and_tool_icons_are_pinned():
     assert cards.theme_name("nonsense") == "neutral"
     assert cards.theme_name(None) == "neutral"
     assert cards.tool_step("read_file", status="ok", theme="nonsense") == "✅ read_file"
+    cards.set_color_tags_enabled(False)
 
 
 def test_plugin_manifest_declares_theme_default_ap_lite():

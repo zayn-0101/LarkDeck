@@ -105,7 +105,7 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 | 即时响应：首帧早于首个 token（native seed 帧）+ 等待期占位 + 可关的「处理中」表情 | ✅ 真机实测 seed 帧建卡 `code=0`；等待期正文区显示「⏳ 正在生成…」（默认中文；markdown 无 `i18n_content`，英文客户端也显示这一份），收尾帧不带，避免空答案停在「正在生成…」；`reactions: false` 可关掉飞书那侧相当于「输入提示」的表情（**默认保持 Hermes 行为 = aiduPOP 的做法**，它的测试明确断言「reaction 拦截保持禁用」，见 `docs/plan-6-effects.md` §9） |
 | **回合状态色**：完成绿边 / 报错红边 / 中止黄边 | ✅ 数据来自官方 `on_session_end`（每回合一次）；颜色画在面板边框上 |
 | **推理按轮分段**（`第 N 轮 · 6.2s`；一轮 = 一段连续推理，被正文或工具打断） | ✅ |
-| 过程面板（CLS 观感）：`💭 思考 1.6s · 🛠️ 工具执行 · 3 步`；工具行 = 图标 + 加粗**英文动作名**（`Read file` / `Run command` / `Load skill` …）+ 耗时 + 绿色 `Succeeded` / 青绿 `Running` / 红色 `Failed`·`Blocked`·`Timed out` / 灰色 `Cancelled`·`Skipped`，命令或 skill 名另起一行灰色小字 | ✅ 数据来自官方钩子；工具行动作词/状态词为**语言固定边界**（markdown 不承载 `i18n_content`）；`<font color>` 真机渲染待截图确认 |
+| 过程面板（CLS 观感）：`💭 思考 1.6s · 🛠️ 工具执行 · 3 步`；工具行 = 图标 + 加粗**英文动作名**（`Read file` / `Run command` / `Load skill` …）+ 耗时 + 绿色 `Succeeded` / 青绿 `Running` / 红色 `Failed`·`Blocked`·`Timed out` / 灰色 `Cancelled`·`Skipped`，命令或 skill 名另起一行灰色小字 | ✅ 数据来自官方钩子；工具行动作词/状态词为**语言固定边界**（markdown 不承载 `i18n_content`）。⚠️ `<font color>` 真机渲染待截图确认，因此 v0.6.0 默认 `panel_color_tags: false`（无色降级）；确认后可显式打开 |
 | 页脚：状态 → 耗时 → 模型 → 上下文用量 + **本卡短码**（`✅ 已完成 · ⏱ 10.4s · 🤖 … · ctx … · 🔖 xxxxxx`，截图可与日志对齐） | ⚠️ 数据来自官方钩子；**状态在最前**这一组合待本轮真机截图确认（旧版页脚真机已确认） |
 | 上下文用量三样式（纯文字 / 图形条 / 数字+条） | ✅ 真机渲染已确认 |
 | 推理文本 / 工具结果上限 + 元素溢出保护 | ✅ |
@@ -217,7 +217,7 @@ plugins:
         context_style: text      # 上下文用量样式：text | bar | both
         text_profile: "off"      # CardKit 设备字号：off（默认）/ mobile_friendly（PC 小、手机大）/ compact（面板/脚注更小，正文不变）/ large（正文更大）
         theme: "ap_lite"         # 观感主题：neutral（原符号）/ ap_lite（默认，抽象 emoji）/ ap_bubble（AP 泡波风，含人物 emoji，可选）
-        panel_color_tags: true   # markdown 面板是否用 <font color>；关闭则状态词/灰色标题/细节行降级为纯文本
+        panel_color_tags: false  # Phase 4 真机视觉未确认前默认 false；确认 <font color> 三类消费者可渲染后可显式打开
         model_aliases: ""        # "真名=显示名, 真名2=显示名2"
         max_reasoning_chars: 1200   # 推理文本上限（超出截断并留痕；写 0 视为用默认值，不是不设限）
         max_tool_result_chars: 600  # 单条工具步骤行上限；面板显示的是参数预览，预览已被截到 80 字符，所以这项现实里几乎不会触发
