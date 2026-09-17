@@ -49,6 +49,7 @@ from __future__ import annotations
 import re as _re
 
 import json
+import math
 import re
 import unicodedata
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
@@ -448,11 +449,12 @@ def footer_line(*, duration: Optional[float] = None, model: str = "",
                 tools: Optional[int] = None, rounds: Optional[int] = None,
                 context: str = "", cache: Optional[float] = None,
                 api: Optional[int] = None, ttfb: Optional[float] = None,
-                theme: Any = THEME_NEUTRAL) -> Optional[str]:
+                status: str = "", theme: Any = THEME_NEUTRAL) -> Optional[str]:
     """「符号 + 数字 + 英文缩写」拼成的信息行 —— 天然无需翻译（不依赖 i18n）。
 
-    两个调用点：**面板标题行**（``model + rounds + tools + duration``，决策 D2 把这些
-    从卡片级 header 搬进面板头）与**页脚**（``context`` + R7 的 ``cache`` / ``api`` / ``ttfb``）。
+    两个调用点：**面板标题行**（``rounds + tools``）与**页脚**
+    （``status + duration + model + context + R7 指标``，用户 2026-09-17 指定：
+    状态在最前、模型名放页脚，参考 aiduPOP 的 ``已完成 · 1m 4s · ✳ model``）。
 
     各段之间用 ``·`` 分隔；一段都没有时返回 ``None``，调用方就不渲染。
 
@@ -471,6 +473,11 @@ def footer_line(*, duration: Optional[float] = None, model: str = "",
     """
     parts: List[str] = []
     syms = _THEME_SYMBOLS[theme_name(theme)]
+    # 顺序 = 用户指定的页脚阅读顺序：状态 → 时长 → 模型 → 其余指标。
+    if status:
+        parts.append(str(status))
+    if isinstance(duration, (int, float)) and duration >= 0.1:
+        parts.append(f"{syms['duration']} {format_elapsed(float(duration))}")
     if model:
         parts.append(f"{syms['model']} {model}")
     # 注意排除 bool：Python 里 isinstance(True, int) 为真，不排会拼出「🧠 True」。
@@ -491,8 +498,6 @@ def footer_line(*, duration: Optional[float] = None, model: str = "",
         parts.append(f"{syms['api']} {api}")
     if isinstance(ttfb, (int, float)) and not isinstance(ttfb, bool) and ttfb > 0:
         parts.append(f"{syms['ttfb']} {format_elapsed(float(ttfb))}")
-    if isinstance(duration, (int, float)) and duration >= 0.1:
-        parts.append(f"{syms['duration']} {format_elapsed(float(duration))}")
     return " · ".join(parts) or None
 
 
@@ -516,7 +521,8 @@ _MARKER_ONLY_RE = _re.compile(r"[#* \t]+$")
 _HEADING_CLOSING_RE = _re.compile(r"\s+#+$")
 
 #: 工具步骤状态符号（符号语言无关，无需 i18n；未知状态用「•」兜底）。
-_TOOL_STATUS_MARKS = {"running": "⏳", "ok": "✅", "error": "❌", "blocked": "⛔"}
+_TOOL_STATUS_MARKS = {"running": "⏳", "ok": "✅", "error": "❌", "blocked": "⛔",
+                      "cancelled": "⛔", "canceled": "⛔", "timeout": "⏰", "skipped": "⏭"}
 
 #: P2 主题层：只改「符号 + 文案」的观感，不碰卡片结构。
 #: neutral = 原观感；ap_lite = 抽象 emoji（用户选定的默认风格）；ap_bubble = AP 泡波全量。
@@ -564,6 +570,15 @@ def theme_name(theme: Any) -> str:
     return name if name in _THEME_SYMBOLS else THEME_NEUTRAL
 
 
+def _tool_category(name: str) -> Optional[str]:
+    """工具名 → 粗类别（web / search / image / skill / agent / write / read / terminal）。"""
+    tokens = [tok for tok in _re.split(r"[^0-9a-z]+", str(name or "").lower()) if tok]
+    for category, keys in _TOOL_CATEGORIES:
+        if any(token in tokens for token in keys):
+            return category
+    return None
+
+
 def _tool_icon(name: str, theme: str) -> str:
     """工具类别图标（neutral 没有图标，保持原观感）。返回带尾随空格或空串。"""
     icons = _TOOL_ICONS.get(theme_name(theme)) or {}
@@ -571,35 +586,302 @@ def _tool_icon(name: str, theme: str) -> str:
         return ""
     # `read_file` → ["read", "file"]；非字母数字一律当分隔符。token 精确匹配而不是
     # 子串包含：`ls` 不该命中 `false`，`cat` 不该命中 `catalog`。
-    tokens = [tok for tok in _re.split(r"[^0-9a-z]+", str(name or "").lower()) if tok]
-    for category, keys in _TOOL_CATEGORIES:
-        if any(token in tokens for token in keys):
-            return f"{icons.get(category) or icons.get('default', '')} "
+    category = _tool_category(name)
+    if category:
+        return f"{icons.get(category) or icons.get('default', '')} "
     return f"{icons.get('default', '')} " if icons.get("default") else ""
+
+
+#: AP-lite 工具标签：把英文工具名换成用户能扫一眼看懂的动作词。
+#: 参考 aiduPOP 展开面板的 `Load skill / Run command / Read config.yaml` 观感。
+_TOOL_LABELS: Dict[str, str] = {
+    "web": "Web search",
+    "search": "Search",
+    "image": "Image",
+    "skill": "Load skill",
+    "agent": "Run sub-agent",
+    "write": "Write file",
+    "read": "Read file",
+    "terminal": "Run command",
+}
+
+#: 每个类别优先从参数里取哪个键做「细节行」；取不到再退回第一个非空标量。
+_TOOL_DETAIL_KEYS: Dict[str, Tuple[str, ...]] = {
+    "web": ("query", "url", "q"),
+    "search": ("pattern", "query", "glob", "name"),
+    "image": ("prompt", "path", "file"),
+    "skill": ("skill", "skill_name", "name"),
+    "agent": ("prompt", "task", "description", "name"),
+    "write": ("path", "file", "file_path"),
+    "read": ("path", "file", "file_path"),
+    "terminal": ("command", "cmd"),
+}
+
+
+def _tool_label(name: str, theme: Any) -> str:
+    """AP-lite 工具名 → 动作标签；认不出的工具退回可读的原名。
+
+    ⚠️ 动作词固定英文（CLS 风格），与固定英文的状态词一致；markdown element.content
+    无法承载 ``i18n_content``，所以这是**明确的 i18n 边界**，详见 AGENTS.md。
+    """
+    category = _tool_category(name)
+    if category:
+        return _TOOL_LABELS.get(category, "Tool")
+    raw = str(name or "tool").replace("_", " ").replace("-", " ").strip()
+    return " ".join(raw.split()) or "Tool"
+
+
+#: 工具状态 → （英文状态词, 飞书 ``<font color>`` 颜色）。
+#: 用户 2026-09-17 点单的 CLS 观感：状态不再只是一个 emoji，而是**带颜色的词**
+#: （``Succeeded`` / ``Running`` / ``Failed``），这样色盲用户也能读懂，且与工具面板
+#: 里的标题同一行就能扫完。英文状态词对所有客户端一致（CLS 也是这么做的）。
+_TOOL_STATUS_STYLES: Dict[str, Tuple[str, str]] = {
+    "running": ("Running", "turquoise"),
+    "ok": ("Succeeded", "green"),
+    "success": ("Succeeded", "green"),
+    "error": ("Failed", "red"),
+    "blocked": ("Blocked", "red"),
+    # Hermes 的中断 / 跳过工具用的是这些状态；不映射就会掉进 fallback
+    # （必须存在，2026-09-17 审计 H1：旧写法 `.get()` 后直接解包，未知状态先 TypeError）。
+    "cancelled": ("Cancelled", "grey"),
+    "canceled": ("Cancelled", "grey"),
+    "skipped": ("Skipped", "grey"),
+    "timeout": ("Timed out", "red"),
+}
+
+
+def _format_tool_duration(duration_ms: Any) -> str:
+    """工具耗时的人类格式（对齐 CLS 的 ``25 ms`` / ``1.2 s`` 观感）。
+
+    < 1 秒显示毫秒（模型跑得快的工具人眼更直观），≥ 1 秒显示秒；超过一分钟才退回合时格式。
+    非数字 / NaN / ±Inf / 非正数 / 超过 24h 都返回空串或 ``>24h``（缺数据就少一段，绝不编 0；
+    也绝不让坏 hook 数据把面板整块带走 —— 2026-09-17 审计 M1）。
+    """
+    if isinstance(duration_ms, bool) or not isinstance(duration_ms, (int, float)):
+        return ""
+    try:
+        ms = float(duration_ms)
+    except (TypeError, ValueError, OverflowError):
+        return ""
+    if not math.isfinite(ms) or ms <= 0:
+        return ""
+    if ms < 1000:
+        return f"{int(round(ms))} ms"
+    seconds = ms / 1000.0
+    if seconds < 60:
+        return f"{seconds:.1f} s"
+    if seconds >= 86400:
+        return ">24h"
+    return format_elapsed(seconds)
+
+
+def _duration_seconds(duration_ms: Any) -> Optional[float]:
+    """安全地把毫秒转成秒；坏值（bool/非数值/NaN/Inf/≤0）返回 None。"""
+    if isinstance(duration_ms, bool) or not isinstance(duration_ms, (int, float)):
+        return None
+    try:
+        ms = float(duration_ms)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(ms) or ms <= 0:
+        return None
+    return ms / 1000.0
+
+
+def _detail_safe(text: str) -> str:
+    """细节行放进 ``<font>`` 之前的中和：尖括号换全角、反引号换单引号。
+
+    不这么做的话，参数里的 ``</font>`` / ``<at>`` 会被飞书当 HTML 截断，
+    细节行会突然变成正文（用户看到的是「灰色小字跑出来了」）。
+    """
+    # 只中和 `<`（它才可能开启 HTML 标签）；`>` 与 `&` 都保留 —— 终端里的
+    # `2>/dev/null` / `&&` 换掉会让人误以为是另一个命令（可读性优先）。
+    return " ".join(str(text or "").split()).replace("<", "‹").replace("`", "'")
+
+
+def _unescape_json_fragment(value: str) -> str:
+    r"""把截断 JSON 字符串片段里的转义还原成可读文本（单次扫描，有界）。
+
+    非法 ``\uXXXX`` 保留原文、绝不崩；lone surrogate 转 U+FFFD，避免产出无法 UTF-8
+    编码的字符绕过字节预算。
+    """
+    out: List[str] = []
+    i = 0
+    simple = {'"': '"', "\\": "\\", "/": "/", "n": " ", "t": " ", "r": " ",
+              "b": " ", "f": " "}
+    while i < len(value):
+        ch = value[i]
+        if ch == "\\" and i + 1 < len(value):
+            nxt = value[i + 1]
+            if nxt == "u" and i + 5 < len(value):
+                hex4 = value[i + 2:i + 6]
+                if not _re.fullmatch(r"[0-9a-fA-F]{4}", hex4):
+                    out.append("\\u")
+                    i += 2
+                    continue
+                codepoint = int(hex4, 16)
+                i += 6
+                if (0xD800 <= codepoint <= 0xDBFF and i + 5 < len(value)
+                        and value[i:i + 2] == "\\u"
+                        and _re.fullmatch(r"[0-9a-fA-F]{4}", value[i + 2:i + 6])):
+                    low = int(value[i + 2:i + 6], 16)
+                    if 0xDC00 <= low <= 0xDFFF:
+                        codepoint = 0x10000 + ((codepoint - 0xD800) << 10) + (low - 0xDC00)
+                        i += 6
+                if 0xD800 <= codepoint <= 0xDFFF:
+                    codepoint = 0xFFFD
+                out.append(chr(codepoint))
+                continue
+            if nxt == "u":
+                # 不足 4 位的截断 \u：保留原始反斜杠，不能悄悄吞掉
+                out.append("\\u")
+                i += 2
+                continue
+            out.append(simple.get(nxt, nxt))
+            i += 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+def _preview_value(text: str, category: Optional[str]) -> Optional[str]:
+    """从**被截断的** JSON 预览里摸出一个值（只用于展示，绝不回填原文）。
+
+    :func:`panel._args_preview` 会把预览截到 80 字符，因此 write/terminal 这类大参数
+    的预览通常**不是合法 JSON**。以前的做法是一律不显示细节 —— 干净，但用户看不到
+    加载了哪个 skill / 跑了什么命令。这里做**有界**的 key 提取：只认单层的
+    ``"key": "value"``，value 到字符串结束（截断处）为止；解不出来就返回 None。
+    """
+    keys = _TOOL_DETAIL_KEYS.get(category or "", ())
+    # ⚠️ 只认「对象开头（可有 ``{``）或逗号之后」的键：在别的字符串值里搜到
+    # ``"command": ...`` 不能当成本次工具的参数（2026-09-17 审计 M2 的第二个形状）。
+    for key in keys:
+        match = _re.search(
+            r'(?:\A\{?\s*|,\s*)"%s"\s*:\s*"((?:\\.|[^"\\])*)' % _re.escape(key), text)
+        if match:
+            return _unescape_json_fragment(match.group(1))
+    # 已知类别没命中自己的键：**不要**退回「第一个字符串值」——那会把其它参数
+    # （例如 note）当成命令展示（审计 M2 的第二个形状）。只有未知类别才做这种兜底。
+    if category in _TOOL_DETAIL_KEYS:
+        return None
+    match = _re.search(r'(?:\A\{?\s*|,\s*)"[^"]{1,40}"\s*:\s*"((?:\\.|[^"\\])*)', text)
+    if match:
+        return _unescape_json_fragment(match.group(1))
+    return None
+
+
+def _shell_summary(command: str) -> str:
+    """终端命令做「首条 + 条数」摘要，避免把整串复合命令倒进卡里。"""
+    parts = [part.strip() for part in _re.split(r"\s*(?:&&|\|\||;|\n)\s*", command) if part.strip()]
+    if not parts:
+        return command.strip()
+    if len(parts) > 1:
+        return f"{parts[0]} 等 {len(parts)} 条"
+    return parts[0]
+
+
+def _tool_detail(name: str, preview: str) -> str:
+    """参数预览 → 一行人话细节（**绝不把 JSON 原文倒回卡上**）。
+
+    预览是合法 JSON 时按类别取关键键；被上游 80 字符截断时退到
+    :func:`_preview_value` 的有界提取；两者都拿不到就返回空串（少一段，不倾倒原文）。
+    """
+    text = str(preview or "").strip()
+    if not text:
+        return ""
+    category = _tool_category(name)
+    value: Any = None
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        value = _preview_value(text, category)
+        if value is None:
+            return ""
+    else:
+        if isinstance(parsed, dict):
+            for key in _TOOL_DETAIL_KEYS.get(category or "", ()):
+                candidate = parsed.get(key)
+                if (candidate is not None and not isinstance(candidate, (dict, list))
+                        and str(candidate).strip()):
+                    value = candidate
+                    break
+            if value is None and (category or "") not in _TOOL_DETAIL_KEYS:
+                # 只有未知类别才允许「第一个标量」兜底；已知类别没有自己的键就直接不显示，
+                # 否则会把 note/terminal_id 之类的无关参数当成命令/路径（审计 F1）。
+                for candidate in parsed.values():
+                    if (isinstance(candidate, (str, int, float))
+                            and not isinstance(candidate, bool) and str(candidate).strip()):
+                        value = candidate
+                        break
+        elif isinstance(parsed, (str, int, float)):
+            value = parsed
+        if value is None:
+            return ""
+    if isinstance(value, (dict, list)):
+        # 不把嵌套 JSON 原文倒回卡上（2026-09-17 审计 L3）；拿不到可读标量就不显示细节。
+        return ""
+    detail = str(value)
+    if category == "terminal":
+        detail = _shell_summary(detail)
+    detail = _detail_safe(detail)
+    if len(detail) > 60:
+        detail = detail[:59] + "…"
+    return detail
+
+#: `<font color>` 运行开关：真机探针/客户端不支持时可整体降级为纯文本。
+_COLOR_TAGS_ENABLED = True
+
+
+def set_color_tags_enabled(enabled: bool) -> None:
+    """全局开关（只影响后续渲染；测试与探针失败时使用）。"""
+    global _COLOR_TAGS_ENABLED
+    _COLOR_TAGS_ENABLED = bool(enabled)
+
+
+def color_tags_enabled() -> bool:
+    return _COLOR_TAGS_ENABLED
+
+
+def _colorize(text: str, color: str) -> str:
+    """带颜色的小段；开关关闭时返回纯文本（不留下半个标签）。"""
+    if not _COLOR_TAGS_ENABLED:
+        return text
+    return f"<font color='{color}'>{text}</font>"
 
 
 def tool_step(name: str, *, status: str = "ok", duration_ms: Any = None,
               preview: str = "", theme: Any = THEME_NEUTRAL) -> str:
-    """一步工具调用的单行摘要，供 :func:`unified_panel` 的 ``tools`` 参数使用。
+    """一步工具调用的摘要，供 :func:`unified_panel` 的 ``tools`` 参数使用。
 
-    形如 ``✅ read_file · 2.3s · `` ``{"path": "…"}``。耗时毫秒转秒复用
-    :func:`format_elapsed`（不足 0.1s 显示 ``0.1s``，避免难看的 ``0.0s``）；
-    参数预览包成行内代码 —— 预览是 JSON，可能有 markdown 特殊字符，
-    内部的反引号会被换成单引号，避免破坏行内代码的边界。
-
-    P2 起外部可传 ``theme``；**未传时仍是 neutral**，所以直接调本函数的既有测试/调用
-    一个字节不变。适配器会传配置里的当前主题。
+    * ``neutral``：保持旧观感 —— ``✅ read_file · 2.3s · `{"path": …}```。
+    * ``ap_lite`` / ``ap_bubble``：按 AP 的可读性整理 —— 动作标签 + 时长 +
+      一行细节（``✅ 📖 读取文件 (2.3s)`` + 下一行细节），细节只取参数里的关键值，
+      **不把 JSON 原文倒回卡上**（用户截图里的主要杂乱来源）。
     """
     mark = _TOOL_STATUS_MARKS.get(str(status or ""), "•")
     icon = _tool_icon(name, theme)
-    line = f"{mark} {icon}{name or 'tool'}"
-    if isinstance(duration_ms, (int, float)) and not isinstance(duration_ms, bool):
-        ms = max(0.0, float(duration_ms))
-        if ms > 0:
-            line += f" · {format_elapsed(max(0.1, ms / 1000.0))}"
-    if preview:
-        safe_preview = str(preview).replace("`", "'")
-        line += f" · `{safe_preview}`"
+    # neutral 保持旧行为（包括既有测试/探针的逐字输出）
+    if theme_name(theme) == THEME_NEUTRAL:
+        line = f"{mark} {icon}{name or 'tool'}"
+        seconds = _duration_seconds(duration_ms)
+        if seconds is not None:
+            line += f" · {format_elapsed(max(0.1, seconds))}"
+        if preview:
+            safe_preview = str(preview).replace("`", "'")
+            line += f" · `{safe_preview}`"
+        return line
+    # ap_lite / ap_bubble：CLS 风格 —— 图标 + 加粗动作名 + 耗时 + **带颜色的状态词**，
+    # 细节另起一行、灰色小字（不是 JSON 预览，也不是反引号代码块）。
+    status_text, color = _TOOL_STATUS_STYLES.get(
+        str(status or ""), (str(status or "").strip().capitalize() or "Unknown", "grey"))
+    line = f"{icon}**{_detail_safe(_tool_label(name, theme))}**"
+    duration = _format_tool_duration(duration_ms)
+    if duration:
+        line += f" ({duration})"
+    line += " · " + _colorize(_detail_safe(status_text), color)
+    detail = _tool_detail(name, preview)
+    if detail:
+        line += "\n" + _colorize(f"↳ {detail}", "grey")
     return line
 
 
@@ -1257,10 +1539,13 @@ def fit_reply_card(answer: str, *, streaming: bool = False,
 
 
 def _round_title(index: int, elapsed_ms: Any) -> str:
-    """推理轮的标题行：``第 N 轮 · 6.2s``（耗时是**相对时长**，不是时刻）。"""
+    """推理轮的标题行：``第 N 轮 · 6.2s``（耗时是**相对时长**，不是时刻）。
+
+    脏值不参与运算；单值封顶 24h，避免 ``/1000.0`` 溢出把面板带走（Phase 1 审计 M-1）。
+    """
     base = _i18n.t("panel.round_n", n=index)
     if isinstance(elapsed_ms, int) and not isinstance(elapsed_ms, bool) and elapsed_ms > 0:
-        return f"{base} · {format_elapsed(max(0.1, elapsed_ms / 1000.0))}"
+        return f"{base} · {format_elapsed(max(0.1, min(elapsed_ms, 86_400_000) / 1000.0))}"
     return base
 
 
@@ -1287,6 +1572,41 @@ CARDKIT_STREAM_IDS = (CARDKIT_ANSWER_ID, CARDKIT_PANEL_BODY_ID,
                       CARDKIT_PANEL_TOOLS_ID, CARDKIT_FOOTER_ID)
 
 
+def _rounds_elapsed_ms(rounds: Sequence[Dict[str, Any]]) -> int:
+    """可见推理轮的总耗时（毫秒）；脏值 / 非正数直接跳过，不编 0。
+
+    单值封顶 24h：坏 hook 里的 ``10**400`` 会让 ``/1000.0`` 抛 OverflowError，
+    进而让整块面板静默消失（2026-09-17 审计 M3）。
+    """
+    total = 0
+    for item in rounds:
+        if not isinstance(item, dict):
+            continue
+        value = item.get("elapsed_ms")
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            total += value
+    return min(total, 86_400_000)
+
+
+def _thinking_heading(rounds: Sequence[Dict[str, Any]], reasoning: str = "") -> str:
+    """推理块的灰色小标题：``💭 思考 · 1.6s``（没耗时就写 ``💭 思考``）。"""
+    if not rounds and not reasoning:
+        return ""
+    elapsed_ms = _rounds_elapsed_ms(rounds)
+    key = "panel.sec_thinking" if elapsed_ms > 0 else "panel.sec_thinking_plain"
+    label = (_i18n.t(key, elapsed=format_elapsed(elapsed_ms / 1000.0))
+             if elapsed_ms > 0 else _i18n.t(key))
+    return _colorize(label, "grey")
+
+
+def _tools_heading(count: Any) -> str:
+    """工具块的灰色小标题：``🛠️ 工具执行 · 3 步``（脏值安全：非 int / bool 都不显示）。"""
+    if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+        return ""
+    key = "panel.sec_tools_one" if count == 1 else "panel.sec_tools"
+    return _colorize(_i18n.t(key, n=count), "grey")
+
+
 def panel_rounds_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
                           max_reasoning_chars: int = MAX_REASONING_CHARS) -> str:
     """面板里**推理轮**那一块的 markdown（R3 收窄版：这一块单独一个元素）。
@@ -1298,6 +1618,9 @@ def panel_rounds_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any
     max_reasoning_chars = _cap(max_reasoning_chars, MAX_REASONING_CHARS)
     lines: List[str] = []
     round_list = [item for item in rounds if isinstance(item, dict) and str(item.get("text") or "")]
+    heading = _thinking_heading(round_list, reasoning)
+    if heading:
+        lines.append(heading)
     if round_list:
         keep = max(1, min(len(round_list), max_reasoning_chars // _MIN_ROUND_CHARS))
         share = max(_MIN_ROUND_CHARS, max_reasoning_chars // keep)
@@ -1310,6 +1633,14 @@ def panel_rounds_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any
     elif reasoning:
         lines.append(truncate(reasoning, max_reasoning_chars))
     return "\n\n".join(lines)
+
+
+_FONT_TAG_RE = _re.compile(r"</?font[^>]*>", _re.IGNORECASE)
+
+
+def _strip_font_tags(text: str) -> str:
+    """去掉颜色标签，供小上限截断前的降级（避免切出半个 `<font>`）。"""
+    return _FONT_TAG_RE.sub("", str(text or ""))
 
 
 def panel_tools_markdown(*, tools: Sequence[str] = (),
@@ -1325,10 +1656,16 @@ def panel_tools_markdown(*, tools: Sequence[str] = (),
     max_steps = _cap(max_steps, MAX_PANEL_STEPS)
     lines: List[str] = []
     steps = [str(item) for item in tools]
+    heading = _tools_heading(len(steps))
+    if heading:
+        lines.append(heading)
     if steps and len(steps) > max_steps:
         lines.append(_i18n.t("panel.trimmed", n=len(steps) - max_steps))
         steps = steps[-max_steps:]
     for item in steps:
+        # 小 max_tool_result_chars 下先剥标签再截断：宁可丢颜色，也不留下半个 <font>
+        if "<font" in item and len(item) > max_tool_chars:
+            item = _strip_font_tags(item)
         lines.append(truncate(item, max_tool_chars))
     return "\n\n".join(lines)
 
@@ -1437,7 +1774,7 @@ def unified_panel(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
                   tools: Sequence[str] = (),
                   expanded: bool = False,
                   status: Any = None,
-                  summary: Optional[str] = None,
+                  summary: Optional[Union[str, Dict[str, Any]]] = None,
                   max_reasoning_chars: int = MAX_REASONING_CHARS,
                   max_tool_chars: int = MAX_TOOL_RESULT_CHARS,
                   max_steps: int = MAX_PANEL_STEPS,
@@ -1471,6 +1808,9 @@ def unified_panel(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
     panel_room = max(2, _PANEL_CHILDREN_ROOM)
 
     round_list = [item for item in rounds if isinstance(item, dict) and str(item.get("text") or "")]
+    thinking_heading = _thinking_heading(round_list, reasoning)
+    if thinking_heading:
+        inner.append(md(thinking_heading))
     if round_list:
         # 每轮至少给 _MIN_ROUND_CHARS 才读得下去，但这意味着**轮数必须收住**：
         # 旧写法 share = max(120, 预算 // N) 在 N > 预算/120 时让渲染总量恒等于 120·N，
@@ -1480,9 +1820,12 @@ def unified_panel(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
         # 所以宁可有界地少显示历史轮：渲染轮数 ≤ 预算 // _MIN_ROUND_CHARS。
         # 两个约束一起收：字符预算（均分额度）与元素硬墙（给步骤行留出位置，
         # 有工具时至少留 1 行，没工具时轮次可以吃满面板额度）。
+        # 头部已放入的 thinking 分区标题也要从轮次额度里扣掉（2026-09-17 审计 M5：
+        # 不扣会与 fit_reply_card 的元素墙产生一个 2 元素的缝）。
+        heading_room = 1 if thinking_heading else 0
         keep = max(1, min(len(round_list),
                           max_reasoning_chars // _MIN_ROUND_CHARS,
-                          max(1, panel_room - (1 if tools else 0) - 1)))
+                          max(1, panel_room - heading_room - (1 if tools else 0) - 1)))
         share = max(_MIN_ROUND_CHARS, max_reasoning_chars // keep)
         dropped = len(round_list) - keep
         if dropped > 0:
@@ -1493,14 +1836,31 @@ def unified_panel(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
     elif reasoning:
         inner.append(md(truncate(reasoning, max_reasoning_chars)))
     steps = [str(item) for item in tools]
-    # 面板里已经放了几个元素，剩下的额度才是步骤能用的
-    max_steps = max(1, min(max_steps, panel_room - len(inner)))
-    if max_steps > 0 and len(steps) > max_steps:
-        # 保留最近几步：排查问题基本只看尾部，早期的步骤价值随时间递减。
-        dropped = len(steps) - max_steps
-        inner.append(md(_i18n.t("panel.trimmed", n=dropped)))
-        steps = steps[-max_steps:]
+    remaining = panel_room - len(inner)
+    if remaining <= 0:
+        steps = []
+    elif steps and remaining == 1:
+        # 只剩 1 格：只放最近一步，不加「N 步」标题（避免有标题没步骤）
+        steps = steps[-1:]
+    elif steps:
+        tools_heading = _tools_heading(len(steps))
+        if tools_heading:
+            inner.append(md(tools_heading))
+            remaining -= 1
+        cap = max(0, min(max_steps, remaining))
+        if cap <= 0:
+            steps = []
+        elif len(steps) > cap:
+            # 保留最近几步：排查问题基本只看尾部，早期的步骤价值随时间递减。
+            if cap >= 2:
+                inner.append(md(_i18n.t("panel.trimmed", n=len(steps) - cap)))
+                steps = steps[-(cap - 1):]
+            else:
+                steps = steps[-cap:]
     for item in steps:
+        # 小 max_tool_result_chars 下先剥标签再截断：宁可丢颜色，也不留下半个 <font>
+        if "<font" in item and len(item) > max_tool_chars:
+            item = _strip_font_tags(item)
         inner.append(md(truncate(item, max_tool_chars)))
     border = border_for_status(status)
     if not inner and not status:
@@ -1511,7 +1871,10 @@ def unified_panel(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
         inner.append(md(_i18n.t(_STATUS_TEXT_KEYS.get(str(status or ""), "panel.title"))))
     # 标题必须是 plain_text；优先级：调用方给的摘要行 > 固定的「执行详情」。
     if summary:
-        title: Dict[str, Any] = {"tag": "plain_text", "content": str(summary)}
+        # summary 可以是字符串（旧调用方）或 i18n 节点（adapter 的 `_ld_panel_summary` 走这条，
+        # 这样外层标题在中英文客户端各显示各的）。节点必须是 plain_text。
+        title: Dict[str, Any] = (summary if isinstance(summary, dict)
+                                 else {"tag": "plain_text", "content": str(summary)})
     elif tools:
         # 英文单复数：1 tool call / N tool calls
         key = "panel.title_tools_one" if len(tools) == 1 else "panel.title_tools"

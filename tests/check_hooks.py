@@ -271,7 +271,7 @@ else:
         _adapter_mod = (sys.modules.get("hermes_plugins.larkdeck.core.adapter")
                         or sys.modules["larkdeck.core.adapter"])
         card = _adapter_mod.LarkDeckMixin._ld_build_card(
-            "答案正文", streaming=False, panel=_adapter_mod.LarkDeckMixin._ld_panel("", None),
+            "答案正文", streaming=False, panel=_adapter_mod.LarkDeckMixin._ld_panel(),
             footer=None)
         blob = json.dumps(card, ensure_ascii=False)
         panel_node = None  # noqa: F841 - 下面重新找，这里只是占位
@@ -642,35 +642,60 @@ else:
         try:
             _adm = (sys.modules.get("hermes_plugins.larkdeck.core.adapter")
                     or sys.modules["larkdeck.core.adapter"])
-            node = _adm.LarkDeckMixin._ld_panel("", None)
+            node = _adm.LarkDeckMixin._ld_panel()
             if node is None:
                 problems.append("黄金路径：渲染不出面板")
             else:
                 if node.get("border", {}).get("color") != "green":
                     problems.append(f"黄金路径：边框不是绿色 {node.get('border')!r}")
                 title = node.get("header", {}).get("title", {}).get("content", "")
-                # P2 起默认主题是 ap_lite ⇒ 轮数 / 工具数符号是 🌊 / 🧰。这条门禁验的是
-                # 「标题段有没有丢」，不是主题常量自身；常量由单测与 golden trace 冻结。
-                if "🌊 3" not in title or "🧰 1" not in title:
-                    problems.append(f"黄金路径：面板标题行不对（期望含「🌊 3 / 🧰 1」）：{title!r}")
+                # 2026-09-17 起标题是 CLS 观感的「💭 思考 … · 🛠️ 工具执行 · N 步」；
+                # 这条门禁验的是「思考/工具两段有没有丢」，主题与逐字排版由单测冻结。
+                if "💭 思考" not in title or "🛠️ 工具执行 · 1 步" not in title:
+                    problems.append(
+                        f"黄金路径：面板标题行不对（期望含「💭 思考 / 🛠️ 工具执行 · 1 步」）：{title!r}")
                 print(f"黄金路径面板：{title!r}")
+                inner = " ".join(str(el.get("content", "")) for el in (node.get("elements") or []))
+                if "🛠️ 工具执行 · 1 步" not in inner:
+                    problems.append(f"黄金路径：面板里没有工具分区标题：{inner!r}")
+                elif "<font color='green'>Succeeded</font>" not in inner:
+                    problems.append(
+                        f"黄金路径：工具步骤行没有绿色的 Succeeded 状态词（CLS 观感的核心）：{inner!r}")
+                elif "↳ ls" not in inner:
+                    problems.append(
+                        f"黄金路径：工具步骤行的灰色细节没渲染（期望 ↳ ls）：{inner!r}")
 
-            # ⚠️ 面板标题里的**耗时段**（`⏱ 12.3s`）此前无人验：上面那次调用传的是
-            # `started=None`，所以它永远不出现（第八路审计点出过这个盲区）。生产路径
-            # 是**传 t0 的**（native 帧/收尾/重绘都传 `state["t0"]`），所以这里必须补一次
-            # 带 started 的调用 —— 否则「面板头里没有耗时」这种退化四门禁全绿。
-            timed = _adm.LarkDeckMixin._ld_panel("", time.monotonic() - 12.3)
+            # ⚠️ 2026-09-17 用户指定：**模型名与耗时都不许再进面板标题**，改到页脚
+            # （顺序：状态 → 耗时 → 模型 → ctx）。面板标题本身改为 CLS 观感的
+            # 「💭 思考 … · 🛠️ 工具执行 · N 步」；这里再渲染一次，确认两段都在。
+            timed = _adm.LarkDeckMixin._ld_panel()
             if timed is None:
-                problems.append("黄金路径：带 started 的面板渲染不出来")
+                problems.append("黄金路径：面板渲染不出来（复检那次）")
             else:
                 t_title = timed.get("header", {}).get("title", {}).get("content", "")
-                print(f"黄金路径面板（带耗时）：{t_title!r}")
-                if "⏱" not in t_title:
-                    problems.append(f"黄金路径：面板标题没有耗时段（期望「⏱ 12.3s」）：{t_title!r}")
-                elif "12.3s" not in t_title:
-                    problems.append(f"黄金路径：耗时段的数值不对（期望 12.3s）：{t_title!r}")
-                if "🌊 3" not in t_title or "🧰 1" not in t_title:
-                    problems.append(f"黄金路径：耗时段的出现把它它段挤掉了：{t_title!r}")
+                print(f"黄金路径面板（复检）：{t_title!r}")
+                if "⏱" in t_title or "🤖" in t_title:
+                    problems.append(f"黄金路径：模型/耗时不该再进面板标题：{t_title!r}")
+                if "💭 思考" not in t_title or "🛠️ 工具执行 · 1 步" not in t_title:
+                    problems.append(f"黄金路径：思考/工具段被挤掉了：{t_title!r}")
+
+            footer = _adm.LarkDeckMixin._ld_footer(
+                chat_id=_GOLDEN_CHAT, started=time.monotonic() - 12.3)
+            print(f"黄金路径页脚：{footer!r}")
+            if not footer:
+                problems.append("黄金路径：页脚为空（状态/耗时/模型整块丢了）")
+            else:
+                if not footer.startswith("✅ 已完成"):
+                    problems.append(f"黄金路径：页脚最前面不是完成状态：{footer!r}")
+                if "⏱" not in footer or "12.3s" not in footer:
+                    problems.append(f"黄金路径：页脚没有耗时段（期望「⏱ 12.3s」）：{footer!r}")
+                if "🤖 deepseek-v4-flash" not in footer:
+                    problems.append(f"黄金路径：页脚没有模型名：{footer!r}")
+                if "ctx " not in footer:
+                    problems.append(f"黄金路径：页脚没有上下文用量：{footer!r}")
+                if not (footer.index("✅") < footer.index("⏱") < footer.index("🤖")
+                        < footer.index("ctx")):
+                    problems.append(f"黄金路径：页脚顺序不是 状态→耗时→模型→ctx：{footer!r}")
         except Exception as exc:  # pragma: no cover - 防御性
             problems.append(f"黄金路径：渲染异常 {exc!r}")
 

@@ -531,8 +531,8 @@ _DEFAULTS: Dict[str, Any] = {
     #: ``full``（再 + 首字节延迟 TTFB）。**缺数据就少一段，绝不编 0**（见 `cards.footer_line`）。
     "footer_metrics": "off",
     "progress_lines_in_body": False,
-    "footer": True,           # 页脚：只放上下文用量（模型/耗时已并入面板标题行）
-    "show_model": True,       # 面板标题行里显示模型名
+    "footer": True,           # 页脚：状态 → 耗时 → 模型 → 上下文用量（+ 本卡短码）
+    "show_model": True,       # 页脚里显示模型名（面板标题只放思考/工具摘要）
     "context_style": "text",  # 上下文用量样式：text（默认）| bar | both
     # P1b：CardKit 设备字号档位。off（默认，跟现状）| mobile_friendly（PC 小、手机大）
     # | compact（紧凑）| large（整体放大）。只写 config.style.text_size 的 token 映射 +
@@ -540,6 +540,9 @@ _DEFAULTS: Dict[str, Any] = {
     "text_profile": "off",
     # P2：观感主题。neutral=原符号；ap_lite=抽象 emoji（用户选定默认）；ap_bubble=AP 泡波全量。
     "theme": "ap_lite",
+    # 2026-09-17 D3：是否在 markdown 里使用 <font color>。默认 true（CLS 观感）；
+    # 真机不认/希望纯文本时置 false，会走 cards._colorize 的无色降级路径。
+    "panel_color_tags": True,
     "model_aliases": "",      # 模型别名："真名=显示名, ..." 或 dict
     "max_reasoning_chars": _cards.MAX_REASONING_CHARS,
     "max_tool_result_chars": _cards.MAX_TOOL_RESULT_CHARS,
@@ -601,6 +604,8 @@ def _apply_metrics_config() -> None:
     # 时调用，会让「官方删键 / 归零 reload」在内存里显示成功、运行时却仍钉着旧上限，
     # 直到重启进程 —— 正是「卡片不许撒谎」要消灭的形态。
     _context.set_context_override(pinned or 0)
+    # D3 降级开关：配置关掉后所有 <font color> 渲染走纯文本；无条件推，reload 也生效。
+    _cards.set_color_tags_enabled(bool(_cfg("panel_color_tags")))
 
 
 def configure(**kwargs: Any) -> None:
@@ -1336,7 +1341,7 @@ def _log_turn_selfcheck(chat_id: str, transport: str, frames: int,
         return
     panel_ok = bool(info.get("rounds") or info.get("tools"))
     try:
-        footer_text = LarkDeckMixin._ld_footer() or ""
+        footer_text = LarkDeckMixin._ld_footer(chat_id=chat_id) or ""
     except Exception:
         footer_text = ""
     logger.info(
@@ -1468,6 +1473,16 @@ def _log_theme_once(raw: Any, fallback: str) -> None:
         shown = type(raw).__name__
     logger.warning("[larkdeck] theme=%s 不是可用主题，已退回 %s（可选：neutral / ap_lite / "
                    "ap_bubble）", shown, fallback)
+
+
+def _ld_status_text(status: Any) -> str:
+    """面板结局 → 页脚最前面的状态文案（``✅ 已完成`` / ``❌ 执行出错`` / ``⛔ 已中止``）。"""
+    key = {
+        _panel.STATUS_OK: "panel.status_ok",
+        _panel.STATUS_ERROR: "panel.status_error",
+        _panel.STATUS_STOPPED: "panel.status_stopped",
+    }.get(str(status or ""))
+    return _i18n.t(key) if key else ""
 
 
 class LarkDeckMixin:
@@ -1615,26 +1630,28 @@ class LarkDeckMixin:
            多会话并发时不会串台（页脚指标那种串台是**已知取舍**，但短码是**定位**用的，
            串了就等于没有）。
         """
-        base = self._ld_footer()
+        base = self._ld_footer(chat_id=str(state.get("chat_id") or ""),
+                               started=state.get("t0"),
+                               status=state.get("status"))
         trace = _ld_trace_id(state.get("message_id") or state.get("card_id"))
         if not base or not trace:
             return base
         return f"{base} · \U0001f516 {trace}"
 
     @classmethod
-    def _ld_footer(cls) -> Optional[str]:
-        """页脚一行：上下文用量（``ctx 45.2k/200k · 23%``）+ 可选的 R7 指标。
+    def _ld_footer(cls, chat_id: str = "", started: Optional[float] = None,
+                   status: Optional[str] = None) -> Optional[str]:
+        """页脚一行：``状态 · ⏱ 时长 · 🤖 模型 · ctx 用量 · 短码``。
 
-        模型名与耗时已经搬进面板标题行（决策 D2：卡片级 header 去掉了，信息压进面板头），
-        这里再写一遍就是同一屏里重复两行同样的信息。页脚留下的是面板头不显示的那几项。
+        用户 2026-09-17 明确指定（对齐 aiduPOP 的页脚观感）：
+          * 状态放**最前面**（``✅ 已完成`` / ``❌ 执行出错`` / ``⛔ 已中止``）；
+          * 模型名从面板标题搬到页脚；
+          * 上下文用量与卡短码继续留在页脚。
+        面板标题因此只保留 ``轮数 · 工具数``。
 
-        **R7 扩展**（配置 ``footer_metrics``，默认 ``off`` = 与从前一字不差）：
+        **R7 扩展**（配置 ``footer_metrics``，默认 ``off``）：
           * ``basic`` —— 加缓存命中率（``⚡ 75%``）与本回合 API 次数（``🔁 7``）；
           * ``full``  —— 再加首字节延迟（``🐢 0.4s``）。
-        这三个数**都能从载荷直接算**（``cache_read_tokens`` / ``api_call_count`` /
-        ``first_chunk_at - started_at``），**成本**那条在本项目里做不到实报（载荷没有成本字段），
-        所以**不做**（审计纠正：要做得引 ``agent.usage_pricing``，那是新的上游耦合）。
-
         数据来自官方钩子（见 :mod:`larkdeck.core.context`）：钩子还没触发时该段自然缺失，
         全缺就返回 ``None``（不渲染脚注元素）。**任何情况下不抛异常** —— 页脚是装饰，
         不能因为它把整张卡片搞坏。
@@ -1645,12 +1662,31 @@ class LarkDeckMixin:
             mode = str(_cfg_raw("footer_metrics") or "off").strip().lower()
             if mode not in ("off", "basic", "full"):
                 mode = "off"          # 认不出的值按 off（不猜、不放大）
-            snap = _context.snapshot() if mode != "off" else {}
+            ctx_snap = _context.snapshot() or {}
+            panel_snap = _panel.snapshot(chat_id) if chat_id else _panel.snapshot()
+            status_text = _ld_status_text(
+                status or (panel_snap.get("status") if isinstance(panel_snap, dict) else None))
+            model = ""
+            if _cfg("show_model"):
+                model = str(ctx_snap.get("model_display") or "")
+            duration = None
+            # ⚠️ truthy 判据：``started=0`` 不是合法回合起点（monotonic 不会为 0），
+            # 当「有起点」会算出机器 uptime 级别的假耗时（2026-09-17 审计 M6）。
+            if started:
+                try:
+                    duration = max(0.0, time.monotonic() - float(started))
+                except (TypeError, ValueError, OverflowError):
+                    duration = None
+            metric_snap = ctx_snap if mode != "off" else {}
             return _cards.footer_line(
-                context=cls._ld_context_segment(snap or None),
-                cache=snap.get("cache_pct") if mode in ("basic", "full") else None,
-                api=snap.get("api_call_count") if mode in ("basic", "full") else None,
-                ttfb=(None if snap.get("ttfb_ms") is None else float(snap["ttfb_ms"]) / 1000.0)
+                status=status_text,
+                duration=duration,
+                model=model,
+                context=cls._ld_context_segment(ctx_snap),
+                cache=metric_snap.get("cache_pct") if mode in ("basic", "full") else None,
+                api=metric_snap.get("api_call_count") if mode in ("basic", "full") else None,
+                ttfb=(None if metric_snap.get("ttfb_ms") is None
+                      else float(metric_snap["ttfb_ms"]) / 1000.0)
                 if mode == "full" else None,
                 theme=_ld_theme(),
             )
@@ -1659,33 +1695,46 @@ class LarkDeckMixin:
             return None
 
     @classmethod
-    def _ld_panel_summary(cls, snap: Dict[str, Any], started: Optional[float]) -> str:
-        """面板标题行：``🤖 模型 · 🧠 3 · 🔧 5 · ⏱ 12.3s``（决策 D2 的信息落点）。
+    def _ld_panel_summary(cls, snap: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """外层折叠面板标题：``💭 思考 1.6s · 🛠️ 工具执行 · 3 步``（i18n 节点）。
 
-        全是「符号 + 数字 + 英文缩写」，与页脚同理：天然无需翻译，也不该走 i18n。
-        各段数据缺失时自然缺段；全缺时返回空串，调用方退回固定标题。
+        用户 2026-09-17 指定向 CLS 看齐：思考与工具用**两个不同的 emoji**，思考显示
+        耗时、工具显示步数。返回的是 ``i18n_text`` 节点（不是裸字符串），折叠面板标题
+        在中英文客户端各显示各的；``cards.unified_panel`` 直接把它当 plain_text 用。
+        缺数据就少一段；全缺返回 ``None``，调用方退回固定标题「执行详情」。
         """
         try:
-            model = ""
-            if _cfg("show_model"):
-                model = str(_context.snapshot().get("model_display") or "")
-            duration = None
-            if started:
-                duration = max(0.0, time.monotonic() - float(started))
-            return _cards.footer_line(
-                model=model,
-                rounds=len(snap.get("rounds") or []),
-                tools=len(snap.get("tools") or []),
-                duration=duration,
-                theme=_ld_theme(),
-            ) or ""
+            rounds = [item for item in (snap.get("rounds") or []) if isinstance(item, dict)]
+            tools = snap.get("tools") or []
+            reasoning = str(snap.get("reasoning") or "")
+            count = len(tools)
+            elapsed_ms = _cards._rounds_elapsed_ms(rounds)
+            if count:
+                if rounds or reasoning:
+                    if elapsed_ms > 0:
+                        key = ("panel.summary_both_one" if count == 1
+                               else "panel.summary_both")
+                        return _i18n.i18n_text(
+                            key, elapsed=_cards.format_elapsed(elapsed_ms / 1000.0), n=count)
+                    key = ("panel.summary_both_plain_one" if count == 1
+                           else "panel.summary_both_plain")
+                    return _i18n.i18n_text(key, n=count)
+                key = "panel.sec_tools_one" if count == 1 else "panel.sec_tools"
+                return _i18n.i18n_text(key, n=count)
+            if rounds or reasoning:
+                if elapsed_ms > 0:
+                    return _i18n.i18n_text(
+                        "panel.sec_thinking",
+                        elapsed=_cards.format_elapsed(elapsed_ms / 1000.0))
+                return _i18n.i18n_text("panel.sec_thinking_plain")
+            return None
         except Exception:
             logger.debug("[larkdeck] 面板标题渲染失败，跳过", exc_info=True)
-            return ""
+            return None
 
     @classmethod
-    def _ld_panel_parts(cls, chat_id: str = "", started: Optional[float] = None,
-                        *, report_empty: bool = False) -> Tuple[str, str]:
+    def _ld_panel_parts(cls, chat_id: str = "", *,
+                        report_empty: bool = False) -> Tuple[str, str]:
         """面板的**两块**内容（CardKit 实体卡用，R3 收窄版）：``(推理块, 工具块)``。
 
         为什么拆两块：推理文本**逐字在长**（轮次标题的耗时每秒还在变）⇒ 装推理的那个元素
@@ -1738,7 +1787,7 @@ class LarkDeckMixin:
             return "", ""
 
     @classmethod
-    def _ld_panel_markdown(cls, chat_id: str = "", started: Optional[float] = None) -> str:
+    def _ld_panel_markdown(cls, chat_id: str = "") -> str:
         """面板内容的 **markdown 文本**（**普通卡 / `patch` 传输**用，见 :func:`cards.panel_markdown`）。
 
         与 :meth:`_ld_panel` 取**同一份快照、同一套上限**，所以两条传输看到的内容一致；
@@ -1779,8 +1828,8 @@ class LarkDeckMixin:
             return ""
 
     @classmethod
-    def _ld_panel(cls, chat_id: str = "", started: Optional[float] = None,
-                  *, report_empty: bool = False) -> Optional[Dict[str, Any]]:
+    def _ld_panel(cls, chat_id: str = "", *,
+                  report_empty: bool = False) -> Optional[Dict[str, Any]]:
         """底部折叠面板：推理过程 + 工具步骤 + 状态色（数据来自 :mod:`larkdeck.core.panel`）。
 
         ``chat_id`` 决定面板归属：由 ``pre_gateway_dispatch`` 观察到的
@@ -1788,7 +1837,9 @@ class LarkDeckMixin:
         拿不到映射时（新会话首回合 / 老版本 Hermes）自动退回「最近活跃会话」的旧行为
         —— **归属失败绝不能导致面板不渲染**。
 
-        ``started`` 是本回合的起始时刻（用于面板标题里的耗时）；拿不到就不显示耗时。
+        ⚠️ **不再收 ``started``**（2026-09-17）：面板标题只放 CLS 观感的
+        「💭 思考 / 🛠️ 工具执行」摘要，模型名与回合耗时都在页脚（``_ld_footer``）。
+        删掉形参是为了让「面板标题不会再有耗时」由**签名**保证，而不是靠调用方记得别传。
 
         没有数据（钩子未触发 / reasoning 未开启 / 面板关掉）就返回 ``None``，
         ``reply_card`` 会自然跳过这个元素。与页脚同理：**任何情况下不抛异常**，
@@ -1819,7 +1870,7 @@ class LarkDeckMixin:
                 tools=steps,
                 expanded=_cfg("panel_expanded"),
                 status=snap.get("status"),
-                summary=cls._ld_panel_summary(snap, started),
+                summary=cls._ld_panel_summary(snap),
                 max_reasoning_chars=_cfg_int("max_reasoning_chars", _cards.MAX_REASONING_CHARS),
                 max_tool_chars=_cfg_int("max_tool_result_chars", _cards.MAX_TOOL_RESULT_CHARS),
                 max_steps=_cfg_int("max_panel_steps", _cards.MAX_PANEL_STEPS),
@@ -1949,7 +2000,7 @@ class LarkDeckMixin:
             content = _sanitize_for_send(content)
             card = self._ld_build_card(content, streaming=False,
                                        panel=self._ld_panel(chat_id, report_empty=True),
-                                       footer=self._ld_footer())
+                                       footer=self._ld_footer(chat_id=chat_id))
             result = await self._ld_send_card(chat_id, card, reply_to=reply_to, metadata=metadata)
             if result is not None and getattr(result, "success", False):
                 message_id = getattr(result, "message_id", "") or ""
@@ -1984,9 +2035,10 @@ class LarkDeckMixin:
             #    用基数页脚会把短码漏掉 —— 而「截图 ↔ 日志」对齐正是短码存在的唯一理由。
             card = self._ld_build_card(
                 content, streaming=not finalize,
-                panel=self._ld_panel(chat_id, state.get("t0"),
-                                     report_empty=bool(finalize)),
-                footer=self._ld_frame_footer({"message_id": message_id}),
+                panel=self._ld_panel(chat_id, report_empty=bool(finalize)),
+                footer=self._ld_frame_footer({"message_id": message_id,
+                                              "chat_id": state.get("chat_id") or chat_id,
+                                              "t0": state.get("t0")}),
             )
             result = await self._ld_update_card(chat_id, message_id, card)
             if result is not None and getattr(result, "success", False):
@@ -2457,9 +2509,9 @@ class LarkDeckMixin:
         sealed = text[offset:cut]
         card = self._ld_build_card(sealed + "\n\n" + _i18n.t("stream.continued"),
                                    streaming=False,
-                                   panel=self._ld_panel(chat, state.get("t0"),
-                                                        report_empty=True),
-                                   footer=self._ld_footer())
+                                   panel=self._ld_panel(chat, report_empty=True),
+                                   footer=self._ld_footer(chat_id=chat,
+                                                          started=state.get("t0")))
         result = await self._ld_update_card(chat, old_message_id, card)
         if result is None or not getattr(result, "success", False):
             logger.warning("[larkdeck] 卡链：封旧卡失败（%s），本帧回落",
@@ -2469,7 +2521,7 @@ class LarkDeckMixin:
         # 但它的 id 留在 `ck_cards` 里 —— 那是「这一回合发过哪几张卡」的唯一记录。
         self._ld_forget(old_message_id)
         # ② 开新卡：只写**剩下的那一段**（写整段会让用户把前半段再看一遍 —— R4 最大的观感坑）
-        new_body, new_tools = self._ld_panel_parts(chat, now)
+        new_body, new_tools = self._ld_panel_parts(chat)
         made = await self._ld_ck_create(chat, answer=text[cut:],
                                         panel_text=new_body, panel_tools_text=new_tools,
                                         reply_to=reply_to)
@@ -2661,7 +2713,7 @@ class LarkDeckMixin:
                 # ---- CardKit 实体卡（真打字机）：结构建实体时定死，之后只按 id 写元素 ----
                 # R3 收窄版：面板是**两块**（推理 / 工具），建实体时都定死，之后只改内容
                 panel_text, panel_tools_text = self._ld_panel_parts(
-                    chat, now, report_empty=bool(finalize))
+                    chat, report_empty=bool(finalize))
                 # ⚠️ 这里**故意**用 `_ld_footer()` 而不是 `_ld_frame_footer(state)`：
                 # 这一帧就是**建卡那一帧**，`message_id`/`card_id` 此刻还不存在 ——
                 # 短码是「本卡的 id 后 6 位」，在 id 诞生之前不可能有。**从下一帧起**
@@ -2711,9 +2763,8 @@ class LarkDeckMixin:
             # ⚠️ 同理（见上面 CardKit 那处）：**建卡那一帧**还没有 id ⇒ 只能是基数页脚；
             # 短码从第二帧起才有。
             card = self._ld_build_card(display, streaming=True,
-                                       panel=self._ld_panel(chat, now,
-                                                            report_empty=bool(finalize)),
-                                       footer=self._ld_footer())
+                                       panel=self._ld_panel(chat, report_empty=bool(finalize)),
+                                       footer=self._ld_footer(chat_id=chat, started=now))
             result = await self._ld_send_card(chat, card, reply_to=reply_to)
             if result is None or not getattr(result, "success", False):
                 return self._ld_stream_fail(
@@ -2747,8 +2798,7 @@ class LarkDeckMixin:
             tail_offset = int(state.get("ck_offset") or 0)
             tail_visible = _sanitize_for_send(display[tail_offset:])
             card = self._ld_build_card(tail_visible or " ", streaming=False,
-                                       panel=self._ld_panel(chat, state.get("t0"),
-                                                            report_empty=True),
+                                       panel=self._ld_panel(chat, report_empty=True),
                                        footer=self._ld_frame_footer(state))
             result = await self._ld_update_card(chat, message_id, card)
             if result is None or not getattr(result, "success", False):
@@ -2846,7 +2896,7 @@ class LarkDeckMixin:
             # ⚠️ 面板那两块**按关键字**传：`_ck_plan` 的第 3 个位置参数是**元素表**，
             # 用 `*parts` 展开会把工具块塞进 `elems`（实测症状：帧异常 ⇒ 整回合掉 native）。
             _panel_body, _panel_tools = self._ld_panel_parts(
-                chat, state.get("t0"), report_empty=bool(finalize))
+                chat, report_empty=bool(finalize))
             ops = _ck_plan(visible, _panel_body, live_elems, self._ld_frame_footer(state),
                            panel_tools_text=_panel_tools)
             live_state = dict(state)
@@ -2897,7 +2947,7 @@ class LarkDeckMixin:
                 _log_ck_degrade_once(degrade_code)
                 # ⚠️ 降级后写的也是**本卡那一段**（同 R4：写全文会把封掉的几段重放一遍）
                 card = self._ld_build_card(visible, streaming=True,
-                                           panel=self._ld_panel(chat, state.get("t0")),
+                                           panel=self._ld_panel(chat),
                                            footer=self._ld_frame_footer(state))
                 result = await self._ld_update_card(chat, message_id, card)
                 if result is None or not getattr(result, "success", False):
@@ -2938,8 +2988,7 @@ class LarkDeckMixin:
         # ⚠️ 这条车道（patch 传输 / 降级之后）同样只写**本卡那一段**：写整段会让降级后的卡
         # 把已经封掉的几段重放一遍（与元素车道同一条纪律）。
         card = self._ld_build_card(visible, streaming=True,
-                                   panel=self._ld_panel(chat, state.get("t0"),
-                                                        report_empty=bool(finalize)),
+                                   panel=self._ld_panel(chat, report_empty=bool(finalize)),
                                    footer=self._ld_frame_footer(state))
         result = await self._ld_update_card(chat, message_id, card)
         if result is None or not getattr(result, "success", False):
@@ -3242,13 +3291,15 @@ class LarkDeckMixin:
             # 只靠 `_ld_panel` 会踩到一个实测过的坑 —— 该回合还没有任何过程数据时
             # （模型还在思考、还没调工具），快照里什么都没有 ⇒ 面板为 None ⇒
             # 「状态改了、卡片没变、还不报错」。这正是本项目最怕的形态。
-            panel = self._ld_panel(chat, started, report_empty=True) or _cards.unified_panel(
+            panel = self._ld_panel(chat, report_empty=True) or _cards.unified_panel(
                 status=_panel.STATUS_STOPPED)
             # ⚠️ 同上（审计 C1）：`/stop` 重绘是**用户最可能截图的那一帧**，而且它以前会把
             #    卡片上**已有的** 🔖 抹掉（用基数页脚重画 ⇒ 短码没了）。这里手上就有 message_id。
             card = self._ld_build_card(_sanitize_for_send(text) or " ", streaming=False,
                                        panel=panel,
-                                       footer=self._ld_frame_footer({"message_id": message_id}))
+                                       footer=self._ld_frame_footer(
+                                           {"message_id": message_id, "chat_id": chat,
+                                            "t0": started, "status": _panel.STATUS_STOPPED}))
             blob = json.dumps(card, ensure_ascii=False)
             if '"collapsible_panel"' not in blob:
                 # 第十路审计：正文贴着飞书硬上限时，降载阶梯会把承载状态色的面板摘掉 ⇒

@@ -1035,10 +1035,10 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
             #   为什么必须在真机上验这一条：去重的判据在本地（`ck_decor`），所以它不会因为
             #   飞书拒绝而变红 —— 真机要证明的是「只带一个 action 的 batch 照样 `code=0`」
             #   （多元素 batch 已经验过，单元素那条路是新的）。
-            panel_before = adapter._ld_panel_markdown(chat, None)
+            panel_before = adapter._ld_panel_markdown(chat)
             _panel_mod.record_reasoning(_sid, _tid, "再补一段推理，让面板内容变一次。") \
                 if _panel_mod is not None else None
-            panel_after = adapter._ld_panel_markdown(chat, None)
+            panel_after = adapter._ld_panel_markdown(chat)
             print(f"   面板内容变了 = {panel_after != panel_before}"
                   f"（{len(panel_before)} → {len(panel_after)} 字符）")
             ok_tail = loop.run_until_complete(adapter.send_stream_frame(

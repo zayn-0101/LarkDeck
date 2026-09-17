@@ -7,9 +7,15 @@ description: >
   platform adapter (registry last-writer-wins) and subclasses it, replacing the
   plain-text reply path with a card renderer: one card streams from the first
   token through the final answer, with a collapsible reasoning + tool panel
-  (model / rounds / tools / elapsed in its header), per-turn status colors on
+  (a CLS-style `💭 Thought · 🛠️ Tools` panel summary; status, elapsed and model
+  in the footer), per-turn status colors on
   the panel border (green = done, red = failed, yellow = stopped), interactive
-  clarify cards and bilingual (zh / en) UI strings.
+  clarify cards, and bilingual (zh / en) i18n nodes for card chrome. Note:
+  markdown content is language-fixed because Feishu markdown does not carry
+  i18n_content: tool action/status words are fixed English; footer status,
+  pending placeholder, round headings, trim/continuation notices and section
+  headings are fixed Chinese defaults. Only plain_text/i18n nodes follow the
+  client language.
 
   No Hermes source file is modified and no monkeypatching is used, so a Hermes
   upgrade never requires reinstalling or re-patching this plugin.
@@ -67,11 +73,11 @@ config_schema:
   footer:
     type: boolean
     default: true
-    description: "页脚显示上下文用量（模型名与耗时在面板标题行）"
+    description: "页脚：状态 → 耗时 → 模型 → 上下文用量（+ 本卡短码）"
   show_model:
     type: boolean
     default: true
-    description: "面板标题行里包含模型名"
+    description: "页脚里显示模型名（面板标题只放「💭 思考 / 🛠️ 工具执行」摘要）"
   context_style:
     type: string
     default: "text"
@@ -84,6 +90,10 @@ config_schema:
     type: string
     default: "ap_lite"
     description: "观感主题：neutral（原符号）/ ap_lite（默认，抽象 emoji）/ ap_bubble（AP 泡波风格，含人物 emoji，可选）"
+  panel_color_tags:
+    type: boolean
+    default: true
+    description: "markdown 面板里是否使用 <font color>（默认 true，CLS 观感）；关闭则状态词/灰色标题/细节行走纯文本降级"
   model_aliases:
     type: string
     default: ""

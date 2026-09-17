@@ -772,7 +772,9 @@ def test_send_and_edit_include_panel():
         body = json.loads(captured[0]["content"])
         assert "collapsible_panel" in _all_tags(body)
         joined = json.dumps(body, ensure_ascii=False)
-        assert "推理中……" in joined and "bash" in joined
+        assert "推理中……" in joined and "Run command" in joined, joined
+        assert "bash" not in joined, \
+            f"默认 ap_lite 不该再把原始英文工具名倒进卡片：{joined}"
     finally:
         panel.reset()
         adapter._CONFIG.clear()
@@ -1014,6 +1016,12 @@ def _golden_trace() -> dict:
                                    duration_ms=2300, tool_call_id="tc-golden-1")
         returns.append(_run(raw.send_stream_frame("第一段，第二段。", chat_id="oc_golden",
                                                   turn_id="t-golden")))
+        # 用户 2026-09-17 的观感要求：结局状态在最前、模型名在页脚（不再进面板标题）。
+        # 把这两样塞进夹具的**定义域**，否则「状态/模型整段丢掉」在 golden trace 里逐字不变。
+        context.record_api_call(model="test-model", provider="test",
+                                usage={"input_tokens": 21000, "prompt_tokens": 21000,
+                                       "output_tokens": 5})
+        panel.record_turn_end("oc_golden", "s-golden", completed=True)
         finalized = []
 
         async def _record_update(chat_id, mid, card):
@@ -1449,7 +1457,7 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                                           chat_id="oc_ck", turn_id="t-ck"))
         panel.reset()
         panel.record_reasoning("oc_ck", "s-ck-1", "面板到这一帧才第一次有内容")
-        assert raw._ld_panel_markdown("oc_ck", None), "⑱ 前提：面板到这一帧必须有内容"
+        assert raw._ld_panel_markdown("oc_ck"), "⑱ 前提：面板到这一帧必须有内容"
         assert _run(raw.send_stream_frame("正文一，正文二，正文三，正文四",
                                           chat_id="oc_ck", turn_id="t-ck"))
         assert context.status_snapshot()["frame_ok_count"] == 5, \
@@ -2218,7 +2226,7 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             _footer(3000, "⑱ 前提")
             assert _run(raw19.send_stream_frame("正文四", chat_id="oc_ck20", turn_id="t-20"))
             panel.record_reasoning("oc_ck20", "s-ck-20", "面板第二段")
-            assert raw19._ld_panel_markdown("oc_ck20", None), "⑱ 前提：面板到这一帧必须有内容"
+            assert raw19._ld_panel_markdown("oc_ck20"), "⑱ 前提：面板到这一帧必须有内容"
             assert _run(raw19.send_stream_frame("正文五", chat_id="oc_ck20", turn_id="t-20"))
             got_ids = [[a["params"]["element_id"] for a in b[0]] for b in calls["batch"]]
             got_batch_seqs = [b[1] for b in calls["batch"]]
@@ -2807,7 +2815,7 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         #    （2026-09-14 R3 代码审计实测：把 `_ld_panel_parts` 的三个上限换成写死的值，
         #    四门禁全绿 ⇒ 实体卡面板的上限**完全没人守**，长工具行/200 步都不会被截断，
         #    最后撞建实体的字节墙 ⇒ 那一帧 fail-open）。所以两块各自断言一次。
-        _body, _tools = raw11._ld_panel_parts("oc_ck12", None)
+        _body, _tools = raw11._ld_panel_parts("oc_ck12")
         assert _body, "前提：推理块得有内容（否则这条断言恒真）"
         assert len(_body) <= 200, \
             f"配了 max_reasoning_chars=100，cardkit 的推理块却有 {len(_body)} 字符（上限被忽略）"
@@ -2817,7 +2825,7 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             _panel_mod.record_tool_started("oc_ck12", "s-ck12", f"tool{_i}", {"i": _i}, f"c{_i}")
             _panel_mod.record_tool_finished("oc_ck12", "s-ck12", f"tool{_i}", status="ok",
                                             duration_ms=10, tool_call_id=f"c{_i}")
-        _body2, _tools2 = raw11._ld_panel_parts("oc_ck12", None)
+        _body2, _tools2 = raw11._ld_panel_parts("oc_ck12")
         assert _tools2, "前提：工具块得有内容"
         _rows = [r for r in _tools2.split("\n\n") if r.startswith(("✅", "⏳"))]
         assert len(_rows) == 3, \
@@ -3389,10 +3397,14 @@ def test_format_elapsed_and_footer_line() -> None:
     assert cards.format_elapsed(60) == "1m00s"
     assert cards.format_elapsed(125.7) == "2m05s"
     assert cards.format_elapsed(-1) == "0.0s"
-    line = cards.footer_line(model="Sonnet 4.6", context="ctx 45.2k/200k · 23%", duration=12.3)
-    assert line == "🤖 Sonnet 4.6 · ctx 45.2k/200k · 23% · ⏱ 12.3s"
+    line = cards.footer_line(status="✅ 已完成", model="Sonnet 4.6",
+                             context="ctx 45.2k/200k · 23%", duration=12.3)
+    # 用户 2026-09-17 指定的页脚阅读顺序：状态 → 时长 → 模型 → 其余指标。
+    assert line == "✅ 已完成 · ⏱ 12.3s · 🤖 Sonnet 4.6 · ctx 45.2k/200k · 23%"
     assert cards.footer_line() is None
     assert cards.footer_line(model="m") == "🤖 m"
+    assert cards.footer_line(model="m", duration=1.2) == "⏱ 1.2s · 🤖 m",         "模型前必须有耗时；顺序不能倒（对齐 AP 的 `已完成 · 1m 4s · ✳ model`）"
+    assert cards.footer_line(status="S", duration=1.2, model="m") == "S · ⏱ 1.2s · 🤖 m"
     assert cards.footer_line(duration=0.0) is None, "0 秒不算耗时（首帧就是这个情况）"
     assert cards.footer_line(duration=0.05) is None, "不足 0.1s 不显示（native seed 帧）"
     assert cards.footer_line(tools=3) == "🔧 3"
@@ -3431,6 +3443,121 @@ def test_tool_step_formatting() -> None:
 
 
 
+def test_tool_step_unknown_and_cancelled_statuses_never_crash():
+    """Hermes 会 emit ``status="cancelled"``（中断/跳过的工具）——未知状态不能把面板带走。
+
+    2026-09-17 审计 H1：旧写法 ``_TOOL_STATUS_STYLES.get(...)`` 后直接解包，未命中时先抛
+    ``TypeError``，``_ld_panel`` 的列表推导整块失败 ⇒ 一个被取消的工具就能让面板、推理和
+    状态色全部消失。这里钉「未知状态有兜底词」与「中性主题仍走旧 ``•`` 兜底」两条。
+    """
+    cases = {
+        "cancelled": ("Cancelled", "grey"),
+        "canceled": ("Cancelled", "grey"),
+        "skipped": ("Skipped", "grey"),
+        "success": ("Succeeded", "green"),
+        "": ("Unknown", "grey"),
+        "weird": ("Weird", "grey"),
+        "timeout": ("Timed out", "red"),
+    }
+    for status, (label, color) in cases.items():
+        try:
+            got = cards.tool_step("read_file", status=status, theme="ap_lite")
+        except TypeError as exc:
+            raise AssertionError(
+                f"未知工具状态 {status!r} 让 tool_step 解包崩溃：{exc}") from exc
+        assert got.startswith(
+            f"📖 **Read file** · <font color='{color}'>{label}</font>"), got
+    # neutral 主题仍保持旧行为（cancelled 现在有 ⛔ 兜底，不再是未知 •）
+    assert cards.tool_step("read_file", status="cancelled") == "⛔ read_file"
+    assert cards.tool_step("read_file", status="skipped") == "⏭ read_file"
+
+
+def test_tool_duration_and_section_heading_helpers_are_dirty_data_safe():
+    """坏 hook 数据（NaN / Inf / 超大 int / 非 int）不能让面板整块消失。"""
+    assert cards._format_tool_duration(25) == "25 ms"
+    assert cards._format_tool_duration(1200) == "1.2 s"
+    assert cards._format_tool_duration(float("nan")) == ""
+    assert cards._format_tool_duration(float("inf")) == ""
+    assert cards._format_tool_duration(10 ** 400) == ""
+    assert cards._format_tool_duration(86_400_000) == ">24h"
+    huge = [{"elapsed_ms": 10 ** 400}]
+    assert cards._rounds_elapsed_ms(huge) == 86_400_000
+    heading = cards._thinking_heading(huge)
+    assert heading.startswith("<font color='grey'>💭 思考"), heading
+    assert cards._tools_heading(None) == ""
+    assert cards._tools_heading(True) == ""
+    assert cards._tools_heading(0) == ""
+    assert cards._tools_heading(2) == "<font color='grey'>🛠️ 工具执行 · 2 步</font>"
+    # neutral 与每轮标题也必须走同一套坏值防护（Phase 1 审计 H-1/M-1）
+    for bad in (10 ** 400, float("inf"), float("nan")):
+        try:
+            neutral = cards.tool_step("x", status="ok", duration_ms=bad)
+        except Exception as exc:
+            raise AssertionError(f"neutral 坏耗时崩溃：{exc}") from exc
+        assert neutral == "✅ x", neutral
+        assert cards.tool_step("x", status="ok", duration_ms=bad, theme="ap_lite") == \
+            "🧰 **x** · <font color='green'>Succeeded</font>"
+    try:
+        round_title = cards._round_title(1, 10 ** 400)
+    except Exception as exc:
+        raise AssertionError(f"坏 elapsed 让轮标题崩溃：{exc}") from exc
+    assert round_title == "第 1 轮 · 1440m00s"
+    huge_round = cards.unified_panel(rounds=[{"text": "a", "elapsed_ms": 10 ** 400}])
+    assert huge_round is not None
+    assert "1440m00s" in " ".join(e.get("content", "") for e in huge_round["elements"])
+
+
+def test_json_fragment_unescape_and_preview_value_are_not_fooled():
+    """截断预览的转义还原不能被 ``\\\\n`` 顺序改坏，也不能把嵌套字符串当参数。"""
+    assert cards._unescape_json_fragment(r"C:\\new") == r"C:\new"
+    assert cards._unescape_json_fragment(r"a\nb") == "a b"
+    assert cards._preview_value(
+        '{"note": "\\"command\\": \\"rm -rf /\\""}', "terminal") is None
+    assert cards._preview_value('{"command": "ls -la', "terminal") == "ls -la"
+    assert cards._unescape_json_fragment(r"\u4e2d") == "中"
+    try:
+        illegal = cards._unescape_json_fragment(r"\u-123")
+    except Exception as exc:
+        raise AssertionError(f"非法 \\u 片段让解析崩溃：{exc}") from exc
+    assert illegal == r"\u-123", illegal
+    assert cards._unescape_json_fragment(r"\u12") == r"\u12"
+    assert cards._unescape_json_fragment(r"\ud83d") == "\ufffd"
+    # 合法 JSON 但已知类别没有本类别的键 ⇒ 不显示细节（不得把 terminal_id/note 当命令/路径）
+    assert cards._tool_detail("read_file", '{"terminal_id": "abc", "offset": 3}') == ""
+    assert cards._tool_detail("run_command", '{"note": "do not show me"}') == ""
+    assert cards._tool_detail("read_file", '{"path": {"a": 1}, "file": "/tmp/a"}') == "/tmp/a"
+
+
+def test_small_tool_char_limit_never_cuts_font_tag():
+    """小 max_tool_result_chars 下先剥标签再截断，不能留下半个 `<font>`。"""
+    item = cards.tool_step("read_file", status="ok", duration_ms=120,
+                           preview='{"path": "/tmp/a.txt"}', theme="ap_lite")
+    out = cards.panel_tools_markdown(tools=[item], max_tool_chars=40)
+    # 分区标题本身也是 `<font>`，这里只看工具行那一块；工具行必须先剥标签再截断
+    tool_part = out.split("\n\n", 1)[-1]
+    assert "<font" not in tool_part, tool_part
+    assert "已省略" in out, out
+
+
+def test_color_tag_fallback_covers_status_heading_and_detail():
+    """D3：真机若不认 `<font color>`，三类消费者必须有无色降级路径。"""
+    try:
+        adapter.configure(panel_color_tags=False)
+        assert cards.color_tags_enabled() is False, "配置没有把降级开关推给 cards"
+        read = cards.tool_step("read_file", status="ok", duration_ms=100,
+                               preview='{"path": "/tmp/a.txt"}', theme="ap_lite")
+        assert "<font" not in read and "Succeeded" in read and "↳ /tmp/a.txt" in read, read
+        body = cards.panel_rounds_markdown(
+            rounds=[{"text": "想一下", "elapsed_ms": 1000}])
+        assert "<font" not in body and "💭 思考" in body, body
+        tools = cards.panel_tools_markdown(
+            tools=[cards.tool_step("read_file", status="ok", theme="ap_lite")])
+        assert "<font" not in tools and "🛠️ 工具执行 · 1 步" in tools, tools
+    finally:
+        adapter.configure(panel_color_tags=True)
+    assert cards.color_tags_enabled() is True, "恢复默认后颜色标签必须回来"
+
+
 def test_theme_symbols_and_tool_icons_are_pinned():
     """P2 主题层：符号/图标是**默认观感**的一部分，必须逐字冻结。
 
@@ -3443,38 +3570,73 @@ def test_theme_symbols_and_tool_icons_are_pinned():
     assert cards.THEME_NEUTRAL == "neutral"
     assert cards.THEME_AP_LITE == "ap_lite"
     assert cards.THEME_AP_BUBBLE == "ap_bubble"
-    # 缺省 = neutral：既有调用点（探针、单测、任何未传 theme 的直接调用）零变化
+    # 缺省 = neutral：既有调用点（探针、单测、任何未传 theme 的直接调用）零变化；
+    # 页脚顺序本身对两档主题一致：状态 → 时长 → 模型 → 轮次 → 工具。
     assert cards.footer_line(model="m", rounds=3, tools=2, duration=1.2) == \
-        "🤖 m · 🧠 3 · 🔧 2 · ⏱ 1.2s"
+        "⏱ 1.2s · 🤖 m · 🧠 3 · 🔧 2"
     assert cards.tool_step("read_file", status="running") == "⏳ read_file"
     # ap_lite：只动模型/轮次/工具数/耗时这几格
     assert cards.footer_line(model="m", rounds=3, tools=2, duration=1.2,
-                             theme="ap_lite") == "🤖 m · 🌊 3 · 🧰 2 · ⏱ 1.2s"
+                             theme="ap_lite") == "⏱ 1.2s · 🤖 m · 🌊 3 · 🧰 2"
     assert cards.footer_line(rounds=1, tools=1, cache=75.0, api=7, ttfb=0.4,
                              theme="ap_lite") == "🌊 1 · 🧰 1 · ⚡ 75% · 🔁 7 · 🐢 0.4s"
     # ap_bubble：可选档，人物 emoji 只在显式选择时出现
     assert cards.footer_line(model="m", rounds=1, tools=1, duration=1.2,
-                             theme="ap_bubble") == "👸🏻 m · 🌊 1 · 🫧 1 · ✨ 1.2s"
+                             theme="ap_bubble") == "✨ 1.2s · 👸🏻 m · 🌊 1 · 🫧 1"
     assert cards.tool_step("read_file", status="running",
-                           theme="ap_bubble").startswith("⏳ 👩🏻‍🏫 read_file")
-    # 工具图标：每个类别至少一条；同一条里状态符号 / 名称 / 预览全部保持原语义
+                           theme="ap_bubble") == \
+        "👩🏻‍🏫 **Read file** · <font color='turquoise'>Running</font>"
+    # CLS 风格契约：图标 + 加粗动作名 + 耗时 + **带颜色的状态词**，细节灰色小字另起一行；
+    # 不再用 ✅/⏳ 前缀（状态词本身就是可读的状态），也不把 JSON 原文倒回卡上。
+    read = cards.tool_step("read_file", status="ok", duration_ms=100,
+                           preview='{"path": "/tmp/a.txt"}', theme="ap_lite")
+    assert read == ("📖 **Read file** (100 ms) · <font color='green'>Succeeded</font>\n"
+                    "<font color='grey'>↳ /tmp/a.txt</font>"), read
+    cmd = cards.tool_step("run_command", status="ok",
+                          preview='{"command": "ls -la && pwd"}', theme="ap_lite")
+    assert cmd == ("⌨️ **Run command** · <font color='green'>Succeeded</font>\n"
+                   "<font color='grey'>↳ ls -la 等 2 条</font>"), cmd
+    assert "{" not in cmd and '"' not in cmd, f"细节行不许露出 JSON：{cmd!r}"
+    # 失败 / 阻塞也必须有一眼可读的状态词（颜色 + 文字，不靠 emoji 单独承载）
+    assert "<font color='red'>Failed</font>" in cards.tool_step(
+        "run_command", status="error", theme="ap_lite")
+    assert "<font color='red'>Blocked</font>" in cards.tool_step(
+        "run_command", status="blocked", theme="ap_lite")
+    # 预览被上游截断（不是合法 JSON）时做**有界** key 提取：既保留命令细节，又不倾倒原文
+    truncated = cards.tool_step("run_command", status="ok", duration_ms=1200,
+                                preview='{"command": "sed -n \'1,200p\' /very/long/path/to/file',
+                                theme="ap_lite")
+    assert truncated == (
+        "⌨️ **Run command** (1.2 s) · <font color='green'>Succeeded</font>\n"
+        "<font color='grey'>↳ sed -n '1,200p' /very/long/path/to/file</font>"), truncated
+    # 细节里的 `<` 必须被中和，否则参数里的 `</font>` 会把灰色小字变成正文
+    safe = cards.tool_step("run_command", status="ok",
+                           preview='{"command": "echo </font> hi"}', theme="ap_lite")
+    assert "</font> hi" not in safe and "‹/font> hi" in safe, safe
+    # 工具图标：每个类别至少一条；标签必须是人话，图标与类别配对。
     icon_cases = {
-        "read_file": "📖", "write_file": "✍️", "run_command": "⌨️",
-        "web_search": "🌐", "grep": "🔍", "skill_view": "🧩",
-        "delegate_task": "🤝", "create_image": "🖼️",
+        "read_file": ("📖", "Read file"), "write_file": ("✍️", "Write file"),
+        "run_command": ("⌨️", "Run command"),
+        "web_search": ("🌐", "Web search"), "grep": ("🔍", "Search"),
+        "skill_view": ("🧩", "Load skill"),
+        "delegate_task": ("🤝", "Run sub-agent"), "create_image": ("🖼️", "Image"),
         # 审计 C1：读取类必须优先于 terminal，`read_terminal` 归 📖；`close_terminal`
         # 没有 read token，仍归 ⌨️（关闭终端是终端动作）。
-        "read_terminal": "📖", "close_terminal": "⌨️",
+        "read_terminal": ("📖", "Read file"), "close_terminal": ("⌨️", "Run command"),
     }
-    for name, icon in icon_cases.items():
-        got = cards.tool_step(name, status="ok", duration_ms=100, preview='{"a": 1}',
+    for name, (icon, label) in icon_cases.items():
+        got = cards.tool_step(name, status="ok", duration_ms=100,
                               theme="ap_lite")
-        assert got.startswith(f"✅ {icon} {name} · 0.1s"), f"{name}: {got!r}"
+        assert got.startswith(
+            f"{icon} **{label}** (100 ms) · <font color='green'>Succeeded</font>"), \
+            f"{name}: {got!r}"
     # token 精确匹配：短键不许在更长单词里误命中；未知工具退回默认工具图标
     for name in ("false", "catalog", "results", "tool"):
         got = cards.tool_step(name, status="ok", theme="ap_lite")
-        assert got == f"✅ 🧰 {name}", f"{name} 被误分类：{got!r}"
-    assert cards.tool_step("ls", status="ok", theme="ap_lite") == "✅ 📖 ls"
+        assert got == f"🧰 **{name}** · <font color='green'>Succeeded</font>", \
+            f"{name} 被误分类：{got!r}"
+    assert cards.tool_step("ls", status="ok", theme="ap_lite") == \
+        "📖 **Read file** · <font color='green'>Succeeded</font>"
     # 认不出的主题退回 neutral（不猜、不放大）
     assert cards.theme_name("nonsense") == "neutral"
     assert cards.theme_name(None) == "neutral"
@@ -3511,30 +3673,71 @@ def test_adapter_theme_wiring_uses_default_ap_lite_and_neutral_fallback():
         node = adapter.LarkDeckMixin._ld_panel()
         assert node is not None
         title = node["header"]["title"]["content"]
-        assert "🌊 1" in title and "🧰 1" in title, title
+        # CLS 观感：思考与工具两个不同的 emoji；思考显示耗时、工具显示步数。
+        assert "💭 思考" in title and "🛠️ 工具执行" in title, title
+        assert "🌊" not in title and "🧰" not in title, title
         body, tools = adapter.LarkDeckMixin._ld_panel_parts()
-        assert "先看文件。" in body and "📖 read_file" in tools, (body, tools)
-        assert "📖 read_file" in adapter.LarkDeckMixin._ld_panel_markdown(),             adapter.LarkDeckMixin._ld_panel_markdown()
+        assert "先看文件。" in body and "💭 思考" in body, (body, tools)
+        assert "🛠️ 工具执行 · 1 步" in tools, (body, tools)
+        assert "📖 **Read file**" in tools and "Running" in tools, tools
+        assert "/tmp/a.txt" in tools, tools
+        assert "📖 **Read file**" in adapter.LarkDeckMixin._ld_panel_markdown(), \
+            adapter.LarkDeckMixin._ld_panel_markdown()
 
         adapter.configure(theme="neutral")
         title = adapter.LarkDeckMixin._ld_panel()["header"]["title"]["content"]
-        assert "🧠 1" in title and "🔧 1" in title, title
+        # 主题只改符号/图标；「💭/🛠️ + 耗时/步数」是 2026-09-17 的布局，与主题无关。
+        assert "💭 思考" in title and "🛠️ 工具执行 · 1 步" in title, title
         _, tools = adapter.LarkDeckMixin._ld_panel_parts()
         assert "read_file" in tools and "📖" not in tools, tools
+        assert "Running" not in tools, "neutral 保留旧的 emoji 前缀状态，不掺 CLS 状态词"
 
         adapter.configure(theme="nonsense")
         title = adapter.LarkDeckMixin._ld_panel()["header"]["title"]["content"]
-        assert "🧠 1" in title and "🔧 1" in title, f"未知主题必须退回 neutral：{title!r}"
+        assert "💭 思考" in title and "🛠️ 工具执行 · 1 步" in title, \
+            f"未知主题必须退回 neutral 的符号，但布局摘要不变：{title!r}"
 
         adapter.configure(theme="ap_bubble")
         _, tools = adapter.LarkDeckMixin._ld_panel_parts()
-        assert "👩🏻‍🏫 read_file" in tools, tools
+        assert "👩🏻‍🏫 **Read file**" in tools, tools
     finally:
         panel.reset()
         context.reset()
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)
         adapter._apply_metrics_config()
+
+
+def test_panel_summary_uses_cls_section_emojis_and_i18n():
+    """折叠面板标题：💭 思考（耗时）+ 🛠️ 工具执行（步数），且必须是双语 i18n 节点。
+
+    CLS 的这两个面板标题分别带不同 emoji；我们收在一个折叠面板里，所以合并成一行。
+    判据分三种数据组合 + 空数据，防止「只有工具时把思考段也写出来」这种半成品。
+    """
+    snap = {"rounds": [{"text": "想一下", "elapsed_ms": 1600}],
+            "tools": [{"name": "read_file"}]}
+    node = adapter.LarkDeckMixin._ld_panel_summary(snap)
+    assert node is not None and node["tag"] == "plain_text", node
+    assert node["content"] == "💭 思考 1.6s · 🛠️ 工具执行 · 1 步", node
+    assert node["i18n_content"]["en_us"] == "💭 Thought 1.6s · 🛠️ Tools · 1 step", node
+    assert node["i18n_content"]["zh_cn"] == node["content"]
+
+    many = adapter.LarkDeckMixin._ld_panel_summary(
+        {"rounds": [{"text": "想一下", "elapsed_ms": 1600}],
+         "tools": [{"name": "a"}, {"name": "b"}]})
+    assert many["content"] == "💭 思考 1.6s · 🛠️ 工具执行 · 2 步", many
+    assert many["i18n_content"]["en_us"] == "💭 Thought 1.6s · 🛠️ Tools · 2 steps", many
+
+    only_tools = adapter.LarkDeckMixin._ld_panel_summary(
+        {"rounds": [], "tools": [{"name": "a"}, {"name": "b"}]})
+    assert only_tools["content"] == "🛠️ 工具执行 · 2 步", only_tools
+    assert only_tools["i18n_content"]["en_us"] == "🛠️ Tools · 2 steps", only_tools
+
+    only_reasoning = adapter.LarkDeckMixin._ld_panel_summary(
+        {"rounds": [{"text": "想", "elapsed_ms": 0}], "tools": []})
+    assert only_reasoning["content"] == "💭 思考", only_reasoning
+    assert adapter.LarkDeckMixin._ld_panel_summary({"rounds": [], "tools": []}) is None
+
 
 
 def test_plugin_ctx_handle_is_recorded_in_the_shared_box():
@@ -3573,8 +3776,9 @@ def test_panel_tools_block_truncates_and_keeps_the_most_recent() -> None:
     # ① 截断：一条 2000 字的工具行必须被截到上限附近，且**带省略标记**（不能静默截断）
     long_row = "✅ bash · " + "甲" * 2000
     got = cards.panel_tools_markdown(tools=[long_row], max_tool_chars=40)
+    assert "🛠️ 工具执行 · 1 步" in got, got[:80]
     assert len(got) < len(long_row), f"超长工具行必须被截断：{len(got)} vs {len(long_row)}"
-    assert got.startswith("✅ bash · 甲"), got[:20]
+    assert "✅ bash · 甲" in got, got[:80]
     assert got != long_row and "…" in got, f"截断必须带省略标记（静默截断会让用户以为就这么多）：{got[-20:]!r}"
 
     # ② 裁减方向：33 步 / 上限 30 ⇒ **保留最近的 30 步**、丢掉最早的 3 步，
@@ -3585,8 +3789,9 @@ def test_panel_tools_block_truncates_and_keeps_the_most_recent() -> None:
         f"裁减必须丢掉**最早**的几步：{got[:60]!r}"
     assert "step03" in got and "step32" in got, "最近的几步必须都在"
     lines = got.split("\n\n")
-    assert lines[0] not in steps and "3" in lines[0], \
-        f"提示行必须在前、且说的是被丢掉的那 3 步：{lines[0]!r}"
+    assert "🛠️ 工具执行 · 33 步" in lines[0], f"分区标题必须最前：{lines[0]!r}"
+    assert lines[1] not in steps and "3" in lines[1], \
+        f"提示行必须在步骤前、且说的是被丢掉的那 3 步：{lines[1]!r}"
     assert len([l for l in lines if l.startswith("✅")]) == 30, \
         f"上限是元素行数（保留 30 步）：{[l for l in lines if l.startswith('✅')][:3]}"
 
@@ -3794,18 +3999,39 @@ def test_merged_class_never_stacks_our_mixin_twice() -> None:
 def test_unified_panel_applies_caps() -> None:
     panel = cards.unified_panel(reasoning="x" * 5000, tools=["a"])
     assert panel is not None
-    first = panel["elements"][0]["content"]
-    assert "已省略" in first and len(first) < 5000
+    joined = " ".join(e.get("content", "") for e in panel["elements"])
+    assert "已省略" in joined and len(joined) < 5000
+    assert "💭 思考" in joined and "🛠️ 工具执行 · 1 步" in joined
     trimmed = cards.unified_panel(tools=[f"step{i}" for i in range(40)])
     joined = " ".join(e.get("content", "") for e in trimmed["elements"])
     assert "更早的 10 步已折叠" in joined
     assert "step0" not in joined and "step39" in joined, "保留最近的步骤"
     # 每条工具结果也各自受限
     big = cards.unified_panel(tools=["y" * 5000])
-    assert "已省略" in big["elements"][0]["content"]
+    assert "已省略" in " ".join(e.get("content", "") for e in big["elements"])
     # 上限可调（配置进来就是这个口子）
     assert cards.unified_panel(reasoning="z" * 50, max_reasoning_chars=10) is not None
     assert cards.unified_panel() is None
+
+
+def test_unified_panel_reserves_room_for_section_headings():
+    """分区标题本身也占面板子元素额度 —— 不能把元素墙的缝重新打开。
+
+    2026-09-17 审计 M5：``keep`` 原先没有为 ``💭 思考`` / ``🛠️ 工具执行`` 两个标题扣额度，
+    极端配置下会让整卡元素数越过 ``fit_reply_card`` 的硬墙（面板被整块摘掉）。
+    """
+    rounds = [{"text": "x" * 120, "elapsed_ms": 1} for _ in range(187)]
+    node = cards.unified_panel(rounds=rounds, tools=["t1", "t2"],
+                               max_reasoning_chars=22320)
+    assert node is not None
+    rendered = "".join(str(e.get("content", "")) for e in node["elements"])
+    expected = max(1, min(187, 22320 // cards._MIN_ROUND_CHARS,
+                          max(1, cards._PANEL_CHILDREN_ROOM - 1 - 1 - 1)))
+    assert rendered.count("**第") == expected, (
+        f"渲染轮数应把 thinking/tools 两个分区标题的额度一起扣掉："
+        f"expected {expected}, got {rendered.count('**第')}")
+    assert "更早的 187" not in rendered and "轮已折叠" in rendered
+
 
 
 def test_panel_caps_treat_zero_as_default_not_unlimited():
@@ -3816,7 +4042,7 @@ def test_panel_caps_treat_zero_as_default_not_unlimited():
     """
     for zeroish in (0, -1):
         long_panel = cards.unified_panel(reasoning="x" * 5000, max_reasoning_chars=zeroish)
-        assert "已省略" in long_panel["elements"][0]["content"], \
+        assert "已省略" in " ".join(e.get("content", "") for e in long_panel["elements"]), \
             f"max_reasoning_chars={zeroish} 不能变成「不截断」"
 
         many = cards.unified_panel(tools=[f"step{i}" for i in range(40)], max_steps=zeroish)
@@ -3824,7 +4050,7 @@ def test_panel_caps_treat_zero_as_default_not_unlimited():
         assert "更早的 10 步已折叠" in joined, f"max_steps={zeroish} 不能变成「全量保留」"
 
         big = cards.unified_panel(tools=["y" * 5000], max_tool_chars=zeroish)
-        assert "已省略" in big["elements"][0]["content"], \
+        assert "已省略" in " ".join(e.get("content", "") for e in big["elements"]), \
             f"max_tool_chars={zeroish} 不能变成「不截断」"
 
 
@@ -4516,33 +4742,52 @@ def test_footer_metrics_are_opt_in_and_never_fake_zero() -> None:
 
 
 def test_adapter_footer_wiring() -> None:
-    """页脚 = **只有上下文用量**；模型名与耗时归面板标题（决策 D2，别又搬回页脚）。"""
+    """页脚顺序钉死：``状态 → 耗时 → 模型 → ctx``；模型不再出现在面板标题（用户 2026-09-17 指定）。"""
     defaults = dict(adapter._DEFAULTS)
     try:
         context.reset()
+        panel.reset()
         adapter.configure(footer=True, show_model=True, context_style="text",
                           model_aliases="test-model=Test Model")
         # 钩子还没触发 → 没有任何一段可显示 → 不渲染脚注
-        assert adapter.LarkDeckMixin._ld_footer() is None
+        assert adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw") is None
 
+        panel.bind_chat_session("oc_fw", "s-fw")
         context.record_api_call(model="test-model",
                                 usage={"input_tokens": 1000, "output_tokens": 5})
         # ⚠️ 用配置设置上限（而不是直接戳 `context.set_context_override`）：`configure()`
         # 会调用 `_apply_metrics_config()`，现在它无条件把配置值推给 context（审计 A1），
         # 直接戳的临时值会被正确覆盖掉。
         adapter.configure(context_max_override=10000)
-        assert adapter.LarkDeckMixin._ld_footer() == "ctx 1k/10k · 10%"
-        # 同一屏里不重复：模型名与耗时只在面板标题行出现
-        assert "🤖" not in adapter.LarkDeckMixin._ld_footer()
-        assert "⏱" not in adapter.LarkDeckMixin._ld_footer()
+        assert adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw") == \
+            "🤖 Test Model · ctx 1k/10k · 10%"
+
+        # 结局一到，状态必须出现在**最前面**，且排在耗时/模型之前（AP 的 `已完成 · 1m 4s · ✳ model`）
+        panel.record_turn_end("s-fw", "t-fw", completed=True)
+        line = adapter.LarkDeckMixin._ld_footer(
+            chat_id="oc_fw", started=time.monotonic() - 12.3)
+        assert line is not None
+        assert re.search(r"✅ 已完成 · ⏱ 12\.[0-9]s · 🤖 Test Model · ctx ", line), line
+        assert line.index("✅") < line.index("⏱") < line.index("🤖") < line.index("ctx")
+        # 显式传入的 status 也要能覆盖面板快照（`/stop` 重绘没有等待快照那一帧）
+        assert adapter.LarkDeckMixin._ld_footer(
+            chat_id="oc_fw", status="stopped").startswith("⛔ 已中止 · ")
+        # started=0/False 不是合法回合起点（monotonic 不会为 0）：不许算出机器 uptime 级假耗时
+        assert "⏱" not in (adapter.LarkDeckMixin._ld_footer(
+            chat_id="oc_fw", started=0) or ""), "started=0 被当成了合法起点"
+        # ❌ 执行出错 三态里必须有独立覆盖（Phase 1 审计 HIGH-1）
+        assert adapter.LarkDeckMixin._ld_footer(
+            chat_id="oc_fw", status="error").startswith("❌ 执行出错 · ")
+        assert adapter._ld_status_text(panel.STATUS_ERROR) == "❌ 执行出错"
 
         adapter.configure(context_style="bar")
-        assert "[█░░░░░░░]" in adapter.LarkDeckMixin._ld_footer()
+        assert "[█░░░░░░░]" in adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw")
         adapter.configure(show_model=False)
-        assert not adapter.LarkDeckMixin._ld_footer().startswith("🤖")
+        assert "🤖" not in adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw")
         adapter.configure(footer=False)
-        assert adapter.LarkDeckMixin._ld_footer() is None
+        assert adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw") is None
     finally:
+        panel.reset()
         context.set_context_override(None)
         context.reset()
         adapter._CONFIG.clear()
@@ -4565,33 +4810,33 @@ def test_adapter_panel_wiring() -> None:
         node = adapter.LarkDeckMixin._ld_panel()
         assert node is not None and node["tag"] == "collapsible_panel"
         title = node["header"]["title"]["content"]
-        # 决策 D2：卡片级 header 去掉了，模型名 / 轮数 / 工具数 / 耗时全在面板标题行
-        assert "🧠 1" in title and "🔧 1" in title, title
+        # 2026-09-17 CLS 观感：思考（💭 + 耗时）/ 工具（🛠️ + 步数）两个不同的 emoji。
+        assert "💭 思考" in title and "🛠️ 工具执行 · 1 步" in title, title
         assert node["border"]["color"] == "grey", "还没有结局 → 中性灰边"
         texts = " ".join(e.get("content", "") for e in node["elements"])
         assert "先想一下。" in texts and "read_file" in texts and "✅" in texts
 
-        # 模型名与耗时进面板标题（show_model 控制前者）
+        # 用户 2026-09-17 指定：模型名与耗时**不再进面板标题**，改到页脚。
         adapter.configure(show_model=True, model_aliases="test-model=Test Model")
         context.record_api_call(model="test-model", usage={"input_tokens": 1})
-        with_time = adapter.LarkDeckMixin._ld_panel("", time.monotonic() - 12.3)
+        with_time = adapter.LarkDeckMixin._ld_panel("")
         header = with_time["header"]["title"]["content"]
-        # ⚠️ 这里**不能**写死 `⏱ 12.3s`：`time.monotonic() - (time.monotonic() - 12.3)` 会带上
-        #    两次调用之间的**真实间隔**，而负载高时（例如同时跑变异验证器 + 子代理）这个间隔
-        #    能超过 50ms ⇒ 四舍五入成 `12.4s` ⇒ **偶发假红**。
-        #    ⚠️ 假红比不红更危险：变异验证器把「红」当作**判别力证据**，于是某条本来没牙的变异
-        #    会被误判成「被抓住了」—— 结论正好写反（2026-09-15 真机踩到一次：清理后重跑就绿了）。
-        #    判据保留原意（格式 + 数值量级），只是不再钉到小数第二位以后。
-        assert "🤖 Test Model" in header and re.search(r"⏱ 12\.[0-9]s", header), header
+        assert "🤖" not in header and "⏱" not in header, header
+        assert "💭 思考" in header and "🛠️ 工具执行 · 1 步" in header, header
+        footer = adapter.LarkDeckMixin._ld_footer(started=time.monotonic() - 12.3) or ""
+        assert re.search(r"⏱ 12\.[0-9]s", footer), footer
+        assert "🤖 Test Model" in footer, footer
         adapter.configure(show_model=False)
-        assert "🤖" not in adapter.LarkDeckMixin._ld_panel("", None)["header"]["title"]["content"]
+        assert "🤖" not in adapter.LarkDeckMixin._ld_panel()["header"]["title"]["content"]
+        assert "🤖" not in (adapter.LarkDeckMixin._ld_footer(started=time.monotonic() - 12.3) or "")
 
-        # 只有推理（没有工具）也给面板，标题仍带轮数
+        # 只有推理（没有工具）也给面板：标题只带思考段，不出现空的工具段
         panel.reset()
         panel.record_reasoning("s1", "t1", "只有推理。")
         only = adapter.LarkDeckMixin._ld_panel()
         assert only is not None
-        assert "🧠 1" in only["header"]["title"]["content"]
+        only_title = only["header"]["title"]["content"]
+        assert "💭 思考" in only_title and "🛠️" not in only_title, only_title
 
         adapter.configure(unified_panel=False)
         assert adapter.LarkDeckMixin._ld_panel() is None, "开关关掉必须立刻生效"
@@ -4812,10 +5057,12 @@ def test_panel_renders_reasoning_rounds_with_durations():
     # 英文侧同步
     assert "Round 1" in i18n.t("panel.round_n", loc := i18n.EN, n=1)
 
-    # 没给 rounds 时退回把 reasoning 当一整段（向后兼容）
+    # 没给 rounds 时退回把 reasoning 当一整段（向后兼容）；标题仍走「💭 思考」分区
     flat = cards.unified_panel(reasoning="一整段推理")
-    assert "一整段推理" in flat["elements"][0]["content"]
-    assert "轮" not in flat["elements"][0]["content"]
+    flat_text = " ".join(e.get("content", "") for e in flat["elements"])
+    assert "一整段推理" in flat_text
+    assert "💭 思考" in flat_text and "🛠️" not in flat_text
+    assert "第 1 轮" not in flat_text
 
     # 每轮额度是总量的均分，而且**渲染轮数收在预算 // _MIN_ROUND_CHARS 以内**。
     # 旧断言是 `len(...) < 1000` —— 近乎恒真：实测「均分」290 字符、「一轮吃满上限」
@@ -5783,14 +6030,23 @@ def test_frame_footer_carries_the_card_trace_id():
     raw = _make()
     orig = adapter.LarkDeckMixin._ld_footer
     try:
-        adapter.LarkDeckMixin._ld_footer = classmethod(lambda cls: "ctx 1k/2k")
+        seen: dict = {}
+        def _fake_footer(cls, **kwargs):
+            seen.update(kwargs)
+            return "ctx 1k/2k"
+        adapter.LarkDeckMixin._ld_footer = classmethod(_fake_footer)
         assert raw._ld_frame_footer({"message_id": "om_abcdef123456"}) == \
             "ctx 1k/2k · \U0001f516 123456", "帧页脚必须接上本卡短码"
         # 还没建卡（没有 message_id / card_id）⇒ 不加短码，只有基数页脚
         assert raw._ld_frame_footer({}) == "ctx 1k/2k"
         assert raw._ld_frame_footer({"card_id": "card_zzz999"}) == "ctx 1k/2k · \U0001f516 zzz999"
+        assert seen == {"chat_id": "", "started": None, "status": None}, \
+            "三次都没有 chat_id / t0 / status 时，往下传的必须是中性缺省（不猜）"
+        raw._ld_frame_footer({"message_id": "om_abcdef123456", "chat_id": "oc_t",
+                              "t0": 123.0, "status": "ok"})
+        assert seen == {"chat_id": "oc_t", "started": 123.0, "status": "ok"}, seen
         # ⚠️ 基数页脚为空 ⇒ 仍然是 None（短码不许把「页脚=无」这个诊断信号抹掉）
-        adapter.LarkDeckMixin._ld_footer = classmethod(lambda cls: None)
+        adapter.LarkDeckMixin._ld_footer = classmethod(lambda cls, **kwargs: None)
         assert raw._ld_frame_footer({"message_id": "om_abcdef123456"}) is None
     finally:
         adapter.LarkDeckMixin._ld_footer = orig
