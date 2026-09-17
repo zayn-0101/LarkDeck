@@ -671,7 +671,7 @@ ls -la ~/.hermes/logs/agent.log*
 | HEAD | **以 `git log -1 --format='%h %s'` 为准** —— ⚠️ 本表**写在提交里**，所以哈希天然落后一格（写这几行时是 `b82f71f`，`== origin/main`，已推送；表里原先印的 `bdde6f1` 就是这么过期的） |
 | 工作树 | 主工作树在 Phase 3 收尾提交前为 dirty（8 个文档/ignore 修改 + 未跟踪 phase-3 目录）；`git worktree list` 共 9 行（主 + 8 linked，含 phase3b 审计树），只有 `main` 一个分支；清场需用户确认 |
 | 最后一次全量变异 | **Phase 2 run 3（2026-09-17）：381/381 全红 + 8 对照全绿，`EXIT=0`** —— 冻结 tree `fd96f90f…` / commit `ecf11df`；日志 `docs/audits/cls-ui/phase-2/logs/fullrun_phase2_run3.log`，结论见 `docs/audits/cls-ui/phase-2/consensus.md` |
-| 那条结论**还算不算数** | **算**：run 3 收在 `ecf11df`；此后 HEAD 只增加审计证据/文档，`core/`、`tests/`、`plugin.yaml` 未再改 |
+| 那条结论**还算不算数** | **算**：最终 v0.6.0 发布树（`0886f2c` / tree `72744bcd`）已在发布前重跑全量 run 4（382/382、8/8 对照、EXIT=0）；此后只增加发布后状态文档 |
 | 遗留进程 | 无（只剩该跑的 Hermes 网关）；`$TMPDIR` 下的影子树已被系统清理，**不影响任何结论** |
 
 ### 13.2 路线问题已收口，**不要再重新论证一遍**

@@ -34,5 +34,4 @@
 
 - 六面矩阵与逐对象清场候选：`docs/audits/cls-ui/phase-3/inventory.md`
 - 归档证据：`docs/audits/cls-ui/phase-3/evidence/`
-- 门禁日志：`docs/audits/cls-ui/phase-3/logs/`（225/225、389/389）
-MD
+- 门禁日志：`docs/audits/cls-ui/phase-3/logs/`（225/225、389/389；v0.6.0 release 工作树为 390/390）

@@ -17,8 +17,9 @@
 
 > CLS 观感改造：面板摘要、工具行与页脚重做；模型名/回合耗时移入状态优先页脚；
 > markdown i18n 边界写清；`panel_color_tags` 因真机 `<font color>` 视觉未确认而默认
-> **false**（无色降级，确认后可显式打开）。全量变异 run 3 + 颜色翻转后的定向 32 条
-> 均通过；D1 维持方案 c（不做生产 header 局部更新）。
+> **false**（无色降级，确认后可显式打开）。最终工作树全量变异 run 4：382/382 断言红、
+> 0 crash/green/missing/noop、8/8 对照，preflight 390/390；D1 维持方案 c（不做生产 header
+> 局部更新）。
 
 ### 变更（CLS 观感）
 

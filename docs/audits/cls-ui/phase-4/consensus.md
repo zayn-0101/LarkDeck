@@ -32,3 +32,20 @@
 - `AGENTS.md` 预算 ~92.8%，后续新增规则前先压缩。
 - 审计 worktree / `/tmp` witness 保留；用户确认后再按逐对象清单清理。
 - 并发负载下门禁仍可能假红（已登记），最终 gate 独占运行。
+
+## 发布与部署终态（2026-09-18）
+
+- 已 push：`main 4810d0b → 0886f2c`；annotated tag `v0.6.0`（object `4dbed608…`）；
+  audit refs 未 push。
+- GitHub Release `v0.6.0` 已发布，target commit
+  `0886f2c5b9d88742ab125d2a2923a0ab790754b0`：
+  <https://github.com/zayn-0101/larkdeck/releases/tag/v0.6.0>；body 保留
+  `<font color>`/header、ap_lite、text_profile、无网关 cron 的 pending 与默认 false。
+- Mac 本机：软链仓库已是 `0886f2c`；`hermes gateway restart` 后新 launchd wrapper
+  `pid=64866`、`runs=3`、`state=running`，`gateway.pid` child `pid=64869`，旧
+  `94949/94952` 已消失；`gateway.log` 显示 Feishu connected，`agent.log` 显示
+  `[larkdeck] 启动自检通过`。
+- 状态：**released + deployed（新进程已加载 v0.6.0 代码）**；`live verified` 仍等用户
+  在飞书执行 `/larkdeck status` 看到 `v0.6.0 · 钩子 7/7` 与真机颜色结论。默认
+  `panel_color_tags: false`，不声明颜色已验证。
+- 清场执行仍等用户明确确认；当前零删除。
