@@ -1,0 +1,45 @@
+{
+  "phase": 2,
+  "objective": "Full mutation verification on the frozen CLS UI phase 2 run-2 tree",
+  "tree": "755eda3545237dbe67329872424a83e92e6eae32",
+  "commit": "76c0e6816b2600bbfbaf26392494f76cddc6cb38",
+  "frozen_ref": "refs/audit/cls-ui/phase2-run2",
+  "predecessor_phase1_ref": "refs/audit/cls-ui/phase1e",
+  "baseline_commit": "ac3b25e7d1127c2e3968cfa3ef72404067064b9b",
+  "interpreter": "/Users/Zayn/.hermes/hermes-agent/venv/bin/python3 (3.11.15)",
+  "command": "cd /tmp/phase2b/larkdeck && PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 /Users/Zayn/.hermes/hermes-agent/venv/bin/python3 tests/mutate_check.py",
+  "start_utc": "2026-09-17T08:57:21Z",
+  "end_utc": "2026-09-17T10:24:10Z",
+  "expected": {
+    "mutations": 381,
+    "controls": 8
+  },
+  "exit_code": 0,
+  "counts": {
+    "red_assert": 381,
+    "green": 0,
+    "crash": 0,
+    "missing_anchor": 0,
+    "grey_total": 8,
+    "grey_control": 8,
+    "grey_mutation_noop": 0
+  },
+  "run1_failure": {
+    "tree": "2be37dcdd1124351c14e07aea48b6478f72299df",
+    "exit_code": 1,
+    "red": 375,
+    "crash": 6,
+    "fixed_commit": "76c0e6816b2600bbfbaf26392494f76cddc6cb38",
+    "log": "docs/audits/cls-ui/phase-2/logs/fullrun_phase2_failed_6crash.log",
+    "sha256": "ec35bf5545e50f88885fb8eadd899b05324b20c4cf601113885c3f4367fb4392"
+  },
+  "log_path": "docs/audits/cls-ui/phase-2/logs/fullrun_phase2_run2.log",
+  "log_sha256": "6cbe38989de14386258346756058b77beca35d7407b140e267fbf80cdfa92ceb",
+  "log_size_bytes": 64517,
+  "hard_condition_pass": true,
+  "tail": [
+    "⚪ 对照全绿（符合预期） C-对照：纯注释改动",
+    "全部 381 条变异都被门禁抓住 ✅"
+  ],
+  "generated_at": "2026-09-17T18:25:37"
+}

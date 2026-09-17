@@ -45,6 +45,8 @@
 | **09-17 09:3x（已 superseded）** | **4（定向 CLS）** | **4** | 0 | — | 0 | 0 | — | ~~EXIT=0 ✅~~ —— 这是**旧的 4 条**定向 run，基线数字 219/219；当前清单已扩到 CLS-1..9，见下方 Phase 0 行与 `docs/audits/cls-ui/phase-0/`。旧数字不得再引用 | `/tmp/mutCLS.log`（旧） |
 | **09-17 Phase 0（计划审计冻结）** | **9（`-k CLS` 定向）** | **9** | 0 | — | 0 | 0 | — | **CONDITIONAL GO** —— 三路计划审计 GO-WITH-CHANGES + 第 4 方 D1 裁决（条件式 a）；venv 四门禁全绿（`test_units 223/223`）、preflight 366/366（358+8）、CLS-1..9 全 🔴；冻结快照 `refs/audit/cls-ui/phase0` / tree `efe612a8…`；未闭环 H1/D1 探针、H3/D2 兜底、H4 旧数字 | `docs/audits/cls-ui/phase-0/manifest.json` + `consensus.md` + `freeze.json` |
 | **09-17 Phase 1（实现收口）** | **32（`-k CLS` 定向）** | **32** | 0 | — | 0 | 0 | — | venv 四门禁全绿（`test_units 225/225` ×2）、preflight **389/389（381+8）**、CLS-1..32 全 **断言红**（含 `success`/`timeout` 两条状态分支）；D2 英文动作词 + F1/F2/F3/F5 + D3 无色降级接线 + error footer + 小上限标签截断修复已落地；D1 按裁决转 c（生产无 header 代码） | `docs/audits/cls-ui/phase-1/`（`mutCLS_phase1c.log` + probe-header.md） |
+| **09-17 14:05–16:47（Phase 2 run 1）** | **381** | **375** | 0 | 0 | **6** | 0 | **8/8** | **EXIT=1 ❌** —— 6 条被归类为「只有崩溃、没有断言失败」（`R7-D2`/`R9-22`/`R8-6`/`R12-6`/`P1b-8`/`P1b-9`）；测试把病态异常直接抛出，已改为断言失败（commit `76c0e68`） | `docs/audits/cls-ui/phase-2/logs/fullrun_phase2_failed_6crash.log`（sha256 `ec35bf55…`） |
+| **09-17 16:57–18:24（Phase 2 run 2）** | **381** | **381** | 0 | 0 | 0 | 0 | **8/8** | **EXIT=0 ✅** —— 冻结树 `755eda3545237dbe67329872424a83e92e6eae32`（commit `76c0e68`）；preflight 389/389（381+8）；末行「全部 381 条变异都被门禁抓住 ✅」 | `docs/audits/cls-ui/phase-2/logs/fullrun_phase2_run2.log`（sha256 `6cbe3898…`，64,517 B） |
 
 
 ⚠️ 上表里「—」表示当时**还没有那个分类**（`⚪ 变异没生效` 是 2026-09-16 才加的）。
