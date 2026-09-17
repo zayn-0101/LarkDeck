@@ -663,12 +663,15 @@ ls -la ~/.hermes/logs/agent.log*
 
 ### 13.1 当前坐标（机械核对过，不是叙述）
 
+> ⚠️ 本节是 2026-09-16 旧会话的坐标快照；2026-09-17 CLS 改造后，现役坐标与
+> 全量结论以 `docs/verify-log.md` 和 `docs/audits/cls-ui/phase-2/consensus.md` 为准。
+
 | 项 | 值 |
 |---|---|
 | HEAD | **以 `git log -1 --format='%h %s'` 为准** —— ⚠️ 本表**写在提交里**，所以哈希天然落后一格（写这几行时是 `b82f71f`，`== origin/main`，已推送；表里原先印的 `bdde6f1` 就是这么过期的） |
-| 工作树 | 干净；无 stash；单 worktree；只有 `main` 一个分支 |
-| 最后一次全量变异 | **`fullrun9`：317/317 全部被门禁抓住 + 8 对照全绿，`EXIT=0`** —— 留档 `docs/verify-log.md`，日志 `~/.larkdeck-scratch/fullrun9.log` |
-| 那条结论**还算不算数** | **算**：`aa6571b`（fullrun9 收在那份代码上）之后到 HEAD **只改过 `.md`**（`git diff --name-only aa6571b..HEAD` 五份全是文档）⇒ 代码未动 |
+| 工作树 | 主工作树在 Phase 3 收尾提交前为 dirty（8 个文档/ignore 修改 + 未跟踪 phase-3 目录）；`git worktree list` 共 9 行（主 + 8 linked，含 phase3b 审计树），只有 `main` 一个分支；清场需用户确认 |
+| 最后一次全量变异 | **Phase 2 run 3（2026-09-17）：381/381 全红 + 8 对照全绿，`EXIT=0`** —— 冻结 tree `fd96f90f…` / commit `ecf11df`；日志 `docs/audits/cls-ui/phase-2/logs/fullrun_phase2_run3.log`，结论见 `docs/audits/cls-ui/phase-2/consensus.md` |
+| 那条结论**还算不算数** | **算**：run 3 收在 `ecf11df`；此后 HEAD 只增加审计证据/文档，`core/`、`tests/`、`plugin.yaml` 未再改 |
 | 遗留进程 | 无（只剩该跑的 Hermes 网关）；`$TMPDIR` 下的影子树已被系统清理，**不影响任何结论** |
 
 ### 13.2 路线问题已收口，**不要再重新论证一遍**
@@ -679,11 +682,13 @@ ls -la ~/.hermes/logs/agent.log*
 ⚠️ 本次复核**推翻了三处旧结论**（§6.1 的两条优势、§6.2 的「三重死」措辞、以及一个按名字搜的矩阵），
 都在原文留了痕 —— **读 §6 时以 §7 的判决为准**。
 
-### 13.3 待办队列 = `docs/plugins-compare.md` §7.8（7 项，**只登记未开工**）
+### 13.3 待办队列 = `docs/plugins-compare.md` §7.8（进度以该节更新注为准）
 
-最高两项：① 把 `probe_report` 的结论**打到 `/larkdeck status` 卡上**（现在一个键都没上）；
-② `interrupt_session_activity` 的**核心查找名**是探测盲区（改名 ⇒ `/stop` 后卡片永久冻结、零信号）。
-⇒ **别自行开工** —— 按本项目规矩，等用户点单。
+- ① `probe_report` 上 `/larkdeck status`：**P1a 已完成**（10 个契约键 + 未探测/已接管/
+  必需接口缺失/覆盖层构造失败/报告缺键）。
+- ② S7 `interrupt_session_activity` 核心查找名：**P1b 已加静态 best-effort 探测 + 状态行 +
+  False 时 WARNING**；**运行期派发仍未验证**，是当前真正残余。
+- 其余 S2、S6、矩阵探针、`compat.py` 乐观注释按 §7.8 更新注继续推进；**等用户点单**。
 
 ### 13.4 ⚠️ 本仓库出现过「两个写入者互相卷走改动」的事故（2026-09-16 实测）
 
@@ -716,10 +721,11 @@ ls -la ~/.hermes/logs/agent.log*
 | ② 第一组（2.0 澄清卡选项外显 / 脚注按方言拆 / 工具参数脱敏） | 已交付 | `CHANGELOG.md` 的 `[Unreleased]` 一节逐条 |
 | ② 第二组（卡片短码 / `/larkdeck status` 六条记录 / question+选项 md 转义） | 已交付 | 同上 |
 | ② 第三组 探针 ⑮（2.0 `button` + 组件级 `behaviors`） | **真机已证**（2026-09-16 16:12:37 点击，日志有据） | §12 开头的结论块 + `verify-log.md` 的「真机证据」一节 |
-| 全量变异 | **317/317 全红 + 8 对照全绿，`EXIT=0`** | `verify-log.md` 的 `fullrun9` 行 |
+| 全量变异 | **Phase 2 run 3：381/381 全红 + 8 对照全绿，`EXIT=0`** | `verify-log.md` 的 Phase 2 run 3 行 + `docs/audits/cls-ui/phase-2/consensus.md` |
 | 对抗性审计 | 五轮（每轮换不同子代理）；第五轮专审**新加的门禁自身**，报 5 条缺口、全部已修 | `CHANGELOG.md` 的「第五轮对抗审计」一节 |
 
-⚠️ **新会话的下一步只有一处**：`docs/plugins-compare.md` §7.8 那 **7 项**（只登记未开工）——
+⚠️ **新会话的下一步只有一处**：`docs/plugins-compare.md` §7.8 的**更新注 + 剩余项**——
+P1a/probe_report 上卡已完成，S7 静态探测已交付但运行期派发未验；其余按更新注推进，
 **等用户点单，别自行开工**（用户 2026-09-15 的原话：「等用户一条条捋」）。
 
 ### 13.7 这个环境里最容易白白烧掉一小时的四个坑（本次会话实测）

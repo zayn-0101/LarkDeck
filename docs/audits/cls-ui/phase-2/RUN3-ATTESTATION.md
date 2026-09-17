@@ -22,6 +22,10 @@
   line-start `ERROR ` as `red-crash` even when `FAIL  ` lines are present.
 - six hidden-ERROR fixes: `P5a2`, `SEQ4`, `CK9`, `R3-1`, `R8-4`, `G1-1`.
 
-`/tmp/phase2c/fullrun_phase2.{raw,meta,exit}` is the external witness used
-during the audit; the durable copy is this file plus the committed log and
-`manifest.json`/`freeze.json`.
+`/tmp/phase2c/fullrun_phase2.{raw,meta,exit}` was the external witness used
+during the audit. The raw log is durable as
+`docs/audits/cls-ui/phase-2/logs/fullrun_phase2_run3.log`; the meta and exit
+files are archived as
+`docs/audits/cls-ui/phase-3/evidence/phase2_run3/fullrun_phase2.meta.txt` and
+`fullrun_phase2.exit.txt`, so the reference does not die if `/tmp` is cleared.
+`manifest.json`/`freeze.json` carry the run tuple and hashes.

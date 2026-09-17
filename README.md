@@ -481,7 +481,8 @@ LarkDeckFeishuAdapter → LarkDeckMixin → FeishuAdapter → BasePlatformAdapte
   建进卡里，之后每帧随正文一起刷新（`footer: false` 时不建、也一次都不写它的 id）；
   ② 与之同理，面板内容（推理轮 / 工具步骤）整个回合都在更新；
   ③ **面板标题**现在是 CLS 观感的 `💭 思考 1.6s · 🛠️ 工具执行 · 3 步`；模型名与回合耗时
-  在**页脚**（流式期间也会更新）。CardKit 实体卡的外层 header 建卡时定死，收尾 / 降级 /
+  在**页脚**（流式期间也会更新）。CardKit 实体卡的外层折叠面板（`collapsible_panel`）
+  的 `header.title` 建卡时定死，收尾 / 降级 /
   `/stop` 的整卡替换才把它换成这个双语摘要 —— 流式期间展开面板，正文里也有同样的
   `💭 思考` / `🛠️ 工具执行` 分区小标题与灰色细节行；
   ④ **核心的工具行（`⚙️ terminal: "…"`）默认不进正文**（`progress_lines_in_body: false`）：
@@ -559,7 +560,8 @@ LarkDeckFeishuAdapter → LarkDeckMixin → FeishuAdapter → BasePlatformAdapte
   正文超过字节预算（40000）时，状态色由 `cards.status_shell()` 保住（只带边框色的小面板，
   ≈545 字节，见上一条）；只有正文贴近飞书硬上限（128000）时才会为了「发得出去」放弃它。
   真机自测：`tests/probe_render.py --stop-redraw`。
-- **卡片级 header 已去掉**（决策 D2）：过程信息收进统一面板，摘要行是
+- **CardKit 实体卡顶层 header 不建**（决策 D2）；被建卡定死的是**外层折叠面板的
+  `header.title`**，收尾整卡替换时才换成摘要。过程信息收进统一面板，摘要行是
   `💭 思考 1.6s · 🛠️ 工具执行 · 3 步`；模型名与回合耗时在**页脚**。
   面板被关（`unified_panel: false`）或正文超过字节预算（40000）时，**这些信息会消失，
   但状态色不会** —— 超预算档会保留一个只带边框色的小面板（`cards.status_shell`）。

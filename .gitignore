@@ -10,6 +10,10 @@ venv/
 config.yaml
 .env
 *.env
+.env.*
+!.env.example
+config.yml
+*.bak
 *.key
 *.pem
 # 探针自己发的消息 ID（本地状态，别提交）

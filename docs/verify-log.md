@@ -55,6 +55,9 @@
 
 **读这张表要注意**：`🔴 == 变异条数` 且 `🟢 0 / 💥 0 / ❓ 0` 才是全绿。
 ⚠️ 其中 `⚪` 那一列若**大于对照条数**，说明有变异被判成「没生效」——那也是**失败**，不是通过。
+⚠️ Phase 2 起审计日志被 `.gitignore` 的 `*.log` 忽略，入库必须 `git add -f`；run 3 与 run 2
+输出逐字节相同（同一 sha256），因此额外用 `docs/audits/cls-ui/phase-2/RUN3-ATTESTATION.md`
+记录 run id、tree、commit、EXIT，避免「同 hash 不能自证是哪一轮」。
 
 ---
 

@@ -22,7 +22,7 @@
 - 工具行重做：图标 + 加粗**英文动作名**（`Read file` / `Run command` / `Load skill` …，
   CLS 风格；工具行是裸 markdown，不承载 `i18n_content`，因此它是明确的语言固定边界）+
   耗时 + **带颜色的状态词**（绿色 `Succeeded` / 青绿 `Running` / 红色 `Failed`·`Blocked`·
-  `Cancelled` / 灰 `Skipped`）；命令或 skill 名另起一行灰色小字。
+  `Timed out` / 灰 `Cancelled`·`Skipped`）；命令或 skill 名另起一行灰色小字。
   被上游 80 字符截断的 JSON 预览改为**有界 key 提取**，不再整段丢细节、也不倒原文。
 - 展开面板内新增 `💭 思考` / `🛠️ 工具执行` 两个分区小标题。
 - 未知工具状态（`cancelled`/`timeout`/`skipped`）不再让面板整块渲染失败；
@@ -34,6 +34,12 @@
   `check_hooks` / `check_clarify_e2e` 全绿；`mutate_check --preflight` **389/389**
   （381 变异 + 8 对照）；定向 `-k CLS` **CLS-1..32 共 32 条全 🔴（断言红）**，
   其中 `CLS-31`/`CLS-32` 钉住 `success` 与 `timeout` 两个状态分支。
+- Phase 2 全量变异（run 3，tree `fd96f90f839f6621d83aff46006622d90ff27c1f` /
+  commit `ecf11df`）：**381/381 断言红**，`🟢0 / 💥0 / ❓0`、非对照 `⚪0`、
+  对照 **8/8** 全绿，`EXIT=0`；`--preflight` 389/389（381 变异 + 8 对照）。
+  审计 C 发现的 6 条隐藏 `ERROR` 已由严格分类器与测试断言修复；日志
+  `docs/audits/cls-ui/phase-2/logs/fullrun_phase2_run3.log`，结论见
+  `docs/audits/cls-ui/phase-2/consensus.md`。
 - golden trace 按本次**有意**的行为变化重新生成。
 - ⚠️ `<font color>` 真机渲染与 header 局部更新的**视觉**结论仍为 pending：
   接口探针已发送（`card.create` / `content` / `batch_update` / `content` 全 `code=0`），

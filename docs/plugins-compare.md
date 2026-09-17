@@ -454,8 +454,8 @@
 
 | 优先级 | 项 | 依据 |
 |---|---|---|
-| 高 | 把 `probe_report` 的结论**打到 `/larkdeck status` 卡上**（现在一个键都没上） | 7.6 |
-| 高 | S7：`interrupt_session_activity` 只探了基类、**没探核心的查找名** | 7.6 |
+| 高 | 把 `probe_report` 的结论打到 `/larkdeck status` 卡上——**P1a 已完成，见下方更新注** | 7.6 |
+| 高 | S7：`interrupt_session_activity` 核心查找名——**P1b 已加静态探测；运行期派发仍未验** | 7.6 |
 | 中 | S1：`session_attribution_ok` 算了不报 | 7.6 |
 | 中 | S2：`CALLBACK_INSTANCE_ATTRS` 整组补探测键 | 7.6 |
 | 中 | `compat.py` 三处「注释比代码乐观」的句子改准（或让代码兑现注释） | 7.6 |
