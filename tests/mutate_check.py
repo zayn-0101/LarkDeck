@@ -1148,7 +1148,7 @@ MUTATIONS = [
     ("R8-6-测试把 staticmethod 还原成普通函数（污染同一进程里后续所有用例）",
      "tests/test_units.py",
      '        original_builder = adapter.LarkDeckMixin.__dict__["_ld_build_resolved_card"]',
-     '        original_builder = adapter.LarkDeckMixin._ld_build_resolved_card.__func__',
+     '        original_builder = adapter.LarkDeckMixin._ld_build_resolved_card',
      "test_units"),
     # ---- R4：卡链（超长回答封旧卡 + 开新卡，正文只写本卡那一段）------------------------- #
     # ⚠️ 锚点在 R3 收窄版落地时**重对准过一次**（那一行整行被重写成「面板两块按关键字传」）：
@@ -2204,15 +2204,23 @@ def _classify(script: str, proc: "subprocess.CompletedProcess") -> str:
       * **green** 必须看到该门禁自己的收尾语（``OVERRIDE OK`` / ``HOOKS OK`` / ``passed``…）
         —— 光看退出码会把「根本没跑起来」算成通过；
       * **red-assert** 要求看到该门禁的**失败标记**（``AssertionError`` / ``FAIL  `` /
-        ``ERROR `` / ``FAIL: ``）。三个 ``check_*`` 在**加载失败**（语法错误等）时只打自己的
-        友好文案、不打断言标记，于是那种变异会落到下面一支；
+        ``FAIL: ``）。三个 ``check_*`` 在**加载失败**（语法错误等）时只打自己的友好文案、
+        不打断言标记，于是那种变异会落到下面一支；
       * **red-crash** = 非零退出 + 没有任何失败标记，或输出里有崩溃标记（traceback /
-        SyntaxError / ImportError）。**崩溃不是判别力证据** —— 它只说明「你把代码弄坏了」，
+        SyntaxError / ImportError），或 ``test_units.py`` 输出里有行首 ``ERROR ``（自研
+        runner 用它表示未捕获异常）。**崩溃不是判别力证据** —— 它只说明「你把代码弄坏了」，
         而这一批的教训正是：把崩溃算成「被门禁抓住」会掩盖真正的假绿。
     """
     blob = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode == 0 and _PASS_MARKERS[script] in blob:
         return "green"
+    # ⚠️ 审计 C（2026-09-17）实测的隐藏崩溃：test_units 的一次运行可能同时打
+    # `FAIL  ` 和行首 `ERROR `（一个测试断言失败、另一个未捕获异常）。如果只按
+    # 「有 FAIL 就算断言红」，这条运行会被记成纯断言红，manifest 的 crash=0
+    # 就会被读成「0 个测试崩溃」—— 实际不是。行首 `ERROR ` 一律算 red-crash，
+    # 即使同一份输出里还有别的断言失败。
+    if script == "test_units.py" and any(line.startswith("ERROR ") for line in blob.splitlines()):
+        return "red-crash"
     broken = any(marker in blob for marker in _LOAD_FAIL_MARKERS)
     asserted = any(marker in blob for marker in _FAIL_MARKERS[script])
     # ⚠️ **结构性判据优先于子串判据**（2026-09-15 实测的误判，方向与假绿相反但同样是错）：
@@ -2391,8 +2399,9 @@ def main() -> int:
             print(f"❌ {_shape}")
             print("   （预检 `--preflight` 也会报同一个问题：两处共用 `_shape_error`）")
             return 2
-    if args.k and not picked and not controls:
-        print(f"❌ `-k {args.k!r}` 一条变异/对照都没命中 —— 什么都没验，不给「全绿」结论。")
+    if args.k and not picked:
+        print(f"❌ `-k {args.k!r}` 没有命中任何变异（只命中对照 {len(controls)} 条）—— "
+              "对照不能替代变异证据，不给「全绿」结论。")
         print(f"   （清单里共 {len(MUTATIONS)} 条变异 + {len(CONTROLS)} 条对照；"
               f"用 `--preflight` 可以看全部名字）")
         return 2

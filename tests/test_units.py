@@ -302,9 +302,12 @@ def test_probe_adapter_class_reports_missing():
     bare = compat.probe_report(Bare)
     assert compat.REACTION_ADAPTER_ATTRS, "登记表是空的，探测等于没做"
     assert compat.SIGNAL_ADAPTER_ATTRS, "登记表是空的，探测等于没做"
-    assert list(bare["missing_reactions"]) == list(compat.REACTION_ADAPTER_ATTRS), bare
-    assert list(bare["missing_signal"]) == list(compat.SIGNAL_ADAPTER_ATTRS), bare
-    assert list(bare["missing_callback"]) == list(compat.CALLBACK_ADAPTER_ATTRS), bare
+    try:
+        assert list(bare["missing_reactions"]) == list(compat.REACTION_ADAPTER_ATTRS), bare
+        assert list(bare["missing_signal"]) == list(compat.SIGNAL_ADAPTER_ATTRS), bare
+        assert list(bare["missing_callback"]) == list(compat.CALLBACK_ADAPTER_ATTRS), bare
+    except KeyError as exc:  # P5a2 变异：删掉报告键会让探测结果无法上卡
+        raise AssertionError(f"探测报告必须包含完整契约键：{exc!r}; bare={bare!r}") from exc
 
 
 def test_probe_report_warnings_name_the_right_contract():
@@ -5410,8 +5413,12 @@ def test_interrupt_redraws_the_stream_card_in_stopped_color():
         assert not panel._STATE["s_other"].get("status"), "中止状态串到别的会话了"
         assert len(updates) == 2, "中止后必须自己重绘那张卡"
         body = json.loads(updates[1]["content"])
-        assert _find_collapsible(body)["border"]["color"] == "yellow", \
-            "中止态不是黄边 —— 状态色整条没落地"
+        try:
+            assert _find_collapsible(body)["border"]["color"] == "yellow", \
+                "中止态不是黄边 —— 状态色整条没落地"
+        except (TypeError, KeyError) as exc:  # SEQ4 变异：重绘不带可折叠面板/状态色
+            raise AssertionError(
+                f"中止重绘必须带可折叠面板与黄边：{exc!r}; body={body!r}") from exc
         assert not body["config"].get("streaming_mode")
         joined = json.dumps(body, ensure_ascii=False)
         assert "正在写的答案，还没写完" in joined, "重绘必须沿用已经打出来的正文"
@@ -6004,13 +6011,22 @@ def test_clarify_question_and_choices_are_escaped_but_answers_stay_raw():
     card2 = cards.clarify_card_2(q, ch, clarify_id="c", session_key="s")
     els = card2["body"]["elements"]
     body_md = [e for e in els if e["tag"] == "markdown" and e.get("text_size") != "notation"]
-    assert "A\\*B" in body_md[0]["content"] and "C\\_D" in body_md[0]["content"], body_md[0]
+
+    def _body_md(i):  # G1-1 变异：撤掉可见选项列表后，这段必须红成断言而不是 IndexError
+        try:
+            return body_md[i]
+        except IndexError as exc:
+            raise AssertionError(
+                f"2.0 澄清卡缺少第 {i} 段正文 markdown（可见选项列表被撤掉）："
+                f"{[e['tag'] for e in els]!r}") from exc
+
+    assert "A\\*B" in _body_md(0)["content"] and "C\\_D" in _body_md(0)["content"], _body_md(0)
     sel = [e for e in els if e["tag"] == "select_static"][0]
     assert [o["value"] for o in sel["options"]] == ch, \
         f"⚠️ 提交值必须是**原文**（转义过的答案对不上）：{[o['value'] for o in sel['options']]}"
     assert all("\\" not in o["text"]["content"] for o in sel["options"]), \
         "下拉标签是 plain_text ⇒ 不需要转义（转了用户就看见反斜杠）"
-    list_md = body_md[1]["content"]
+    list_md = _body_md(1)["content"]
     assert "A\\*B" in list_md and "\\[链接\\]" in list_md, list_md
     # 剥掉转义反斜杠后必须与提交值逐条对上（**同源不受转义影响**）
     assert [ln.replace("\\", "") for ln in list_md.split("\n")] == \
@@ -9244,10 +9260,16 @@ def test_text_profile_applies_device_tokens_to_entity_card():
             for item in node:
                 _collect(item)
     _collect(card)
-    assert by_id[cards.CARDKIT_ANSWER_ID].get("text_size") == "ld_body"
-    assert by_id[cards.CARDKIT_PANEL_BODY_ID].get("text_size") == "ld_panel"
-    assert by_id[cards.CARDKIT_PANEL_TOOLS_ID].get("text_size") == "ld_panel"
-    assert by_id[cards.CARDKIT_FOOTER_ID].get("text_size") == "ld_notice"
+    def _node(eid):
+        try:
+            return by_id[eid]
+        except KeyError as exc:  # R3-1 变异：面板只建一块 ⇒ 实体卡缺元素
+            raise AssertionError(f"实体卡缺少元素 {eid!r}：{sorted(by_id)!r}") from exc
+
+    assert _node(cards.CARDKIT_ANSWER_ID).get("text_size") == "ld_body"
+    assert _node(cards.CARDKIT_PANEL_BODY_ID).get("text_size") == "ld_panel"
+    assert _node(cards.CARDKIT_PANEL_TOOLS_ID).get("text_size") == "ld_panel"
+    assert _node(cards.CARDKIT_FOOTER_ID).get("text_size") == "ld_notice"
 
     unknown = cards.cardkit_entity_card("正文", "面板", panel_tools_text="工具",
                                         panel=True, footer_text="f")
@@ -9266,7 +9288,7 @@ def test_card_builders_apply_text_profile_not_just_the_helper():
             "正文", streaming=False, panel=None, footer=None)
         try:
             assert card["config"]["style"]["text_size"]["ld_body"]["mobile"] == "large", card["config"]
-        except (KeyError, TypeError) as exc:  # P1b-8 变异：建卡不接字号档位
+        except (KeyError, TypeError, IndexError) as exc:  # P1b-8 变异：建卡不接字号档位
             raise AssertionError(f"普通卡没有应用字号档位：{exc!r}; card={card!r}") from exc
 
         calls, client = _mk_cardkit_fake()
@@ -9275,11 +9297,14 @@ def test_card_builders_apply_text_profile_not_just_the_helper():
         adapter.LarkDeckMixin._ld_ck_requests = staticmethod(_fake_ck_requests)
         adapter.configure(native_transport="cardkit")
         assert _run(raw.send_stream_frame("", chat_id="oc_tp", turn_id="t-tp"))
-        entity = json.loads(calls["entity"][0])
+        try:
+            entity = json.loads(calls["entity"][0])
+        except IndexError as exc:  # CK9 变异：传输写死后根本不建实体卡
+            raise AssertionError(f"CardKit 实体卡没有建出来（配置传输未生效）：{exc!r}; calls={calls!r}") from exc
         try:
             assert entity["config"]["style"]["text_size"]["ld_body"]["pc"] == "small", entity["config"]
             assert entity["body"]["elements"][0]["text_size"] == "ld_body", entity["body"]["elements"][0]
-        except (KeyError, TypeError) as exc:  # P1b-9 变异：CardKit 实体卡不接字号档位
+        except (KeyError, TypeError, IndexError) as exc:  # P1b-9 变异：实体卡不接字号档位
             raise AssertionError(f"CardKit 实体卡没有应用字号档位：{exc!r}; entity={entity!r}") from exc
     finally:
         adapter.LarkDeckMixin._ld_ck_requests = saved_reqs
@@ -9682,8 +9707,11 @@ def test_clarify_failed_toast_never_invites_an_impossible_retry():
         raw._on_card_action_trigger(_clarify_click_data())
         assert box and box[-1].toast is not None, "失败必须留下提示"
         toast = box[-1].toast
-        zh = toast.i18n.get("zh_cn") or ""
-        en = toast.i18n.get("en_us") or ""
+        try:
+            zh = toast.i18n.get("zh_cn") or ""
+            en = toast.i18n.get("en_us") or ""
+        except AttributeError as exc:  # R8-4 变异：toast 只给 content 不给 i18n
+            raise AssertionError(f"失败 toast 必须带双语 i18n：{exc!r}; toast={toast!r}") from exc
         assert "重试" not in zh, f"再点一次永远不可能成功，不许邀请重试：{zh!r}"
         assert "retry" not in en.lower(), f"英文同理不许邀请重试：{en!r}"
         assert "无需重复" in zh, f"必须明确告诉用户不必重复点击：{zh!r}"
