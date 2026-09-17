@@ -1,0 +1,30 @@
+===== 对照组（不启用） =====
+has_hook = {'post_api_request': False, 'on_stream_start': False, 'on_stream_delta': False, 'pre_tool_call': False, 'post_tool_call': False, 'pre_gateway_dispatch': False, 'on_session_end': False}
+CONTROL OK（未启用插件时钩子为空）
+
+===== 启用 larkdeck =====
+OBSERVED_HOOKS = ['post_api_request', 'on_stream_start', 'on_stream_delta', 'pre_tool_call', 'post_tool_call', 'pre_gateway_dispatch', 'on_session_end']
+has_hook = {'post_api_request': True, 'on_stream_start': True, 'on_stream_delta': True, 'pre_tool_call': True, 'post_tool_call': True, 'pre_gateway_dispatch': True, 'on_session_end': True}
+payload usage keys = ['cache_read_tokens', 'cache_write_tokens', 'input_tokens', 'output_tokens', 'prompt_tokens', 'reasoning_tokens', 'request_count', 'total_tokens']
+prompt_tokens = 44800 (= input 800 + cache_read 44000)
+注意: 存在两份 larkdeck.core.context，断言改用加载器那份 hermes_plugins.larkdeck.core.context
+snapshot = model:deepseek-v4-flash used:44800 out:120 cache:44000
+panel snapshot = {'session_id': 'sess-panelcheck', 'turn_id': 'turn-p1', 'reasoning': '先看目录结构。正文之后的推理。', 'rounds': [{'text': '先看目录结构。', 'elapsed_ms': 0}, {'text': '正文之后的推理。', 'elapsed_ms': 55}], 'tools': [{'id': 'call-1', 'name': 'read_file', 'status': 'ok', 'duration_ms': 42, 'preview': '{"path": "/tmp/demo.txt"}', 't0': 99587.023453333}], 'status': None, 'age': 0.05521358300757129}
+status after completed=True → 'ok'
+完成态卡片：border={'color': 'green', 'corner_radius': '8px'} 字节=1294
+answer_state = ('这是正文', True, True)
+answer_state（正文增量之后） = ('这是正文，还没写完', False)
+前提核对：核心累积 '第一段正文。第二段。\n\n工具之后的正文。'
+          我们钩子收到的累积 '第一段正文。第二段。\n\n工具之后的正文。'
+前提核对：核心合成的帧（真实实现） = '第一段正文。第二段。\n\n工具之后的正文。\n\n---\n⚙️ terminal: "ls -la"'
+黄金路径 snapshot = {'session_id': 'sess-golden', 'turn_id': 'golden-1', 'reasoning': '先想一下再看工具工具之后', 'rounds': [{'text': '先想一下', 'elapsed_ms': 24}, {'text': '再看工具', 'elapsed_ms': 25}, {'text': '工具之后', 'elapsed_ms': 27}], 'tools': [{'id': 'g-call-1', 'name': 'terminal', 'status': 'ok', 'duration_ms': 42, 'preview': '{"command": "ls"}', 't0': 99587.171938541}], 'status': 'ok', 'age': 0.11609133299498353}
+黄金路径面板：'💭 思考 0.1s · 🛠️ 工具执行 · 1 步'
+黄金路径面板（复检）：'💭 思考 0.1s · 🛠️ 工具执行 · 1 步'
+黄金路径页脚：'✅ 已完成 · ⏱ 12.3s · 🤖 deepseek-v4-flash · ctx 44.8k/200k · 22%'
+黄金序列 ①：seed 帧卡片 422 字节，含占位 = True
+黄金序列 ②：正文帧含面板 = True，含占位 = False
+黄金序列 ③：正文帧含真答案 = True，含占位 = False
+黄金序列 ④：收尾用 patch，绿边 = True，占位 = False
+黄金序列 ⑤：/stop 之后 1 次写入，含黄边 = True
+HOOKS OK
+
