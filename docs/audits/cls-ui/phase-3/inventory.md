@@ -1,4 +1,4 @@
-# Phase 3 neat-freak inventory (final, phase3c)
+# Phase 3 neat-freak inventory (final, phase3d)
 
 日期：2026-09-17
 范围：`/Users/Zayn/Code/larkdeck` 主工作树 + 与本项目直接相关的 worktree/临时对象。
@@ -14,7 +14,7 @@
 | 文档 | `changed-and-verified` | CLS 布局、i18n 边界、颜色/header pending、run3 数字与代码一致；`docs/handoff-route.md` 的 `fullrun9 317/317` 与 §13.3「7 项未开工」已按 `plugins-compare.md §7.8` 更新注修正；`docs/verify-log.md` 登记 run 1/2/3；相对链接 0 缺失。 |
 | 规则 | `changed-and-verified`（附预算 warning） | 项目 `AGENTS.md` 已修掉「审计日志必须 force-add」与「不提交日志」的矛盾（后者限定为可能含凭据/真实 ID 的运行日志）；补齐严格分类器、control-only `-k`、留档口径、关键性质单独成条四条现役规则。文件 62,510 B → 60,803 B；Codex `project_doc_max_bytes=65536`，占 92.8%，作为 **warning** 登记，后续新增规则前必须先压缩。全局规则只读核验，无冲突；项目 red lines 的日志例外边界已写明（不是简单加严）。 |
 | 记忆 | `not-applicable` / `generated-read-only` | `~/.codex/memories` 由宿主生成；`grep -Ril larkdeck` 0 命中，本次未写入。不直接编辑生成记忆。 |
-| 工作区 | `pending`（快照已封装，主树待提交；清场待用户确认） | 主工作树在 closeout 提交前为 dirty（本轮 8 个文档/ignore 修改 + 未跟踪 phase-3 目录）；`git worktree list` 当前为 **9 行（主 + 8 linked，含 phase3b 审计树）**；终版 `refs/audit/cls-ui/phase3c` 不新增 worktree。`phase3c`（commit `f5c4618…` / tree `d60d164…`）快照与工作树逐字节一致；`phase3b` 是上一版、已被 supersede，且 `f5c4618` **不是 main 祖先**；统一结论后按显式路径提交。清场候选见下，删除动作等用户完整汇报后确认。 |
+| 工作区 | `pending`（快照已封装，主树待提交；清场待用户确认） | 主工作树在 closeout 提交前为 dirty（本轮 8 个文档/ignore 修改 + 未跟踪 phase-3 目录）；`git worktree list` 当前为 **9 行（主 + 8 linked，含 phase3b 审计树）**。`phase3c`（commit `f5c4618…` / tree `d60d164…`）是前一版快照；终版为 main 上的 closeout 提交及其 `refs/audit/cls-ui/phase3d` tag（不新增 worktree），auditC README 与 inventory 的最后三行文书修正已包含。清场候选见下，删除动作等用户完整汇报后确认。 |
 
 ## 运行时与发布状态
 
@@ -48,7 +48,7 @@
 | 根 `.probe_*.json`（3 个，含真实 35 位 `om_` message_id / card_id） | 本地探针状态 | 待用户确认；**不得提交** | `.gitignore` 覆盖；含真实飞书对象 ID，清场前单独标注 |
 | `design/` | 他项目产物（DeepSeek iDesign） | 范围外，不清理 | manifest 显示非 larkdeck；只读提及 |
 | `/tmp/audit_b2.png`、`/tmp/audit_bottom.png` | 他项目截图 | 范围外，不清理 | 内容为医药合规表，与 larkdeck 无关 |
-| `refs/audit/*`（终版 phase3c 后 13 条） | 本地审计 refs | **保留** | 未 push 的冻结证据；清场前不得删/GC |
+| `refs/audit/*`（本地保留，随每个终版 tag 增加） | 本地审计 refs | **保留** | 未 push 的冻结证据；清场前不得删/GC |
 
 ⚠️ 禁止把 `/tmp/phase2*` 当作一个 glob 删除：该 pattern 同时命中活 worktree、run3 外部见证、
 taghash 和 run2 逐门禁日志。worktree 一律走 `git worktree remove`，删后复核
