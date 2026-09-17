@@ -9,7 +9,7 @@ payload usage keys = ['cache_read_tokens', 'cache_write_tokens', 'input_tokens',
 prompt_tokens = 44800 (= input 800 + cache_read 44000)
 注意: 存在两份 larkdeck.core.context，断言改用加载器那份 hermes_plugins.larkdeck.core.context
 snapshot = model:deepseek-v4-flash used:44800 out:120 cache:44000
-panel snapshot = {'session_id': 'sess-panelcheck', 'turn_id': 'turn-p1', 'reasoning': '先看目录结构。正文之后的推理。', 'rounds': [{'text': '先看目录结构。', 'elapsed_ms': 0}, {'text': '正文之后的推理。', 'elapsed_ms': 59}], 'tools': [{'id': 'call-1', 'name': 'read_file', 'status': 'ok', 'duration_ms': 42, 'preview': '{"path": "/tmp/demo.txt"}', 't0': 135468.212374291}], 'status': None, 'age': 0.05965425001340918}
+panel snapshot = {'session_id': 'sess-panelcheck', 'turn_id': 'turn-p1', 'reasoning': '先看目录结构。正文之后的推理。', 'rounds': [{'text': '先看目录结构。', 'elapsed_ms': 0}, {'text': '正文之后的推理。', 'elapsed_ms': 59}], 'tools': [{'id': 'call-1', 'name': 'read_file', 'status': 'ok', 'duration_ms': 42, 'preview': '{"path": "/tmp/demo.txt"}', 't0': 138204.904377458}], 'status': None, 'age': 0.05979450000450015}
 status after completed=True → 'ok'
 完成态卡片：border={'color': 'green', 'corner_radius': '8px'} 字节=1294
 answer_state = ('这是正文', True, True)
@@ -17,7 +17,7 @@ answer_state（正文增量之后） = ('这是正文，还没写完', False)
 前提核对：核心累积 '第一段正文。第二段。\n\n工具之后的正文。'
           我们钩子收到的累积 '第一段正文。第二段。\n\n工具之后的正文。'
 前提核对：核心合成的帧（真实实现） = '第一段正文。第二段。\n\n工具之后的正文。\n\n---\n⚙️ terminal: "ls -la"'
-黄金路径 snapshot = {'session_id': 'sess-golden', 'turn_id': 'golden-1', 'reasoning': '先想一下再看工具工具之后', 'rounds': [{'text': '先想一下', 'elapsed_ms': 30}, {'text': '再看工具', 'elapsed_ms': 23}, {'text': '工具之后', 'elapsed_ms': 30}], 'tools': [{'id': 'g-call-1', 'name': 'terminal', 'status': 'ok', 'duration_ms': 42, 'preview': '{"command": "ls"}', 't0': 135468.360259541}], 'status': 'ok', 'age': 0.11587508401134983}
+黄金路径 snapshot = {'session_id': 'sess-golden', 'turn_id': 'golden-1', 'reasoning': '先想一下再看工具工具之后', 'rounds': [{'text': '先想一下', 'elapsed_ms': 30}, {'text': '再看工具', 'elapsed_ms': 30}, {'text': '工具之后', 'elapsed_ms': 21}], 'tools': [{'id': 'g-call-1', 'name': 'terminal', 'status': 'ok', 'duration_ms': 42, 'preview': '{"command": "ls"}', 't0': 138205.054962375}], 'status': 'ok', 'age': 0.11569025000790134}
 黄金路径面板：'💭 思考 0.1s · 🛠️ 工具执行 · 1 步'
 黄金路径面板（复检）：'💭 思考 0.1s · 🛠️ 工具执行 · 1 步'
 黄金路径页脚：'✅ 已完成 · ⏱ 12.3s · 🤖 deepseek-v4-flash · ctx 44.8k/200k · 22%'

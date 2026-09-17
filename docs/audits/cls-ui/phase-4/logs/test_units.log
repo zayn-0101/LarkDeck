@@ -4,7 +4,7 @@ Traceback (most recent call last):
   File "/Users/Zayn/Code/larkdeck/core/adapter.py", line 4139, in _ld_diagnosis_lines
     snap = _context.status_snapshot() or {}
            ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/Zayn/Code/larkdeck/tests/test_units.py", line 8872, in _boom_snapshot
+  File "/Users/Zayn/Code/larkdeck/tests/test_units.py", line 8896, in _boom_snapshot
     raise RuntimeError("snapshot boom")
 RuntimeError: snapshot boom
 [larkdeck] 能力探测：__main__.test_build_adapter_falls_back_when_interface_missing.<locals>.Half · 缺可选 ['edit_message'] · 缺点击回调 ['_on_card_action_trigger', '_is_interactive_operator_authorized', '_loop_accepts_callbacks', '_get_cached_sender_name', '_card_response'] —— 澄清按钮会静默失灵（点下去没反应）
@@ -190,7 +190,7 @@ Traceback (most recent call last):
   File "/Users/Zayn/Code/larkdeck/core/adapter.py", line 4343, in _ld_command_card
     raw = str(raw_args or "").strip()
           ^^^^^^^^^^^^^^^^^^^
-  File "/Users/Zayn/Code/larkdeck/tests/test_units.py", line 9501, in __str__
+  File "/Users/Zayn/Code/larkdeck/tests/test_units.py", line 9525, in __str__
     raise RuntimeError("boom")
 RuntimeError: boom
 [larkdeck] `/larkdeck` 状态读取失败: _Unprintable
@@ -198,7 +198,7 @@ Traceback (most recent call last):
   File "/Users/Zayn/Code/larkdeck/core/adapter.py", line 4343, in _ld_command_card
     raw = str(raw_args or "").strip()
           ^^^^^^^^^^^^^^^^^^^
-  File "/Users/Zayn/Code/larkdeck/tests/test_units.py", line 9522, in __str__
+  File "/Users/Zayn/Code/larkdeck/tests/test_units.py", line 9546, in __str__
     raise _Unprintable()
 test_command_card_never_raises_even_when_the_error_itself_is_unprintable.<locals>._Unprintable: <exception str() failed>
 [larkdeck] 能力探测：内置适配器缺少 ['_reactions_enabled'] —— `reactions: false` 会静默失效（「处理中」表情照旧）
@@ -487,7 +487,7 @@ RuntimeError: 卡片构造炸了
 Traceback (most recent call last):
   File "/Users/Zayn/Code/larkdeck/core/adapter.py", line 3200, in interrupt_session_activity
     await self._ld_redraw_stopped(chat_id)
-  File "/Users/Zayn/Code/larkdeck/tests/test_units.py", line 6598, in boom
+  File "/Users/Zayn/Code/larkdeck/tests/test_units.py", line 6622, in boom
     raise RuntimeError("重绘失败")
 RuntimeError: 重绘失败
 [larkdeck] 能力探测：内置适配器缺少 ['_reactions_enabled'] —— `reactions: false` 会静默失效（「处理中」表情照旧）

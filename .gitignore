@@ -5,6 +5,7 @@ __pycache__/
 venv/
 .DS_Store
 *.log
+*.tmp
 
 # 绝不进公开仓库
 config.yaml

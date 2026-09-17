@@ -47,10 +47,11 @@
   审计 C 发现的 6 条隐藏 `ERROR` 已由严格分类器与测试断言修复；日志
   `docs/audits/cls-ui/phase-2/logs/fullrun_phase2_run3.log`，结论见
   `docs/audits/cls-ui/phase-2/consensus.md`。
-- 颜色默认翻转（`panel_color_tags: false`）后在 release 候选树上重跑：`test_units.py`
+- 颜色默认翻转与 release-gate 修正后在 release 候选工作树上重跑：`test_units.py`
   **225/225**、`check_override` / `check_hooks` / `check_clarify_e2e` 全绿、
-  `--preflight` **389/389**、定向 `-k CLS` **32/32 断言红**；日志
-  `docs/audits/cls-ui/phase-4/logs/mutCLS_color_false.log`。
+  `--preflight` **390/390（382 变异 + 8 对照）**、**全量变异 run 4 EXIT=0：382/382 断言红**，
+  `🟢0 / 💥0 / ❓0`、非对照 ⚪0、对照 8/8；日志
+  `docs/audits/cls-ui/phase-4/logs/fullrun_v0.6.0.log`（sha256 `70e28b6b…`）。
 - golden trace 按本次**有意**的行为变化重新生成。
 - ⚠️ `<font color>` 真机渲染与 header 局部更新的**视觉**结论仍为 pending：
   接口探针已发送（`card.create` / `content` / `batch_update` / `content` 全 `code=0`），

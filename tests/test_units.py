@@ -876,6 +876,17 @@ def test_declared_defaults_are_an_explicit_decision():
             "没配置任何东西时真正跑的传输与 `_DEFAULTS` 声明的不一致")
     finally:
         adapter._CONFIG.update(saved)
+    # v0.6.0：真机 `<font color>` 视觉未确认，颜色默认必须显式是 false；把它翻回 true
+    # 会命中这一条（配套变异 CLS-33），而不是只依赖 golden trace 的间接副作用。
+    assert declared["panel_color_tags"] is False, (
+        "v0.6.0 在真机颜色确认前必须默认 panel_color_tags=false（无色降级）")
+    manifest_text = (_pathlib.Path(_REPO_PARENT) / "larkdeck" / "plugin.yaml").read_text(
+        encoding="utf-8")
+    color_block = re.search(r"^  panel_color_tags:\n(?:    .*\n)+", manifest_text, re.M)
+    assert color_block, "plugin.yaml 缺少 panel_color_tags 配置块"
+    assert "default: false" in color_block.group(0), color_block.group(0)
+    assert cards.color_tags_enabled() is False, (
+        "cards 模块的初始颜色开关必须与生产默认一致（false）")
 
 
 def _golden_trace() -> dict:
@@ -3557,7 +3568,12 @@ def test_small_tool_char_limit_never_cuts_font_tag():
 
 
 def test_color_tag_fallback_covers_status_heading_and_detail():
-    """D3：真机若不认 `<font color>`，三类消费者必须有无色降级路径。"""
+    """D3：真机若不认 `<font color>`，三类消费者必须有无色降级路径。
+
+    v0.6.0 的生产默认已经是**无色**（真机视觉未确认）；本条同时钉住
+    「默认 false」与「显式 true 时三类消费者恢复彩色」两条。
+    """
+    saved = dict(adapter._DEFAULTS)
     try:
         adapter.configure(panel_color_tags=False)
         assert cards.color_tags_enabled() is False, "配置没有把降级开关推给 cards"
@@ -3570,9 +3586,17 @@ def test_color_tag_fallback_covers_status_heading_and_detail():
         tools = cards.panel_tools_markdown(
             tools=[cards.tool_step("read_file", status="ok", theme="ap_lite")])
         assert "<font" not in tools and "🛠️ 工具执行 · 1 步" in tools, tools
-    finally:
         adapter.configure(panel_color_tags=True)
-    assert cards.color_tags_enabled() is True, "恢复默认后颜色标签必须回来"
+        assert cards.color_tags_enabled() is True, "显式打开后彩色必须真的回来"
+        colored = cards.tool_step("read_file", status="ok", theme="ap_lite")
+        assert "<font color='green'>Succeeded</font>" in colored, colored
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved)
+        adapter._apply_metrics_config()
+    assert adapter._DEFAULTS["panel_color_tags"] is False
+    assert cards.color_tags_enabled() is False, (
+        "恢复默认后颜色标签必须关闭（v0.6.0 默认 false）")
 
 
 def test_theme_symbols_and_tool_icons_are_pinned():

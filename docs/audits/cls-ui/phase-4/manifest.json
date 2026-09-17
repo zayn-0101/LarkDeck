@@ -1,0 +1,46 @@
+{
+  "phase": 4,
+  "release_version": "0.6.0",
+  "objective": "Final full-mutation verification for the v0.6.0 release candidate after the panel_color_tags default flip and release-gate fixes",
+  "base_commit": "bdedb9b29141a3aa303c4a8ff7241f2e6005b1da",
+  "worktree_fingerprint": {
+    "head": "bdedb9b29141a3aa303c4a8ff7241f2e6005b1da",
+    "diff_sha256": "ab1ed372a3cef9b9b318f63ceaf1c0891350a424adbe8de3f543e1b897d15948"
+  },
+  "frozen_ref": "refs/audit/cls-ui/phase4",
+  "self_reference": "The final release commit/tree hash is recorded in the annotated tag object for refs/audit/cls-ui/phase4, created after the commit.",
+  "full_run": {
+    "command": "cd /Users/Zayn/Code/larkdeck && PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 /Users/Zayn/.hermes/hermes-agent/venv/bin/python3 tests/mutate_check.py",
+    "start_local": "2026-09-18T00:25:24+08:00",
+    "end_local": "2026-09-18T02:15:30+08:00",
+    "exit_code": 0,
+    "counts": {
+      "red_assert": 382,
+      "green": 0,
+      "crash": 0,
+      "missing_anchor": 0,
+      "grey_total": 8,
+      "grey_control": 8,
+      "grey_mutation_noop": 0
+    },
+    "expected": {"mutations": 382, "controls": 8},
+    "log": "docs/audits/cls-ui/phase-4/logs/fullrun_v0.6.0.log",
+    "log_sha256": "70e28b6b9c8a7d76cecad78ba188ff6cd7629e0c1b082e88215c46a531c9ab31",
+    "log_size_bytes": 64725
+  },
+  "preflight": {"anchors": "390/390", "detail": "382 mutations + 8 controls", "log_sha256": "1702ba34b63f66d6b504c25760222399fc4df88fec9d264a96aaf2121a5ed44e"},
+  "gate_logs": {
+    "test_units.log": "9d02e5dcbd06a30ae2a2e04f0a011db414c55ea5940b0a568586f716e43ae1e8",
+    "check_override.log": "08fe421e55f0148c6c4c41f8dbbe1dbb662d47ddeaad9718ec328861c163cd7f",
+    "check_hooks.log": "29aee5aace6f41f8d67e2ddb61df56b1be21c20a9299edf7b030abc4ee96c832",
+    "check_clarify_e2e.log": "e4662421b0597be2a6d7709f4b08b082ab23b834ab5441d81f9d0030a85cb8c6",
+    "preflight.log": "1702ba34b63f66d6b504c25760222399fc4df88fec9d264a96aaf2121a5ed44e"
+  },
+  "hard_condition_pass": true,
+  "known_pending": [
+    "real-device <font color> visual confirmation (panel_color_tags defaults to false)",
+    "D1 panel header partial update is not implemented (plan c)",
+    "theme: ap_lite / text_profile / no-gateway cron device checks carried from v0.5.0",
+    "cleanup of audit worktrees and /tmp witnesses awaits explicit user confirmation"
+  ]
+}

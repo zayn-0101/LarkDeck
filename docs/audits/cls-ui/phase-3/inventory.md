@@ -9,7 +9,7 @@
 
 | 事实面 | 状态 | 证据与动作 |
 | --- | --- | --- |
-| 代码 | `verified-current` | Phase 1 产品实现冻结于 `refs/audit/cls-ui/phase1e`（commit `0bf59525…`）；Phase 2 只改测试/证据，最终全量 run 3 冻结于 commit `ecf11df` / tree `fd96f90f…`。四门禁 225/225 + preflight 389/389。 |
+| 代码 | `verified-current` | Phase 1 产品实现冻结于 `refs/audit/cls-ui/phase1e`（commit `0bf59525…`）；Phase 2 只改测试/证据，最终全量 run 3 冻结于 commit `ecf11df` / tree `fd96f90f…`。四门禁 225/225 + preflight 390/390（382+8）。 |
 | 运行态 | `pending`（Phase 4 必须 live verify） | Hermes `v0.21.1`；插件软链 `~/.hermes/plugins/larkdeck -> /Users/Zayn/code/larkdeck`；网关 detached 进程 PID 94952/94949 在跑旧模块，launchd service 未加载。Phase 4 要 `git pull` + `hermes gateway restart`，再核对网关日志/`/larkdeck status`/真机颜色。 |
 | 文档 | `changed-and-verified` | CLS 布局、i18n 边界、颜色/header pending、run3 数字与代码一致；`docs/handoff-route.md` 的 `fullrun9 317/317` 与 §13.3「7 项未开工」已按 `plugins-compare.md §7.8` 更新注修正；`docs/verify-log.md` 登记 run 1/2/3；相对链接 0 缺失。 |
 | 规则 | `changed-and-verified`（附预算 warning） | 项目 `AGENTS.md` 已修掉「审计日志必须 force-add」与「不提交日志」的矛盾（后者限定为可能含凭据/真实 ID 的运行日志）；补齐严格分类器、control-only `-k`、留档口径、关键性质单独成条四条现役规则。文件 62,510 B → 60,803 B；Codex `project_doc_max_bytes=65536`，占 92.8%，作为 **warning** 登记，后续新增规则前必须先压缩。全局规则只读核验，无冲突；项目 red lines 的日志例外边界已写明（不是简单加严）。 |

@@ -828,8 +828,9 @@ def _tool_detail(name: str, preview: str) -> str:
         detail = detail[:59] + "…"
     return detail
 
-#: `<font color>` 运行开关：真机探针/客户端不支持时可整体降级为纯文本。
-_COLOR_TAGS_ENABLED = True
+#: `<font color>` 运行开关：生产默认 false（真机视觉未确认），adapter 会按配置推送；
+#: 直接调用 cards 的探针/测试若要看彩色，必须显式 `set_color_tags_enabled(True)`。
+_COLOR_TAGS_ENABLED = False
 
 
 def set_color_tags_enabled(enabled: bool) -> None:
