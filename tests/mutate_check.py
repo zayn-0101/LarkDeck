@@ -1147,8 +1147,8 @@ MUTATIONS = [
      "test_units"),
     ("R8-6-测试把 staticmethod 还原成普通函数（污染同一进程里后续所有用例）",
      "tests/test_units.py",
-     '    original_builder = adapter.LarkDeckMixin.__dict__["_ld_build_resolved_card"]',
-     '    original_builder = adapter.LarkDeckMixin._ld_build_resolved_card.__func__',
+     '        original_builder = adapter.LarkDeckMixin.__dict__["_ld_build_resolved_card"]',
+     '        original_builder = adapter.LarkDeckMixin._ld_build_resolved_card.__func__',
      "test_units"),
     # ---- R4：卡链（超长回答封旧卡 + 开新卡，正文只写本卡那一段）------------------------- #
     # ⚠️ 锚点在 R3 收窄版落地时**重对准过一次**（那一行整行被重写成「面板两块按关键字传」）：

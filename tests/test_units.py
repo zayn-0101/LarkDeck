@@ -1087,7 +1087,10 @@ def test_context_snapshot_exposes_r7_footer_fields():
     context.record_api_call(model="m-3", api_duration=float("inf"), started_at=2000.0,
                             first_chunk_at=1000.0,          # 负差 ⇒ None
                             usage={"prompt_tokens": 0, "cache_read_tokens": 5})
-    snap = context.snapshot()
+    try:
+        snap = context.snapshot()
+    except Exception as exc:  # 撤掉 _as_float 的 inf 守卫时 round(inf) 会炸到这里
+        raise AssertionError(f"病态 duration/时间戳不能让 snapshot 崩溃：{exc!r}") from exc
     assert snap["api_duration_ms"] is None, "inf 秒不能变成一个巨大的毫秒数"
     assert snap["ttfb_ms"] is None, "负的首字延迟必须 None，不能是负数毫秒"
     assert snap["cache_pct"] is None, "分母为 0 ⇒ None"
@@ -3976,8 +3979,11 @@ def test_merged_class_never_stacks_our_mixin_twice() -> None:
     assert first.__mro__.count(adapter.LarkDeckMixin) == 1, "正常叠一层就够"
     assert _Official in first.__mro__
 
-    with _LogCapture("larkdeck") as records:
-        second = adapter.merged_class(first)          # ← 第二世代拿到的基类
+    try:
+        with _LogCapture("larkdeck") as records:
+            second = adapter.merged_class(first)          # ← 第二世代拿到的基类
+    except TypeError as exc:  # R12-6 变异：不剥旧层会造出矛盾 MRO
+        raise AssertionError(f"自套娃必须剥掉旧层，不能造出矛盾 MRO：{exc}") from exc
     assert second.__mro__.count(adapter.LarkDeckMixin) == 1, \
         "自套娃：混入层被叠了两层（`super()` 回退路径会执行两遍）"
     assert second.__bases__ == (adapter.LarkDeckMixin, _Official), \
@@ -5837,7 +5843,10 @@ def test_clarify_free_text_only_commits_when_the_core_accepts_it():
     # 都会把 self 当第一个位置实参 ⇒ `TypeError: takes 0 positional arguments but 1 given`。
     # 而那个异常被点击入口的兜底吞掉、表现成「点击走内置回落」，**与真实原因毫无关系**
     # （R8 的新用例排到它后面，正是被这条咬住才发现的）。
-    original_builder = adapter.LarkDeckMixin.__dict__["_ld_build_resolved_card"]
+    try:
+        original_builder = adapter.LarkDeckMixin.__dict__["_ld_build_resolved_card"]
+    except AttributeError as exc:  # R8-6 变异：误取 __func__ 会污染后续用例
+        raise AssertionError(f"必须从 __dict__ 取 staticmethod 对象本身：{exc!r}") from exc
     try:
         panel.reset()
         adapter.configure(clarify_cards=True, clarify_dialect="2.0")
@@ -9255,7 +9264,10 @@ def test_card_builders_apply_text_profile_not_just_the_helper():
         adapter.configure(text_profile="mobile_friendly")
         card = adapter.LarkDeckMixin._ld_build_card(
             "正文", streaming=False, panel=None, footer=None)
-        assert card["config"]["style"]["text_size"]["ld_body"]["mobile"] == "large", card["config"]
+        try:
+            assert card["config"]["style"]["text_size"]["ld_body"]["mobile"] == "large", card["config"]
+        except (KeyError, TypeError) as exc:  # P1b-8 变异：建卡不接字号档位
+            raise AssertionError(f"普通卡没有应用字号档位：{exc!r}; card={card!r}") from exc
 
         calls, client = _mk_cardkit_fake()
         raw = _make()
@@ -9264,8 +9276,11 @@ def test_card_builders_apply_text_profile_not_just_the_helper():
         adapter.configure(native_transport="cardkit")
         assert _run(raw.send_stream_frame("", chat_id="oc_tp", turn_id="t-tp"))
         entity = json.loads(calls["entity"][0])
-        assert entity["config"]["style"]["text_size"]["ld_body"]["pc"] == "small", entity["config"]
-        assert entity["body"]["elements"][0]["text_size"] == "ld_body", entity["body"]["elements"][0]
+        try:
+            assert entity["config"]["style"]["text_size"]["ld_body"]["pc"] == "small", entity["config"]
+            assert entity["body"]["elements"][0]["text_size"] == "ld_body", entity["body"]["elements"][0]
+        except (KeyError, TypeError) as exc:  # P1b-9 变异：CardKit 实体卡不接字号档位
+            raise AssertionError(f"CardKit 实体卡没有应用字号档位：{exc!r}; entity={entity!r}") from exc
     finally:
         adapter.LarkDeckMixin._ld_ck_requests = saved_reqs
         adapter._CONFIG.clear()
@@ -9468,7 +9483,10 @@ def test_command_card_never_raises_even_when_the_error_itself_is_unprintable():
         def __str__(self):
             raise _Unprintable()
 
-    out = adapter._ld_command_card(_Arg())
+    try:
+        out = adapter._ld_command_card(_Arg())
+    except Exception as exc:  # R9-22 变异：连 str(异常) 都抛时会穿透处理器
+        raise AssertionError(f"处理器抛穿到调用方了（用户什么也看不到）：{exc!r}") from exc
     assert isinstance(out, str) and out, "处理器抛穿到调用方了（用户什么也看不到）"
     assert "状态读取失败" in out, out
     assert "读不出失败原因" in out, f"读不出原因时必须如实说读不出，不许装成别的：{out!r}"
