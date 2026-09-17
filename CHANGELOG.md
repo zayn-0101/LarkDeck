@@ -13,6 +13,34 @@
 > 卡片投递）。**新增 `theme` 默认值，属于用户可见默认观感变化**；配置键无改名。
 > 已知待验：`text_profile` / `ap_lite` 真机视觉、无网关 cron 真机投递。
 
+## [未发布]
+
+### 变更（CLS 观感）
+
+- 面板摘要行改为 CLS 观感：`💭 思考 1.6s · 🛠️ 工具执行 · 3 步`；模型名与回合耗时
+  不再出现在面板标题，改到页脚（顺序：状态 → 耗时 → 模型 → 上下文 → 短码）。
+- 工具行重做：图标 + 加粗**英文动作名**（`Read file` / `Run command` / `Load skill` …，
+  CLS 风格；工具行是裸 markdown，不承载 `i18n_content`，因此它是明确的语言固定边界）+
+  耗时 + **带颜色的状态词**（绿色 `Succeeded` / 青绿 `Running` / 红色 `Failed`·`Blocked`·
+  `Cancelled` / 灰 `Skipped`）；命令或 skill 名另起一行灰色小字。
+  被上游 80 字符截断的 JSON 预览改为**有界 key 提取**，不再整段丢细节、也不倒原文。
+- 展开面板内新增 `💭 思考` / `🛠️ 工具执行` 两个分区小标题。
+- 未知工具状态（`cancelled`/`timeout`/`skipped`）不再让面板整块渲染失败；
+  ±Inf/NaN/超大 duration 与 elapsed 已做有界处理。
+
+### 门禁
+
+- 冻结树实测（venv 解释器）：`test_units.py` **225/225**（连续两次）、`check_override` /
+  `check_hooks` / `check_clarify_e2e` 全绿；`mutate_check --preflight` **389/389**
+  （381 变异 + 8 对照）；定向 `-k CLS` **CLS-1..32 共 32 条全 🔴（断言红）**，
+  其中 `CLS-31`/`CLS-32` 钉住 `success` 与 `timeout` 两个状态分支。
+- golden trace 按本次**有意**的行为变化重新生成。
+- ⚠️ `<font color>` 真机渲染与 header 局部更新的**视觉**结论仍为 pending：
+  接口探针已发送（`card.create` / `content` / `batch_update` / `content` 全 `code=0`），
+  但“标题真的变了 / 颜色真的画出来了”需要用户真机截图确认（见
+  `docs/audits/cls-ui/phase-0/consensus.md` 的 Phase 1 探针记录）。
+- 详细数字与留档以 `docs/verify-log.md` / `docs/audits/cls-ui/` 的实跑日志为准。
+
 ## [0.5.0] - 2026-09-17（效果债 + AP-lite + cron）
 
 ### 安全（**新增能力** + 开发中审计现场抓到的三处漏脱）

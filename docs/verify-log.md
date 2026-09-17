@@ -42,6 +42,9 @@
 | **09-16 16:11–17:35** | **317** | **317** | 0 | 8 | 0 | 0 | **8/8** | **EXIT=0 ✅** —— 收在 `aa6571b` 的代码上（第五轮审计的 5 条缺口全部修完之后），含新增的 `PA-1`/`PA-2`。日志末行：`全部 317 条变异都被门禁抓住 ✅` | `~/.larkdeck-scratch/fullrun9.log`（49 KB） |
 | 09-16 15:45–16:0x（**主动中断**） | 316 | — | — | — | — | — | — | **未拿到结论，且是故意的**：这一轮跑到第 ~50 条时，第五轮对抗审计报出**5 条缺口**（其中两条 medium 在我刚加的那格门禁里）⇒ 它验证的树马上就要改，**继续跑完只会得到一份过期的结论**。已 kill（pid 65238），改完重跑（见下一行）。日志 `fullrun8.log` 保留（0 字节，块缓冲没落盘） | `~/.larkdeck-scratch/fullrun8.log`（空） |
 | **09-17 03:19–04:42** | **349** | **349** | 0 | 8 | 0 | 0 | **8/8** | **EXIT=0 ✅** —— 收在 v0.5.0 发布候选树（`79cf0c7` + 发布元数据）上；基线四门禁全绿（`test_units` 218/218）。末行：`全部 349 条变异都被门禁抓住 ✅` | `/tmp/fullrun10b.log`（P4 会话沙箱只允许写 `/tmp`；复跑命令同本节） |
+| **09-17 09:3x（已 superseded）** | **4（定向 CLS）** | **4** | 0 | — | 0 | 0 | — | ~~EXIT=0 ✅~~ —— 这是**旧的 4 条**定向 run，基线数字 219/219；当前清单已扩到 CLS-1..9，见下方 Phase 0 行与 `docs/audits/cls-ui/phase-0/`。旧数字不得再引用 | `/tmp/mutCLS.log`（旧） |
+| **09-17 Phase 0（计划审计冻结）** | **9（`-k CLS` 定向）** | **9** | 0 | — | 0 | 0 | — | **CONDITIONAL GO** —— 三路计划审计 GO-WITH-CHANGES + 第 4 方 D1 裁决（条件式 a）；venv 四门禁全绿（`test_units 223/223`）、preflight 366/366（358+8）、CLS-1..9 全 🔴；冻结快照 `refs/audit/cls-ui/phase0` / tree `efe612a8…`；未闭环 H1/D1 探针、H3/D2 兜底、H4 旧数字 | `docs/audits/cls-ui/phase-0/manifest.json` + `consensus.md` + `freeze.json` |
+| **09-17 Phase 1（实现收口）** | **32（`-k CLS` 定向）** | **32** | 0 | — | 0 | 0 | — | venv 四门禁全绿（`test_units 225/225` ×2）、preflight **389/389（381+8）**、CLS-1..32 全 **断言红**（含 `success`/`timeout` 两条状态分支）；D2 英文动作词 + F1/F2/F3/F5 + D3 无色降级接线 + error footer + 小上限标签截断修复已落地；D1 按裁决转 c（生产无 header 代码） | `docs/audits/cls-ui/phase-1/`（`mutCLS_phase1c.log` + probe-header.md） |
 
 
 ⚠️ 上表里「—」表示当时**还没有那个分类**（`⚪ 变异没生效` 是 2026-09-16 才加的）。

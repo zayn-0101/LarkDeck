@@ -156,6 +156,11 @@ tests/        见「验证」
   而且看起来像处理过了）。四个形状各有一条变异守着：`G1-11..G1-14`。
 - 界面文案只从 `i18n.t()` / `i18n.i18n_text()` 取，不硬编码中文字符串。
   i18n 只覆盖界面文案，AI 生成的正文不翻译。
+  例外边界（2026-09-17 明确）：`markdown` element.content 不承载 `i18n_content`；
+  工具行动作词/状态词固定英文（CLS 风格）；面板分区小标题、footer 状态、等待期占位
+  「⏳ 正在生成…」、轮标题「第 N 轮」、`…更早的 N 轮/步已折叠`、`（续下一条）`
+  均为固定中文默认，不得被声明成“随客户端语言切换”。**只有走 `i18n_content` 的
+  plain_text / 面板摘要节点才跟随客户端语言。**
 - 插件配置路径是 `plugins.entries.larkdeck.settings.<key>`，由 `register()` 里的
   `_apply_ctx_settings()` 经官方 `ctx.get_config()` 读入。Hermes **从不**调用
   `configure()`（它只是自有运行时入口，单测在用）。取值优先级：环境变量
@@ -200,6 +205,19 @@ tests/        见「验证」
     ⚠️ **收尾/降级/`/stop` 重绘走的是普通卡**（`unified_panel` = `auxiliary_timeline`），
     那三条路径**没有** `panel_body`/`panel_tools`（有反向断言钉住）—— 所以「面板两块」是
     **实体卡流式期间**的形态，收尾那一刻整卡一换就回到一个 markdown（今天本来就是这样）。
+    ⚠️ **观感摘要（2026-09-17，向 CLS 看齐）**：折叠面板摘要行是
+    `💭 思考 {耗时} · 🛠️ 工具执行 · {n} 步`（i18n 节点，中英文各一份）；展开后正文里
+    同样有 `💭 思考` / `🛠️ 工具执行` 两个灰色分区小标题。工具行 = 图标 + 加粗**英文
+    动作名**（Read file / Run command / Load skill …）+ 耗时（`25 ms` / `1.2 s`）+
+    **带颜色的状态词**（`Succeeded` 绿 / `Running` 青绿 / `Failed`、`Blocked` 红 /
+    `Cancelled`·`Skipped` 灰），命令或 skill 名另起一行 `<font color='grey'>↳ …</font>`。
+    ⚠️ **i18n 边界**：`markdown` element.content 不承载 `i18n_content` ⇒ 工具行动作词/
+    状态词固定英文、分区小标题固定中文；完整句子提示仍走 `i18n.t()`。不要把它写成
+    “动作词双语”。
+    参数预览被上游 80 字符截断时走 `_preview_value()` 的有界提取，**绝不把 JSON 原文
+    倒回卡上**。CardKit 实体卡 panel header 建卡时定死；Phase 1 先做 header
+    `partial_update_element` 真机探针，pass 才实现流式摘要，fail 自动 c（见
+    `docs/plan-cls-ui.md`）。`<font color>` 在 `markdown` 元素上的真机渲染待截图确认。
     每帧**元素写**预算 2 次（常量 `_CK_WRITES_PER_FRAME`；卡级上限 10 次/秒 × 帧窗口 0.25s）；
     R7 起再加一次**会话预览**写（`card.settings`，`_CK_SUMMARY_INTERVAL = 5s` 限频 ⇒ 平均
     ≈0.2 次/秒，且**不重试**）⇒ 折算 ≈8.2 逻辑写/秒 < 卡级上限 10 次/秒；
