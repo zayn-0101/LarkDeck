@@ -13,6 +13,38 @@
 > 卡片投递）。**新增 `theme` 默认值，属于用户可见默认观感变化**；配置键无改名。
 > 已知待验：`text_profile` / `ap_lite` 真机视觉、无网关 cron 真机投递。
 
+## [0.6.2] - 2026-09-18
+
+### 修复
+
+- **多行核心工具进度不再进入答案正文**（真机截图 2026-09-18）：模型尚未输出正文、
+  核心连续跑多个工具时，进度块是一整段多行文本（friendly verb 行 + terminal 代码块 +
+  `⏳ Working` 状态行）；旧判据只看第一行，整帧落进答案区。现在空累积时逐行识别核心
+  进度形状（verb / tool name / 围栏 / `(×N)` / 光标 / Working），全帧可证明才剥，
+  任何一行不匹配则 fail-open。裸围栏额外要求 terminal 仍在 running；工具名单与正文
+  累积强制同会话。收尾帧仍永不剥；**例外**：核心某一帧确定性失败后会用同一合成文本
+  再发一帧 finalize（`stream_consumer_transport.py`），该路径的进度行会留在收尾正文里
+  （防不可逆吞正文的已知取舍）。
+- 修复 `/stop` 重绘可行性判据没把设备字号档位新增的 `config.style.text_size` /
+  元素 `text_size` 字节算进去的问题；被追踪正文不可能出现“留下却画不上中止色”。
+
+### 变更（观感默认值）
+
+- `panel_color_tags` 默认从 `false` 翻为 `true`：官方 Card 2.0 `markdown` 文档确认
+  `<font color>` 与 14 色枚举后，默认启用彩色标签（绿色 `Succeeded` / 青绿 `Running` /
+  红色 `Failed` / 灰色细节）；**真机视觉仍待用户截图确认**，不认颜色的客户端可显式关回 `false`。
+- `text_profile` 默认从 `off` 翻为 `compact`：面板/页脚 `notation`（12px）、正文
+  `normal`；`compact` 里未见于官方文档的 `x-small` 已移除。**真机字号视觉待确认**。
+- `plugin.yaml` / `_DEFAULTS` / README 三处默认值同步，`CLS-33` 变异钉住“默认不许再
+  被静默关回无色”。
+
+### 门禁
+
+- 冻结树实测（venv 3.11.15）：`test_units.py` 226/226；`check_override` / `check_hooks` /
+  `check_clarify_e2e` 全绿；`--preflight` 398/398（391 变异 + 7 对照）。
+- 定向变异 `CLS-33`–`CLS-41`、`A1a`–`A1d`、`R11-2` / `R11-4` / `R11-9` 全部断言红。
+- 全量变异（6 分片并行，2026-09-18 14:09–14:57）：**391/391 断言红**，🟢0 / 💥0 / ❓0 / ⚪0（非对照）/ ❌0；**7/7 对照全绿**；无 `test_args_preview` / `225/226` / Traceback 抖动。日志与 sha256 见 `docs/audits/cls-ui/phase-4/v0.6.2/`。
+
 ## [0.6.1] - 2026-09-18
 
 ### 修复

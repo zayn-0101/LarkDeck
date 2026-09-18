@@ -51,6 +51,7 @@ import re
 import sys
 import threading
 import time
+import unicodedata
 from collections import deque
 from types import SimpleNamespace
 from typing import (Any, Deque, Dict, List, Mapping, NamedTuple, Optional, Sequence,
@@ -414,42 +415,213 @@ _STREAM_HARD_CAP_FACTOR = 4
 _CORE_PROGRESS_SEP = "\n\n---\n"
 
 
-def _looks_like_core_progress_only(text: str, tools: Any = None) -> bool:
+#: Core appends its streaming cursor (default ``" ▉"``, ``gateway/config.py``) to the
+#: whole composed frame.  It is not part of any progress line, so drop it before
+#: shape matching or the last line never matches an exact tool-name suffix.
+_CORE_PROGRESS_CURSOR = " ▉"
+
+#: Core's ``_progress_emit`` de-duplicates consecutive identical lines by appending
+#: ``" (×N)"`` to the **whole** line (``gateway/run_turn_runner.py``).
+_CORE_PROGRESS_DEDUP_RE = re.compile(r"\s+\(×\d+\)\s*$")
+
+#: ``{emoji} {rest}`` — the emoji must be a non-word symbol, otherwise the line is
+#: ordinary prose/bullets (``1.``, ``-`` with no emoji token is rejected separately).
+_CORE_PROGRESS_HEAD_RE = re.compile(r"^(\S+)\s+(.+)$")
+
+#: Hermes 0.21.1 ``agent/display.py::_TOOL_VERBS`` (tool -> curated verb), in table
+#: order.  It is kept as a **mapping** rather than a bare phrase list so a friendly
+#: verb line is only accepted when the corresponding tool is present in the same
+#: session's tool snapshot.  That is what makes ``⚙️ Reading hosts``
+#: (``read_file`` preview is the basename, not a path) strippable while
+#: ``📖 Reading list`` written by the model with no ``read_file`` running stays
+#: fail-open (2026-09-18 audit A/F2).
+_CORE_TOOL_VERBS: Dict[str, str] = {
+    "web_search": "Searching the web",
+    "web_extract": "Reading",
+    "browser_navigate": "Browsing",
+    "browser_click": "Clicking",
+    "browser_type": "Typing",
+    "read_file": "Reading",
+    "write_file": "Writing",
+    "patch": "Editing",
+    "search_files": "Searching files",
+    "terminal": "Running",
+    "execute_code": "Running code",
+    "image_generate": "Generating image",
+    "video_generate": "Generating video",
+    "text_to_speech": "Generating speech",
+    "vision_analyze": "Looking at the image",
+    "session_search": "Searching past sessions",
+    "skill_view": "Reading skill",
+    "skills_list": "Listing skills",
+    "skill_manage": "Updating skill",
+    "delegate_task": "Delegating",
+    "cronjob_manage": "Scheduling",
+    "clarify": "Asking",
+    "memory": "Updating memory",
+    "todo_list": "Updating tasks",
+}
+#: Distinct verb phrases in table order (same 23 values as core's table).
+_CORE_PROGRESS_VERBS = tuple(dict.fromkeys(_CORE_TOOL_VERBS.values()))
+#: Reverse index: verb phrase -> the tools whose curated label it is.
+_VERB_TO_TOOLS: Dict[str, frozenset] = {
+    phrase: frozenset(tool for tool, verb in _CORE_TOOL_VERBS.items() if verb == phrase)
+    for phrase in _CORE_PROGRESS_VERBS
+}
+
+#: Core's long-running status overlay: ``⏳ Working — 9 min — iteration 29, …``.
+_CORE_PROGRESS_STATUS = ("Working",)
+
+#: Curated verbs whose connector is ``" for "`` (search-style phrasing).
+_FOR_VERBS = frozenset({"Searching the web", "Searching files"})
+
+
+#: 正文净化诊断日志的限流时间戳（每个 key 60 秒一条）。
+#: 与项目其它诊断日志同纪律：F2 类形状持续 fail-open 时，长回合不能每帧打一条。
+_BODY_DIAG_AT: Dict[str, float] = {}
+
+
+def _log_body_diag_once(key: str, message: str, *args: Any) -> None:
+    """正文净化诊断日志 60 秒一条（绝不让日志随帧数线性膨胀）。"""
+    now = time.monotonic()
+    if now - float(_BODY_DIAG_AT.get(key) or 0.0) < 60.0:
+        return
+    _BODY_DIAG_AT[key] = now
+    logger.info(message, *args)
+
+
+def _strip_core_progress_cursor(line: str) -> str:
+    """Drop a trailing core cursor glyph from one line (shape check only)."""
+    s = str(line or "")
+    if s.endswith(_CORE_PROGRESS_CURSOR):
+        return s[: -len(_CORE_PROGRESS_CURSOR)]
+    return s.rstrip("\u2589\u2588\u258c\u2590")
+
+
+def _is_core_progress_header(line: str, names: Any) -> bool:
+    """One non-fence line: is it a core progress header rather than model prose?
+
+    Recognised shapes (all produced by ``run_turn_runner._progress_build_message``):
+      * ``{emoji} {running_tool_name}`` / ``…: "…"`` / ``…...`` / ``…(…)``;
+      * ``{emoji} Searching the web for …`` — one of Core's curated verb phrases;
+      * ``{emoji} custom_tool: "…"`` for a tool with no curated verb;
+      * ``{emoji} Working — …`` — Core's long-running status overlay.
+
+    The display token must start with a **non-ASCII** symbol: Core's emojis all do,
+    while Markdown bullets/headings (``- item`` / ``# title`` / ``1. item``) start
+    with ASCII punctuation or a digit and must stay fail-open.
+    """
+    s = _strip_core_progress_cursor(line).strip()
+    if not s:
+        return False
+    s = _CORE_PROGRESS_DEDUP_RE.sub("", s).strip()
+    match = _CORE_PROGRESS_HEAD_RE.match(s)
+    if not match:
+        return False
+    head, rest = match.group(1), match.group(2).strip()
+    # Emoji/pictograph only: category "S*" (So/Sk/…) rejects ASCII Markdown, CJK
+    # prose (`执行 terminal: …`) and non-ASCII punctuation from being treated as core
+    # overlays (2026-09-18 audit A/F4).  A custom ASCII tool emoji simply fails
+    # open (progress stays visible), never swallows model text.
+    if not head or not unicodedata.category(head[0]).startswith("S"):
+        return False
+    name_set = {str(name) for name in names if str(name)}
+    for name in names:
+        if rest == name or rest.startswith(name + ":") or rest.startswith(name + "..."):
+            return True
+        if rest.startswith(name + "("):
+            return True
+    for phrase in _CORE_PROGRESS_VERBS:
+        # Cross-validate the friendly verb against the **same session's** tool
+        # snapshot: ``Reading hosts`` strips only while ``read_file`` is present.
+        if not (_VERB_TO_TOOLS.get(phrase, frozenset()) & name_set):
+            continue
+        if rest == phrase or rest.startswith(phrase + " ("):
+            return True
+        if phrase in _FOR_VERBS:
+            # ``Searching the web for X`` — the connector is part of core's shape.
+            if rest.startswith(phrase + " for "):
+                return True
+            continue
+        if rest.startswith(phrase + " "):
+            return True
+    for phrase in _CORE_PROGRESS_STATUS:
+        # Core's long-task line is ``⏳ Working — …``; plain ``Working on it``
+        # (model prose with an emoji) must fail open.
+        if rest.startswith(phrase + " —") or rest.startswith(phrase + " –"):
+            return True
+    return False
+
+
+def _looks_like_core_progress_only(text: str, tools: Any = None,
+                                  running: Any = None) -> bool:
     """True when an **empty-accumulated** frame is only core's tool progress block.
 
     Core's ``_compose_frame_content()`` joins ``(accumulated, progress)`` and drops
-    empty parts.  When the model has not written any answer text yet, the frame is
-    just the progress block — often the terminal code block from
-    ``_progress_terminal_blocks()``.  The normal prefix proof cannot fire because
-    ``accumulated`` is empty, so use a conservative shape check: the first line
-    must carry a running tool's name (or be a bare fenced terminal block) and the
-    frame must not contain the separator (that would mean real text is present and
-    the normal fail-open path should decide).
+    empty parts.  With ``accumulated == ""`` the whole frame is the progress block,
+    and that block is a **sequence** of lines: friendly verbs
+    (``🔍 Searching the web for …`` / ``📄 Reading https://…``), generic lines
+    (``⚙️ tool: "…"``), a status line (``⏳ Working — …``), and complete fenced
+    terminal blocks (with or without the ``🖥 terminal`` header).  v0.6.1 only
+    inspected the first line and therefore missed every multi-line frame — which is
+    exactly the 2026-09-18 real-device screenshot.
+
+    This remains a conservative shape check: every non-empty line must either be a
+    progress header (tool-name / curated-verb / generic name shape) or belong to a
+    closed fenced block.  ``tools`` must be non-empty and the frame must contain no
+    ``_CORE_PROGRESS_SEP`` (a separator means real text is present and the normal
+    prefix proof, not this helper, must decide).  Ambiguous prose fails open.
+
+    A frame made of **bare fenced blocks only** (no explicit ``🖥 terminal`` header)
+    is accepted only when ``running`` contains ``terminal``: model answers that start
+    with a code block are otherwise indistinguishable from core's header-less
+    consecutive terminal progress blocks.  Without that cross-check a single interim
+    frame of the model's code would be blanked (finalize still never strips, so it is
+    transient, but the user sees a flash).  ``running`` is normally the set of tool
+    names whose panel status is still ``running``.
     """
     if not text or _CORE_PROGRESS_SEP in text:
         return False
     names = [str(item).strip() for item in (tools or []) if str(item).strip()]
     if not names:
         return False
-    first = text.splitlines()[0].strip()
-    if not first or first[0].isalnum():
+    running_names = {str(item).strip() for item in (running or []) if str(item).strip()}
+    lines = _strip_core_progress_cursor(text).splitlines()
+    saw_progress = False
+    saw_header = False
+    index = 0
+    while index < len(lines):
+        line = lines[index].strip()
+        if not line:
+            index += 1
+            continue
+        if line.startswith("```"):
+            index += 1
+            closed = False
+            while index < len(lines):
+                if lines[index].strip().startswith("```"):
+                    closed = True
+                    index += 1
+                    break
+                index += 1
+            if not closed:
+                return False
+            saw_progress = True
+            continue
+        if not _is_core_progress_header(lines[index], names):
+            return False
+        saw_header = True
+        saw_progress = True
+        index += 1
+    if not saw_progress:
         return False
-    for name in names:
-        if name == "terminal":
-            # Header form (`🖥 terminal`) or the header-less consecutive form.
-            if first == name or first.endswith(" " + name) or text.startswith("```"):
-                return True
-        # Generic core line: `{emoji} {tool_name}: "…"` / `{emoji} {tool_name}...`
-        rest = first.split(" ", 1)[-1]
-        if rest == name or rest.startswith(name + ":") or rest.startswith(name + "...") \
-                or rest.startswith(name + " "):
-            return True
-    return False
+    # Bare-fence-only frames need the running-terminal cross-check (see docstring).
+    return saw_header or "terminal" in running_names
 
 
 def _strip_core_progress(text: str, accumulated: str, tool_pending: bool,
                          complete: bool, *, finalize: bool,
-                         tools: Any = None) -> str:
+                         tools: Any = None, running: Any = None) -> str:
     """剥掉核心叠加在**帧尾**的工具进度块；证明不了就原样返回（fail-open）。
 
     五个条件缺一不可，各自对应一类「不能剥」的情形（每条都有对应变异，撤掉必红）：
@@ -527,7 +699,7 @@ def _strip_core_progress(text: str, accumulated: str, tool_pending: bool,
         # No answer text yet ⇒ core's composed frame can be the progress block
         # alone (no separator, because the empty part is dropped).  Strip only a
         # conservative progress shape; otherwise fail-open.
-        return "" if _looks_like_core_progress_only(text, tools) else text
+        return "" if _looks_like_core_progress_only(text, tools, running) else text
     if not text.startswith(accumulated):
         return text
     tail = text[len(accumulated):]
@@ -576,16 +748,19 @@ _DEFAULTS: Dict[str, Any] = {
     "footer": True,           # 页脚：状态 → 耗时 → 模型 → 上下文用量（+ 本卡短码）
     "show_model": True,       # 页脚里显示模型名（面板标题只放思考/工具摘要）
     "context_style": "text",  # 上下文用量样式：text（默认）| bar | both
-    # P1b：CardKit 设备字号档位。off（默认，跟现状）| mobile_friendly（PC 小、手机大）
-    # | compact（紧凑）| large（整体放大）。只写 config.style.text_size 的 token 映射 +
-    # 给 markdown 元素加 text_size 引用；不改流式结构，不在流式中途做结构性 patch。
-    "text_profile": "off",
+    # P1b：CardKit 设备字号档位。off（不缩放）| mobile_friendly（PC 小、手机大，正文随设备）
+    # | compact（默认：面板/脚注 12px notation，正文 14px normal）| large（整体放大）。
+    # 只写 config.style.text_size 的 token 映射 + 给 markdown 元素加 text_size 引用；
+    # 不改流式结构，不在流式中途做结构性 patch。2026-09-18：官方 markdown 文档确认
+    # `notation` / `normal` 后，把 compact 从默认 off 翻成默认开启（用户要求看得见字号层级）。
+    "text_profile": "compact",
     # P2：观感主题。neutral=原符号；ap_lite=抽象 emoji（用户选定默认）；ap_bubble=AP 泡波全量。
     "theme": "ap_lite",
-    # 2026-09-17 D3：是否在 markdown 里使用 <font color>。Phase 4 真机视觉未确认前
-    # 默认 false（无色降级），避免客户端不认时把标签原样画给用户；真机确认三类消费者
-    # 都能渲染后，可在配置里显式打开 `panel_color_tags: true`。
-    "panel_color_tags": False,
+    # 2026-09-17 D3：是否在 markdown 里使用 <font color>。2026-09-18 官方 Card 2.0
+    # markdown 文档确认 `<font color='red'>…</font>` 与 14 色枚举（含 grey/green/red/
+    # turquoise）后，默认翻成 true —— 用户真机截图里面板状态词/灰色细节必须真的有色。
+    # 客户端不认时可在配置里显式关回 `panel_color_tags: false`（纯文本降级仍在）。
+    "panel_color_tags": True,
     "model_aliases": "",      # 模型别名："真名=显示名, ..." 或 dict
     "max_reasoning_chars": _cards.MAX_REASONING_CHARS,
     "max_tool_result_chars": _cards.MAX_TOOL_RESULT_CHARS,
@@ -845,7 +1020,8 @@ def _log_sanitize_reverted_once(size: int) -> None:
                    size, _cards.FEISHU_CARD_BYTE_LIMIT)
 
 
-def _stop_redraw_would_paint(body: str) -> bool:
+def _stop_redraw_would_paint(body: str, *, panel: Any = None,
+                             footer: Any = None) -> bool:
     """**真正的判据**：留下这段正文之后，`/stop` 那张卡能不能既发得出去、又带上中止色。
 
     为什么不能只看「正文 JSON 字节 ≤ 阈值」（第十路审计实测出来的两条缝）：
@@ -865,10 +1041,20 @@ def _stop_redraw_would_paint(body: str) -> bool:
     判不出来时（异常）返回 ``True``：**丢正文的代价比多留一份大**（丢 = 中止时不变色）。
     """
     try:
-        shell = _cards.status_shell(_cards.unified_panel(status=_panel.STATUS_STOPPED))
+        # 优先用**真实卡的面板**（`_ld_redraw_one_stopped` 会带 `_ld_panel(chat)`）：
+        # `fit_reply_card` 先受 40000 软预算约束，长正文 + 大面板会被降成 no-panel ⇒
+        # 只按 status_shell 判会得出「留正文」而真实 `/stop` 卡没有面板/没有颜色
+        # （2026-09-18 审计 A/F1）。panel=None 时才退回旧的状态 shell 兜底。
+        shell = panel
+        if shell is None:
+            shell = _cards.status_shell(_cards.unified_panel(status=_panel.STATUS_STOPPED))
         if shell is None:                     # 连状态色都造不出来 ⇒ 没有「保色」这回事
             return True
-        node = _cards.fit_reply_card(body, panel=shell)
+        node, _tier = _cards.fit_reply_card(body, panel=shell, footer=footer)
+        # 与 `_ld_build_card` **同一条构造路径**：字号档位也会加 `config.style.text_size`
+        # 与元素 `text_size` 字段（默认 compact 下实测 +~300 字节）。漏掉这一步，
+        # 判据会比真实 `/stop` 卡小一截 ⇒ 留下「发出去就超限」的正文。
+        node = _cards.apply_text_profile(node, _cfg_raw("text_profile"))
         if _cards.card_bytes(node) > _cards.FEISHU_CARD_BYTE_LIMIT:
             return False
         return '"collapsible_panel"' in json.dumps(node, ensure_ascii=False)
@@ -1587,7 +1773,22 @@ class LarkDeckMixin:
         # JSON 126890 字节就已经画不上色 —— 比阈值 126976 **低 86 字节**，于是那 86 字节的
         # 带里会「留下了正文、却发出一次没有颜色的 patch」。所以这里只在**明显没戏**时
         # 用阈值省掉一次构造，其余一律问真判据（:func:`_stop_redraw_would_paint`）。
-        if size > _HOPELESS_BYTES or not _stop_redraw_would_paint(body):
+        entry = self._ld_state.get(message_id) if isinstance(self._ld_state, dict) else None
+        chat = str((entry or {}).get("chat_id") or "")
+        panel = None
+        footer = None
+        if chat:
+            try:
+                panel = self._ld_panel(chat, report_empty=True)
+                footer = self._ld_frame_footer({
+                    "message_id": message_id, "chat_id": chat,
+                    "t0": (entry or {}).get("t0"), "status": _panel.STATUS_STOPPED,
+                })
+            except Exception:                 # pragma: no cover - 判据是装饰，绝不因此丢正文
+                panel = None
+                footer = None
+        if size > _HOPELESS_BYTES or not _stop_redraw_would_paint(
+                body, panel=panel, footer=footer):
             _log_note_text_skipped(size, len(body.encode("utf-8", "ignore")))
             body = ""
         with self._ld_lock:
@@ -2716,14 +2917,40 @@ class LarkDeckMixin:
             logger.debug("[larkdeck] 正文净化取状态失败，按原样渲染", exc_info=True)
             return text
         tools: list = []
+        running: list = []
         try:
-            snap = _panel.snapshot(chat) or {}
-            tools = [str(item.get("name") or "") for item in (snap.get("tools") or [])
-                     if item.get("name")]
+            # 必须与 `answer_state` 取**同一个会话**的工具桶：`snapshot(chat)` 走的是
+            # 面板的「最近活跃/绑定」选择，可能与正文累积选中的会话不同（审计 A-P2）。
+            # 归属不一致时拿别的会话的工具名单去剥本会话的正文，会把真实文本剥空。
+            for item in _panel.answer_tools(chat):
+                name = str(item.get("name") or "")
+                if not name:
+                    continue
+                tools.append(name)
+                if str(item.get("status") or "") == "running":
+                    running.append(name)
         except Exception:  # pragma: no cover - 同上：取不到工具名单就不做空累积剥离
             logger.debug("[larkdeck] 正文净化取工具名单失败，按原样渲染", exc_info=True)
-        return _strip_core_progress(text, accumulated, tool_pending, complete,
-                                    finalize=finalize, tools=tools)
+        display = _strip_core_progress(text, accumulated, tool_pending, complete,
+                                       finalize=finalize, tools=tools, running=running)
+        if (display == text and not accumulated and tool_pending and complete
+                and not finalize):
+            # v0.6.1 diagnostic: the empty-accumulated progress frame was not
+            # stripped (shape/tool-name mismatch). One bounded line so the next
+            # real-device retry tells us exactly what core sent.
+            _log_body_diag_once(
+                "empty-accum-progress",
+                "[larkdeck] 空累积工具帧未剥离：tools=%r frame=%r",
+                tools[:8], text[:200])
+        if (finalize and text.strip() and not accumulated and tool_pending
+                and complete):
+            # Final frames are never stripped; log when that means a tool block
+            # could be the only visible content, so the next retry is decisive.
+            _log_body_diag_once(
+                "finalize-progress",
+                "[larkdeck] 收尾帧含工具帧且无累积正文：tools=%r frame=%r",
+                tools[:8], text[:200])
+        return display
 
     async def _ld_stream_frame(self, text: str, *, finalize: bool, chat_id: Optional[str],
                                reply_to: Optional[str], turn_id: str) -> bool:

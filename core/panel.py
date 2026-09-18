@@ -1117,6 +1117,27 @@ def answer_state(chat_id: str = "") -> "tuple[str, bool, bool]":
     return "".join(parts), armed, complete
 
 
+def answer_tools(chat_id: str = "") -> List[Dict[str, Any]]:
+    """与 :func:`answer_state` **同一会话**的工具步骤快照（正文净化专用）。
+
+    为什么不能直接用 :func:`snapshot`：`snapshot` 走面板的「最近活跃/绑定」选择，
+    而正文净化拿累积正文走的是 :func:`answer_state` 的归属；两者在无绑定 / 绑定过期时
+    可能选中不同会话。空累积的进度剥离需要「累积为空 + 有工具窗口 + 工具名单」三件事实
+    来自同一会话 —— 用别的会话的工具名单去剥本会话的真实文本，会把模型正文当进度剥掉
+    （2026-09-18 独立审计 A-P2）。
+
+    取不到、会话为空或不一致一律返回 ``[]``（调用方据此 fail-open，绝不猜）。
+    """
+    now = _now()
+    with _LOCK:
+        _purge_answers_locked(now)
+        sid = _answer_session_for(chat_id)
+        state = _STATE.get(sid) if sid else None
+        if not isinstance(state, dict):
+            return []
+        return [dict(item) for item in (state.get("tools") or []) if isinstance(item, dict)]
+
+
 def diagnose(chat_id: str = "") -> Dict[str, Any]:
     """**只读诊断**：这次渲染会选中哪个会话桶、桶里到底有什么（不改任何状态）。
 
@@ -1182,5 +1203,6 @@ __all__ = [  # noqa: RUF022 - 按功能分组列出，便于对照文档
     "record_tool_started",
     "record_tool_finished",
     "snapshot",
+    "answer_tools",
     "reset",
 ]

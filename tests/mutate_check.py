@@ -270,16 +270,26 @@ MUTATIONS = [
      "check_hooks"),
     # ---- 第十路审计：真判据 / 崩溃分类 / 口径 / 调用点 / 码表 ------------------ #
     ("A1a-判据退回「只看近似阈值」", "core/adapter.py",
-     "        if size > _HOPELESS_BYTES or not _stop_redraw_would_paint(body):",
+     "        if size > _HOPELESS_BYTES or not _stop_redraw_would_paint(\n"
+     "                body, panel=panel, footer=footer):",
      "        if size > _MAX_TRACKED_TEXT:",
      "test_units"),
     ("A1b-真判据恒真（不丢正文）", "core/adapter.py",
-     "        if size > _HOPELESS_BYTES or not _stop_redraw_would_paint(body):",
+     "        if size > _HOPELESS_BYTES or not _stop_redraw_would_paint(\n"
+     "                body, panel=panel, footer=footer):",
      "        if size > _HOPELESS_BYTES:",
      "test_units"),
     ("A1c-真判据不再检查有没有颜色", "core/adapter.py",
      '        return \'"collapsible_panel"\' in json.dumps(node, ensure_ascii=False)',
      "        return True",
+     "test_units"),
+
+    # ⚠️ 2026-09-18：原先是「对照项」（当时 `fit_reply_card` 的裸卡回落似乎覆盖了这句）。
+    # F1 修复后 `_stop_redraw_would_paint` 会给结果套 `apply_text_profile`（+~300B），
+    # 而 `fit_reply_card` 的字节判据发生在套 profile **之前** ⇒ 显式硬上限检查不再冗余。
+    ("A1d-真判据不再单独检查字节上限（profile 字节把卡顶过硬墙）", "core/adapter.py",
+     "        if _cards.card_bytes(node) > _cards.FEISHU_CARD_BYTE_LIMIT:\n            return False",
+     "        if False:\n            return False",
      "test_units"),
 
     ("A2-判据口径退回原始 utf-8", "core/adapter.py",
@@ -1905,10 +1915,45 @@ MUTATIONS = [
      '    if not _COLOR_TAGS_ENABLED:\n        return text',
      '    if False:\n        return text',
      "test_units"),
-    ("CLS-33-panel_color_tags 默认翻回 true（v0.6.0 无色默认被静默改掉）",
+    ("CLS-33-panel_color_tags 默认被静默关回 false（真机颜色又变纯文本）",
      "core/adapter.py",
-     '    "panel_color_tags": False,',
      '    "panel_color_tags": True,',
+     '    "panel_color_tags": False,',
+     "test_units"),
+    ("CLS-35-编号/标题等 ASCII 标记被当核心进度吞掉（符号类别护栏被放宽）",
+     "core/adapter.py",
+     '    if not head or not unicodedata.category(head[0]).startswith("S"):\n        return False',
+     '    if not head or not (head[0].isascii() or unicodedata.category(head[0]).startswith("S")):\n        return False',
+     "test_units"),
+    ("CLS-36-裸围栏不再与 running terminal 交叉验证（模型首个代码块被剥空）",
+     "core/adapter.py",
+     '    return saw_header or "terminal" in running_names',
+     '    return True',
+     "test_units"),
+    ("CLS-37-正文净化改用 snapshot 的其他会话工具名单（跨会话误剥模型正文）",
+     "core/adapter.py",
+     '            for item in _panel.answer_tools(chat):',
+     '            for item in (_panel.snapshot(chat) or {}).get("tools") or []:',
+     "test_units"),
+    ("CLS-38-任意 emoji+ASCII 词+冒号被当核心工具行（模型 Note/Plan 首行被吞）",
+     "core/adapter.py",
+     '    return False\n\n\ndef _looks_like_core_progress_only',
+     '    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*\\s*(?::|\\.\\.\\.|\\()", rest))\n\n\ndef _looks_like_core_progress_only',
+     "test_units"),
+    ("CLS-39-verb 行不再与同会话工具交叉验证（模型 `📖 Reading list` 被吞）",
+     "core/adapter.py",
+     '        if not (_VERB_TO_TOOLS.get(phrase, frozenset()) & name_set):\n            continue',
+     '        if False:\n            continue',
+     "test_units"),
+    ("CLS-40-符号类别护栏失效（中文/非 emoji 头被当核心进度）",
+     "core/adapter.py",
+     '    if not head or not unicodedata.category(head[0]).startswith("S"):\n        return False',
+     '    if not head:\n        return False',
+     "test_units"),
+    ("CLS-41-搜索类 verb 不要求 ` for ` 连接词（`Searching the web tutorial` 被吞）",
+     "core/adapter.py",
+     '            if rest.startswith(phrase + " for "):\n                return True',
+     '            if rest.startswith(phrase + " "):\n                return True',
      "test_units"),
     ("CLS-34-空累积的核心进度帧不再剥（terminal 代码块又画进答案）",
      "core/adapter.py",
@@ -1916,7 +1961,7 @@ MUTATIONS = [
      '        # No answer text yet ⇒ core\'s composed frame can be the progress block\n'
      '        # alone (no separator, because the empty part is dropped).  Strip only a\n'
      '        # conservative progress shape; otherwise fail-open.\n'
-     '        return "" if _looks_like_core_progress_only(text, tools) else text',
+     '        return "" if _looks_like_core_progress_only(text, tools, running) else text',
      '    if not accumulated:\n'
      '        return text',
      "test_units"),
@@ -2127,12 +2172,6 @@ CONTROLS = [
     ("C-对照：没有 SDK 时不显式 fail-open（被外层 except 接住）", "core/adapter.py",
      "        reqs = self._ld_ck_requests()\n        if reqs is None:\n            return None                      # 没有 SDK ⇒ fail-open 回落（不猜、不抛）",
      "        reqs = self._ld_ck_requests()", ""),
-    # 行为等价：真判据里那句字节上限检查其实被「卡里有没有面板」覆盖了 ——
-    # `fit_reply_card` 装不下壳时会退回**裸卡**（没有面板），所以两种写法结果相同。
-    # 第十路审计式的核对：这类「撤掉也全绿」的变异应当被承认为**等价**，而不是硬找门禁。
-    ("C-对照：真判据不再单独检查字节上限（被面板判据覆盖）", "core/adapter.py",
-     "        if _cards.card_bytes(node) > _cards.FEISHU_CARD_BYTE_LIMIT:\n            return False",
-     "        if False:\n            return False", ""),
     ("C-对照：default 加行内注释（合法 YAML）", "plugin.yaml",
      "    default: 15\n", "    default: 15  # 毫秒\n", ""),
     # R7 审计中-3 的 ④：预览的「内容没变就不发」被撤掉 ⇒ 仍然全绿，因为限频窗口先挡住了

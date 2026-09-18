@@ -606,6 +606,72 @@ else:
                 problems.append(
                     "空累积的真实进度帧没被剥成空（terminal 代码块会画进答案）："
                     f"{_empty_stripped!r}")
+
+            # 多行进度块（2026-09-18 真机截图）：模型还没写正文时，核心可能已经跑过
+            # 多个工具；`_tool_progress_lines` 只追加不清空 ⇒ 真实帧是「friendly verb 行
+            # + terminal 代码块」的无分隔符多行块。进度行必须用**核心自己的**
+            # `_progress_build_message` 生成，而不是测试手写串（审计 A-反例 2）。
+            from gateway.run_turn_runner import TurnRunner   # noqa: E402
+
+            class _FakeCardAdapter:
+                supports_code_blocks = True
+
+                def format_tool_preview(self, prepared):
+                    return getattr(prepared, "text", str(prepared))
+
+            class _FakeRunner:
+                def _adapter_for_source(self, source):
+                    return _FakeCardAdapter()
+
+            class _ProgressCtx:
+                def __init__(self) -> None:
+                    self.progress_mode = "all"
+                    self.last_was_terminal_block = [False]
+                    self.last_progress_msg = [""]
+                    self.repeat_count = [0]
+                    self.source = "feishu:dm"
+                    self.agent_holder = None
+
+            from agent import display as _agent_display   # noqa: E402
+            # 真机 `display.friendly_tool_labels` 打开时才是 `🔍 Searching …` 形状；
+            # 隔离环境没有用户的 display 配置，这里显式打开以核对**核心的真实渲染器**。
+            _agent_display._friendly_tool_labels = True
+
+            _progress_runner = TurnRunner(_FakeRunner(), _ProgressCtx())
+            _web_line = _progress_runner._progress_build_message(
+                "web_search", "顺义图书馆 活动", {"query": "顺义图书馆 活动"})
+            _term_line = _progress_runner._progress_build_message(
+                "terminal", "", {"command": "ls -la"})
+            if not isinstance(_web_line, str) or "Searching the web" not in _web_line:
+                problems.append(
+                    f"核心 friendly verb 行没生成出来（构造无效）：{_web_line!r}")
+            elif not isinstance(_term_line, str) or "```" not in _term_line:
+                problems.append(
+                    f"核心 terminal 进度块没生成出来（构造无效）：{_term_line!r}")
+            else:
+                _consumer._tool_progress_lines = [_web_line, _term_line]
+                _multi_frame = _consumer._compose_frame_content()
+                _multi_expect = "\n".join([_web_line, _term_line])
+                _multi_stripped = _adapter_mod._strip_core_progress(
+                    _multi_frame, "", True, True, finalize=False,
+                    tools=["web_search", "terminal"], running=["terminal"])
+                print(f"前提核对：真实多行进度帧 = {_multi_frame!r}")
+                if _multi_frame != _multi_expect:
+                    problems.append(
+                        f"空累积多行帧不等于纯进度块：{_multi_frame!r} != {_multi_expect!r}")
+                elif _multi_stripped != "":
+                    problems.append(
+                        "真实多行进度帧（friendly verb + terminal）没被剥成空："
+                        f"{_multi_stripped!r}")
+                _model_code = "```python\nprint('hi')\n```"
+                _model_kept = _adapter_mod._strip_core_progress(
+                    _model_code, "", True, True, finalize=False,
+                    tools=["terminal"], running=[])
+                if _model_kept != _model_code:
+                    problems.append(
+                        "模型首个代码块在 terminal 未运行时被误剥成进度："
+                        f"{_model_kept!r}")
+
         except Exception as _exc:
             problems.append(
                 f"核心投递链路的形状变了（{_exc!r}）⇒ 前提核对无法进行 —— "
@@ -618,7 +684,7 @@ else:
     # 处理：超时后如实报「可能是 worker 时序，不一定是退化」，免得有人用放宽断言来「修」它。
     golden = None
     drained = False
-    for _ in range(60):
+    for _ in range(240):   # 12s：并发门禁/CI 负载下仍能等到异步 worker 排空
         golden = _panel.snapshot()
         if golden and len(golden.get("rounds") or []) >= 3 and golden.get("status") == "ok":
             drained = True

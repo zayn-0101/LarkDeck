@@ -217,11 +217,13 @@ _TEXT_PROFILE_STYLES: Dict[str, Dict[str, Dict[str, str]]] = {
         "panel": {"default": "notation", "pc": "notation", "mobile": "notation"},
         "notice": {"default": "notation", "pc": "notation", "mobile": "notation"},
     },
-    # 整体紧凑：正文 normal，面板/脚注 x-small。
+    # 整体紧凑：正文 normal(14px)，面板/脚注 notation(12px)。
+    # ⚠️ 只用官方文档列出的值（`normal` / `notation`）；曾经的 `x-small` 不在文档枚举里，
+    # 客户端可能忽略甚至拒收，不能拿真机卡片赌一个没写进文档的 token。
     "compact": {
         "body": {"default": "normal", "pc": "normal", "mobile": "normal"},
-        "panel": {"default": "x-small", "pc": "x-small", "mobile": "x-small"},
-        "notice": {"default": "x-small", "pc": "x-small", "mobile": "x-small"},
+        "panel": {"default": "notation", "pc": "notation", "mobile": "notation"},
+        "notice": {"default": "notation", "pc": "notation", "mobile": "notation"},
     },
     # 整体放大：正文 large、面板 normal、脚注 notation（脚注保持小字）。
     "large": {
@@ -828,7 +830,7 @@ def _tool_detail(name: str, preview: str) -> str:
         detail = detail[:59] + "…"
     return detail
 
-#: `<font color>` 运行开关：生产默认 false（真机视觉未确认），adapter 会按配置推送；
+#: `<font color>` 运行开关：v0.6.2 生产默认 true（官方 Card 2.0 文档确认语法，真机视觉待确认）；adapter 会按配置推送；
 #: 直接调用 cards 的探针/测试若要看彩色，必须显式 `set_color_tags_enabled(True)`。
 _COLOR_TAGS_ENABLED = False
 

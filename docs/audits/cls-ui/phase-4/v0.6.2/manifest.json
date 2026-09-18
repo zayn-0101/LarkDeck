@@ -1,0 +1,81 @@
+{
+  "version": "0.6.2",
+  "date": "2026-09-18",
+  "base_commit": "ce7b51a3a86c7cc178ef06e3c7121bc4db252802",
+  "worktree_diff_sha256": "f2ba1f96f1a893946d759dfa7e38e90f926980ef1bb18e77e092f243c06c92ad",
+  "python": "/Users/Zayn/.hermes/hermes-agent/venv/bin/python3 (3.11.15)",
+  "fullrun": {
+    "runner": "6 parallel shards over the same tests/mutate_check.py",
+    "mutations_total": 391,
+    "mutations_red": 391,
+    "controls_total": 7,
+    "controls_green": 7,
+    "shard_totals": [
+      66,
+      65,
+      65,
+      65,
+      65,
+      65
+    ],
+    "started_at": "2026-09-18 14:09:22 +08",
+    "finished_at": "2026-09-18 14:56:52 +08"
+  },
+  "gates": {
+    "test_units": "226/226",
+    "check_override": "OVERRIDE OK",
+    "check_hooks": "HOOKS OK",
+    "check_clarify_e2e": "CLARIFY E2E OK"
+  },
+  "preflight": "398/398 (391 mutations + 7 controls)",
+  "files": {
+    "check_clarify_e2e.log": {
+      "bytes": 3924,
+      "sha256": "e4662421b0597be2a6d7709f4b08b082ab23b834ab5441d81f9d0030a85cb8c6"
+    },
+    "check_hooks.log": {
+      "bytes": 3335,
+      "sha256": "a00a3f7667e1d7634fd679e3825339082081372ef25a18c083877bc74ac123eb"
+    },
+    "check_override.log": {
+      "bytes": 1775,
+      "sha256": "85f37d1216a79c9c1d54e571bf541544c9d7c904c36c8ec237d1605cdc75f066"
+    },
+    "fullrun.start": {
+      "bytes": 26,
+      "sha256": "bee252e3292908a4687d6ebb4cc8b992de1b113233ee2a1a21d2fb89e0d88d28"
+    },
+    "fullrun_shard0.log": {
+      "bytes": 12225,
+      "sha256": "d8587d246792664bb94addf68aaae1a38971e6fcfc5593c796af095de115e53e"
+    },
+    "fullrun_shard1.log": {
+      "bytes": 11348,
+      "sha256": "e42a825f8fc44487917b724774c97dc8e1846cee4f062625d22174ed72a73dc7"
+    },
+    "fullrun_shard2.log": {
+      "bytes": 11185,
+      "sha256": "d1f3df2f255d4bed9ed65516b32bc03f1c2c6bf15769d2190e3687c14babf526"
+    },
+    "fullrun_shard3.log": {
+      "bytes": 11167,
+      "sha256": "7a440d7b1894233a1b34faf9b1fc1f5ec323a72c83f4ece49ebfcfc5a19e6d6b"
+    },
+    "fullrun_shard4.log": {
+      "bytes": 11165,
+      "sha256": "280d0cda9996f859d1aef681de6dae0236caa596db25be8728b439604d940e62"
+    },
+    "fullrun_shard5.log": {
+      "bytes": 11314,
+      "sha256": "b49ee281e177ede9828601345980e51a5b5a3b5910f7158a7bac61cbd18bbffc"
+    },
+    "preflight.log": {
+      "bytes": 31376,
+      "sha256": "eb29a5df7a578cdb6376398b93039b51b315469373a81ae69cefc100736c617f"
+    },
+    "test_units.log": {
+      "bytes": 66348,
+      "sha256": "364a6211901bcf3e5495019f63b501199c5f3d1149e7f615736a487a0273aa88"
+    }
+  }
+}

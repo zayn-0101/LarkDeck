@@ -876,18 +876,25 @@ def test_declared_defaults_are_an_explicit_decision():
             "没配置任何东西时真正跑的传输与 `_DEFAULTS` 声明的不一致")
     finally:
         adapter._CONFIG.update(saved)
-    # v0.6.0：真机 `<font color>` 视觉未确认，颜色默认必须显式是 false；把它翻回 true
-    # 会命中这一条（配套变异 CLS-33），而不是只依赖 golden trace 的间接副作用。
-    assert declared["panel_color_tags"] is False, (
-        "v0.6.0 在真机颜色确认前必须默认 panel_color_tags=false（无色降级）")
+    # 2026-09-18：官方 Card 2.0 markdown 文档确认 `<font color='red'>` 与色板后，
+    # 默认翻成 **true**（配套变异 CLS-33 防止被静默改回无色）；真机若仍不认，
+    # 用户可显式 `panel_color_tags: false` 走纯文本降级。
+    assert declared["panel_color_tags"] is True, (
+        "默认必须有颜色（Succeeded 绿 / Running 青绿 / Failed 红 / 细节灰）；"
+        "改回 false 必须是一次显式决定")
+    assert declared["text_profile"] == "compact", (
+        "默认字号档位 compact：面板/脚注 12px notation、正文 normal；改它必须显式")
     manifest_text = (_pathlib.Path(_REPO_PARENT) / "larkdeck" / "plugin.yaml").read_text(
         encoding="utf-8")
     color_block = re.search(r"^  panel_color_tags:\n(?:    .*\n)+", manifest_text, re.M)
     assert color_block, "plugin.yaml 缺少 panel_color_tags 配置块"
-    assert "default: false" in color_block.group(0), color_block.group(0)
-    assert cards.color_tags_enabled() is False, (
-        "cards 模块的初始颜色开关必须与生产默认一致（false）")
-
+    assert "default: true" in color_block.group(0), color_block.group(0)
+    size_block = re.search(r"^  text_profile:\n(?:    .*\n)+", manifest_text, re.M)
+    assert size_block, "plugin.yaml 缺少 text_profile 配置块"
+    assert 'default: "compact"' in size_block.group(0), size_block.group(0)
+    adapter._apply_metrics_config()
+    assert cards.color_tags_enabled() is declared["panel_color_tags"], (
+        "cards 模块的颜色开关必须与生产默认一致（true）")
 
 def _golden_trace() -> dict:
     """跑一遍**固定场景**，把「真正会发到飞书的东西」逐字记下来（golden trace）。
@@ -900,9 +907,9 @@ def _golden_trace() -> dict:
     收尾整卡 patch 的 JSON、每一帧的返回值。
     """
     calls = {"content": [], "patch": [], "entity": [], "batch": [], "settings": []}
-    # Release default is `panel_color_tags: false` until the real-device colour
-    # gate is confirmed; keep the golden trace pinned to that production default.
-    cards.set_color_tags_enabled(False)
+    # v0.6.2 production default is `panel_color_tags: true` (official Card 2.0
+    # markdown confirms <font color>); keep the golden trace pinned to it.
+    cards.set_color_tags_enabled(True)
 
     class _Resp:
         def __init__(self, code=0, **data):
@@ -2894,11 +2901,159 @@ def test_core_progress_only_frame_is_not_rendered_as_terminal_block():
                                         tools=["terminal"]) == ""
     assert adapter._strip_core_progress(_search, "", True, True, finalize=False,
                                         tools=["web_search"]) == ""
+    # 2026-09-18 真机截图：模型还没写正文时，核心的进度块是**多行**——
+    # 友好的 web_search / web_extract 动词行 + terminal 围栏。v0.6.1 只看第一行，
+    # 于是整块落进答案正文。这里逐字复刻真机形状（含核心光标 `` ▉``）。
+    _multi = (
+        "🔍 Searching the web for 顺义图书馆 活动 2026年9月\n"
+        "🔍 Searching the web for 顺义区图书馆 近期活动 讲座 展览 报名\n"
+        "📄 Reading https://www.bplisn.net.cn/event/activ...\n"
+        '🔍 Searching the web for "顺义区图书馆" 活动 报名 2026 ▉'
+    )
+    _multi_tools = ["web_search", "web_extract", "browser_exec", "terminal"]
+    assert adapter._strip_core_progress(_multi, "", True, True, finalize=False,
+                                        tools=_multi_tools) == "", (
+        "多行进度帧必须整体剥离——真机截图的答案区污染就是这一形态")
+    _term_multi = ("🖥 terminal\n```\ncd /tmp && python3 scan.py\n```\n"
+                   "```\ncd /tmp && python3 find.py\n```")
+    assert adapter._strip_core_progress(_term_multi, "", True, True, finalize=False,
+                                        tools=["terminal"]) == ""
+    # 核心的长任务状态行（第二张真机截图里的 `⏳ Working — 9 min — …`）也是进度，不是正文。
+    _working = "⏳ Working — 9 min — iteration 29, receiving stream response ▉"
+    assert adapter._strip_core_progress(_working, "", True, True, finalize=False,
+                                        tools=["terminal"]) == ""
     # 形状/窗口/完整性任一不成立都必须 fail-open。
     assert adapter._strip_core_progress(_term, "", True, True, finalize=False,
                                         tools=[]) == _term
+    assert adapter._strip_core_progress(_multi, "", True, True, finalize=False,
+                                        tools=[]) == _multi
     assert adapter._strip_core_progress("先说一句话。", "", True, True, finalize=False,
                                         tools=["terminal"]) == "先说一句话。"
+    # 普通中文正文 / Markdown 列表 / 「进度行 + 正文」混排都必须 fail-open；
+    # 这是空累积启发式的安全边界：证明不了是核心叠加就一个字都不动。
+    _prose = "这是模型自己写的第一行正文。\n第二行也不是进度。"
+    assert adapter._strip_core_progress(_prose, "", True, True, finalize=False,
+                                        tools=["terminal"]) == _prose
+    _bullets = "- 第一项\n- 第二项"
+    assert adapter._strip_core_progress(_bullets, "", True, True, finalize=False,
+                                        tools=["terminal"]) == _bullets
+    # 编号列表（`1.` 开头）看着像「emoji + 空格 + 大写动词」，但首 token 是 alnum
+    # ⇒ 必须 fail-open。这是形状启发式的安全边界，专门钉 `head[0].isalnum()` 护栏。
+    _numbered = "1. Searching for a book"
+    assert adapter._strip_core_progress(_numbered, "", True, True, finalize=False,
+                                        tools=["terminal"]) == _numbered
+    _mixed = "🔍 Searching the web for X\n这是模型正文"
+    assert adapter._strip_core_progress(_mixed, "", True, True, finalize=False,
+                                        tools=["web_search"]) == _mixed
+
+    # 核心 friendly verb 的**精确集合**都必须识别（默认 friendly_tool_labels=True 时的真形状）。
+    # 这里用 `⚙️ {verb} x` 逐条跑；漏掉任何一个，v0.6.0/v0.6.1 的「搜索行进正文」就回来。
+    # 独立 oracle：核心 0.21.1 `agent/display.py::_TOOL_VERBS` 的 23 个值逐字抄在这里。
+    # 为什么不用 `for _verb in adapter._CORE_PROGRESS_VERBS` 自证（审计 C 实测：删掉
+    # "Generating speech" 后四门禁仍全绿）—— 上游升级新增 verb 时这一条不会红，
+    # 只会退回 fail-open；至少把当前核心版本的表钉死。
+    # 独立 oracle：核心 0.21.1 `agent/display.py::_TOOL_VERBS` 逐工具抄在这里。
+    # 不用 `for _verb in adapter._CORE_PROGRESS_VERBS` 自证 —— 审计 C 实测删掉
+    # "Generating speech" 四门禁仍全绿；至少把当前核心版本的完整映射钉死。
+    assert adapter._CORE_TOOL_VERBS == {
+        "web_search": "Searching the web",
+        "web_extract": "Reading",
+        "browser_navigate": "Browsing",
+        "browser_click": "Clicking",
+        "browser_type": "Typing",
+        "read_file": "Reading",
+        "write_file": "Writing",
+        "patch": "Editing",
+        "search_files": "Searching files",
+        "terminal": "Running",
+        "execute_code": "Running code",
+        "image_generate": "Generating image",
+        "video_generate": "Generating video",
+        "text_to_speech": "Generating speech",
+        "vision_analyze": "Looking at the image",
+        "session_search": "Searching past sessions",
+        "skill_view": "Reading skill",
+        "skills_list": "Listing skills",
+        "skill_manage": "Updating skill",
+        "delegate_task": "Delegating",
+        "cronjob_manage": "Scheduling",
+        "clarify": "Asking",
+        "memory": "Updating memory",
+        "todo_list": "Updating tasks",
+    }
+    assert adapter._CORE_PROGRESS_VERBS == (
+        "Searching the web", "Reading", "Browsing", "Clicking", "Typing",
+        "Writing", "Editing", "Searching files", "Running", "Running code",
+        "Generating image", "Generating video", "Generating speech",
+        "Looking at the image", "Searching past sessions",
+        "Reading skill", "Listing skills", "Updating skill",
+        "Delegating", "Scheduling", "Asking", "Updating memory", "Updating tasks",
+    )
+    assert adapter._FOR_VERBS == frozenset({"Searching the web", "Searching files"})
+    assert adapter._VERB_TO_TOOLS["Reading"] == frozenset({"web_extract", "read_file"})
+    # 每个 verb 只有与**对应工具**同会话时才剥：`⚙️ Reading hosts` 的 preview 是
+    # basename（不是 path/URL），所以旧的 preview 形状判据会把真实 read_file 进度漏掉
+    # （2026-09-18 审计 A/F2）；反过来 `📖 Reading list` 在 read_file 未运行时 fail-open。
+    for _tool, _verb in adapter._CORE_TOOL_VERBS.items():
+        if _verb in adapter._FOR_VERBS:
+            _line = f"⚙️ {_verb} for 示例参数"
+        else:
+            _line = f"⚙️ {_verb} 示例参数"
+        assert adapter._strip_core_progress(_line, "", True, True, finalize=False,
+                                            tools=[_tool]) == "", (_tool, _line)
+    for _line, _tool in (("⚙️ Reading hosts", "read_file"),
+                         ("⚙️ Reading adapter.py L10-29", "read_file"),
+                         ("⚙️ Reading README", "read_file"),
+                         ("⚙️ Writing src/main.py", "write_file"),
+                         ("⚙️ Editing src/main.py", "patch")):
+        assert adapter._strip_core_progress(_line, "", True, True, finalize=False,
+                                            tools=[_tool]) == "", _line
+    # 审计 B P0：模型首行常见「emoji + 英文词 + 冒号 / 英文名词」不是核心工具行。
+    for _note in ("💡 Note: 这是模型正文", "⚠️ Warning: 注意", "✅ Done: 完成了",
+                  "📝 Plan: 下一步", "📖 Reading list", "💡 Working on it"):
+        assert adapter._strip_core_progress(_note, "", True, True, finalize=False,
+                                            tools=["terminal"]) == _note, _note
+    # 审计 A/F4：非 ASCII 护栏必须是**符号类别**，中文/汉字/非 ASCII 标点都不行。
+    # ASCII 标记 + 对应 running 工具：只有符号类别护栏能挡住（CLS-35）。
+    for _ascii, _tools in (("1. Reading /etc/passwd", ["read_file"]),
+                           ("- Writing /tmp/x.py", ["write_file"])):
+        assert adapter._strip_core_progress(_ascii, "", True, True, finalize=False,
+                                            tools=_tools) == _ascii, _ascii
+    for _sneaky, _tools in (("执行 terminal: 需要先检查磁盘", ["terminal"]),
+                            ("· terminal: x", ["terminal"]),
+                            ("运行 Running 测试", ["terminal"]),
+                            ("注意 Reading notes.md", ["read_file"])):
+        assert adapter._strip_core_progress(_sneaky, "", True, True, finalize=False,
+                                            tools=_tools) == _sneaky, _sneaky
+    # 不在核心 verb 表里的动词不是核心进度（fail-open，宁可这一帧多显示一行）。
+    _unknown_verb = "⚙️ Searching for a book"
+    assert adapter._strip_core_progress(_unknown_verb, "", True, True, finalize=False,
+                                        tools=["web_search"]) == _unknown_verb
+    # 搜索类 verb 的 ` for ` 连接词是核心形状的一部分；少了它只是模型散文。
+    _tutorial = "⚙️ Searching the web tutorial"
+    assert adapter._strip_core_progress(_tutorial, "", True, True, finalize=False,
+                                        tools=["web_search"]) == _tutorial
+    # Markdown 标题 / 列表 / emoji 散文都不能被首 token 形状骗到。
+    for _prose in ("## The terminal\n\nRun it.", "- Reading list", "📌 terminal 用法如下",
+                   "1. Reading /etc/passwd", "- Reading /var/log/system.log"):
+        assert adapter._strip_core_progress(_prose, "", True, True, finalize=False,
+                                            tools=["terminal"]) == _prose, _prose
+
+    # 裸围栏没有显式 `🖥 terminal` 表头时，必须和「terminal 仍在 running」交叉验证：
+    # 否则模型第一条消息若恰好是代码块，会被当成连续 terminal 进度剥空（审计 A/M1）。
+    _bare = "```\nprint('hi')\n```"
+    assert adapter._strip_core_progress(_bare, "", True, True, finalize=False,
+                                        tools=["terminal"], running=[]) == _bare
+    assert adapter._strip_core_progress(_bare, "", True, True, finalize=False,
+                                        tools=["terminal"], running=["terminal"]) == ""
+
+    # 工具名单必须与累积正文取自**同一会话**：绑定 A 时不能拿 B 的 terminal 名单去剥。
+    panel.reset()
+    panel.bind_chat_session("oc_tools", "s-tools-a")
+    panel.record_tool_started("s-tools-a", "t-a", "web_search", {"query": "x"}, "c-a")
+    panel.record_tool_started("s-tools-b", "t-b", "terminal", {"command": "ls"}, "c-b")
+    _same = [str(item.get("name")) for item in panel.answer_tools("oc_tools")]
+    assert _same == ["web_search"], _same
     assert adapter._strip_core_progress(_term, "", False, True, finalize=False,
                                         tools=["terminal"]) == _term
     assert adapter._strip_core_progress(_term, "", True, False, finalize=False,
@@ -2917,6 +3072,20 @@ def test_core_progress_only_frame_is_not_rendered_as_terminal_block():
     assert raw._ld_body_text(_term, "oc_prog", finalize=True) == _term, \
         "收尾帧永远不剥（最终正文不可逆）"
 
+    # 跨会话误剥（审计 A-P2）：工具名单必须与累积正文同会话。
+    # 无绑定 chat 时：正文累积回退到 A（`_ANSWERS_LAST`，有工具窗口），而面板最近活跃
+    # 是 B（`_LAST_ACTIVE_BOX`，有 running terminal）。若用 `snapshot(chat)` 的工具名单，
+    # B 的 terminal 会把模型第一条代码块答案当进度剥空；正确实现从 A 取名单 ⇒ fail-open。
+    _model_code = "```\nprint('model text')\n```"
+    panel.reset()
+    context.reset()
+    panel.record_tool_started("s-cross-a", "t-a", "web_search", {"query": "x"}, "c-a")
+    panel.record_tool_started("s-cross-b", "t-b", "terminal", {"command": "ls"}, "c-b")
+    panel._ANSWERS_LAST[0] = "s-cross-a"   # 正文归属 A；面板最近活跃仍是 B
+    assert panel._answer_session_for("oc_cross") == "s-cross-a"
+    assert (panel.snapshot("oc_cross") or {}).get("session_id") == "s-cross-b"
+    assert raw._ld_body_text(_model_code, "oc_cross", finalize=False) == _model_code, \
+        "不能拿另一个会话的 terminal 工具名单剥本会话的模型正文"
 
 
 
@@ -3606,13 +3775,18 @@ def test_small_tool_char_limit_never_cuts_font_tag():
 
 
 def test_color_tag_fallback_covers_status_heading_and_detail():
-    """D3：真机若不认 `<font color>`，三类消费者必须有无色降级路径。
+    """D3：默认有颜色，但每个消费者都必须保留**无色降级**路径。
 
-    v0.6.0 的生产默认已经是**无色**（真机视觉未确认）；本条同时钉住
-    「默认 false」与「显式 true 时三类消费者恢复彩色」两条。
+    2026-09-18 起 `panel_color_tags` 默认 true（官方 Card 2.0 markdown 文档确认
+    `<font color>` 与色板）；本条同时钉住「默认 true 时真的有色」与「显式 false 时
+    三类消费者都不留半个标签」——后者是客户端不认时的逃生门，不能被默认值改动删掉。
     """
     saved = dict(adapter._DEFAULTS)
     try:
+        adapter.configure(panel_color_tags=True)
+        assert cards.color_tags_enabled() is True, "默认配置必须把彩色推给 cards"
+        colored = cards.tool_step("read_file", status="ok", theme="ap_lite")
+        assert "<font color='green'>Succeeded</font>" in colored, colored
         adapter.configure(panel_color_tags=False)
         assert cards.color_tags_enabled() is False, "配置没有把降级开关推给 cards"
         read = cards.tool_step("read_file", status="ok", duration_ms=100,
@@ -3624,18 +3798,13 @@ def test_color_tag_fallback_covers_status_heading_and_detail():
         tools = cards.panel_tools_markdown(
             tools=[cards.tool_step("read_file", status="ok", theme="ap_lite")])
         assert "<font" not in tools and "🛠️ 工具执行 · 1 步" in tools, tools
-        adapter.configure(panel_color_tags=True)
-        assert cards.color_tags_enabled() is True, "显式打开后彩色必须真的回来"
-        colored = cards.tool_step("read_file", status="ok", theme="ap_lite")
-        assert "<font color='green'>Succeeded</font>" in colored, colored
     finally:
         adapter._CONFIG.clear()
         adapter._CONFIG.update(saved)
         adapter._apply_metrics_config()
-    assert adapter._DEFAULTS["panel_color_tags"] is False
-    assert cards.color_tags_enabled() is False, (
-        "恢复默认后颜色标签必须关闭（v0.6.0 默认 false）")
-
+    assert adapter._DEFAULTS["panel_color_tags"] is True
+    assert cards.color_tags_enabled() is True, (
+        "恢复默认后颜色标签必须重新打开（v0.6.2 默认 true）")
 
 def test_theme_symbols_and_tool_icons_are_pinned():
     """P2 主题层：符号/图标是**默认观感**的一部分，必须逐字冻结。
@@ -7078,21 +7247,27 @@ def test_tracked_body_always_fits_the_status_shell_end_to_end():
 
         for per_line in (40, 80):
             line = "汉" * per_line + "\n"
-            # 顶到**真正的边界**：JSON 引号只算一次，所以「unit 整除」只能当保守起点
+            # 换行形状专门钉住「JSON 转义后字节 ≈ 原始两倍」那条口径。
+            # ⚠️ `_MAX_TRACKED_TEXT` 只是**必要条件**：默认 compact 字号会给卡加
+            # `config.style.text_size` + 元素的 `text_size` 字段（实测 ~300 字节），
+            # 所以边界必须同时满足**真判据** `_stop_redraw_would_paint`。
             count = max(1, limit // adapter._card_body_bytes(line))
-            while adapter._card_body_bytes(line * (count + 1)) <= limit:
+            while (adapter._card_body_bytes(line * (count + 1)) <= limit
+                   and adapter._stop_redraw_would_paint(line * (count + 1))):
                 count += 1
             inside = line * count
             assert adapter._card_body_bytes(inside) <= limit, (
                 adapter._card_body_bytes(inside), limit)
+            assert adapter._stop_redraw_would_paint(inside), (
+                f"换行正文边界构造无效：{len(inside)} 字真判据说画不上色")
             panel.reset()
             raw = _make()
             updates = _wire_patch(raw)
             _run(raw.send("oc_esc", inside))
             kept = (raw._ld_state.get("om_card_1") or {}).get("last_text") or ""
             assert kept == inside, (
-                f"判据口径 {adapter._card_body_bytes(inside)} ≤ 阈值 {limit} 的正文必须被保留"
-                f"（原始 {len(inside.encode('utf-8'))} 字节）—— 否则 /stop 不会重绘")
+                f"判据口径 {adapter._card_body_bytes(inside)} ≤ 阈值 {limit} 且真判据说画得上色的正文"
+                f"必须被保留（原始 {len(inside.encode('utf-8'))} 字节）—— 否则 /stop 不会重绘")
             _run(raw.interrupt_session_activity("sk", "oc_esc"))
             assert updates, "被追踪的正文必须能重绘出中止态"
             payload = updates[-1]["content"]
@@ -7104,17 +7279,33 @@ def test_tracked_body_always_fits_the_status_shell_end_to_end():
                 "被追踪的正文 /stop 后**载荷里没有颜色**（追踪判据与守卫口径不一致）"
                 f"：判据口径 {adapter._card_body_bytes(inside)} 字节、载荷 {size} 字节")
 
-            # 反方向：超出判据口径的正文必须**不被保留**，而且留一条告警（绝不静默）
+            # 反方向：真判据说画不上色的那一份必须**不被保留**，而且留一条告警（绝不静默）。
             outer = line * (count + 1)
-            assert adapter._card_body_bytes(outer) > limit
+            assert not adapter._stop_redraw_would_paint(outer)
             raw2 = _make()
             _wire_patch(raw2)
             adapter._log_note_text_skipped._at = 0.0
             with _LogCapture("larkdeck") as records:
                 _run(raw2.send("oc_esc2", outer))
             assert (raw2._ld_state.get("om_card_1") or {}).get("last_text") == "", \
-                "超出判据口径的正文不许再留下（留下就落进「无颜色」窗口）"
+                "真判据说画不上色的正文不许再留下（留下就落进「无颜色」窗口）"
             assert "未为「中止重绘」保留副本" in _log_text(records), _log_text(records)
+
+        # F1（2026-09-18 审计 A）：判据必须用**真实面板**，不能只看 status_shell。
+        # 大面板 + 正文会让 `fit_reply_card` 先撞 40000 软预算、降成 no-panel；
+        # 只按 shell 判会误以为仍画得上中止色（留下一次没有颜色的 /stop patch）。
+        _big_panel = cards.unified_panel(
+            reasoning="推理" * 1200,
+            tools=[f"🌐 **Web search** · <font color='green'>Succeeded</font>\n"
+                   f"<font color='grey'>↳ query number {i} something longer here</font>"
+                   for i in range(30)],
+            status="ok")
+        _big_body = ("汉" * 40 + "\n") * 250
+        assert adapter._stop_redraw_would_paint(_big_body) is True, \
+            "构造前提：只看状态 shell 时这段正文仍被误判为画得上色"
+        assert adapter._stop_redraw_would_paint(
+            _big_body, panel=_big_panel, footer="✅ 已完成") is False, \
+            "带真实大面板时正文必须被丢弃（否则 /stop patch 没有颜色）"
     finally:
         adapter._STREAM_MIN_INTERVAL = old_interval
         panel.reset()
@@ -7929,11 +8120,15 @@ def test_args_preview_is_bounded_for_nested_and_long_inputs():
     assert max(_seen) <= panel._REDACT_SCAN_CHARS, (
         f"送进脱敏的文本超过上限（{max(_seen)} > {panel._REDACT_SCAN_CHARS}）—— "
         "fail-closed 钩子会被大参数拖慢（实测 1MB ⇒ 436ms）")
-    # 同一条上限也要能挡住「最坏嵌套形状」的耗时（这里放宽到 15ms：墙钟只做兜底）
-    _t0 = time.perf_counter()
+    # 同一条上限也要能挡住「最坏嵌套形状」的耗时。
+    # ⚠️ 这里**刻意用 CPU 时间（process_time）而不是墙钟**：4 分片并发跑变异时实测
+    # 单次墙钟会从 ~10ms 飘到 17.4ms，把正确实现判红、进而污染变异基线
+    # （2026-09-18 审计 C 实测；`_cost_ms` 上方那段取最小值的做法也拦不住整机饱和）。
+    # 上限仍是 15ms，量的是一个纯正则/序列化路径的 CPU 成本，不随负载漂移。
+    _t0 = time.process_time()
     panel._args_preview(_worst)
-    _cost = (time.perf_counter() - _t0) * 1000.0
-    assert _cost < 15.0, f"最坏嵌套形状耗时 {_cost:.1f}ms —— 扫描上限失效了"
+    _cost = (time.process_time() - _t0) * 1000.0
+    assert _cost < 15.0, f"最坏嵌套形状 CPU 耗时 {_cost:.1f}ms —— 扫描上限失效了"
     # 自引用结构不许无限递归
     cyc: dict = {}
     cyc["self"] = cyc

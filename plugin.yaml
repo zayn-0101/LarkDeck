@@ -1,7 +1,7 @@
 name: larkdeck
 label: LarkDeck — Feishu streaming cards
 kind: platform
-version: 0.6.1
+version: 0.6.2
 description: >
   Streaming Feishu / Lark cards for Hermes Agent. Shadows the built-in `feishu`
   platform adapter (registry last-writer-wins) and subclasses it, replacing the
@@ -9,7 +9,9 @@ description: >
   token through the final answer, with a collapsible reasoning + tool panel
   (a CLS-style `💭 Thought · 🛠️ Tools` panel summary; status, elapsed and model
   in the footer), per-turn status colors on
-  the panel border (green = done, red = failed, yellow = stopped), interactive
+  the panel border (green = done, red = failed, yellow = stopped), default
+  coloured tool status words and a compact 12px panel/footer text profile,
+  interactive
   clarify cards, and bilingual (zh / en) i18n nodes for card chrome. Note:
   markdown content is language-fixed because Feishu markdown does not carry
   i18n_content: tool action/status words are fixed English; footer status,
@@ -69,7 +71,7 @@ config_schema:
   progress_lines_in_body:
     type: boolean
     default: false
-    description: "核心的工具行要不要进正文（默认 false = 吃掉：正文只有回答，工具步骤收在「执行详情」面板里，来自官方钩子）；设 true 会恢复核心那套并进正文的 ⚙️ 工具行"
+    description: "核心的工具行要不要进正文（默认 false = 吃掉：空累积时逐行识别 核心多行进度并剥成空/占位，工具步骤收在「执行详情」面板里）；设 true 恢复核心那套。已知边界：core 帧失败后重发 finalize 的路径不剥；上游新增 verb 未同步时 fail-open"
   footer:
     type: boolean
     default: true
@@ -84,16 +86,16 @@ config_schema:
     description: "上下文用量样式：text | bar | both"
   text_profile:
     type: string
-    default: "off"
-    description: "CardKit 设备字号档位：off（默认）/ mobile_friendly（PC 小、手机大）/ compact（面板/脚注更小，正文不变）/ large（正文更大）"
+    default: "compact"
+    description: "CardKit 设备字号档位：compact（默认：面板/脚注 notation、正文 normal；真机视觉待确认）/ off（不缩放）/ mobile_friendly（PC 小、手机大）/ large（正文更大）"
   theme:
     type: string
     default: "ap_lite"
     description: "观感主题：neutral（原符号）/ ap_lite（默认，抽象 emoji）/ ap_bubble（AP 泡波风格，含人物 emoji，可选）"
   panel_color_tags:
     type: boolean
-    default: false
-    description: "markdown 面板里是否使用 <font color>（Phase 4 真机视觉未确认前默认 false：状态词/灰色标题/细节行走纯文本降级；确认后可显式打开）"
+    default: true
+    description: "markdown 面板里是否使用 <font color>（默认 true：绿色 Succeeded / 青绿 Running / 红色 Failed / 灰色细节；官方 Card 2.0 文档已确认语法，真机视觉待确认。客户端不认时可显式 false 走纯文本降级）"
   model_aliases:
     type: string
     default: ""
