@@ -2881,6 +2881,44 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         adapter._CONFIG.update(defaults)
         adapter._apply_metrics_config()
 
+def test_core_progress_only_frame_is_not_rendered_as_terminal_block():
+    """模型还没写正文时，核心会把 terminal 代码块当成**唯一正文帧**发来。
+
+    v0.6.0 真机截图（用户 2026-09-18）就是这一形态：答案区里出现 `🖥 terminal` +
+    代码块，而不是折叠面板里的紧凑工具行。这里同时钉直接判据与一条 cardkit 集成路径。
+    """
+    _term = "🖥 terminal\n```\nls -la\n```"
+    _search = '🔍 web_search: "下周天气"'
+    # 空累积 + 运行中工具 + 形状明确 ⇒ 剥成空（卡片层会落成等待占位）。
+    assert adapter._strip_core_progress(_term, "", True, True, finalize=False,
+                                        tools=["terminal"]) == ""
+    assert adapter._strip_core_progress(_search, "", True, True, finalize=False,
+                                        tools=["web_search"]) == ""
+    # 形状/窗口/完整性任一不成立都必须 fail-open。
+    assert adapter._strip_core_progress(_term, "", True, True, finalize=False,
+                                        tools=[]) == _term
+    assert adapter._strip_core_progress("先说一句话。", "", True, True, finalize=False,
+                                        tools=["terminal"]) == "先说一句话。"
+    assert adapter._strip_core_progress(_term, "", False, True, finalize=False,
+                                        tools=["terminal"]) == _term
+    assert adapter._strip_core_progress(_term, "", True, False, finalize=False,
+                                        tools=["terminal"]) == _term
+    # 收尾帧永不剥（最终正文是唯一不可逆的一帧）。
+    assert adapter._strip_core_progress(_term, "", True, True, finalize=True,
+                                        tools=["terminal"]) == _term
+
+    raw = _make()
+    panel.reset()
+    context.reset()
+    panel.bind_chat_session("oc_prog", "s-prog")
+    panel.record_tool_started("s-prog", "t-prog", "terminal", {"command": "ls -la"}, "c-prog")
+    assert raw._ld_body_text(_term, "oc_prog", finalize=False) == "", \
+        "空累积的 terminal 进度帧不许落进答案正文"
+    assert raw._ld_body_text(_term, "oc_prog", finalize=True) == _term, \
+        "收尾帧永远不剥（最终正文不可逆）"
+
+
+
 
 def test_card_tracking_cache_has_a_hard_bound():
     """追踪表**必须有容量上界**（R5 的第 ④ 项）：网关是长驻进程，无界缓存 = 慢性内存泄漏。

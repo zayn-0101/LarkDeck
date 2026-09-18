@@ -1397,8 +1397,8 @@ MUTATIONS = [
      '        display = text',
      "test_units"),
     ("R11-2-工具窗口判据撤掉（没有工具事件也照剥）", "core/adapter.py",
-     '    if finalize or not text or not accumulated or not tool_pending or not complete:',
-     '    if finalize or not text or not accumulated or not complete:',
+     '    if finalize or not text or not tool_pending or not complete:',
+     '    if finalize or not text or not complete:',
      "test_units"),
     ("R11-3-判据退回「按分隔符切」（模型自己写的分隔线之后的正文被吞）", "core/adapter.py",
      '    if not text.startswith(accumulated):\n'
@@ -1412,8 +1412,8 @@ MUTATIONS = [
      '    return text.split(_CORE_PROGRESS_SEP)[0]',
      "test_units"),
     ("R11-4-「累积完整」判据撤掉（冻结之后的真答案被吞）", "core/adapter.py",
-     '    if finalize or not text or not accumulated or not tool_pending or not complete:',
-     '    if finalize or not text or not accumulated or not tool_pending:',
+     '    if finalize or not text or not tool_pending or not complete:',
+     '    if finalize or not text or not tool_pending:',
      "test_units"),
     # R11-9（R11-A7 尾巴）：**收尾帧护栏撤掉**。这是本组里唯一「失败不可逆」的一条 ——
     # 核心对 finalize 是乐观记账（`_record_turn_final_payload` / `delivered_final_matches`），
@@ -1422,8 +1422,8 @@ MUTATIONS = [
     # 只可能是**模型自己写的正文**。判别力由单测 ㉘⑦ 提供（陈旧前缀场景：累积只到前半段、
     # 模型自己写了分隔线之后继续写 ⇒ 旧四个条件全部成立 ⇒ 收尾卡里后半段消失）。
     ("R11-9-收尾帧护栏撤掉（finalize 帧也照剥 ⇒ 静默吞正文且核心不再补发）", "core/adapter.py",
-     '    if finalize or not text or not accumulated or not tool_pending or not complete:',
-     '    if not text or not accumulated or not tool_pending or not complete:',
+     '    if finalize or not text or not tool_pending or not complete:',
+     '    if not text or not tool_pending or not complete:',
      "test_units"),
     ('G1-22-条件③放宽成「子串」（帧里含累积就剥 ⇒ 会吞掉前面的正文）', 'core/adapter.py',
      '    if not text.startswith(accumulated):',
@@ -1909,6 +1909,16 @@ MUTATIONS = [
      "core/adapter.py",
      '    "panel_color_tags": False,',
      '    "panel_color_tags": True,',
+     "test_units"),
+    ("CLS-34-空累积的核心进度帧不再剥（terminal 代码块又画进答案）",
+     "core/adapter.py",
+     '    if not accumulated:\n'
+     '        # No answer text yet ⇒ core\'s composed frame can be the progress block\n'
+     '        # alone (no separator, because the empty part is dropped).  Strip only a\n'
+     '        # conservative progress shape; otherwise fail-open.\n'
+     '        return "" if _looks_like_core_progress_only(text, tools) else text',
+     '    if not accumulated:\n'
+     '        return text',
      "test_units"),
     ("CLS-16-STATUS_ERROR 映射成完成（❌ 执行出错静默变 ✅）",
      "core/adapter.py",

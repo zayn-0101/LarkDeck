@@ -590,6 +590,22 @@ else:
                 problems.append(
                     "真实帧过一遍 `_strip_core_progress` 没剥回核心自己的正文："
                     f"{_stripped!r} != {_our_acc!r}")
+
+            # 空累积形态（真机截图 2026-09-18）：模型还没写正文时核心只发进度块，
+            # 合成式不会留下分隔符；插件必须按运行中工具形状剥成空，而不是画进答案。
+            _consumer._accumulated = ""
+            _empty_frame = _consumer._compose_frame_content()
+            _empty_expect = "\n".join(_consumer._tool_progress_lines)
+            _empty_stripped = _adapter_mod._strip_core_progress(
+                _empty_frame, "", True, True, finalize=False, tools=["terminal"])
+            print(f"前提核对：空累积帧（真实实现） = {_empty_frame!r}")
+            if _empty_frame != _empty_expect:
+                problems.append(
+                    f"空累积时核心合成帧不等于纯进度块：{_empty_frame!r} != {_empty_expect!r}")
+            elif _empty_stripped != "":
+                problems.append(
+                    "空累积的真实进度帧没被剥成空（terminal 代码块会画进答案）："
+                    f"{_empty_stripped!r}")
         except Exception as _exc:
             problems.append(
                 f"核心投递链路的形状变了（{_exc!r}）⇒ 前提核对无法进行 —— "

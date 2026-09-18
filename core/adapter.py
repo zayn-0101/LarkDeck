@@ -414,8 +414,42 @@ _STREAM_HARD_CAP_FACTOR = 4
 _CORE_PROGRESS_SEP = "\n\n---\n"
 
 
+def _looks_like_core_progress_only(text: str, tools: Any = None) -> bool:
+    """True when an **empty-accumulated** frame is only core's tool progress block.
+
+    Core's ``_compose_frame_content()`` joins ``(accumulated, progress)`` and drops
+    empty parts.  When the model has not written any answer text yet, the frame is
+    just the progress block — often the terminal code block from
+    ``_progress_terminal_blocks()``.  The normal prefix proof cannot fire because
+    ``accumulated`` is empty, so use a conservative shape check: the first line
+    must carry a running tool's name (or be a bare fenced terminal block) and the
+    frame must not contain the separator (that would mean real text is present and
+    the normal fail-open path should decide).
+    """
+    if not text or _CORE_PROGRESS_SEP in text:
+        return False
+    names = [str(item).strip() for item in (tools or []) if str(item).strip()]
+    if not names:
+        return False
+    first = text.splitlines()[0].strip()
+    if not first or first[0].isalnum():
+        return False
+    for name in names:
+        if name == "terminal":
+            # Header form (`🖥 terminal`) or the header-less consecutive form.
+            if first == name or first.endswith(" " + name) or text.startswith("```"):
+                return True
+        # Generic core line: `{emoji} {tool_name}: "…"` / `{emoji} {tool_name}...`
+        rest = first.split(" ", 1)[-1]
+        if rest == name or rest.startswith(name + ":") or rest.startswith(name + "...") \
+                or rest.startswith(name + " "):
+            return True
+    return False
+
+
 def _strip_core_progress(text: str, accumulated: str, tool_pending: bool,
-                         complete: bool, *, finalize: bool) -> str:
+                         complete: bool, *, finalize: bool,
+                         tools: Any = None) -> str:
     """剥掉核心叠加在**帧尾**的工具进度块；证明不了就原样返回（fail-open）。
 
     五个条件缺一不可，各自对应一类「不能剥」的情形（每条都有对应变异，撤掉必红）：
@@ -453,6 +487,9 @@ def _strip_core_progress(text: str, accumulated: str, tool_pending: bool,
        拿它当证据就会把「冻结点之后、核心分隔符之前」的那段正文吞掉（变异 ``R11-4``）。
     3. ``accumulated`` 非空且是帧文本的前缀 —— 归属错、回合错、核心换了累积
        （``_adopt_final_text`` 用权威终稿替换、或流式被重试取代）都会在这里对不上。
+       若累积为空（模型还没写正文），核心的合成式会**只返回进度块**；此时只有形状
+       明确指向运行中工具（``🖥 terminal`` / 裸围栏 / ``{emoji} {tool_name}:``）才
+       剥成占位，其余一律 fail-open（唯一代价是那一帧短暂可见，下一帧自愈）。
     4. 尾巴**以分隔符开头、且分隔符之后还有内容**：核心的合成式在 ``progress`` 为空时
        **不会**留下裸分隔符，所以裸分隔符只能是模型写的（那时它已在 ``accumulated`` 里，
        条件 3 就把它挡住了）。要求「还有内容」是给这条再加一道锁。
@@ -484,8 +521,13 @@ def _strip_core_progress(text: str, accumulated: str, tool_pending: bool,
     只会「不剥」，不会吞正文）—— 登记在 `docs/plan-v1.md` 附录 F。
     **改这一段时，上面那两条判据一起看。**
     """
-    if finalize or not text or not accumulated or not tool_pending or not complete:
+    if finalize or not text or not tool_pending or not complete:
         return text
+    if not accumulated:
+        # No answer text yet ⇒ core's composed frame can be the progress block
+        # alone (no separator, because the empty part is dropped).  Strip only a
+        # conservative progress shape; otherwise fail-open.
+        return "" if _looks_like_core_progress_only(text, tools) else text
     if not text.startswith(accumulated):
         return text
     tail = text[len(accumulated):]
@@ -2673,8 +2715,15 @@ class LarkDeckMixin:
         except Exception:  # pragma: no cover - 防御性：状态层异常绝不能让整帧失败
             logger.debug("[larkdeck] 正文净化取状态失败，按原样渲染", exc_info=True)
             return text
+        tools: list = []
+        try:
+            snap = _panel.snapshot(chat) or {}
+            tools = [str(item.get("name") or "") for item in (snap.get("tools") or [])
+                     if item.get("name")]
+        except Exception:  # pragma: no cover - 同上：取不到工具名单就不做空累积剥离
+            logger.debug("[larkdeck] 正文净化取工具名单失败，按原样渲染", exc_info=True)
         return _strip_core_progress(text, accumulated, tool_pending, complete,
-                                    finalize=finalize)
+                                    finalize=finalize, tools=tools)
 
     async def _ld_stream_frame(self, text: str, *, finalize: bool, chat_id: Optional[str],
                                reply_to: Optional[str], turn_id: str) -> bool:
