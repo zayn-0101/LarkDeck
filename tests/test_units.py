@@ -3053,6 +3053,21 @@ def test_core_progress_only_frame_is_not_rendered_as_terminal_block():
     assert adapter._strip_core_progress(_bare, "", True, True, finalize=False,
                                         tools=["terminal"], running=["terminal"]) == ""
 
+    # 真实核心 2026-09-18 15:17 帧：core 持有**空白**累积（一个 leading newline）时，
+    # `_compose_frame_content()` 会发出 `"\n\n---\n" + progress`。插件此前因为看到
+    # 分隔符而 fail-open，整段进度漏进正文；现在必须把「纯空白前缀 + 分隔符」剥掉。
+    _leading = ("\n\n\n---\n"
+                "🔍 Searching the web for 顺义区图书馆 一马当先挂件\n"
+                "💻 terminal\n```\ncd /tmp && UA=...\n``` ▉")
+    for _acc in ("", "\n"):
+        assert adapter._strip_core_progress(
+            _leading, _acc, True, True, finalize=False,
+            tools=["web_search", "terminal"], running=["terminal"]) == "", _acc
+    # 分隔符前面有任何真实正文时不许切掉它（那是模型自己写的 `---`）。
+    _real = "模型正文第一段。\n\n---\n" + _leading.split(adapter._CORE_PROGRESS_SEP, 1)[-1]
+    assert adapter._strip_core_progress(
+        _real, "", True, True, finalize=False,
+        tools=["web_search", "terminal"], running=["terminal"]) == _real
     # 工具名单必须与累积正文取自**同一会话**：绑定 A 时不能拿 B 的 terminal 名单去剥。
     panel.reset()
     panel.bind_chat_session("oc_tools", "s-tools-a")

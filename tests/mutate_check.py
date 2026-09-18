@@ -1962,14 +1962,34 @@ MUTATIONS = [
      '        answer_text = _cards.answer_or_pending(display, streaming) or " "',
      '        answer_text = display or " "',
      "test_units"),
+    ("CLS-43-空白累积 + 前导分隔符的进度帧不再剥（真机 15:17 的 terminal 代码块回到正文）",
+     "core/adapter.py",
+     '        if at >= 0 and not text[:at].strip():\n'
+     '            candidate = text[at + len(_CORE_PROGRESS_SEP):]',
+     '        if False:\n'
+     '            candidate = text[at + len(_CORE_PROGRESS_SEP):]',
+     "test_units"),
     ("CLS-34-空累积的核心进度帧不再剥（terminal 代码块又画进答案）",
      "core/adapter.py",
-     '    if not accumulated:\n'
-     '        # No answer text yet ⇒ core\'s composed frame can be the progress block\n'
-     '        # alone (no separator, because the empty part is dropped).  Strip only a\n'
-     '        # conservative progress shape; otherwise fail-open.\n'
-     '        return "" if _looks_like_core_progress_only(text, tools, running) else text',
-     '    if not accumulated:\n'
+     '    if not accumulated.strip():\n'
+     '        # No **real** answer text yet ⇒ core\'s composed frame is the progress block.\n'
+     '        # Usually the empty accumulated part is dropped and the frame has no separator,\n'
+     '        # but core can hold whitespace-only text (e.g. a leading "\\n" delta that the\n'
+     '        # scrubber kept), and then its composer emits `"\\n\\n---\\n" + progress` — the\n'
+     '        # exact real-device frame of 2026-09-18 15:17 (leading rule + search lines +\n'
+     '        # terminal block).  Normalise away that whitespace-only prefix before the shape\n'
+     '        # check; if the prefix contains any non-whitespace (real model text) we fall\n'
+     '        # through to fail-open and never cut it off.\n'
+     '        candidate = text\n'
+     '        at = text.find(_CORE_PROGRESS_SEP)\n'
+     '        if at >= 0 and not text[:at].strip():\n'
+     '            candidate = text[at + len(_CORE_PROGRESS_SEP):]\n'
+     '        # Empty accumulated/text still means no answer: fail-open.  A leading\n'
+     '        # separator with an empty tail is not evidence of progress by itself.\n'
+     '        if candidate and _looks_like_core_progress_only(candidate, tools, running):\n'
+     '            return ""\n'
+     '        return text',
+     '    if not accumulated.strip():\n'
      '        return text',
      "test_units"),
     ("CLS-16-STATUS_ERROR 映射成完成（❌ 执行出错静默变 ✅）",

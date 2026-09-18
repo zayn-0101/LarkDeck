@@ -695,11 +695,24 @@ def _strip_core_progress(text: str, accumulated: str, tool_pending: bool,
     """
     if finalize or not text or not tool_pending or not complete:
         return text
-    if not accumulated:
-        # No answer text yet ⇒ core's composed frame can be the progress block
-        # alone (no separator, because the empty part is dropped).  Strip only a
-        # conservative progress shape; otherwise fail-open.
-        return "" if _looks_like_core_progress_only(text, tools, running) else text
+    if not accumulated.strip():
+        # No **real** answer text yet ⇒ core's composed frame is the progress block.
+        # Usually the empty accumulated part is dropped and the frame has no separator,
+        # but core can hold whitespace-only text (e.g. a leading "\n" delta that the
+        # scrubber kept), and then its composer emits `"\n\n---\n" + progress` — the
+        # exact real-device frame of 2026-09-18 15:17 (leading rule + search lines +
+        # terminal block).  Normalise away that whitespace-only prefix before the shape
+        # check; if the prefix contains any non-whitespace (real model text) we fall
+        # through to fail-open and never cut it off.
+        candidate = text
+        at = text.find(_CORE_PROGRESS_SEP)
+        if at >= 0 and not text[:at].strip():
+            candidate = text[at + len(_CORE_PROGRESS_SEP):]
+        # Empty accumulated/text still means no answer: fail-open.  A leading
+        # separator with an empty tail is not evidence of progress by itself.
+        if candidate and _looks_like_core_progress_only(candidate, tools, running):
+            return ""
+        return text
     if not text.startswith(accumulated):
         return text
     tail = text[len(accumulated):]
