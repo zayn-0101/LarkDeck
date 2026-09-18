@@ -1,7 +1,7 @@
 name: larkdeck
 label: LarkDeck — Feishu streaming cards
 kind: platform
-version: 0.6.4
+version: 0.7.0
 description: >
   Streaming Feishu / Lark cards for Hermes Agent. Shadows the built-in `feishu`
   platform adapter (registry last-writer-wins) and subclasses it, replacing the
@@ -72,6 +72,10 @@ config_schema:
     type: boolean
     default: false
     description: "核心的工具行要不要进正文（默认 false = 吃掉：空累积时逐行识别 核心多行进度并剥成空/占位，工具步骤收在「执行详情」面板里）；设 true 恢复核心那套。已知边界：core 帧失败后重发 finalize 的路径不剥；上游新增 verb 未同步时 fail-open"
+  body_source:
+    type: string
+    default: "own"
+    description: "正文来源（v0.7.0）：own（默认：只认插件 on_stream_delta(kind=text) 累积，core 帧只作刷新信号与 finalize 兜底；无绑定/绑定漂移时严格 fail-open）/ legacy（旧的剥帧路径，仅过渡回退；P2b 后删除）"
   footer:
     type: boolean
     default: true

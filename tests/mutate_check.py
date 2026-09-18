@@ -894,9 +894,9 @@ MUTATIONS = [
      '        if "<font" in item and len(item) > max_tool_chars:\n'
      '            item = _strip_font_tags(item)\n'
      '        lines.append(truncate(item, max_tool_chars))\n'
-     '    return "\\n\\n".join(lines)',
+     '    return "\\n".join(lines)',
      '    for item in steps:\n        lines.append(item)\n'
-     '    return "\\n\\n".join(lines)',
+     '    return "\\n".join(lines)',
      "test_units"),
     ("R10-4-删掉每回合自检汇总（三个症状又变回只能靠用户截图）", "core/adapter.py",
      '            _log_turn_selfcheck(chat, self._ld_transport(), int(state.get("frames") or 0) + 1,\n                                strips=int(state.get("strips") or 0) + (1 if stripped else 0),\n                                trace=_ld_trace_id(message_id))',
@@ -1404,10 +1404,10 @@ MUTATIONS = [
     # ---- R11-A7：正文净化（**有证据**地剥掉核心叠加的工具进度块）----
     # 用户选的是「一个核心配置都不动」⇒ 这件事只能在插件侧做，而它**有可能吞掉正文**，
     # 所以每一条修复都必须有变异守着（撤掉一处 ⇒ 至少一个门禁变红）。
-    ("R11-1-正文净化整个撤掉（帧文本原样渲染）", "core/adapter.py",
-     '        display = self._ld_body_text(text, chat, finalize=finalize)',
-     '        display = text',
-     "test_units"),
+     ("R11-1-正文净化整个撤掉（帧文本原样渲染）", "core/adapter.py",
+      '        display = self._ld_body_text(text, chat, finalize=finalize, stream_state=state)',
+      '        display = text',
+      "test_units"),
     ("R11-2-工具窗口判据撤掉（没有工具事件也照剥）", "core/adapter.py",
      '    if finalize or not text or not tool_pending or not complete:',
      '    if finalize or not text or not complete:',

@@ -910,6 +910,10 @@ def _golden_trace() -> dict:
     # v0.6.2 production default is `panel_color_tags: true` (official Card 2.0
     # markdown confirms <font color>); keep the golden trace pinned to it.
     cards.set_color_tags_enabled(True)
+    # 这个夹具冻结的是 **legacy 帧语义** 的 CardKit 写路径；own 默认的正文来源
+    # 另有 check_own_body / test_own_* 门禁。显式钉住，避免翻默认时夹具被 process
+    # 级配置差异带偏（否则测试进程的 harness 与生成脚本的默认值会打架）。
+    adapter.configure(body_source="legacy")
 
     class _Resp:
         def __init__(self, code=0, **data):
@@ -2860,7 +2864,7 @@ def test_cardkit_transport_writes_elements_and_falls_open():
                                             duration_ms=10, tool_call_id=f"c{_i}")
         _body2, _tools2 = raw11._ld_panel_parts("oc_ck12")
         assert _tools2, "前提：工具块得有内容"
-        _rows = [r for r in _tools2.split("\n\n") if r.startswith(("✅", "⏳"))]
+        _rows = [r for r in _tools2.split("\n") if r.startswith(("✅", "⏳"))]
         assert len(_rows) == 3, \
             f"配了 max_panel_steps=3 ⇒ 只该留 3 行工具，实得 {len(_rows)}：{_tools2!r}"
         assert "tool7" in _tools2 and "tool0" not in _tools2, \
@@ -3788,7 +3792,7 @@ def test_small_tool_char_limit_never_cuts_font_tag():
                                preview='{"path": "/tmp/a.txt"}', theme="ap_lite")
         out = cards.panel_tools_markdown(tools=[item], max_tool_chars=40)
         # 分区标题本身也是 `<font>`，这里只看工具行那一块；工具行必须先剥标签再截断
-        tool_part = out.split("\n\n", 1)[-1]
+        tool_part = out.split("\n", 1)[-1]
         assert "<font" not in tool_part, tool_part
         assert "已省略" in out, out
     finally:
@@ -4059,7 +4063,7 @@ def test_panel_tools_block_truncates_and_keeps_the_most_recent() -> None:
     assert "step00" not in got and "step01" not in got and "step02" not in got, \
         f"裁减必须丢掉**最早**的几步：{got[:60]!r}"
     assert "step03" in got and "step32" in got, "最近的几步必须都在"
-    lines = got.split("\n\n")
+    lines = got.split("\n")
     assert "🛠️ 工具执行 · 33 步" in lines[0], f"分区标题必须最前：{lines[0]!r}"
     assert lines[1] not in steps and "3" in lines[1], \
         f"提示行必须在步骤前、且说的是被丢掉的那 3 步：{lines[1]!r}"
@@ -10727,12 +10731,522 @@ def test_ck_write_window_guard_never_trips_at_production_cadence():
         panel.reset()
 
 
+
+def test_own_body_uses_only_own_accumulation_and_never_reads_core_frames():
+    """v0.7.0 P1：own 模式非 finalize 只回严格绑定的 own；core 帧只作 finalize 兜底。"""
+    panel.reset()
+    context.reset()
+    adapter.configure(body_source="own", native_transport="patch")
+    try:
+        panel.bind_chat_session("oc_own", "sess-own")
+        panel.record_answer_delta("sess-own", "turn-own", "你")
+        panel.record_answer_delta("sess-own", "turn-own", "好")
+        raw = _make(body_source="own")
+        dirty = "你好\n\n---\n⚙️ terminal: \"export TOKEN=sk-live\""
+        assert raw._ld_body_text(dirty, "oc_own", finalize=False) == "你好", \
+            "own 模式非 finalize 绝不能读 core 帧字节"
+        assert raw._ld_body_text(dirty, "oc_own", finalize=True) == dirty, \
+            "finalize 时 core 非空即整段采用（权威终稿优先，不切片不拼接）"
+        assert raw._ld_body_text("", "oc_own", finalize=True) == "你好", \
+            "finalize 时 core 空回 own"
+        assert raw._ld_body_text("你好，世界", "oc_own", finalize=True) == "你好，世界", \
+            "core 是 own 的前缀扩展时取 core 整段"
+        assert raw._ld_final_body("", "") == "", "core/own 都空必须返回空，不得自造占位"
+        # core 只含权威尾稿、own 还含工具前已展示的前段：保留 own 整段
+        assert raw._ld_final_body("尾段 END", "开始\n\n尾段 END") == "开始\n\n尾段 END", \
+            "core 是 own 精确后缀时必须保留 own 前段，不能只显示尾稿"
+    finally:
+        adapter.configure(body_source="legacy")
+        panel.reset()
+        context.reset()
+
+
+def test_own_body_strict_binding_never_falls_back_to_last_active():
+    """无确定性 chat→session 绑定：own 视为空；finalize 仍走 core 权威文本。"""
+    panel.reset()
+    context.reset()
+    adapter.configure(body_source="own")
+    try:
+        panel.record_answer_delta("sess-orphan", "turn-orphan", "别的会话的秘密答案")
+        raw = _make(body_source="own")
+        assert raw._ld_body_text("core 正文", "oc_unbound", finalize=False) == "", \
+            "无绑定非 finalize 必须是空（展示层才给占位），绝不能读 _ANSWERS_LAST"
+        assert raw._ld_body_text("core 正文", "oc_unbound", finalize=True) == "core 正文", \
+            "无绑定 finalize 必须走 core 权威文本"
+        assert raw._ld_body_text("", "oc_unbound", finalize=True) == "", \
+            "无绑定且 core 空时不得串别的会话答案"
+        panel.bind_chat_session("oc_bound", "sess-orphan")
+        assert raw._ld_body_text("", "oc_bound", finalize=False) == "别的会话的秘密答案", \
+            "绑定后 own 应恢复为对应会话的累积"
+    finally:
+        adapter.configure(body_source="legacy")
+        panel.reset()
+        context.reset()
+
+
+def test_f4_resend_frame_is_rejected_and_interim_edit_renders_own():
+    """F4：失败帧后的 finalize 重发含未脱敏进度 ⇒ 拒绝持久化；同 tick edit 只渲 own。"""
+    panel.reset()
+    context.reset()
+    adapter.configure(body_source="own", native_transport="patch")
+    chat, turn = "oc_f4", "t-f4"
+    try:
+        panel.bind_chat_session(chat, "sess-f4")
+        panel.record_answer_delta("sess-f4", turn, "干净正文")
+        raw = _make(body_source="own", native_transport="patch")
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn)), "seed 帧"
+        state_before = raw._ld_stream_get(_frame_key(chat, turn)) or {}
+        message_id = str(state_before.get("message_id") or "")
+        assert message_id, state_before
+        composed = "干净正文\n\n---\n⚙️ terminal: \"export TOKEN=sk-live\""
+        raw._ld_stream_put(_frame_key(chat, turn),
+                           {**state_before, "last_failed_frame": composed})
+        assert not _run(raw.send_stream_frame(composed, finalize=True,
+                                              chat_id=chat, turn_id=turn)), \
+            "F4 重发帧必须返回 False，不能把合成进度持久化"
+        requests = _wire_patch(raw)
+        _run(raw.edit_message(chat, message_id, composed, finalize=False))
+        assert requests, "interim edit 必须真的写卡"
+        blob = json.dumps(requests[-1], ensure_ascii=False)
+        assert "干净正文" in blob, blob
+        assert "TOKEN=sk-live" not in blob and "terminal" not in blob, \
+            "F4 同 tick 的 interim edit 绝不能渲染 core 合成文本"
+        final_requests = _wire_patch(raw)
+        _run(raw.edit_message(chat, message_id, "干净正文", finalize=True))
+        final_blob = json.dumps(final_requests[-1], ensure_ascii=False)
+        assert "干净正文" in final_blob, final_blob
+    finally:
+        adapter.configure(body_source="legacy")
+        panel.reset()
+        context.reset()
+
+
+def test_own_stop_body_uses_rendered_slice_not_raw_core_frame():
+    """own 模式 /stop 只读 last_rendered_body（卡内 visible slice），legacy 保持旧行为。"""
+    raw = _make()
+    panel.reset()
+    try:
+        adapter.configure(body_source="own")
+        state = {"last": "⚙️ terminal: \"secret\"", "last_rendered_body": "卡上可见正文",
+                 "session_id": "sess-stop", "ck_offset": 0}
+        assert raw._ld_stop_body("oc_stop", state) == "卡上可见正文"
+        state.pop("last_rendered_body")
+        panel.bind_chat_session("oc_stop", "sess-stop")
+        panel.record_answer_delta("sess-stop", "turn-stop", "own 回退正文")
+        state["answer_gen"] = panel.answer_generation("oc_stop", require_binding=True)
+        assert raw._ld_stop_body("oc_stop", state) == "own 回退正文"
+        adapter.configure(body_source="legacy")
+        assert raw._ld_stop_body("oc_stop", {**state, "last": "legacy 原文"}) == "legacy 原文", \
+            "legacy 模式保持旧 /stop 行为直到 P2b 归档"
+    finally:
+        adapter.configure(body_source="legacy")
+        panel.reset()
+        context.reset()
+
+
+def test_on_stream_end_is_registered_as_extra_observer_not_body_source():
+    """P2a：on_stream_end 已并入主订阅契约；只写对账快照，绝不决定正文。"""
+    names = [name for name, _ in hooks.SUBSCRIPTIONS]
+    assert "on_stream_end" in names, "on_stream_end 必须与 OBSERVED_HOOKS 一一对应"
+    assert tuple(hooks.EXTRA_SUBSCRIPTIONS) == (), hooks.EXTRA_SUBSCRIPTIONS
+    panel.reset()
+    try:
+        panel.record_stream_end("sess-end", "turn-end", iteration=2,
+                                final_text="正文尾部", finished=True)
+        snap = panel.stream_end_snapshot("sess-end", "turn-end")
+        assert snap.get("finished") is True and snap.get("len") == 4, snap
+        assert panel.stream_end_snapshot("missing", "x") == {}
+    finally:
+        panel.reset()
+
+
+
+def test_send_stream_frame_records_failed_frame_and_rejects_f4_resend():
+    """F4 端到端：真实帧失败 → wrapper 记 last_failed_frame → 同文 finalize 被拒。"""
+    panel.reset()
+    context.reset()
+    old_reqs = adapter.LarkDeckMixin.__dict__.get("_ld_ck_requests")
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    calls, client = _mk_cardkit_fake(fail_answer_only=True)
+    chat, turn = "oc_f4e2e", "t-f4e2e"
+    try:
+        adapter.configure(body_source="own", native_transport="cardkit")
+        panel.bind_chat_session(chat, "sess-f4e2e")
+        panel.record_answer_delta("sess-f4e2e", turn, "干净正文")
+        raw = _make()
+        adapter.configure(body_source="own", native_transport="cardkit")
+        raw._client = client
+        raw._ld_send_card = lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("cardkit 模式不该走 _ld_send_card"))
+        # 实例属性优先于类描述符：避免沿用前序用例恢复类属性时的绑定差异。
+        raw._ld_ck_requests = _fake_ck_requests  # type: ignore[method-assign]
+        adapter._STREAM_MIN_INTERVAL = 0.0
+        with _LogCapture("larkdeck") as seed_logs:
+            seed_ok = _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        assert seed_ok, \
+            f"seed 帧 logs={[r.getMessage() for r in seed_logs]}"
+        state = raw._ld_stream_get(_frame_key(chat, turn)) or {}
+        assert state.get("message_id"), state
+        composed = "干净正文\n\n---\n⚙️ terminal: \"secret\""
+        assert not _run(raw.send_stream_frame(composed, chat_id=chat, turn_id=turn)), \
+            "故意让正文元素写失败，帧必须 fail-open"
+        state = raw._ld_stream_get(_frame_key(chat, turn)) or {}
+        assert state.get("last_failed_frame") == composed, \
+            f"wrapper 必须记下失败帧原文供 F4 识别：{state.get('last_failed_frame')!r}"
+        assert not _run(raw.send_stream_frame(composed, finalize=True,
+                                              chat_id=chat, turn_id=turn)), \
+            "同文 finalize 是 F4 合成帧，必须拒绝持久化"
+        # 模拟 core 帧失败后同 tick `_first_send(composed)` 回落：own 守卫必须拦截
+        raw.calls.clear()
+        _run(raw.send(chat, composed))
+        assert raw.calls, "fallback send 必须真的发生"
+        fallback_blob = str(raw.calls[-1][2] if len(raw.calls[-1]) > 2 else raw.calls[-1])
+        assert "TOKEN=sk-live" not in fallback_blob and "terminal" not in fallback_blob, \
+            f"core fallback send 不得把合成帧写进正文：{fallback_blob}"
+    finally:
+        if old_reqs is not None:
+            adapter.LarkDeckMixin._ld_ck_requests = old_reqs  # type: ignore[method-assign]
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        adapter.configure(body_source="legacy")
+        panel.reset()
+        context.reset()
+
+
+
+def test_own_seed_placeholder_stays_out_of_ledger_fields():
+    """占位只在展示层：空 own 的 seed 卡正文可以有占位，账本/offset/summary 不行。"""
+    panel.reset()
+    context.reset()
+    adapter.configure(body_source="own", native_transport="patch")
+    chat, turn = "oc_placeholder", "t-placeholder"
+    raw = None
+    try:
+        raw = _make()
+        adapter.configure(body_source="own", native_transport="patch")
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn)), "seed 帧"
+        state = raw._ld_stream_get(_frame_key(chat, turn)) or {}
+        assert state.get("last_rendered_body") == "", \
+            f"占位不得进 last_rendered_body：{state.get('last_rendered_body')!r}"
+        assert int(state.get("ck_offset") or 0) == 0, state
+        summary = str(state.get("ck_summary") or "")
+        assert "正在生成" not in summary, f"占位不得进 ck_summary：{summary!r}"
+        # own 账本本身仍是空（不是占位）
+        panel.bind_chat_session(chat, "sess-placeholder")
+        text, _armed, _complete = panel.answer_state(chat, require_binding=True)
+        assert text == ""
+    finally:
+        adapter.configure(body_source="legacy")
+        panel.reset()
+        context.reset()
+
+
+def test_own_binding_drift_fails_open_without_cross_session_text():
+    """建卡后 chat→session 漂移：interim edit 不得把新会话正文接到旧卡。"""
+    panel.reset()
+    context.reset()
+    adapter.configure(body_source="own", native_transport="patch")
+    chat, turn = "oc_drift", "t-drift"
+    raw = None
+    try:
+        panel.bind_chat_session(chat, "sess-a")
+        panel.record_answer_delta("sess-a", turn, "A 会话正文")
+        raw = _make()
+        adapter.configure(body_source="own", native_transport="patch")
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn)), "seed 帧"
+        state = raw._ld_stream_get(_frame_key(chat, turn)) or {}
+        assert state.get("session_id") == "sess-a", state
+        panel.bind_chat_session(chat, "sess-b")
+        panel.record_answer_delta("sess-b", turn, "B 会话正文")
+        assert raw._ld_stream_own_text(chat, state) == "", \
+            "绑定漂移必须 fail-open 为空，不能把 B 会话正文接进 A 的卡"
+        message_id = str(state.get("message_id") or "")
+        requests = _wire_patch(raw)
+        _run(raw.edit_message(chat, message_id,
+                              "A 会话正文\n\n---\n⚙️ terminal: \"secret\"", finalize=False))
+        blob = json.dumps(requests[-1], ensure_ascii=False)
+        assert "A 会话正文" not in blob, "漂移后不得继续渲染旧会话正文"
+        assert "B 会话正文" not in blob, "漂移后不得串入新会话正文"
+        assert "terminal" not in blob, "漂移后 interim edit 仍不得读 core 合成帧"
+    finally:
+        adapter.configure(body_source="legacy")
+        panel.reset()
+        context.reset()
+
+
+
+def test_own_seed_failure_guard_never_renders_core_composed_text():
+    """seed 失败后的 `send()` 回落窗口：own 模式不得把 core 合成进度当正文/纯文本。"""
+    panel.reset()
+    context.reset()
+    adapter.configure(body_source="own", native_transport="patch")
+    chat, turn = "oc_seedfail", "t-seedfail"
+    raw = None
+    try:
+        panel.bind_chat_session(chat, "sess-seedfail")
+        panel.record_answer_delta("sess-seedfail", turn, "干净正文")
+        raw = _make()
+        adapter.configure(body_source="own", native_transport="patch")
+        composed = "干净正文\n\n---\n⚙️ terminal: \"export TOKEN=sk-live\""
+        raw._ld_note_seed_failure(chat, turn)
+        assert raw._ld_seed_failure_active(chat), "前提：失败窗口应激活"
+        _run(raw.send(chat, composed))
+        assert raw.calls, "卡片发送必须发生"
+        blob = str(raw.calls[0][2])
+        assert "干净正文" in blob and "TOKEN=sk-live" not in blob and "terminal" not in blob, blob
+        assert not raw._ld_seed_failure_active(chat), "成功发送后应清掉 seed 失败窗口"
+        # own 为空时：只允许干净的流式占位卡，绝不能回落 core 合成文本
+        panel.reset()
+        raw2 = _make()
+        adapter.configure(body_source="own", native_transport="patch")
+        raw2._ld_note_seed_failure(chat, turn)
+        _run(raw2.send(chat, composed))
+        blob2 = str(raw2.calls[0][2])
+        assert "TOKEN=sk-live" not in blob2 and "terminal" not in blob2, blob2
+    finally:
+        adapter.configure(body_source="legacy")
+        panel.reset()
+        context.reset()
+
+
+def test_own_turn_drift_and_missing_tracking_never_leak_core_text():
+    """回合漂移必须 fail-open 空；追踪项丢失但活跃流存在时 edit 不得回落 super 读 core 文本。"""
+    panel.reset()
+    context.reset()
+    adapter.configure(body_source="own", native_transport="patch")
+    chat, turn = "oc_turndrift", "t-old"
+    raw = None
+    try:
+        panel.bind_chat_session(chat, "sess-turndrift")
+        panel.record_answer_delta("sess-turndrift", turn, "旧回合正文")
+        raw = _make()
+        adapter.configure(body_source="own", native_transport="patch")
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn)), "seed 帧"
+        state = raw._ld_stream_get(_frame_key(chat, turn)) or {}
+        assert state.get("turn_id") == turn, state
+        # 同一会话切到新回合：旧卡不得消费新回合正文
+        panel.record_answer_delta("sess-turndrift", "t-new", "新回合正文")
+        assert raw._ld_stream_own_text(chat, state) == "", \
+            "回合漂移必须 fail-open 为空，不能串新回合正文"
+        # 追踪项丢失但活跃流仍在：edit_message 必须继续 own 保护，不得 super(content)
+        message_id = str(state.get("message_id") or "")
+        raw._ld_state.pop(message_id, None)
+        requests = _wire_patch(raw)
+        _run(raw.edit_message(chat, message_id,
+                              "旧回合正文\n\n---\n⚙️ terminal: \"secret\"", finalize=False))
+        blob = json.dumps(requests[-1], ensure_ascii=False)
+        assert "terminal" not in blob and "secret" not in blob, blob
+    finally:
+        adapter.configure(body_source="legacy")
+        panel.reset()
+        context.reset()
+
+
+
+def test_own_production_stream_path_never_renders_core_progress_and_finalize_uses_core():
+    """生产接线门禁：own 的 seed→interim 合成帧→finalize 全程字节断言（覆盖 M10/M11）。"""
+    panel.reset()
+    context.reset()
+    adapter.configure(body_source="own", native_transport="patch")
+    chat, turn = "oc_prod", "t-prod"
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    raw = None
+    try:
+        panel.bind_chat_session(chat, "sess-prod")
+        panel.record_answer_delta("sess-prod", turn, "OWN正文")
+        raw = _make()
+        adapter.configure(body_source="own", native_transport="patch")
+        raw._client = raw._client  # StubAdapter client 已在
+        adapter._STREAM_MIN_INTERVAL = 0.0
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn)), "seed 帧"
+        requests = _wire_patch(raw)
+        dirty = "OWN正文\n\n---\n⚙️ terminal: \"export TOKEN=sk-prod\""
+        assert _run(raw.send_stream_frame(dirty, chat_id=chat, turn_id=turn)), "interim 帧"
+        assert requests, "interim 必须真的写卡"
+        blob = json.dumps(requests[-1], ensure_ascii=False)
+        assert "OWN正文" in blob, blob
+        assert "TOKEN=sk-prod" not in blob and "terminal" not in blob, blob
+        state = raw._ld_stream_get(_frame_key(chat, turn)) or {}
+        assert state.get("last_rendered_body") == "OWN正文", state
+        # core 权威终稿可能被替换得更短；旧 ck_offset 落在新终稿之外时不得切空
+        raw._ld_stream_put(_frame_key(chat, turn), {**state, "ck_offset": 999})
+        final_requests = _wire_patch(raw)
+        assert _run(raw.send_stream_frame("权威终稿", finalize=True,
+                                          chat_id=chat, turn_id=turn)), "finalize 帧"
+        final_blob = json.dumps(final_requests[-1], ensure_ascii=False)
+        assert "权威终稿" in final_blob and "OWN正文" not in final_blob, final_blob
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        adapter.configure(body_source="legacy")
+        panel.reset()
+        context.reset()
+
+
+def test_stop_production_path_reads_last_rendered_body_not_raw_frame():
+    """/stop 生产调用点门禁：_ld_redraw_stopped_keys 必须走 _ld_stop_body（覆盖 M8）。"""
+    raw = _make()
+    panel.reset()
+    try:
+        adapter.configure(body_source="own")
+        key = "oc_stop_prod:t1"
+        raw._ld_stream_put(key, {"message_id": "om_stop", "chat_id": "oc_stop_prod",
+                                 "last": "⚙️ terminal: \"secret\"",
+                                 "last_rendered_body": "卡上可见正文",
+                                 "session_id": "sess-stop-prod", "answer_gen": 0,
+                                 "t0": time.monotonic()})
+        captured: list = []
+
+        async def _fake(chat, message_id, text, started):
+            captured.append((message_id, text))
+            return True
+
+        raw._ld_redraw_one_stopped = _fake  # type: ignore[method-assign]
+        assert _run(raw._ld_redraw_stopped_keys("oc_stop_prod", [key]))
+        assert captured == [("om_stop", "卡上可见正文")], captured
+    finally:
+        adapter.configure(body_source="legacy")
+        panel.reset()
+        context.reset()
+
+
+def test_own_state_ignores_expired_binding_and_new_turn_without_delta():
+    """TTL 过期与同会话新回合首 delta 前都不得回旧答案（覆盖 M13 / A-2）。"""
+    panel.reset()
+    context.reset()
+    adapter.configure(body_source="own")
+    raw = _make()
+    try:
+        panel.bind_chat_session("oc_ttl", "sess-ttl")
+        panel.record_answer_delta("sess-ttl", "T1", "旧答案")
+        assert raw._ld_body_text("", "oc_ttl", finalize=False) == "旧答案"
+        # 同会话新回合、首个 delta 之前：own 必须为空
+        panel.begin_turn("sess-ttl", "T2")
+        assert raw._ld_body_text("CORE-PROGRESS", "oc_ttl", finalize=False) == "", \
+            "新回合首 delta 前不得显示上一回合答案"
+        assert raw._ld_body_text("", "oc_ttl", finalize=True) == "", \
+            "新回合 core 空时也不得回上一回合答案"
+        # TTL 过期后严格绑定必须返回空
+        panel.record_answer_delta("sess-ttl", "T2", "新答案")
+        panel._CHAT_SESSION["oc_ttl"] = ("sess-ttl", panel._now() - panel._CHAT_SESSION_TTL - 1)
+        assert panel.answer_state("oc_ttl", require_binding=True) == ("", False, False)
+    finally:
+        adapter.configure(body_source="legacy")
+        panel.reset()
+        context.reset()
+
+
+
+def test_ck_split_preserves_session_turn_generation_fields():
+    """卡链切新卡必须保留 session/turn/generation（否则长答案后漂移保护失效）。"""
+    raw = _make()
+    old_split = adapter._ck_split_point
+    old_update = raw._ld_update_card
+    old_create = raw._ld_ck_create
+    try:
+        adapter._ck_split_point = lambda *a, **k: 4  # type: ignore[assignment]
+
+        async def _ok_update(chat, mid, card):
+            return _StubResult(True, mid)
+
+        async def _ok_create(chat, *, answer, panel_text, panel_tools_text, reply_to=None):
+            return _StubResult(True, "om_new"), "ck_new", {
+                "body": {"elements": [{"tag": "markdown", "element_id": "answer", "content": answer}]}
+            }
+
+        raw._ld_update_card = _ok_update  # type: ignore[method-assign]
+        raw._ld_ck_create = _ok_create  # type: ignore[method-assign]
+        state = {"message_id": "om_old", "chat_id": "oc_split", "t0": 1.0,
+                 "session_id": "sess-split", "turn_id": "t-split", "answer_gen": 7,
+                 "last_failed_frame": "dirty", "strips": 3, "ck_cards": []}
+        out = _run(raw._ld_ck_split("oc_split", "ABCDEFGHIJ", state, 0, None, 2.0))
+        assert isinstance(out, dict), out
+        assert out.get("session_id") == "sess-split", out
+        assert out.get("turn_id") == "t-split", out
+        assert out.get("answer_gen") == 7, out
+        assert out.get("last_failed_frame") == "dirty", out
+        assert out.get("strips") == 3, out
+    finally:
+        adapter._ck_split_point = old_split  # type: ignore[assignment]
+        raw._ld_update_card = old_update  # type: ignore[method-assign]
+        raw._ld_ck_create = old_create  # type: ignore[method-assign]
+        panel.reset()
+
+
+
+def test_legacy_f4_path_keeps_old_in_place_finalize_behavior():
+    """legacy 默认不启用 F4 拒绝：失败帧后的同文 finalize 仍按旧行为原卡渲染。"""
+    panel.reset()
+    context.reset()
+    adapter.configure(body_source="legacy", native_transport="patch")
+    chat, turn = "oc_legacyf4", "t-legacyf4"
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    raw = None
+    try:
+        raw = _make()
+        adapter.configure(body_source="legacy", native_transport="patch")
+        adapter._STREAM_MIN_INTERVAL = 0.0
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn)), "seed 帧"
+        state = raw._ld_stream_get(_frame_key(chat, turn)) or {}
+        composed = "旧正文\n\n---\n⚙️ terminal: \"secret\""
+        raw._ld_stream_put(_frame_key(chat, turn),
+                           {**state, "last_failed_frame": composed})
+        requests = _wire_patch(raw)
+        assert _run(raw.send_stream_frame(composed, finalize=True,
+                                          chat_id=chat, turn_id=turn)), \
+            "legacy 不得启用 own 的 F4 拒绝（否则旧行为从 1 张脏卡变 2 张卡）"
+        blob = json.dumps(requests[-1], ensure_ascii=False)
+        assert "旧正文" in blob, blob
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        adapter.configure(body_source="legacy")
+        panel.reset()
+        context.reset()
+
+
+
+def test_own_seed_before_first_delta_pins_generation_and_renders_own():
+    """seed 早于首个 text delta：桶世代从 0→1 时必须把世代钉到卡上，不能 fail-open 成空。"""
+    panel.reset()
+    context.reset()
+    adapter.configure(body_source="own", native_transport="patch")
+    chat, turn = "oc_seedfirst", "t-seedfirst"
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    raw = None
+    try:
+        panel.bind_chat_session(chat, "sess-seedfirst")
+        raw = _make()
+        adapter.configure(body_source="own", native_transport="patch")
+        adapter._STREAM_MIN_INTERVAL = 0.0
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn)), "seed 帧"
+        state = raw._ld_stream_get(_frame_key(chat, turn)) or {}
+        assert int(state.get("answer_gen") or 0) == 0, state
+        # 首个正文 delta 在 seed 之后才到 —— 真机顺序（17:59 日志实测）
+        panel.record_answer_delta("sess-seedfirst", turn, "开始")
+        requests = _wire_patch(raw)
+        dirty = "开始\n\n---\n⚙️ terminal: \"export TOKEN=sk-first\""
+        assert _run(raw.send_stream_frame(dirty, chat_id=chat, turn_id=turn)), "正文帧"
+        blob = json.dumps(requests[-1], ensure_ascii=False)
+        assert "开始" in blob and "TOKEN=sk-first" not in blob and "terminal" not in blob, blob
+        state2 = raw._ld_stream_get(_frame_key(chat, turn)) or {}
+        assert state2.get("last_rendered_body") == "开始", state2
+        assert int(state2.get("answer_gen") or 0) > 0, state2
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        adapter.configure(body_source="legacy")
+        panel.reset()
+        context.reset()
+
+
+
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]
     failed = 0
     for name, fn in tests:
         try:
+            # v0.7.0 P1.5：生产默认已切 own；旧用例的断言语义是 legacy 路径，
+            # 这里逐条把基线设为 legacy；own 专属用例会在函数体内自行 configure(own)。
+            # P2b 删除 legacy 后，这些旧用例会随路径一起归档/重写。
+            adapter.configure(body_source="legacy")
             fn()
         except AssertionError as exc:
             failed += 1

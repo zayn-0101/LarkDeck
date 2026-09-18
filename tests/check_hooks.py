@@ -55,8 +55,8 @@ from hermes_cli.lifecycle import has_hook, invoke_hook     # noqa: E402
 discover_plugins()
 
 WIRED_HOOKS = ("post_api_request", "on_stream_start", "on_stream_delta",
-               "pre_tool_call", "post_tool_call", "pre_gateway_dispatch",
-               "on_session_end")
+               "on_stream_end", "pre_tool_call", "post_tool_call",
+               "pre_gateway_dispatch", "on_session_end")
 # 「订阅了哪几个钩子」以插件自己的 compat.OBSERVED_HOOKS 为单一事实来源：
 # 门禁里写死一份清单，插件加钩子时就会悄悄漏掉验证（对照组里插件没加载，拿不到它）。
 if ENABLED:
@@ -169,6 +169,14 @@ else:
     )
     if not has_stream_observer_hooks():
         problems.append("has_stream_observer_hooks() 为假：推理订阅没被认到")
+
+    # v0.7.0：on_stream_end 必须真的派发并落账（只查 has_hook/元组名字抓不住
+    # “回调被换成 lambda / 循环漏掉 EXTRA” 这类静默死法）。
+    invoke_hook("on_stream_end", session_id="sess-endcheck", turn_id="turn-endcheck",
+                iteration=1, final_text="对账文本", finished=True, error=None)
+    _end_snap = _panel.stream_end_snapshot("sess-endcheck", "turn-endcheck")
+    if int(_end_snap.get("len") or -1) != 4 or not _end_snap.get("finished"):
+        problems.append(f"on_stream_end 没有把对账快照写进数据层：{_end_snap!r}")
 
     # pre_tool_call 是 fail-closed 钩子：返回列表必须全是 None（观察者不能变成拦截者）
     pre_results = invoke_hook(
@@ -847,6 +855,10 @@ else:
         # 阶段 9 的新传输另有自己的门禁（单测的 cardkit 用例 + 真机 `--cardkit-prod`），
         # 两件事不该互相牵动（翻默认时这里曾红过一次，就是这么发现的）。
         _adm._CONFIG["native_transport"] = "patch"
+        # v0.7.0：本黄金序列是 **legacy 帧语义**的历史证据；own 默认的正文来源由
+        # tests/check_own_body.py + test_units 的 test_own_* 单独守。这里显式钉回 legacy，
+        # 避免「默认已切 own」被误报成黄金序列回归。
+        _adm._CONFIG["body_source"] = "legacy"
 
         _panel.reset()
         turn_key = "seq-turn-1"

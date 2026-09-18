@@ -355,7 +355,13 @@ tests/        见「验证」
   重放一遍 —— 变异 `R4-1/4/6/7` 四条各钉一条车道）；③ 封卡必须 `streaming=False`（否则旧卡永远
   停在「正在生成」）；④ 切点优先换行、**避开代码围栏**（`cards.code_spans`），整段都在代码区里时
   退到围栏起点。含「切不开就 fail-open」的两半判据（一帧的增量连新卡都装不下时必须回落，不发必被拒的卡）。
-- **正文净化 = 有证据地剥掉核心叠加的工具进度块**（R11-A7，`adapter._strip_core_progress`）。
+- **v0.7.0 正文来源 = own（默认）**：正文只认 `panel.record_answer_delta` 从
+  `on_stream_delta(kind="text")` 累积的文本；native 帧只作刷新/ finalize 兜底。
+  `finalize`：core 非空且以 own 为前缀 → core；**core 是 own 精确后缀 → 保留 own 前段**；
+  其余分叉 → core 整段；绝不按分隔符 split/rsplit。F4 异常重发帧在 own 下拒绝持久化并交回
+  core edit/send 回落（防 terminal 命令/参数进正文）。绑定漂移/回合漂移严格 fail-open。
+  下面的「有证据地剥帧」是 **legacy 回退路径**，仅 `body_source: legacy` 生效，P2b 归档后删除。
+- **正文净化 = 有证据地剥掉核心叠加的工具进度块**（legacy 回退；R11-A7，`adapter._strip_core_progress`）。
   起因：native 流式下核心会把工具进度行**合成进同一帧**
   （`"\n\n---\n".join((accumulated, progress))`），而我们按契约渲染整帧 ⇒ 那几行出现在卡片正文里。
   用户明确要求**一个核心配置都不动**（不改 `display.platforms.feishu.tool_progress`）⇒ 只能在插件侧做。

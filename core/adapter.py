@@ -66,6 +66,11 @@ from . import panel as _panel
 
 logger = logging.getLogger("larkdeck")
 
+#: v0.7.0 P1 过渡：`EXTRA_SUBSCRIPTIONS`（目前只有 on_stream_end 对账观察）先注册、
+#: 但不参与 `7/7` 自检计数；P2a 合并进 SUBSCRIPTIONS/OBSERVED_HOOKS 后本集合消失。
+_HOOK_EXTRA_NAMES = frozenset(
+    name for name, _ in (getattr(_hooks, "EXTRA_SUBSCRIPTIONS", ()) or ()))
+
 PLATFORM_NAME = "feishu"
 LABEL = "Feishu / Lark — LarkDeck cards"
 ADAPTER_CLASS_NAME = "LarkDeckFeishuAdapter"
@@ -758,6 +763,9 @@ _DEFAULTS: Dict[str, Any] = {
     #: ``full``（再 + 首字节延迟 TTFB）。**缺数据就少一段，绝不编 0**（见 `cards.footer_line`）。
     "footer_metrics": "off",
     "progress_lines_in_body": False,
+    # v0.7.0：own（默认，正文只认插件 on_stream_delta(kind="text") 累积；core 帧只作
+    # 刷新信号 / finalize 兜底）。legacy 只保留给旧用例/回退，P2b 归档后删除。
+    "body_source": "own",
     "footer": True,           # 页脚：状态 → 耗时 → 模型 → 上下文用量（+ 本卡短码）
     "show_model": True,       # 页脚里显示模型名（面板标题只放思考/工具摘要）
     "context_style": "text",  # 上下文用量样式：text（默认）| bar | both
@@ -1752,6 +1760,11 @@ class LarkDeckMixin:
     def _ld_setup(self) -> None:
         self._ld_state: Dict[str, Dict[str, Any]] = {}
         self._ld_streams: Dict[str, Dict[str, Any]] = {}
+        #: v0.7.0 P1：native seed 帧刚失败的短窗口标记（chat -> (turn, monotonic)）。
+        #: 核心随后可能在 interim tick 直接 `_first_send(display_text)`，而 display_text
+        #: 是 `_compose_frame_content()` 合成文本（可能含 terminal 命令/args）。own 模式
+        #: 必须在 `send()` 里识别这个窗口并拒绝把它当正文。
+        self._ld_seed_failures: Dict[str, Any] = {}
         self._ld_lock = threading.Lock()
 
     def _ld_track(self, message_id: str, chat_id: str) -> None:
@@ -1859,6 +1872,87 @@ class LarkDeckMixin:
         except Exception:  # pragma: no cover - 防御性
             logger.debug("[larkdeck] 查卡片追踪失败", exc_info=True)
             return None
+
+    def _ld_stream_for_message(self, message_id: str) -> Optional[Dict[str, Any]]:
+        """按 message_id 找当前活跃的 native stream state（浅拷贝；找不到 None）。"""
+        if not message_id:
+            return None
+        lock = getattr(self, "_ld_lock", None)
+        streams = getattr(self, "_ld_streams", None)
+        if lock is None or not isinstance(streams, dict):
+            return None
+        with lock:
+            for state in streams.values():
+                if isinstance(state, dict) and str(state.get("message_id") or "") == message_id:
+                    return dict(state)
+        return None
+
+    def _ld_note_seed_failure(self, chat_id: str, turn_id: str) -> None:
+        chat = str(chat_id or "").strip()
+        if not chat:
+            return
+        with self._ld_lock:
+            self._ld_seed_failures[chat] = (str(turn_id or ""), time.monotonic())
+
+    def _ld_seed_failure_active(self, chat_id: str, ttl: float = 15.0) -> bool:
+        chat = str(chat_id or "").strip()
+        if not chat:
+            return False
+        now = time.monotonic()
+        with self._ld_lock:
+            item = self._ld_seed_failures.get(chat)
+            if not item:
+                return False
+            if now - float(item[1]) > ttl:
+                self._ld_seed_failures.pop(chat, None)
+                return False
+            return True
+
+    def _ld_clear_seed_failure(self, chat_id: str) -> None:
+        chat = str(chat_id or "").strip()
+        if not chat:
+            return
+        with self._ld_lock:
+            self._ld_seed_failures.pop(chat, None)
+
+    def _ld_stream_key_for_message(self, message_id: str) -> Optional[str]:
+        """按 message_id 找活跃 native stream 的 key（找不到 None）。"""
+        if not message_id:
+            return None
+        lock = getattr(self, "_ld_lock", None)
+        streams = getattr(self, "_ld_streams", None)
+        if lock is None or not isinstance(streams, dict):
+            return None
+        with lock:
+            for key, state in streams.items():
+                if isinstance(state, dict) and str(state.get("message_id") or "") == message_id:
+                    return str(key)
+        return None
+
+    def _ld_stream_own_text(self, chat_id: str, stream_state: Dict[str, Any]) -> str:
+        """own 模式取该流对应的正文；绑定/回合漂移时返回空（fail-open，不串会话/回合）。"""
+        chat = str(chat_id or "").strip()
+        stored = str(stream_state.get("session_id") or "")
+        bound = str(_panel.bound_session_id(chat) or "") if chat else ""
+        if stored and bound and stored != bound:
+            _log_body_diag_once(
+                "own-binding-drift",
+                "[larkdeck] 卡片会话绑定漂移：stream_session=%s bound_session=%s"
+                "（按空正文 fail-open，不串会话）", stored[:16], bound[:16])
+            return ""
+        stored_gen = int(stream_state.get("answer_gen") or 0)
+        try:
+            bucket_gen = (_panel.answer_generation(chat, require_binding=True)
+                          if chat else 0)
+        except Exception:  # pragma: no cover - 防御性
+            bucket_gen = 0
+        if stored_gen != bucket_gen:
+            _log_body_diag_once(
+                "own-generation-drift",
+                "[larkdeck] 卡片正文世代漂移：stream_gen=%s bucket_gen=%s"
+                "（按空正文 fail-open，不串会话/回合）", stored_gen, bucket_gen)
+            return ""
+        return self._ld_own_text(chat)
 
     def _ld_forget(self, message_id: str) -> None:
         with self._ld_lock:
@@ -2246,10 +2340,18 @@ class LarkDeckMixin:
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None, **kwargs: Any):
         """把回复渲染成卡片；任何一步出问题都回落到内置的纯文本发送。"""
+        # v0.7.0 P1：native seed 失败后的短窗口里，core 的 `_first_send` 传进来的
+        # `content` 可能是 `_compose_frame_content()` 合成文本（含 terminal 命令/args）。
+        # own 模式在这个窗口内只允许渲染 own 累积；空则渲染干净的流式占位卡，绝不把
+        # 合成帧交给卡片或纯文本 fallback。
+        guarded = (self._ld_body_source() == "own"
+                   and self._ld_seed_failure_active(chat_id))
+        if guarded:
+            content = self._ld_own_text(str(chat_id or ""))
         fallback = lambda: super(LarkDeckMixin, self).send(  # noqa: E731
             chat_id, content, reply_to=reply_to, metadata=metadata, **kwargs,
         )
-        if not _cfg("cards") or not getattr(self, "_client", None) or not content:
+        if not _cfg("cards") or not getattr(self, "_client", None) or (not content and not guarded):
             return await fallback()
         try:
             # 首帧没有「已耗时」可言（这一帧就是起点），所以不带 ⏱；⏱ 由后续
@@ -2260,7 +2362,7 @@ class LarkDeckMixin:
             # 走 native 收尾的回合看到降级后的标题，掉到 `send()` 的回合还露着字面 `**` 与 H1。
             # 判据是「这份文本是不是**完整文本**」，不是「这是哪条路径」（见 cards.sanitize_markdown）。
             content = _sanitize_for_send(content)
-            card = self._ld_build_card(content, streaming=False,
+            card = self._ld_build_card(content, streaming=guarded,
                                        panel=self._ld_panel(chat_id, report_empty=True),
                                        footer=self._ld_footer(chat_id=chat_id))
             result = await self._ld_send_card(chat_id, card, reply_to=reply_to, metadata=metadata)
@@ -2268,6 +2370,8 @@ class LarkDeckMixin:
                 message_id = getattr(result, "message_id", "") or ""
                 self._ld_track(message_id, chat_id)
                 self._ld_note_text(message_id, content)
+                if guarded:
+                    self._ld_clear_seed_failure(str(chat_id or ""))
                 return result
             _context.note_plaintext_fallback("send 未成功")
             logger.warning("[larkdeck] 卡片发送未成功（%s），回落纯文本",
@@ -2288,9 +2392,36 @@ class LarkDeckMixin:
         回答被重发一遍。判据是「这份文本是不是完整文本」，不是「这是哪条调用路径」。
         """
         state = self._ld_known(message_id)
-        if state is None or not getattr(self, "_client", None):
+        stream_state = (self._ld_stream_for_message(message_id)
+                        if self._ld_body_source() == "own" else None)
+        if not getattr(self, "_client", None):
             return await super().edit_message(chat_id, message_id, content, finalize=finalize)
+        if state is None and stream_state is None:
+            return await super().edit_message(chat_id, message_id, content, finalize=finalize)
+        if state is None:
+            # 极端路径（追踪表被淘汰等）：卡片仍在我们自己的活跃 native 流上，
+            # **绝不能**把可能含合成进度的 `content` 交给 super()。用流里的 t0
+            # 造一个最小追踪视图，正文选择仍走 own 规则。
+            state = {"chat_id": chat_id, "t0": stream_state.get("t0"), "last": 0.0}
         try:
+            if self._ld_body_source() == "own" and stream_state is not None:
+                if int(stream_state.get("answer_gen") or 0) == 0:
+                    try:
+                        _gen = _panel.answer_generation(chat_id, require_binding=True)
+                    except Exception:  # pragma: no cover - 防御性
+                        _gen = 0
+                    if _gen > 0:
+                        _key = self._ld_stream_key_for_message(message_id)
+                        if _key:
+                            stream_state = {**stream_state, "answer_gen": _gen}
+                            self._ld_stream_put(_key, stream_state)
+                own = self._ld_stream_own_text(chat_id, stream_state)
+                if finalize:
+                    # core 权威终稿非空则整段采用；否则 own。
+                    content = self._ld_final_body(content, own)
+                else:
+                    # F4 / 原生回落：interim core 文本可能含合成进度，own 模式一律不读它。
+                    content = own
             if finalize:
                 content = _sanitize_for_send(content)
             # ⚠️ 用 `_ld_frame_footer`（审计 C1）：这一帧**手上就有 message_id**，
@@ -2335,17 +2466,39 @@ class LarkDeckMixin:
         seed 帧（空文本）建卡；普通帧原地更新；finalize 收尾。返回 False 时
         核心自动禁用 native 并回落 send/edit —— 卡片失败绝不丢消息。
         """
+        turn = str(kwargs.get("turn_id") or "")
         try:
-            return await self._ld_stream_frame(
+            ok = await self._ld_stream_frame(
                 text, finalize=finalize, chat_id=chat_id, reply_to=reply_to,
-                turn_id=str(kwargs.get("turn_id") or ""),
+                turn_id=turn,
             )
         except Exception as exc:
             # 不能只打异常日志就 return False：核心同样会因为 False 停用本回合的 native，
             # 而「native 被停用 → 输出回落 send/edit（可能变成多条纯文本）」这条最强诊断
-            # 会缺失。走 _ld_stream_fail 让「为什么掉 native」始终留痕（限流 30s 一条）。
+            # 会缺失。走 `_ld_stream_fail` 让「为什么掉 native」始终留痕（限流 30s 一条）。
             logger.warning("[larkdeck] native 流式帧异常，交由核心回落", exc_info=True)
+            self._ld_remember_failed_frame(chat_id, turn, text)
             return self._ld_stream_fail(f"帧处理异常：{exc}")
+        if not ok and not finalize:
+            # v0.7.0 P1：记下失败帧文本（own 模式 F4 识别用），并打开“native 回落窗口”。
+            # 任何 non-finalize 帧失败（不只空 seed）都会让 core 可能 `_first_send(合成文本)`；
+            # own 模式 send() 必须在这个短窗口内拒绝 core 合成进度/密钥当正文。
+            self._ld_remember_failed_frame(chat_id, turn, text)
+            self._ld_note_seed_failure(str(chat_id or ""), turn)
+        elif ok and not finalize:
+            self._ld_clear_seed_failure(str(chat_id or ""))
+        return ok
+
+    def _ld_remember_failed_frame(self, chat_id: Optional[str], turn_id: str, text: str) -> None:
+        """在 stream state 里记下最近一次失败帧原文（只用于识别 F4 重发）。"""
+        chat = str(chat_id or "").strip()
+        if not chat:
+            return
+        key = f"{chat}:{turn_id}" if turn_id else chat
+        state = self._ld_stream_get(key)
+        if state is None:
+            return
+        self._ld_stream_put(key, {**state, "last_failed_frame": str(text or "")})
 
     # ------------------------------------------------- CardKit 传输（阶段 9）
     @staticmethod
@@ -2799,6 +2952,7 @@ class LarkDeckMixin:
         logger.info("[larkdeck] 卡链：封 %s（%d 字）→ 新卡 %s（余 %d 字）",
                     old_message_id[-8:], len(sealed), new_message_id[-8:], len(text) - cut)
         return {
+            **state,
             "message_id": new_message_id, "chat_id": chat, "t0": state.get("t0") or now,
             "last": text, "last_at": now, "frames": 0, "skipped": 0,
             "card_id": new_card_id, "ck_seq": 0,
@@ -2902,8 +3056,82 @@ class LarkDeckMixin:
                 await asyncio.sleep(delay)
         return response
 
-    def _ld_body_text(self, text: str, chat: str, *, finalize: bool) -> str:
-        """帧文本 → **要渲染的正文**（正文净化的唯一入口，R11-A7）。
+    @staticmethod
+    def _ld_body_source() -> str:
+        """当前正文来源：``legacy``（过渡默认）| ``own``（v0.7.0 目标路径）。"""
+        raw = str(_cfg_raw("body_source") or "").strip().lower()
+        return "own" if raw == "own" else "legacy"
+
+    @staticmethod
+    def _ld_final_body(core_text: str, own_text: str) -> str:
+        """finalize 正文选择的**唯一判据**（v0.7.0）：
+
+        * core 空 → own；
+        * core 非空且以 own 为前缀（或二者相等）→ 整段 core（权威扩展 / 清理终稿）；
+        * **core 是 own 的精确后缀** → 取 own 整段：core 是权威尾稿，own 前面的
+          正文是本轮已经流式展示过的前段（工具调用前的正文），不能因 core 只含
+          最后一段而静默消失；
+        * 其余分叉 → 整段 core（投递权威）。
+        绝不 split/rsplit 分隔符，绝不拼接；分叉/后缀关系只记日志。
+        """
+        core = str(core_text or "")
+        own = str(own_text or "")
+        if not core:
+            return own
+        if not own or core.startswith(own) or core == own:
+            return core
+        # core 是 own 的**精确后缀**：core 保留权威尾稿，own 前面还有本轮已经流式
+        # 展示过的正文（例如工具调用前的“开始”）。此时取 own 整段，绝不裁切/拼接。
+        if own.endswith(core):
+            return own
+        return core
+
+    def _ld_own_text(self, chat: str) -> str:
+        """严格绑定的 own 累积（无 ``chat->session`` 或绑定过期 → 空，绝不退回最近活跃）。"""
+        try:
+            own, _armed, _complete = _panel.answer_state(chat, require_binding=True)
+            return str(own or "")
+        except Exception:  # pragma: no cover - 防御性：状态层异常不得让帧失败
+            logger.debug("[larkdeck] own 累积读取失败，按空正文处理", exc_info=True)
+            return ""
+
+    def _ld_log_finalize_divergence(self, core: str, own: str) -> None:
+        """finalize 两份文本分叉时留证据；**只记录，不参与选正文**。"""
+        if not core or not own or core == own:
+            return
+        limit = min(len(core), len(own))
+        first = limit
+        for index in range(limit):
+            if core[index] != own[index]:
+                first = index
+                break
+        _log_body_diag_once(
+            "finalize-divergence",
+            "[larkdeck] finalize 分叉：own_len=%d core_len=%d first=%d "
+            "core_prefix_of_own=%s own_prefix_of_core=%s（整段选一，不切片不拼接）",
+            len(own), len(core), first, core.startswith(own), own.startswith(core))
+
+    def _ld_body_text(self, text: str, chat: str, *, finalize: bool,
+                      stream_state: Optional[Dict[str, Any]] = None) -> str:
+        """帧文本 → **要渲染的正文**（正文净化的唯一入口）。
+
+        v0.7.0 P1 起按 ``body_source`` 分两条路：
+          * ``own``：``finalize=False`` **完全不读** ``text``，只回严格绑定的 own 累积
+            （空由展示层给占位）；``finalize=True`` 按 :meth:`_ld_final_body` 整段选一。
+            传入 ``stream_state`` 时还会校验建卡时的 session/世代（防主帧路径串会话/回合）。
+          * ``legacy``：保留旧的“按证据剥核心叠加进度块”路径，直到 P2b 归档后删除。
+        """
+        if self._ld_body_source() != "own":
+            return self._ld_body_text_legacy(text, chat, finalize=finalize)
+        own = (self._ld_stream_own_text(chat, stream_state)
+               if stream_state is not None else self._ld_own_text(chat))
+        if finalize:
+            self._ld_log_finalize_divergence(str(text or ""), own)
+            return self._ld_final_body(text, own)
+        return own
+
+    def _ld_body_text_legacy(self, text: str, chat: str, *, finalize: bool) -> str:
+        """旧路径（P2b 删除）：按前缀证据剥掉核心叠加的工具进度块。
 
         三个决策点，都在这里：
           * ``progress_lines_in_body: true`` ⇒ **原样渲染**（用户明确要核心那套：正文区也滚工具行）；
@@ -2978,15 +3206,41 @@ class LarkDeckMixin:
         key = f"{chat}:{turn_id}" if turn_id else chat
         state = self._ld_stream_get(key)
         now = time.monotonic()
+        if finalize and state is not None and self._ld_body_source() == "own":
+            failed_text = str(state.get("last_failed_frame") or "")
+            if failed_text and failed_text == text:
+                # v0.7.0 P1 / 审计 C 安全反例：core 帧确定性失败后会用**同一段
+                # interim 合成文本**再发一帧 finalize=True。那段文本含未脱敏 terminal
+                # 命令/args（run_turn_runner.py:210/238），不能持久化进正文。这里拒绝，
+                # 让 core 走 edit_message 回落：own 模式的 interim edit 只渲 own 累积，
+                # 最终 finalize edit 再用 core 权威终稿补齐全文。
+                logger.info("[larkdeck] 检测到 native 帧失败后的 finalize 重发，"
+                            "拒绝持久化合成帧（防止进度/密钥进正文）")
+                return self._ld_stream_fail("F4 合成帧重发：拒绝持久化，交回核心 edit/send 回落")
         # 整帧渲染，**只剥掉能被证明是核心叠加的工具进度块**（R11-A7）—— 判据与
         # 「为什么这是证明而不是猜」见文件顶部那段说明。剥不出来就原样渲染（fail-open）。
         # ⚠️ 「整帧原样渲染」是 8f81b4d 的安全修复留下的口径；R11-A7 把它收紧成
         # 「按证据剥后缀」：仍然**不做任何正文归档**（不按分隔符切、不改写前缀）。
         # ⚠️ **必须把 ``finalize`` 传下去**（R11-A7 尾巴）：收尾帧是**唯一不可逆**的一帧
         # （核心对 finalize 乐观记账、不会再补发），而那一帧**通常**是纯累积正文
-        # （例外：帧失败后的重发，见条件 0 —— 那条路上会留下可见的进度行）。
-        display = self._ld_body_text(text, chat, finalize=finalize)
-        stripped = display != text
+        # （例外：帧失败后的重发，见上面 F4 分支）。
+        display = self._ld_body_text(text, chat, finalize=finalize, stream_state=state)
+        # seed 帧可能早于第一个 text delta：那一刻正文桶还不存在（gen=0），
+        # 随后 `on_stream_delta` 建桶 gen=1。这是**同一回合的合法首段**，必须把
+        # 世代钉到这张卡上；否则会一直 fail-open 成空正文（真机 2026-09-18 实测）。
+        if (state is not None and self._ld_body_source() == "own"
+                and int(state.get("answer_gen") or 0) == 0):
+            try:
+                _gen = _panel.answer_generation(chat, require_binding=True)
+            except Exception:  # pragma: no cover - 防御性
+                _gen = 0
+            if _gen > 0:
+                state = {**state, "answer_gen": _gen}
+                self._ld_stream_put(key, state)
+                display = self._ld_body_text(text, chat, finalize=finalize,
+                                             stream_state=state)
+        # own 模式不“剥帧”，显示文本本来就来自 own 累积；strips 计数只属于 legacy 路径。
+        stripped = (self._ld_body_source() != "own") and display != text
         if state is None:
             if finalize:
                 # 没有活跃流可收尾：交核心回落（send/edit 会正常发出）。这是**正常路径**
@@ -3046,7 +3300,15 @@ class LarkDeckMixin:
                                           # （`text[ck_offset:]`）。第一张卡从 0 开始。
                                           "ck_offset": 0,
                                           # 这一回合已经**封掉**的卡（按顺序）—— 卡链的唯一记录
-                                          "ck_cards": []})
+                                          "ck_cards": [],
+                                          # v0.7.0 P1：/stop 重绘只读「这张卡实际写出的正文」；
+                                          # 绑定漂移校验用建卡时的 session_id。
+                                          "session_id": _panel.bound_session_id(chat) or "",
+                                          "turn_id": str(turn_id or ""),
+                                          "answer_gen": _panel.answer_generation(
+                                              chat, require_binding=True),
+                                          "last_rendered_body": display,
+                                          "last_failed_frame": ""})
                 # ⚠️ **这一笔必须留在帧路径里**（R9 审计高-1 的另一半）：cardkit 的 seed 帧
                 # 是 `cardkit.v1.card.create` + `im.v1.message.create/reply` **两次网络调用**，
                 # 走的是 `_ld_write_with_retry` **而不是** `_ld_send_card` ⇒ 没有任何底层收口点
@@ -3071,7 +3333,13 @@ class LarkDeckMixin:
             self._ld_stream_put(key, {"message_id": message_id, "chat_id": chat,
                                       "t0": now, "last": text, "last_at": now,
                                       "frames": 0, "skipped": 0,
-                                      "strips": 1 if stripped else 0})
+                                      "strips": 1 if stripped else 0,
+                                      "session_id": _panel.bound_session_id(chat) or "",
+                                      "turn_id": str(turn_id or ""),
+                                      "answer_gen": _panel.answer_generation(
+                                          chat, require_binding=True),
+                                      "last_rendered_body": display,
+                                      "last_failed_frame": ""})
             # ⚠️ 这里**不再**记一笔：首发建卡发出去的正是 `_ld_send_card`，账本已经在
             # 那个底层收口点记过了（R9 审计中-1 的修法）。**一次写只记一笔**必须由构造保证，
             # 不能靠「记得别在调用方也写一遍」—— 那种纪律在下一个调用点就会静默失守
@@ -3091,6 +3359,10 @@ class LarkDeckMixin:
             # 会凭空吞掉/重复几个字符。切片之后的这一段本身就是**完整文本**（R4 的切点只在
             # 行首、且避开代码区），所以它满足「只在完整文本上做卫生」这个判据。
             tail_offset = int(state.get("ck_offset") or 0)
+            if self._ld_body_source() == "own" and tail_offset > len(display):
+                # core 权威终稿可被 `_adopt_final_text` 整体替换成更短文本；卡链旧 offset
+                # 若落在新终稿之外，继续切会得到空串 ⇒ 终稿字节丢失。own 模式回退整段。
+                tail_offset = 0
             tail_visible = _sanitize_for_send(display[tail_offset:])
             card = self._ld_build_card(tail_visible or " ", streaming=False,
                                        panel=self._ld_panel(chat, report_empty=True),
@@ -3164,6 +3436,9 @@ class LarkDeckMixin:
                 self._ld_stream_put(key, state)
                 offset = int(state.get("ck_offset") or 0)
                 visible = display[offset:]
+                state = {**state, "last_rendered_body": visible,
+                         "session_id": state.get("session_id") or ""}
+                self._ld_stream_put(key, state)
                 card_id = str(state.get("card_id") or "")
             # ⚠️ 这里**曾经**还有一道 `_card_body_bytes(visible) > 硬上限 ⇒ fail-open` 的闸门。
             # R4 起它是**死代码**：上面那条切卡判据已经把两种情况都收口了 ——
@@ -3206,6 +3481,8 @@ class LarkDeckMixin:
                 self._ld_stream_put(key, {**live_state, "ck_dead": live_state.get("ck_dead") or set(),
                                           # 装饰的「已写成功」记账（未变化不重写的判据）
                                           "ck_decor": live_state.get("ck_decor") or {},
+                                          "last_rendered_body": visible,
+                                          "session_id": state.get("session_id") or "",
                                           "last": text, "last_at": now,
                                           "ck_seq": seq_after,
                                           "frames": int(state.get("frames") or 0) + 1,
@@ -3224,6 +3501,8 @@ class LarkDeckMixin:
                 # 一个已经关掉的会话（R5 审计高-1 的另一半：决定写进 `live_state`、却在成功
                 # 分支被丢掉）。同时清 `card_id`，让后续帧走 patch。
                 _log_ck_degrade_once(degrade_code)
+                live_state["last_rendered_body"] = visible
+                live_state["session_id"] = state.get("session_id") or ""
                 self._ld_stream_put(key, {**live_state, "ck_degrade": degrade_code, "card_id": "",
                                           "last": text, "last_at": now, "ck_seq": seq_after,
                                           "frames": int(state.get("frames") or 0) + 1})
@@ -3252,6 +3531,8 @@ class LarkDeckMixin:
                         f"降级到 patch 后仍然失败（{getattr(result, 'error', 'unknown')}）")
                 self._ld_stream_put(key, {**live_state, "ck_degrade": degrade_code, "card_id": "",
                                           "ck_seq": seq_after, "last": text, "last_at": now,
+                                          "last_rendered_body": visible,
+                                          "session_id": state.get("session_id") or "",
                                           "frames": int(state.get("frames") or 0) + 1})
                 # 记账在 `_ld_update_card` 里（降级这一帧就是一次整卡 patch）—— 不再重复记。
                 return True
@@ -3291,6 +3572,8 @@ class LarkDeckMixin:
                 f"帧更新失败（{getattr(result, 'error', 'unknown')}）",
                 code=getattr(result, "code", None))
         self._ld_stream_put(key, {**state, "last": text, "last_at": now,
+                                  "last_rendered_body": visible,
+                                  "session_id": state.get("session_id") or "",
                                   "frames": int(state.get("frames") or 0) + 1})
         # 记账在 `_ld_update_card` 里（patch 传输每帧一次整卡替换）—— 不再重复记。
         return True
@@ -3553,7 +3836,7 @@ class LarkDeckMixin:
             if not message_id:
                 continue
             if await self._ld_redraw_one_stopped(chat, message_id,
-                                                str(state.get("last") or ""),
+                                                self._ld_stop_body(chat, state),
                                                 state.get("t0")):
                 redrawn = True
                 # ⚠️ **重绘成功后必须清掉这个流状态**（2026-09-13 审计）：
@@ -3567,6 +3850,20 @@ class LarkDeckMixin:
         if redrawn:
             logger.info("[larkdeck] 已把中止态重绘到卡片（chat=%s）", chat)
         return redrawn
+
+    def _ld_stop_body(self, chat: str, state: Dict[str, Any]) -> str:
+        """`/stop` 重绘正文选择（v0.7.0 P1.5）：
+
+        own 模式只读 `last_rendered_body`（当前卡**实际写出的 visible slice**，
+        尊重 `ck_offset`，不会把已封头段重放进最新卡）；字段缺失时按严格绑定取
+        own，绝不回退 `state['last']`（那是 core 原始帧文本，可能含合成进度）。
+        legacy 模式保持旧行为直到 P2b。
+        """
+        if self._ld_body_source() != "own":
+            return str(state.get("last") or "")
+        if "last_rendered_body" in state:
+            return str(state.get("last_rendered_body") or "")
+        return self._ld_stream_own_text(chat, state)
 
     async def _ld_redraw_one_stopped(self, chat: str, message_id: str, text: str,
                                      started: Any) -> bool:
@@ -4425,7 +4722,8 @@ def _ld_diagnosis_lines() -> List[str]:
     try:
         report = dict(PROBE_REPORT)
         state_key = _probe_state_key(report)
-        wired = sum(1 for ok in HOOKS.values() if ok)
+        wired = sum(1 for hook_name, ok in HOOKS.items()
+                    if ok and hook_name not in _HOOK_EXTRA_NAMES)
         total = len(_hooks.SUBSCRIPTIONS)
         command_ok = bool(COMMAND.get("registered"))
         generation = int(_panel.load_seq())
@@ -4649,7 +4947,8 @@ def _ld_command_card(raw_args: str) -> str:
         # 卡片看起来和「一切正常」一模一样 —— 而「读不到就说读不到」正是本卡片的纪律
         #（与「没记录就写无记录」同源）。所以空串在这里翻译成 i18n 的「版本读不到」。
         name = "🃏 larkdeck v" + (version or _i18n.t("cmd.version_unknown"))
-        wired = sum(1 for ok in HOOKS.values() if ok)
+        wired = sum(1 for hook_name, ok in HOOKS.items()
+                    if ok and hook_name not in _HOOK_EXTRA_NAMES)
         header = _i18n.t("cmd.header", name=name,
                          transport=LarkDeckMixin._ld_transport(),
                          wired=wired, total=len(_hooks.SUBSCRIPTIONS))

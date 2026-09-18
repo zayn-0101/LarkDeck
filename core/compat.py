@@ -87,6 +87,7 @@ OBSERVED_HOOKS: Tuple[str, ...] = (
     "post_api_request",
     "on_stream_start",
     "on_stream_delta",
+    "on_stream_end",
     "pre_tool_call",
     "post_tool_call",
     "pre_gateway_dispatch",

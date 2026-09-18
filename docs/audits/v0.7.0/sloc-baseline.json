@@ -1,0 +1,68 @@
+{
+  "core_dir": "/Users/Zayn/Code/larkdeck/core",
+  "files": {
+    "__init__.py": {
+      "blank": 1,
+      "comment_only": 0,
+      "docstring": 5,
+      "sloc": -1,
+      "total": 5
+    },
+    "adapter.py": {
+      "blank": 493,
+      "comment_only": 904,
+      "docstring": 1213,
+      "sloc": 2287,
+      "total": 4897
+    },
+    "cards.py": {
+      "blank": 317,
+      "comment_only": 279,
+      "docstring": 574,
+      "sloc": 934,
+      "total": 2104
+    },
+    "compat.py": {
+      "blank": 97,
+      "comment_only": 64,
+      "docstring": 132,
+      "sloc": 307,
+      "total": 600
+    },
+    "context.py": {
+      "blank": 105,
+      "comment_only": 101,
+      "docstring": 229,
+      "sloc": 305,
+      "total": 740
+    },
+    "hooks.py": {
+      "blank": 42,
+      "comment_only": 22,
+      "docstring": 89,
+      "sloc": 110,
+      "total": 263
+    },
+    "i18n.py": {
+      "blank": 12,
+      "comment_only": 63,
+      "docstring": 14,
+      "sloc": 185,
+      "total": 274
+    },
+    "panel.py": {
+      "blank": 158,
+      "comment_only": 228,
+      "docstring": 290,
+      "sloc": 532,
+      "total": 1208
+    }
+  },
+  "totals": {
+    "blank": 1225,
+    "comment_only": 1661,
+    "docstring": 2546,
+    "sloc": 4659,
+    "total": 10091
+  }
+}

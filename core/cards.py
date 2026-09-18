@@ -1591,6 +1591,17 @@ def _rounds_elapsed_ms(rounds: Sequence[Dict[str, Any]]) -> int:
     return min(total, 86_400_000)
 
 
+def _dense_lines(text: str) -> str:
+    """面板文本排版收密：把连续空行压成一个换行（只用于面板，不改正文）。
+
+    模型推理常带 ``\\n\\n`` 段落间距，飞书 markdown 会把这些空行原样渲染成
+    「每行之间空一行」；面板是收纳过程信息，过疏反而难读。只压缩连续换行，
+    不合并单换行，也不动代码块语义之外的字符。
+    """
+    s = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    return _re.sub(r"\n{2,}", "\n", s)
+
+
 def _thinking_heading(rounds: Sequence[Dict[str, Any]], reasoning: str = "") -> str:
     """推理块的灰色小标题：``💭 思考 · 1.6s``（没耗时就写 ``💭 思考``）。"""
     if not rounds and not reasoning:
@@ -1631,11 +1642,11 @@ def panel_rounds_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any
         if dropped > 0:
             lines.append(_i18n.t("panel.rounds_trimmed", n=dropped))
         for index, item in enumerate(round_list[-keep:], start=dropped + 1):
-            body = truncate(str(item.get("text") or ""), share)
-            lines.append(f"**{_round_title(index, item.get('elapsed_ms'))}**\n\n{body}")
+            body = _dense_lines(truncate(str(item.get("text") or ""), share))
+            lines.append(f"**{_round_title(index, item.get('elapsed_ms'))}**\n{body}")
     elif reasoning:
-        lines.append(truncate(reasoning, max_reasoning_chars))
-    return "\n\n".join(lines)
+        lines.append(_dense_lines(truncate(reasoning, max_reasoning_chars)))
+    return "\n".join(lines)
 
 
 _FONT_TAG_RE = _re.compile(r"</?font[^>]*>", _re.IGNORECASE)
@@ -1670,7 +1681,7 @@ def panel_tools_markdown(*, tools: Sequence[str] = (),
         if "<font" in item and len(item) > max_tool_chars:
             item = _strip_font_tags(item)
         lines.append(truncate(item, max_tool_chars))
-    return "\n\n".join(lines)
+    return "\n".join(lines)
 
 
 def panel_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
@@ -1703,7 +1714,7 @@ def panel_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = ()
         panel_tools_markdown(tools=tools, max_tool_chars=max_tool_chars,
                              max_steps=max_steps),
     ) if part]
-    return "\n\n".join(parts)
+    return "\n".join(parts)
 
 
 def cardkit_entity_card(answer: str, panel_text: str, *, streaming: bool = True,
@@ -1834,10 +1845,10 @@ def unified_panel(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
         if dropped > 0:
             inner.append(md(_i18n.t("panel.rounds_trimmed", n=dropped)))
         for index, item in enumerate(round_list[-keep:], start=dropped + 1):
-            body = truncate(str(item.get("text") or ""), share)
-            inner.append(md(f"**{_round_title(index, item.get('elapsed_ms'))}**\n\n{body}"))
+            body = _dense_lines(truncate(str(item.get("text") or ""), share))
+            inner.append(md(f"**{_round_title(index, item.get('elapsed_ms'))}**\n{body}"))
     elif reasoning:
-        inner.append(md(truncate(reasoning, max_reasoning_chars)))
+        inner.append(md(_dense_lines(truncate(reasoning, max_reasoning_chars))))
     steps = [str(item) for item in tools]
     remaining = panel_room - len(inner)
     if remaining <= 0:

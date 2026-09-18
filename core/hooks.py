@@ -74,6 +74,28 @@ def _on_stream_delta(**payload: Any) -> None:
         logger.debug("[larkdeck] on_stream_delta 采集忽略了一次异常", exc_info=True)
 
 
+def _on_stream_end(**payload: Any) -> None:
+    """``on_stream_end``：每次 API 调用结束时的**只读对账**，绝不决定正文。
+
+    载荷（v0.7.0 静态核实）：``final_text`` / ``finished`` / ``error`` +
+    ``session_id`` / ``turn_id`` / ``iteration``。它不是整回合权威文本
+    （``agent/chat_completion_helpers.py:2243-2259`` 每次调用都会发），
+    且与 ``on_stream_delta`` 不在同一个 1024 队列上、先后不可知。
+    因此只把前缀关系原料写进 :func:`panel.record_stream_end`；渲染路径不读它。
+    """
+    try:
+        _panel.record_stream_end(
+            payload.get("session_id", ""),
+            payload.get("turn_id", ""),
+            iteration=payload.get("iteration", 0),
+            final_text=payload.get("final_text", ""),
+            finished=bool(payload.get("finished")),
+            error=payload.get("error", ""),
+        )
+    except Exception:  # pragma: no cover - 防御性：钩子绝不能抛
+        logger.debug("[larkdeck] on_stream_end 对账忽略了一次异常", exc_info=True)
+
+
 def _on_api_request(**payload: Any) -> None:
     """``post_api_request``：页脚指标 + **面板的「回合在动」信号**。
 
@@ -210,6 +232,7 @@ def _on_post_tool_call(**payload: Any) -> None:
 
 
 #: 订阅清单：钩子名 -> 回调。全部只观察，不返回指令。
+#: ⚠️ 与 ``compat.OBSERVED_HOOKS`` 一一对应；P2a 之前不要在这里加钩子。
 SUBSCRIPTIONS: Tuple[Tuple[str, Callable[..., Any]], ...] = (
     # 每次 API 调用后触发：model / provider / usage{in,out}_tokens + 回合活跃信号
     ("post_api_request", _on_api_request),
@@ -217,6 +240,8 @@ SUBSCRIPTIONS: Tuple[Tuple[str, Callable[..., Any]], ...] = (
     ("on_stream_start", _on_stream_start),
     # 流式增量（仅取 kind="reasoning" 做面板）
     ("on_stream_delta", _on_stream_delta),
+    # 每次 API 调用结束时的只读对账观察（P2a：已并入 OBSERVED_HOOKS 契约）
+    ("on_stream_end", _on_stream_end),
     # 工具生命周期（面板里的工具步骤；pre 为 fail-closed，回调极小）
     ("pre_tool_call", _on_pre_tool_call),
     ("post_tool_call", _on_post_tool_call),
@@ -226,6 +251,10 @@ SUBSCRIPTIONS: Tuple[Tuple[str, Callable[..., Any]], ...] = (
     # 每回合一次的结局（完成 / 报错 / 中止）—— 卡片状态色的唯一来源
     ("on_session_end", _on_session_end),
 )
+
+#: v0.7.0 P2a：`on_stream_end` 已并入 `SUBSCRIPTIONS` / `compat.OBSERVED_HOOKS`；
+#: 保留空元组只是避免旧调用点报 AttributeError，下一轮清理可删。
+EXTRA_SUBSCRIPTIONS: Tuple[Tuple[str, Callable[..., Any]], ...] = ()
 
 
 def register(ctx: Any) -> Dict[str, bool]:
@@ -239,8 +268,8 @@ def register(ctx: Any) -> Dict[str, bool]:
     if not callable(register_hook):
         logger.warning("[larkdeck] 当前 Hermes 未提供 ctx.register_hook()，"
                        "页脚的模型 / 上下文用量不可用（卡片功能不受影响）")
-        return {name: False for name, _ in SUBSCRIPTIONS}
-    for name, callback in SUBSCRIPTIONS:
+        return {name: False for name, _ in SUBSCRIPTIONS + EXTRA_SUBSCRIPTIONS}
+    for name, callback in SUBSCRIPTIONS + EXTRA_SUBSCRIPTIONS:
         try:
             register_hook(name, callback)
         except Exception as exc:
@@ -260,4 +289,4 @@ def register(ctx: Any) -> Dict[str, bool]:
     return result
 
 
-__all__ = ["register", "SUBSCRIPTIONS"]
+__all__ = ["register", "SUBSCRIPTIONS", "EXTRA_SUBSCRIPTIONS"]

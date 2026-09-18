@@ -102,6 +102,13 @@ _SHARED_BOX_FACTORY: Dict[str, Any] = {
     # 正文累积只有一个用途（当**前缀对照物**），而面板那个盒子会被 `_purge_locked` 按
     # 「必须指向一个真面板桶」清空 —— 借来的话，「纯正文回合」（压根没有面板桶）第一帧就丢归属。
     "answers": {}, "answers_last": [""],
+    # v0.7.0 P1：正文桶的**世代号**（换回合/换会话重建时递增）。让卡片能用
+    # 「建卡时的桶世代 == 当前桶世代」判断归属漂移，避免 hook turn 与 consumer turn
+    # 两套命名空间不可比的问题。
+    "answer_gen": [0],
+    # v0.7.0 P1：`on_stream_end` 对账快照（每次 API 调用一次；只观察、不决定正文）。
+    # `session:turn -> {iteration, finished, error, len, text, sha, updated}`，只留最近若干条。
+    "stream_ends": {},
     # —— 指标与账本（context.py 用）
     "status": None,
     "context_lock": threading.Lock(), "ctx_inflight": set(),
@@ -191,9 +198,16 @@ _LOCK: threading.Lock = _SHARED["panel_lock"]
 _ANSWERS: Dict[str, Any] = _SHARED.setdefault("answers", {})
 #: 正文仓库自己的「最近活跃会话」（长度 1 的 list，跨世代共享，理由同上）
 _ANSWERS_LAST: list = _SHARED.setdefault("answers_last", [""])
+#: 正文桶世代计数器（共享盒子，跨模块世代一致；只在 `_answer_bucket_locked` 重建时 +1）
+_ANSWER_GEN: list = _SHARED.setdefault("answer_gen", [0])
 #: 正文累积仓库的上限/存活期（与面板桶同一量级；它是**可选优化**的数据，淘汰了只是少剥一次）
 _ANSWER_MAX_SESSIONS = 32
 _ANSWER_TTL_SECONDS = 1800.0
+
+#: v0.7.0 P1：`on_stream_end` 只读对账存储（共享盒子，跨模块世代一致）。
+#: 键 = ``session_id:turn_id``，值只保留最近一次 API 调用的 final_text 前缀关系诊断。
+_STREAM_ENDS: Dict[str, Any] = _SHARED.setdefault("stream_ends", {})
+_STREAM_END_MAX = 16
 
 _CHAT_SESSION: Dict[str, Any] = _SHARED["panel_chat_session"]
 _CHAT_SESSION_MAX = 256
@@ -569,6 +583,15 @@ def _shrink(value: Any, depth: int = 0) -> Any:
 # --------------------------------------------------------------------------- #
 # 采集（钩子回调 → 本模块）
 # --------------------------------------------------------------------------- #
+def _reset_answers_for_new_turn_locked(sid: str, tid: str) -> None:
+    """换回合时丢掉旧正文桶（锁内调用）：新回合第一个 text delta 前不得回上一回合答案。"""
+    if not sid or not tid:
+        return
+    item = _ANSWERS.get(sid)
+    if isinstance(item, dict) and str(item.get("turn") or "") != tid:
+        _ANSWERS.pop(sid, None)
+
+
 def begin_turn(session_id: str, turn_id: str) -> None:
     """``on_stream_start`` 钩子回调：标记新回合开始，清掉上一回合的面板。
 
@@ -585,6 +608,7 @@ def begin_turn(session_id: str, turn_id: str) -> None:
     now = _now()
     with _LOCK:
         _touch_locked(sid, tid, now)
+        _reset_answers_for_new_turn_locked(sid, tid)
         _purge_locked(now)
 
 
@@ -604,6 +628,7 @@ def note_turn(session_id: str, turn_id: str) -> None:
     now = _now()
     with _LOCK:
         _touch_locked(sid, str(turn_id or ""), now)
+        _reset_answers_for_new_turn_locked(sid, str(turn_id or ""))
         _purge_locked(now)
 
 
@@ -1011,8 +1036,9 @@ def _answer_bucket_locked(sid: str, tid: str, now: float) -> Dict[str, Any]:
     """
     item = _ANSWERS.get(sid)
     if not isinstance(item, dict) or str(item.get("turn") or "") != tid:
-        item = {"turn": tid, "parts": [], "len": 0, "complete": True,
-                "tool_since_text": 0, "updated": now}
+        _ANSWER_GEN[0] = int(_ANSWER_GEN[0] or 0) + 1
+        item = {"turn": tid, "gen": int(_ANSWER_GEN[0]), "parts": [], "len": 0,
+                "complete": True, "tool_since_text": 0, "updated": now}
         _ANSWERS[sid] = item
         # 顺带把正文仓库自己的「最近活跃」指到它：没有绑定 `chat_id -> session_id` 的路径
         # （网关自己发的卡、探针卡）只能靠它。**不借面板那个盒子** —— 那个会被
@@ -1087,8 +1113,14 @@ def _answer_session_for(chat_id: str) -> str:
     return str(_ANSWERS_LAST[0] or "")
 
 
-def answer_state(chat_id: str = "") -> "tuple[str, bool, bool]":
+def answer_state(chat_id: str = "", *,
+                 require_binding: bool = False) -> "tuple[str, bool, bool]":
     """**只读**给正文净化用的三件事实（R11-A7）：``(累积正文, 有工具窗口, 累积是否完整)``。
+
+    ``require_binding=True`` 是 v0.7.0 own 模式的**严格归属**：只有
+    ``chat_id -> session_id`` 存在且 TTL 未过期才返回累积；拿不到确定性绑定时
+    返回 ``("", False, False)``，**绝不**退回 ``_ANSWERS_LAST``（那会跨会话串答案，
+    2026-09-18 审计 B/C 均确认）。legacy 路径仍用默认 ``False`` 保持旧语义。
 
     为什么必须由面板层提供：钩子只知道 ``session_id``、卡片只知道 ``chat_id``，
     而把两者对上的那套归属正是本模块一直在维护的东西。**归属错了也不会剥错** ——
@@ -1105,7 +1137,16 @@ def answer_state(chat_id: str = "") -> "tuple[str, bool, bool]":
     now = _now()
     with _LOCK:
         _purge_answers_locked(now)
-        sid = _answer_session_for(chat_id)
+        if require_binding:
+            chat = str(chat_id or "").strip()
+            sid = ""
+            if chat:
+                bound = _CHAT_SESSION.get(chat)
+                if (isinstance(bound, (tuple, list)) and len(bound) >= 2
+                        and now - float(bound[1]) <= _CHAT_SESSION_TTL):
+                    sid = str(bound[0] or "")
+        else:
+            sid = _answer_session_for(chat_id)
         item = _ANSWERS.get(sid) if sid else None
         if not isinstance(item, dict):
             return "", False, False
@@ -1115,6 +1156,135 @@ def answer_state(chat_id: str = "") -> "tuple[str, bool, bool]":
     # 拼接放到锁外：正文可以长到 _MAX_ANSWER_CHARS，锁里拼会拖慢 fail-closed 的
     # pre_tool_call 回调（同 snapshot 的推理拼接）。
     return "".join(parts), armed, complete
+
+
+def answer_turn(chat_id: str = "", *, require_binding: bool = False) -> str:
+    """严格绑定下该 chat 当前正文桶的 turn_id（无绑定/无桶返回空）。
+
+    用途：own 模式校验「建卡时的 turn」是否仍与当前累积桶一致，防止同一会话
+    切到新回合后旧卡消费新回合正文（审计 B 的绑定漂移补充场景）。
+    """
+    now = _now()
+    with _LOCK:
+        _purge_answers_locked(now)
+        if require_binding:
+            chat = str(chat_id or "").strip()
+            bound = _CHAT_SESSION.get(chat) if chat else None
+            sid = ""
+            if (isinstance(bound, (tuple, list)) and len(bound) >= 2
+                    and now - float(bound[1]) <= _CHAT_SESSION_TTL):
+                sid = str(bound[0] or "")
+        else:
+            sid = _answer_session_for(chat_id)
+        item = _ANSWERS.get(sid) if sid else None
+        return str(item.get("turn") or "") if isinstance(item, dict) else ""
+
+
+def answer_generation(chat_id: str = "", *, require_binding: bool = False) -> int:
+    """严格绑定下该 chat 当前正文桶的世代号（无绑定/无桶返回 0）。
+
+    世代号在每次「换 turn 或换会话重建正文桶」时递增，不依赖 hook turn 与
+    consumer turn 的命名空间能否对齐 —— 这正是 own 模式主帧路径需要的漂移判据。
+    """
+    now = _now()
+    with _LOCK:
+        _purge_answers_locked(now)
+        if require_binding:
+            chat = str(chat_id or "").strip()
+            bound = _CHAT_SESSION.get(chat) if chat else None
+            sid = ""
+            if (isinstance(bound, (tuple, list)) and len(bound) >= 2
+                    and now - float(bound[1]) <= _CHAT_SESSION_TTL):
+                sid = str(bound[0] or "")
+        else:
+            sid = _answer_session_for(chat_id)
+        item = _ANSWERS.get(sid) if sid else None
+        return int(item.get("gen") or 0) if isinstance(item, dict) else 0
+
+
+def record_stream_end(session_id: str, turn_id: str = "", *, iteration: Any = 0,
+                      final_text: Any = "", finished: bool = False,
+                      error: Any = "") -> None:
+    """``on_stream_end`` 观察回调：只保存对账快照，**绝不参与正文决策**。
+
+    为什么只能做对账：Hermes 0.21.1 ``agent/chat_completion_helpers.py:2243-2259``
+    每次 API 调用都发一次 ``on_stream_end``，``final_text`` 是**单次 response** 的
+    content（多工具轮不是整回合文本），且仍走 1024 丢最旧队列。它比 core finalize
+    更早/更晚都不可知，所以这里只记长度与前缀关系原料；渲染路径不读它。
+    """
+    sid = str(session_id or "")
+    tid = str(turn_id or "")
+    if not sid or not tid:
+        return
+    text = str(final_text) if final_text else ""
+    if len(text) > _MAX_ANSWER_CHARS:
+        text = text[:_MAX_ANSWER_CHARS]
+        truncated = True
+    else:
+        truncated = False
+    now = _now()
+    item = {
+        "iteration": _as_int(iteration) or 0,
+        "finished": bool(finished),
+        "error": str(error or ""),
+        "len": len(text),
+        "text": text,
+        "truncated": truncated,
+        "updated": now,
+    }
+    key = f"{sid}:{tid}"
+    with _LOCK:
+        _STREAM_ENDS[key] = item
+        if len(_STREAM_ENDS) > _STREAM_END_MAX:
+            oldest = sorted(_STREAM_ENDS.items(), key=lambda kv: kv[1].get("updated", 0.0))
+            for stale, _ in oldest[: len(_STREAM_ENDS) - _STREAM_END_MAX]:
+                _STREAM_ENDS.pop(stale, None)
+
+
+def stream_end_snapshot(session_id: str, turn_id: str = "") -> Dict[str, Any]:
+    """只读：取最近一次 ``on_stream_end`` 快照的浅拷贝（诊断/测试用）。"""
+    key = f"{str(session_id or '')}:{str(turn_id or '')}"
+    with _LOCK:
+        item = _STREAM_ENDS.get(key)
+        return dict(item) if isinstance(item, dict) else {}
+
+
+def answer_stream_end_reconcile(chat_id: str = "") -> Dict[str, Any]:
+    """只读对账：严格绑定会话的 own 累积与最近 ``on_stream_end.final_text`` 的前缀关系。
+
+    返回字段只用于诊断/状态卡/测试：``has_end``、``finished``、``own_len``、
+    ``final_len``、``own_prefix_of_final``、``final_prefix_of_own``、``missing_tail``。
+    绝不返回或拼接成正文；不满足 ``own_prefix_of_final`` 时只告警。
+    """
+    result: Dict[str, Any] = {"has_end": False, "finished": False, "own_len": 0,
+                              "final_len": 0, "own_prefix_of_final": False,
+                              "final_prefix_of_own": False, "missing_tail": False}
+    own, _armed, _complete = answer_state(chat_id, require_binding=True)
+    result["own_len"] = len(own)
+    with _LOCK:
+        chat = str(chat_id or "").strip()
+        bound = _CHAT_SESSION.get(chat) if chat else None
+        sid = ""
+        if (isinstance(bound, (tuple, list)) and len(bound) >= 2
+                and _now() - float(bound[1]) <= _CHAT_SESSION_TTL):
+            sid = str(bound[0] or "")
+        if not sid:
+            return result
+        candidates = [item for key, item in _STREAM_ENDS.items()
+                      if isinstance(item, dict) and key.startswith(sid + ":")]
+        if not candidates:
+            return result
+        item = max(candidates, key=lambda value: value.get("updated", 0.0))
+        final = str(item.get("text") or "")
+        result.update(has_end=True, finished=bool(item.get("finished")),
+                      final_len=int(item.get("len") or len(final)))
+    if not final:
+        return result
+    result["own_prefix_of_final"] = final.startswith(own)
+    result["final_prefix_of_own"] = own.startswith(final)
+    result["missing_tail"] = bool(own and not result["own_prefix_of_final"]
+                                  and not result["final_prefix_of_own"])
+    return result
 
 
 def answer_tools(chat_id: str = "") -> List[Dict[str, Any]]:
@@ -1189,6 +1359,8 @@ def reset() -> None:
         _CHAT_SESSION.clear()
         _ANSWERS.clear()
         _ANSWERS_LAST[0] = ""
+        _ANSWER_GEN[0] = 0
+        _STREAM_ENDS.clear()
         _LAST_ACTIVE_BOX[0] = ""
 
 
@@ -1200,6 +1372,10 @@ __all__ = [  # noqa: RUF022 - 按功能分组列出，便于对照文档
     "bound_session_id",
     "record_reasoning",
     "record_answer_delta",
+    "record_stream_end",
+    "stream_end_snapshot",
+    "answer_turn",
+    "answer_stream_end_reconcile",
     "record_tool_started",
     "record_tool_finished",
     "snapshot",

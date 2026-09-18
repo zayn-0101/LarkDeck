@@ -13,6 +13,35 @@
 > 卡片投递）。**新增 `theme` 默认值，属于用户可见默认观感变化**；配置键无改名。
 > 已知待验：`text_profile` / `ap_lite` 真机视觉、无网关 cron 真机投递。
 
+## [0.7.0] - 2026-09-18
+
+### 变更
+
+- **正文来源切换为 own（默认）**：正文只认插件从 `on_stream_delta(kind="text")` 累积的文本；
+  native 帧文本只作刷新信号与 finalize 兜底。工具进度行从结构上不再进入正文渲染输入，
+  不再依赖「事后按证据剥帧」。`body_source: legacy` 仅作过渡回退。
+- **finalize 规则**：core 非空且以 own 为前缀 → core 整段；core 是 own 精确后缀 → 保留 own
+  前段（避免 core 只含最后一段时吞掉工具调用前已展示的正文）；其余分叉 → core 整段；
+  绝不按 `\n\n---\n` split/rsplit。
+- **严格绑定**：own 模式下 `chat_id -> session_id` 缺失/过期/漂移或正文桶世代漂移时，
+  非 finalize 一律渲染空/占位，finalize 走 core 权威文本；不再退回「最近活跃会话」。
+- **F4 安全**：core 帧失败后同文 finalize 重发在 own 下拒绝持久化，交回 core edit/send 回落，
+  防止 terminal 命令/参数被写进正文。
+- `/stop` 的 own 路径改为读取当前卡实际写出的 `last_rendered_body`（visible slice），
+  不再读原始 core 帧文本。
+- `on_stream_end` 作为第 8 个只读观察钩子接入 `OBSERVED_HOOKS`，只做对账快照，不参与正文决策。
+- 面板标题不再含模型名；页脚顺序保持 状态 → 耗时 → 模型 → ctx → 短码；
+  面板/工具行颜色与字号层级不变。
+
+### 验证
+
+- 默认 own 下快速门禁：`test_units` 242/242、`check_override` / `check_hooks` /
+  `check_clarify_e2e` / `check_own_body` 全绿；变异 preflight 400/400 锚点可用。
+- 用户桌面飞书真机确认：生成期占位、工具执行、终态正文（`开始` → `---` → `收尾句 END`）、
+  绿边、页脚与展开面板均正常，正文无工具进度行。
+- 未完成/待办：legacy 路径与 393+7 旧变异套件的归档/删除（Phase 2）尚未执行，列为后续版本收口。
+
+
 ## [0.6.4] - 2026-09-18
 
 ### 修复
