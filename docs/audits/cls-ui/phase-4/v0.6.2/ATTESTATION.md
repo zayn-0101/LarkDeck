@@ -44,5 +44,10 @@ Date: 2026-09-18 (+08). Base commit: `ce7b51a`.
 
 ## Deploy record
 
-Pending until commit / tag / Mac gateway restart; this file is updated in the
-release commit.
+- release commit `2ff79ed`; annotated tag `v0.6.2`;
+  GitHub Release: <https://github.com/zayn-0101/larkdeck/releases/tag/v0.6.2>
+- Mac gateway restarted 2026-09-18 15:00 (+08) via `hermes gateway restart`;
+  new gateway pid `58200`, state `running`, Feishu `connected` at 15:00:50;
+  larkdeck self-check passed at 15:00:48 with hooks 7/7.
+- Real-device visual verification of the answer area, `<font color>` and the
+  12px panel/footer text profile is still **pending the user's screenshot**.
