@@ -50,6 +50,7 @@
 | **09-17 19:14–20:45（Phase 2 run 3，最终）** | **381** | **381** | 0 | 0 | 0 | 0 | **8/8** | **EXIT=0 ✅** —— 冻结树 `fd96f90f839f6621d83aff46006622d90ff27c1f`（commit `ecf11df`）；`_classify` 已把 test_units 行首 `ERROR ` 一律判 red-crash，6 条隐藏 ERROR 测试全部改成 AssertionError；control-only `-k` 改为 EXIT=2；preflight 389/389；末行「全部 381 条变异都被门禁抓住 ✅」 | `docs/audits/cls-ui/phase-2/logs/fullrun_phase2_run3.log`（sha256 `6cbe3898…`，64,517 B） |
 | **09-17 21:xx–22:xx（Phase 3 neat-freak）** | — | — | — | — | — | — | — | **GO**（A 文档一致性、B 规则/记忆边界均无条件 GO；C 文档/证据 GO，清场执行 NO-GO 等用户确认）—— closeout `b94bedf`→`b41306d`→`4810d0b`；AGENTS 预算 92.8%、`.gitignore` 加固、phase-3 inventory/consensus/证据归档；零删除 | `docs/audits/cls-ui/phase-3/{consensus.md,inventory.md,logs/}` |
 | **09-18 00:25–02:15（Phase 4 release 候选，最终）** | **382** | **382** | 0 | 0 | 0 | 0 | **8/8** | **EXIT=0 ✅** —— 颜色默认翻转 + release-gate 修正后的工作树（基于 `bdedb9b`）；四门禁全绿（`test_units 225/225`）、preflight 390/390（382+8）；末行「全部 382 条变异都被门禁抓住 ✅」；发布物见 `docs/releases/v0.6.0.md` | `docs/audits/cls-ui/phase-4/logs/fullrun_v0.6.0.log`（sha256 `70e28b6b…`，64,725 B） |
+| **09-18 08:45–10:20（v0.6.1 修复 run）** | **383** | **383** | 0 | 0 | 0 | 0 | **8/8** | **EXIT=0 ✅** —— 修复“空累积时 core 进度帧把 terminal 代码块画进答案”；四门禁全绿（`test_units 226/226`）、preflight 391/391（383+8）；末行「全部 383 条变异都被门禁抓住 ✅」；发布物见 `docs/releases/v0.6.1.md` | `docs/audits/cls-ui/phase-4/v0.6.1/fullrun_v0.6.1.log`（sha256 `2dce07f4…`，64,968 B） |
 
 
 
