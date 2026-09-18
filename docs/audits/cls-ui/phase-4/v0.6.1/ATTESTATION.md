@@ -17,3 +17,14 @@ block was rendered as the answer).
 The fix strips only a conservative progress shape with an empty accumulated
 answer and an open tool window; finalize frames and ambiguous shapes remain
 fail-open.
+
+## Release / deploy record
+
+- release commit `de4f648e030095eb77582b3a0420b38a9359dca9`; annotated tag
+  `v0.6.1`; GitHub Release published:
+  <https://github.com/zayn-0101/larkdeck/releases/tag/v0.6.1>
+- Mac gateway restarted at 2026-09-18 10:07 (+08): new launchd wrapper
+  `pid=20337`, `runs=4`, state running; child `gateway.pid=20340`; old
+  `64866/64869` gone; Feishu reconnected (attempt 2) and larkdeck self-check
+  passed at 10:07:16.
+
