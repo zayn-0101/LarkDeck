@@ -1140,6 +1140,12 @@ def test_ck_plan_content_and_role_failures_are_pinned():
     # 空内容兜底：面板/正文都不许把元素刷成空串（飞书对空内容有历史坑）
     assert adapter._ck_plan("", "", elems)[0].content == " "
     assert adapter._ck_plan("", "", elems)[1].content == " "
+    # 流式中间帧（streaming=True）没有正文时必须保留「正在生成…」占位，
+    # 不能写空格 —— 真机上会像一张坏掉的空卡（用户 2026-09-18 反馈）。
+    _pending = cards.answer_or_pending("", True)
+    _stream_ops = adapter._ck_plan("", "", elems, streaming=True)
+    assert _stream_ops[1].content == _pending, _stream_ops[1].content
+    assert _pending.strip(), "占位文案不能为空（构造前提）"
     # 卡里没有的元素一个都不写（面板关掉时只剩正文）
     only_answer = adapter._ck_plan("正文内容", "面板内容", [cards.CARDKIT_ANSWER_ID])
     assert [op.element_id for op in only_answer] == ["answer"], only_answer

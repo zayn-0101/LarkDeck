@@ -1258,7 +1258,8 @@ class _CkOp(NamedTuple):
 
 def _ck_plan(display: str, panel_text: str, elems: Sequence[str],
              footer_text: Optional[str] = None,
-             panel_tools_text: str = "") -> List[_CkOp]:
+             panel_tools_text: str = "",
+             streaming: bool = False) -> List[_CkOp]:
     """这一帧要写的元素列表（**按发送顺序**）。
 
     结构的唯一事实来源是 ``elems``（建实体时定下来的那份，之后只读）——所以「卡里没有的元素
@@ -1283,7 +1284,11 @@ def _ck_plan(display: str, panel_text: str, elems: Sequence[str],
         # （元素建出来就必须有内容；空串在飞书那边有历史坑）。
         ops.append(_CkOp(_cards.CARDKIT_FOOTER_ID, footer_text or " ", _CK_ROLE_DECOR))
     if _cards.CARDKIT_ANSWER_ID in elems:
-        ops.append(_CkOp(_cards.CARDKIT_ANSWER_ID, display or " ", _CK_ROLE_ANSWER))
+        # 流式中间帧没有正文时保留「正在生成…」占位，而不是写一个空格：
+        # 空正文 + 折叠面板在真机上看像一张坏卡（2026-09-18 用户复测反馈）。
+        # 收尾帧（streaming=False）仍写空格 —— 真的没有正文的回合不能永远停在占位。
+        answer_text = _cards.answer_or_pending(display, streaming) or " "
+        ops.append(_CkOp(_cards.CARDKIT_ANSWER_ID, answer_text, _CK_ROLE_ANSWER))
     return ops
 
 
@@ -3175,7 +3180,7 @@ class LarkDeckMixin:
             _panel_body, _panel_tools = self._ld_panel_parts(
                 chat, report_empty=bool(finalize))
             ops = _ck_plan(visible, _panel_body, live_elems, self._ld_frame_footer(state),
-                           panel_tools_text=_panel_tools)
+                           panel_tools_text=_panel_tools, streaming=not finalize)
             live_state = dict(state)
             ok, seq_after, failed = await self._ld_ck_apply(card_id, ops, _ck_seq(state),
                                                            live_state)
