@@ -5,14 +5,14 @@
   "plan_bytes": 29689,
   "head": "aaeb6c1f217e403f3eefcfc45d65c5eafe611e27",
   "head_tree": "e5ad3a714b7e788d57001bc08501a57af4804e3d",
-  "tree": "e5ad3a714b7e788d57001bc08501a57af4804e3d",
+  "tree": "22e465fd6a937e97dc662471cbb38cba097faae8",
   "worktree_commit": "clean",
   "branch": "v0.7.1-visual",
   "git_status": "",
   "staged_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "unstaged_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "untracked_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "audit_object": "index tree + staged diff + unstaged diff + untracked files + worktree_commit",
+  "audit_object": "代码+文档 tree（不含 freeze-V0.json 自身）；manifest 文件在后续 metadata commit，按 §9.8 元数据豁免",
   "python": "/Users/Zayn/.hermes/hermes-agent/venv/bin/python3 3.11.15",
   "hermes_version": "0.21.1",
   "references": {
@@ -34,8 +34,7 @@
     "C 执行/反假绿"
   ],
   "audit_target_commit": "aaeb6c1f217e403f3eefcfc45d65c5eafe611e27",
-  "audit_target_tree": "e5ad3a714b7e788d57001bc08501a57af4804e3d",
-  "export_dir": "/private/tmp/audit-v0-e5ad3a714b7e788d57001bc08501a57af4804e3d/larkdeck",
-  "manifest_commit": "2433bb9",
-  "pairing_note": "manifest.tree == audit_target_tree == export tree；manifest 文件本身位于 metadata commit 2433bb9（仅改 docs/audits，按 §9.8 元数据豁免），V0 代码/文档审计对象为 aaeb6c1/tree e5ad3a。"
+  "audit_target_tree": "22e465fd6a937e97dc662471cbb38cba097faae8",
+  "export_dir": "/private/tmp/audit-v0-22e465fd6a937e97dc662471cbb38cba097faae8/larkdeck",
+  "pairing_note": "manifest.tree == audit_target_tree == export tree == 22e465fd6a937e97dc662471cbb38cba097faae8；审计 tree 不含 manifest 文件，故无自指；manifest 自身版本在 metadata commit 中。"
 }
