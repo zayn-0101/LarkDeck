@@ -270,3 +270,118 @@ BODY_TEXT_SIZE = "normal"       # 我方现有 token；CLS/FC 用 normal_v2，V0
 - 心跳定时器可能撞限流 → P4 先探针，必要时降频/仅核心帧更新；
 - emoji 在不同客户端渲染不一致 → 关键状态词保留文字，不单靠图标；
 - 视觉验收依赖真机，无法纯自动化 → 用 golden snapshot 抓 token 回归 + 少量真机截图。
+
+## 8. 执行规则（老规矩，v0.7.1）
+
+### 8.1 Goal 模式
+- 本计划在 goal `goal-8c20640d-8ad5-477e-b331-1f68671eff7d`（max rounds 40）下执行；
+- 每轮只推进一个阶段的明确子任务，阶段状态写入 `docs/audits/v0.7.1-visual/`。
+
+### 8.2 计划与阶段审计
+- 本计划冻结后，先由 3 个独立子代理从不同角度审计：
+  A 架构/源码证据、B 用户可见效果/回归、C 执行风险/反假绿；
+- 每份审计必须给 GO / GO-WITH-CONDITIONS / NO-GO + 证据；不同意的地方由父代理组织讨论，
+  直到统一结论写入 `docs/audits/v0.7.1-visual/plan-consensus.md`；
+- V0–V4 **每个阶段执行结束后**同样各过 3 个独立子代理对抗审计并收敛，未收敛不得进入下一阶段；
+- 审计对象必须记录工作树 SHA；审计期间父代理不并发改同一批文件，避免证据失效。
+
+### 8.3 Git / Commit / Push 规则
+- **阶段审计收敛后**：本地 commit（Conventional Commit），说明本阶段行为变更与证据；
+- **不 push 中间态**：未过阶段审计的 commit 只留本地；
+- **Push/tag/release 只在发布里程碑**：最终用户截图确认 + 完整门禁通过 + 3 个子代理发布审计收敛后，
+  才 `git push`、打 tag、创建 release；
+- 任何“重跑夹具/更新 golden”的 diff 必须在同一 commit 里声明行为变更。
+
+### 8.4 Mac 网关生效规则
+- 插件通过软链 `/Users/Zayn/.hermes/plugins/larkdeck -> /Users/Zayn/Code/larkdeck` 生效；
+- **V1 / V3 / V4 的验收节点**才重启网关并请用户看截图；V0/V2 默认不动用户可见运行态；
+- 每次重启前先跑完该阶段自动门禁；探针需要真机发卡时先说明影响并征得同意；
+- 最终发布后重启一次加载正式版本，用户只做最后一次桌面截图确认。
+
+### 8.5 门禁与变异策略
+- 每阶段：`test_units` + 定向 `check_cardview` + 旧四门禁；
+- 变异只跑**定向 smoke**（每阶段 ≤20 条、只覆盖本阶段改动面），不再跑数小时全量；
+- 发布候选才跑归档全量分片，并单独记录 wall-clock 与 red=expected-kill；
+- 任何阶段失败：回退该阶段 commit，修完重跑本阶段 3 个审计，不带着问题进下一阶段。
+
+
+## 9. 三方共识修订（v2，supersedes 上文冲突条款）
+
+> 本节由 A/B/C 三份完整审计 + 两轮逐条讨论收敛而成；统一结论见
+> `docs/audits/v0.7.1-visual/plan-consensus.md`。**与 §0–§8 冲突时以本节为准。**
+
+### 9.1 live 默认与部署
+- `visual_engine` live 默认保持 **legacy 到 V4**；V1/V2/V3 只用显式 `structured` canary。
+- V1 canary 走独立进程/探针卡，不重启网关；V3 至少一次经用户同意的 live structured 回合。
+- 任一阶段若 legacy `golden_cardkit_trace` 出现非空 diff，或 live 软链仍指开发树，
+  **先建独立部署 worktree** 再继续；否则不得重启网关。
+- V4 才切默认 structured；回滚 = 改回 legacy 配置 + 重启，代码级问题 revert commit。
+
+### 9.2 渲染架构（取代 §0.4 的「通用树 diff」）
+- 操作矩阵：① `card_element.content` 写 answer/推理正文，**最后写**；
+  ② `partial_update_element` 替换 header.title / 外层面板 elements / border；
+  ③ `card_element.create` 新增顶层/嵌套 segment（本仓库真机已证）；
+  ④ `batch_update add_elements/delete_elements` 本仓库未验，V1 不得依赖，要用先补 schema 探针。
+- 禁止 partial_element 顶层带 `tag`、禁止增量改 markdown `text_size`（300312）。
+- 单 sequence 计数器共用、严格 +1、不回退不复用；uuid 由内容确定；id 唯一、生命周期冻结。
+
+### 9.3 覆盖与回退（取代 §4 V1/V3/V4 冲突项）
+- structured 覆盖：流式卡、finalize 收尾卡、`/stop` 重绘、卡链封旧卡/seed。
+- **DEGRADE 是唯一同卡回退车道**：legacy 渲染 + `engine_stamp=degraded`，本回合不回切
+  structured；V4 删除 legacy 配置路径，但保留降级渲染器。
+- 结构化 op 失败必须 fault-injection：正文零丢失、状态色不丢、单卡不重复、WARNING 留痕；
+  降级 patch 自身失败才走核心纯文本回退。
+
+### 9.4 元素/字节预算（取代 §7 与 V3 的「卡链一句话」）
+- 递归序列化 card JSON 实数计数；元素墙 200、阈值 180 + reserve 2。
+- 工具步 = 3 基础 + 3/步 + 2 detail + 2 result/error；推理轮 4；answer 按 markdown 膨胀估算。
+- 运行时 create/delete 必须记账；300315 外层 + 300305 内层解析。
+- `max_panel_steps` 改为元素预算推导；超限 trim 最早 + 「已折叠」提示，再考虑封卡；
+  元素墙与字节墙同时守。
+
+### 9.5 P3 嵌套面板（取代 §3 P3 / V3 A 形态描述）
+- 目标仍是 A 形态；V3 实现：流式期用已证 API 的顶层面板，完成卡整卡重建 A 嵌套面板。
+- P3 三路顺序：① `card_element.create`（本仓库真机证据最强）→ ② `partial_update_element`
+  替换外层面板 elements（AP 证据 / A 的首选）→ ③ `batch_update add_elements`（第三方证据，最后）。
+- 每路判据 = code=0 + 会话未关 + sequence 账本 + 本地元素计数 + **人眼落点/展开/二次更新**；
+  code=0 只作必要条件。P3 失败 → 先退 B（AP 式分区标题行），必须用户签字确认观感降级。
+
+### 9.6 变异/门禁（取代 §8.5 的 ≤20 手挑）
+- 开发期 `tests/run_fast.py`（3.65s）只作快速回路，不替代阶段门禁。
+- 每条新增/修改断言必须有一条 expected-kill，定向 `mutate_check -k` 跑出 🔴；锚点失效/崩溃不算红。
+- `check_cardview` 必须接入 `mutate_check._run_gates`，含 content 逐字断言 + 子树 JSON +
+  每字段至少一次非空；只做结构投影对内容恒真，禁止。
+- 阶段门禁 = preflight + 定向红 + **改动面全量后台分片**（≤30 分钟/阶段）；
+  任何用户可见重启前必须跑完并绿；merge/rebase 与发布候选跑全量分片 + expected-kill + wall-clock。
+- 高风险族 inventory 至少覆盖：结构+内容、id/sequence、元素/字节预算+卡链、限流+create 记账、
+  回退/降级、状态色双载体、配置键、answer 提交点、截断/脱敏、i18n/theme。
+
+### 9.7 配置与字号（取代 §2/V0 冲突项）
+- V0 同 commit 落地三键：`visual_engine`(legacy)、`card_status_header`(true)、
+  `show_reasoning`(false)；同步 `_DEFAULTS` + plugin.yaml + README + AGENTS + CHANGELOG +
+  `check_override` + 变异 inventory。
+- 每个键必须被生产路径读取：两取值驱动真实 `send_stream_frame`，断言 card JSON 不同；
+  未实现前显式设置非默认值必须 WARNING。
+- `normal` vs `normal_v2`：V0 真机探针后写回 token；探针前保持 `normal` + `apply_text_profile`；
+  结构化构建统一走 profile，不能写死 text_size 废掉配置。
+- §2 token 表补齐：border 状态色、standard_icon token/size/color、icon_position、
+  icon_expanded_angle、header vertical_align、tool 状态色、expanded 默认、loading 锚点、footer hr；
+  AP 无卡片级 header（§0.2 的「三家一致」表述修正为 CLS/FC 有）。
+
+### 9.8 Git / 冻结（取代 §8.2/§8.3 冲突项）
+- 从当前 main 开 `v0.7.1-visual` 分支，阶段 commit 只在分支；main 保持已验证 release。
+- 每阶段审计前：`git stash create`/`write-tree` 得 TREE + `git archive` 不可变导出；
+  manifest 记 plan sha、HEAD、TREE、dirty diff sha、解释器、参考源哈希、门禁日志 sha。
+- 审计在飞期间 TREE 变化 ⇒ 三份结论全部作废重跑；审计报告写自己看到的 TREE。
+- 里程碑：发布三审收敛 + 用户最终截图 + 全量门禁后 fast-forward main，再 push main +
+  annotated tag（带 tree sha / expected-kill / wall-clock）；push 前 `git log origin/main..main` 白名单。
+
+### 9.9 截图/重启矩阵（取代 §0.4/§6/§8.4 口径）
+| 窗口 | 阶段 | 用户看什么 | 张数 | 重启 |
+|---|---|---|---|---|
+| 1 | V1+V2 | ①流式工具行 ②同卡收尾结构不变 ③`/stop` 黄边 | 3 | 一次，显式 structured/header 开 |
+| 2 | V3 | ④展开嵌套轮+Result/Error ⑤false 同回合只留摘要；P3 探针眼睛并入 | 2 | 一次 |
+| 3 | V4 | ⑥≥20 步长回合 ⑦最终发布确认 + `/larkdeck status` | 2 | 一次，默认切 structured |
+
+每窗口前置 = 定向红 + 改动面分片绿；失败在同窗口修完重看，不新增窗口；看完恢复默认配置。
+
