@@ -75,10 +75,12 @@
 - 里程碑：发布三审收敛 + 用户最终截图 + 全量门禁后 fast-forward main，再 push main +
   annotated tag（带 tree sha / expected-kill / wall-clock）；push 前 `git log origin/main..main` 白名单。
 
-### 1.9 截图/重启矩阵（3 个用户确认窗口，7 张）
+### 1.9 截图/重启矩阵（4 个用户确认窗口，8 张）
+- 窗口 0（V0）：`normal` vs `normal_v2` 字号/间距探针卡 1 张；独立进程，不重启。
 - 窗口 1（V1+V2，一次重启 + structured/header 开）：①流式工具行 ②同卡收尾结构不变 ③`/stop` 黄边；
+  V1 自身 = 探针卡确认，首次 live 重启 = 本窗口，覆盖 V2。
 - 窗口 2（V3，一次重启 + show_reasoning=true）：④展开嵌套轮 + Result/Error ⑤false 同回合只留摘要；
-  P3 探针眼睛确认并入本窗口；
+  P3 探针眼睛确认并入本窗口。
 - 窗口 3（V4，默认切换后一次重启）：⑥≥20 步长回合 ⑦最终发布确认 + `/larkdeck status`。
 - 每窗口前置 = 定向红 + 改动面分片绿；失败在同窗口修完重看，不新增窗口；看完恢复默认配置。
 
@@ -91,8 +93,11 @@
 - **B 的非阻断残留**：R1 DEGRADE 车道 `show_reasoning=false` 断言；R2 心跳 finalize/stop 后
   零写入；R3 V0 字号探针并入窗口 0；R4 V1 点名「create 成功、后续写失败⇒记账保留」；
   R5 §9.2 措辞收紧为「顶层落点已证；嵌套容器待 P3」。以上已写入计划 §9。
-- **冻结配对**：`audit_target = dbf9c8a / tree f45592b4`（plan blob）；
+- **冻结配对**：v2.0 `audit_target = dbf9c8a / tree f45592b4`（plan blob）；
   `manifest_commit = dd0186d / tree a77ad0d4`（仅新增审计 manifest，按 §9.8 元数据豁免）。
+  v2.1 `audit_target = 84331b3 / tree 6f315c22`（plan blob SHA `c1e6cffb…`），
+  manifest = `plan-freeze-v2.1.json`；其后的 consensus 窗口口径/manifest/tool 变更属元数据 delta，
+  按 §9.8 豁免，不改 plan blob。
 - **C 的 C1–C10** 全部接受，B1/B2 最小修法已写入 §9.3/§9.4/§9.6。
 - 未验证：嵌套 collapsible_panel 客户端渲染、header/border partial 视觉、normal_v2 支持、
   standard_icon 逐项显示、batch add/delete schema、心跳真机限流/生命周期、result 真实大小与隐私、
