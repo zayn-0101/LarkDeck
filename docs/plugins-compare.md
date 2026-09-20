@@ -510,3 +510,154 @@
 > 车道覆盖 `hermes cron run` 与无常驻网关进程时的 `send_message`。真机 `hermes cron run`
 > 无网关投递（卡片渲染、失败回落、媒体混合）本次未验证，已在 README/CHANGELOG 如实标注。
 
+---
+
+## 九、血统盘点：每个继任者修了前任什么、自己独有什么（2026-09-20）
+
+> **起因**：用户在做「逐个装一遍」的实测，要求把这条线上每个插件**相对前任**的贡献盘清楚。
+> **与 §8 的分工**：§8 回答「**哪些能力值得我们抄**」；本节回答「**谁修了谁的什么、谁独有什么**」。
+> **取证纪律**（沿用本项目规矩）：每条标来源 —— 【各家自述】= 其 README/CHANGELOG/CUSTOMIZATIONS；
+> 【我复核】= 我读过它的代码；【实测】= 我们真的装上跑过（§9.4）。**不把第三方 README 当事实。**
+
+### 9.1 血统与机制
+
+```
+CLS   Cheerwhy/hermes-lark-streaming          【A 类：AST 注入改 Hermes 源码】
+ ├─ v0.7.0 分叉 ─► ALS   Aowen-Nowor/hermes-lark-streaming   【B 类：改成 monkeypatch】
+ │                   ├─► aiduPOP  monkey2jack/aiduPOP        【B 类】
+ │                   └─► HLS      BcubBo/lark-hls-v2         【B 类】
+ └─ v0.12.0 重写 ─► fry-cards  techysy/hermes-fry-cards      【A 类：仍用 AST 注入】
+
+HFC   baileyh8/hermes-feishu-streaming-card    【A 类 + sidecar】← 独立一支，不在这棵树上
+```
+
+| 关系 | 出处（原文，【各家自述】） |
+|---|---|
+| **HLS ← ALS** | HLS 的致谢：「本插件基于 Aowen-Nowor 的飞书流式卡片插件 fork 而来」 |
+| **aiduPOP ← ALS** | **ALS 自己的 README**：「PyPI 上的 `hermes-lark-streaming`（2.x，"aiduPOP"）不是我们发布的 —— 第三方衍生品，**forked from this repo** with an extra theme layer，却签了原作者的名字」 |
+| **ALS ← CLS** | ALS README 把 Cheerwhy 那个称为「**the upstream plugin**」，并警告两者**互不兼容**（装之前要先卸掉对方） |
+| **fry-cards ← CLS** | fry-cards README：「本项目基于 Cheerwhy/hermes-lark-streaming **v0.12.0** 独立开发」 |
+| **ALS 换了机制** | 【我复核】ALS/HLS **无 `patcher.py`、无 `.hermes_lark.bak` 写入** ⇒ 确认只 monkeypatch；CLS/fry-cards 两者都有 ⇒ 确认改源码。「ALS 基于 CLS」与「CLS 是 A 类、ALS 是 B 类」**同时成立**（分叉后换了取事件的方式） |
+
+### 9.2 逐个盘
+
+#### ① CLS —— 这条线的源头（能力基线）
+
+- **基线能力**【各家自述】：流式卡片（打字机）· 思考过程 · 工具调用面板 · CardKit v2.0 · 终态卡片（token/耗时/上下文）· 卡片样式配置 · 消息撤回保护 · 图片解析 · 中断处理 · cron 卡片推送 · 后台任务卡片推送 · 中英双语。
+- **历史贡献**【各家自述 CHANGELOG】：cron 卡片推送（修 #15）· `panel_expanded` 配置（修 #28）· 后台任务卡片推送（修 #38）。
+- 🔴 **【实测】在 0.21.1 上装不了**：`verify` 报 `Cannot find _handle_message_with_agent in run.py`，**退出码 1**。它盯的是**拆分前**的 `gateway/run.py`；上游 issue **#105**（2026-09-03 开）**至今未修**。
+
+#### ② ALS（← CLS v0.7.0 分叉）
+
+**修了前任什么**
+
+| 问题 | CLS 的状态 | ALS 的解法【各家自述】 |
+|---|---|---|
+| **元素溢出必撞 `300305`** | 无上限 ⇒ 长思考必溢出 | `max_tool_steps` / `max_reasoning_rounds`（默认 20/20）+ 折叠摘要行 + **封卡时递归统计全部元素、超 195（200−5）就裁最旧的面板子项**；**答案 / 页脚 / 错误面板永不裁** |
+| **升级要重装** | AST 改磁盘源码，`hermes update` 会覆盖 | **换成 monkeypatch**（不改磁盘）—— fork 后最大的一处改动 |
+
+**独有特色**：**统一面板**（推理+工具合并；Header 显示模型/轮次/工具数/耗时/上下文）· **`/aowen` 运维命令**（help/status/monitor/config reload，**直接回卡不经 AI**）· **渠道活性自检**（`record_inbound()` + monitor 显示「最近入站」，治 lark-oapi WS **静默断连** —— 它自述生产 2 个月断连 41 次**零日志**）。
+
+- 🔴 **【实测】网关启动死锁**（详见 §9.4）。机制【我复核】：`plugin/__init__.py:237` 在**注册时同步**调 `apply_patches()`，而它会 import Hermes 模块 ⇒ 与插件发现线程构成 **import 竞态**。
+  ⚠️ **诚实标注一处矛盾**：ALS v1.8.2 的 CHANGELOG **自称**「生产 patch 面 100% 兼容」0.21.1，并称做过「行为级验证 41 项检查」。**我们这台机器上实测撞上了死锁**。两者都是数据点 —— 说明这是**竞态**（取决于线程交错），不是确定性失败。
+  ⚠️ **旁证**：**aiduPOP 的 README 明写它修过这个 P0**（「修复 `model_tools` 模块级导入与后台插件发现线程之间的 `import_lock` 死锁……将 `apply_patches()` 改为异步守护线程延迟执行」）⇒ 这个坑在**下游被修过，上游没修**。
+
+#### ③ aiduPOP（← ALS v1.6.0）—— 文档最扎实的一个
+
+它有 `docs/CUSTOMIZATIONS.md`，**9 项定制，每项都写 Problem / Solution**【各家自述】：
+
+| 定制 | **它解决的根因**（原文摘） |
+|---|---|
+| **稳定模型显示**（v22.2） | `threading.local()` **不跨 `asyncio.create_task` 边界** ⇒ 任务 A 写的模型、任务 B 读到空 ⇒ 模型名闪烁/消失。改成模块级全局 dict `_model_cache` |
+| **Phase 2 回滚保护**（v22.3） | 飞书 `batch_update` 是**原子的** —— 删一个不存在的元素（`300314`）会**回滚整批** ⇒ 答案与面板**都建不出来**。改成精确跟踪 `existing_elements` + 命中时丢弃陈旧跟踪立即重试 |
+| **Adapter 三类身份解析**（v1.5.4） | 治「类身份可能不是我以为的那一个」 |
+| Clarify 卡片投递修复（v1.6.0） | — |
+| 面板位置 / 页脚移除 / 模型格式 | 答案在上、面板在下；模型移到面板 header |
+| 卡片失败自动重建 | API 失败时缓存失效 + 重试 |
+| **泡波样式** | 主题层 `cardkit/theme.py` + emoji 工具图标 |
+| **`aidupop studio`** ⭐ | **可视化配置工作坊**（本地 Web、1:1 卡仿真预览）—— **本清单里唯一别人都没有的** |
+| **Markdown 防爆引擎** | 表格超限无损压成 `Table N · Row M`；长文断层保护不腰斩代码块 |
+
+- ✅ **【实测】能跑**（补丁全绿、真的发出卡片）。
+- 缺陷【实测】：澄清链的 import 写错模块（实测 `ImportError`）⇒ **软锁态不可达**；且**不看提交结果** ⇒ 超时后补点会刷**假确认**（详见 §7.5）。
+
+#### ④ HLS（← ALS）
+
+**独有特色**【各家自述】—— **三项是这条线上别人都没有的**：
+
+| 特色 | 说明 |
+|---|---|
+| **动态台词系统** ⭐ | Fisher-Yates 洗牌队列（一轮不重复、同源间隔 ≥5）+ **场景检测**（greeting/thinking/battle/victory/defeat/seal）+ 台词库 JSON |
+| **群成员管理** ⭐ | 群消息自动入库 + 每 5 分钟飞书 API 同步 + **按群隔离** `(open_id, chat_id)` + open_id↔user_id 自动互绑 + 限流保护 |
+| **用户权限系统** ⭐ | `admin:<用户名>` 注入 `source.user_name`（AI 可直接识别权限）+ SQLite 缓存 + 三级优先级 `manual > auto > api` |
+| 嵌套折叠面板 / 批次分组 | 每轮推理独立面板；已完成推理按批次（默认 10 轮/组）合并以降低高度 |
+| 答案质量优化 | 流式阶段标题降级 + 未闭合 markdown 截断，消碎片闪烁 |
+
+- ⚠️ **未实测**。静态检查【我复核】：关键 patch 名字在 0.21.1 上**都在**（`add_reaction`/`delete_reaction` 缺，但有 `_add_reaction`/`_remove_reaction` 兜底）⇒ 大概率可跑。
+- ⚠️ **预判带同族缺陷**【我复核】：`interceptors/adapter.py:725` 是**与 ALS/aiduPOP 完全相同的导错 import** ⇒ 澄清软锁态大概率同样失效。
+
+#### ⑤ fry-cards（← CLS v0.12.0 独立重写）
+
+它 README 有**官方三层差异表**【各家自述】：
+
+**✨ 新增功能 5 项**（括号内是它写的 CLS 状态）
+
+| 功能 | 上游（CLS）状态 |
+|---|---|
+| **统一面板** | ❌ 推理面板独立散排，多轮对话卡片冗长 |
+| **上下文进度条** | ❌ 仅 footer 纯文本百分比，无开关（它做了 `text`/`bar`/`text_bar` 三模式） |
+| **推理面板上限** | ❌ 无限制，长思考必溢出 |
+| 模型名截断 | ❌ 全称显示（移动端换行） |
+| 模型别名 JSON | ❌ 无（`~/.hermes/model_aliases.json`，改完即生效） |
+
+**🔧 关键修复 4 项（都是 CLS 的坑）**
+
+- **`300305` 超限强制拆卡恢复** —— 不再永久卡「处理中」
+- **远程图片 URL 过滤** —— 规避 CardKit 的 `200570 invalid image keys`
+- **完成态 Duplicate ID 修复** —— 上游完成态用**固定的 `reasoning_text`** 会与流式阶段元素冲突 ⇒ **卡片卡 loading**；改成 `text_el_id` 全链路复用 + 带索引唯一 ID
+- **seal 失败清理 loading 图标**
+
+**🏛️ 内部稳定性重构**：session 生命周期统一入口（幂等）· FlushController 竞态防护 · `mark_failed(reason=)` 可追溯 · 单一回落决策点。
+
+- ✅ **【实测】能跑**。代价：**A 类**，改 **6 个 Hermes 源码文件**（406 行），`hermes update` 后要重跑 `install`（详见 `SWAP-RECORD.md`）。
+
+#### ⑥ HFC（baileyh8，**独立一支**）
+
+- **定位完全不同**：badge 写着 **Sidecar-only** —— 卡片在**独立常驻进程**渲染，Hermes 里只留最小 hook；17 个 patch group + 源码 hash 校验【各家自述】。
+- **它列的「解决什么问题」**【各家自述，适用场景表】：只看到最终文本看不到过程 · 运行中不断冒 `Working`/压缩提示/skill loading · **话题里卡片发了但 timeline 不更新** · 授权/选择/模型切换要手工回编号 · **Hermes 升级后不知道 hook 是否兼容**（`doctor --explain` 展示 `version_source`/`hook_strategy`/`compatibility`/anchors）。
+- **特色**：运行态 Header 实时显示当前工具动作 · 主答案/过程分区 · **`/model` 与 Hermes CLI 同源的两级选择** · `/hfc status|doctor|monitor` 运维卡 · 长内容按**结构边界**拆分 · **升级与服务安全**（认证 hello/heartbeat、strict repair 不自动重启、`lark-oapi` 版本体检）· **V4.2 起裸 `/update` 维护确认卡**（确认后自动跑官方 `hermes update` 并恢复 hook）。
+- **规模**：676★、**取证时当天仍在提交**、~48k LOC。
+- **代价**：**最重** —— 常驻进程 + 服务管理 + 独立配置文件 + 完整性账本。**用户暂不测。**
+
+### 9.3 一页总结
+
+| 插件 | 路线 | 修了前任什么 | 独有特色 | 实测 |
+|---|---|---|---|---|
+| **CLS** | A | —（源头） | cron 卡片、后台任务卡片 | ❌ **装不上** |
+| **ALS** | B | 元素溢出必撞 300305；升级要重装 | 统一面板、`/aowen` 命令、渠道活性自检 | ❌ **网关卡死** |
+| **aiduPOP** | B | 模型名闪烁（`threading.local` 跨 task 失效）、300314 整批回滚、类身份漂移 | **studio 可视化配置**、泡波主题、Markdown 防爆 | ✅ 能跑 |
+| **HLS** | B | 继承 ALS | **动态台词**、**群成员管理**、**权限系统** | ⚠️ 未测 |
+| **fry-cards** | A | CLS 的推理面板散排、完成态 Duplicate ID 卡 loading、300305 不恢复 | 上下文进度条三模式、模型别名 | ✅ 能跑 |
+| **HFC** | A+sidecar | 流式漏字/乱序、话题卡不更新、**升级后 hook 兼容不确定** | sidecar 架构、升级维护确认卡、运维卡 | ⚠️ 暂不测 |
+| **larkdeck**（我们） | **C** | —（不在这棵树上） | 官方契约接入、267+ 条变异门禁 | ✅ 现役 |
+
+### 9.4 我们自己的装机实测记录（本节证据强度的来源）
+
+| 插件 | 装过 | 结果 | 证据 |
+|---|---|---|---|
+| CLS | 试装（pip + verify） | ❌ 拒绝 | `verify` 退出码 1；22 个分支全无模块化路径 |
+| **ALS** | **装了**（`hermes plugins install`） | ❌ **网关启动死锁** | 进程 CPU 0%、零日志、`gateway.pid` 未写；`sample` 抓到主线程 `rlock_acquire`；飞书断连约 3 分钟；已回滚 |
+| fry-cards | 装了 | ✅ 工作 | 16 hook installed；6 文件 406 行；卸载后**逐字节还原**（sha256 对账 7/7） |
+| aiduPOP | 装了 | ✅ 工作 | 补丁全绿 + 真发出卡片 |
+| HLS | 未装 | — | 静态检查通过 |
+| HFC | 未装 | — | — |
+| larkdeck | 现役 | ✅ | 启动自检「钩子 8/8 · feishu 平台已由 larkdeck 接管」 |
+
+完整时间线与回滚路径：`~/.larkdeck-scratch/fry-swap/SWAP-RECORD.md`（**不在仓库里** —— 含本机路径与真实 ID）。
+
+### 9.5 三条值得记住的规律
+
+1. **每个继任者都在修「上游撞飞书硬限制」的坑** —— `300305`（元素 200 上限）、`300314`（原子回滚）、完成态 Duplicate ID、`200570`（远程图片 URL）。**这是这条路线的共同战场**，也是它们相对彼此的真正增量所在。
+2. **唯一没人解决的是澄清链** —— ALS 那一支（**ALS / aiduPOP / HLS 三个**）带**同一个导错的 import**（`from lark_oapi.api.cardkit.v1 import P2CardActionTriggerResponse, CallBackCard`，实测 `ImportError`）。aiduPOP 修了死锁、修了模型闪烁、修了原子回滚，**却没修它**。
+3. **往上追溯源版本是错的方向** —— 祖先在 0.21.1 上全都不能用（CLS 装不上、ALS 死锁），0.21 支持都在**下游的 fork / 重写**里（fry-cards、aiduPOP）。
+
