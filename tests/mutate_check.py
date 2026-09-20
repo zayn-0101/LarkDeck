@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -2184,6 +2185,116 @@ MUTATIONS = [
      '            _log_standalone_client_fallback_once()\n'
      '            return await _fallback("larkdeck standalone SDK client unavailable")',
      "test_units"),
+    # v0.7.1 V0：三配置键必须被生产读取且未实现前告警；token 表必须被 check_cardview 锁住。
+    ("V0-1-visual_engine=structured 告警被静默（配置被吞）", "core/adapter.py",
+     '    if raw == "structured":\n'
+     '        _warn_visual_once("visual_engine-structured",',
+     '    if False:\n'
+     '        _warn_visual_once("visual_engine-structured",',
+     "test_units"),
+    ("V0-2-show_reasoning=true 告警被静默（配置被吞）", "core/adapter.py",
+     '    if enabled:\n'
+     '        _warn_visual_once("show_reasoning",',
+     '    if False:\n'
+     '        _warn_visual_once("show_reasoning",',
+     "test_units"),
+    ("V0-3-card_status_header=false 告警被静默（配置被吞）", "core/adapter.py",
+     '    if not enabled:\n'
+     '        _warn_visual_once("card_status_header",',
+     '    if False:\n'
+     '        _warn_visual_once("card_status_header",',
+     "test_units"),
+    ("V0-4-token 表 panel_radius 漂移（check_cardview 必须红）",
+     "docs/audits/v0.7.1-visual/visual-tokens.json",
+     '"panel_radius": "5px"',
+     '"panel_radius": "8px"',
+     "check_cardview"),
+    ("V0-5-删掉 _ld_show_reasoning 生产调用点（配置静默）", "core/adapter.py",
+     '        _ld_show_reasoning()  # V0：生产读取配置；V3 前两种取值观感相同并告警',
+     '        pass  # V0-5 mutated',
+     "test_units"),
+    ("V0-6-删掉 _ld_card_status_header_enabled 生产调用点（配置静默）", "core/adapter.py",
+     '        _ld_card_status_header_enabled()  # V0：生产读取配置；V2 前无观感差异',
+     '        pass  # V0-6 mutated',
+     "test_units"),
+    ("V0-7-删掉 _ld_visual_engine 生产调用点（配置静默）", "core/adapter.py",
+     '        _ld_visual_engine()  # V0：生产读取配置；structured 未实现前按 legacy 运行并告警',
+     '        pass  # V0-7 mutated',
+     "test_units"),
+    ("V0-8-read 图标 token 漂移（check_cardview 必须红）",
+     "docs/audits/v0.7.1-visual/visual-tokens.json",
+     '"read": "file-link-text_outlined"',
+     '"read": "folder_outlined"',
+     "check_cardview"),
+    ("V0-9-status stopped 标题 emoji 漂移（check_cardview 必须红）",
+     "docs/audits/v0.7.1-visual/visual-tokens.json",
+     '"title_zh": "⛔ 已停止"',
+     '"title_zh": "已停止"',
+     "check_cardview"),
+    ("V0-10-/larkdeck config 的 pending_visual 注记被删（配置静默）",
+     "core/adapter.py",
+     '        if key in _VISUAL_TRANSITION_KEYS:\n'
+     '            note = (note + " " + _i18n.t("config.pending_visual")).strip()',
+     '        if False:\n'
+     '            note = (note + " " + _i18n.t("config.pending_visual")).strip()',
+     "test_units"),
+    ("V0-11-生产 tool 状态色 green 被改 blue（check_cardview 必须红）",
+     "core/cards.py",
+     '    "ok": ("Succeeded", "green"),',
+     '    "ok": ("Succeeded", "blue"),',
+     "check_cardview"),
+    ("V0-12-生产 tool 状态映射 ok 键被删（check_cardview 必须断言红）",
+     "core/cards.py",
+     '    "ok": ("Succeeded", "green"),\n',
+     '',
+     "check_cardview"),
+    ("V0-13-token 表 element_anchors.answer 键被删（check_cardview 必须断言红）",
+     "docs/audits/v0.7.1-visual/visual-tokens.json",
+     '    "answer": "answer",\n',
+     '',
+     "check_cardview"),
+    ("V0-14-panel_header.format 漂移（check_cardview 必须红）",
+     "docs/audits/v0.7.1-visual/visual-tokens.json",
+     '"format": "💭 思考 {elapsed}s · 🛠️ 工具执行 · {n} 步"',
+     '"format": "💭 思考 {elapsed}s · 🛠️ 工具执行 · {n} 项"',
+     "check_cardview"),
+    ("V0-15-supports_native_streaming 里的 visual_engine 生产调用点被删（配置静默）",
+     "core/adapter.py",
+     '        _ld_visual_engine()  # V0：公共探测入口也读一次，覆盖 native 关闭/早退路径',
+     '        pass  # V0-15 mutated',
+     "test_units"),
+    ("V0-16-edit_message 里的 header 生产调用点被删（配置静默）",
+     "core/adapter.py",
+     '        回答被重发一遍。判据是「这份文本是不是完整文本」，不是「这是哪条调用路径」。\n'
+     '        """\n'
+     '        _ld_visual_engine()\n'
+     '        _ld_card_status_header_enabled()\n'
+     '        _ld_show_reasoning()',
+     '        回答被重发一遍。判据是「这份文本是不是完整文本」，不是「这是哪条调用路径」。\n'
+     '        """\n'
+     '        _ld_visual_engine()\n'
+     '        pass  # V0-16 mutated\n'
+     '        _ld_show_reasoning()',
+     "test_units"),
+    ("V0-17-stop 重绘里的 visual_engine 生产调用点被删（配置静默）",
+     "core/adapter.py",
+     '        ）—— 用户在「掉 native / 被 /stop / 关掉 cards」的回合里看不到任何卫生。\n'
+     '        """\n'
+     '        _ld_visual_engine()\n'
+     '        _ld_card_status_header_enabled()\n'
+     '        _ld_show_reasoning()',
+     '        ）—— 用户在「掉 native / 被 /stop / 关掉 cards」的回合里看不到任何卫生。\n'
+     '        """\n'
+     '        pass  # V0-17 mutated\n'
+     '        _ld_card_status_header_enabled()\n'
+     '        _ld_show_reasoning()',
+     "test_units"),
+
+
+
+
+
+
 ]
 
 #: **对照项**：行为等价的改动（合法 YAML 变体等），期望四门禁**全绿**。
@@ -2252,6 +2363,7 @@ _PASS_MARKERS = {
     "check_override.py": "OVERRIDE OK",
     "check_hooks.py": "HOOKS OK",
     "check_clarify_e2e.py": "CLARIFY E2E OK",
+    "check_cardview.py": "CARDVIEW OK",
 }
 
 #: 每个门禁**失败时**会打的标记（断言失败/测试报错）。缺了它就说明门禁没跑到断言那一步
@@ -2274,6 +2386,7 @@ _FAIL_MARKERS = {
     # 实测复现（变异 `R8-1`，它只被这个门禁抓住）：改标记之前那一行是
     # `💥 只有崩溃 …算判别力证据`，改之后是 `🔴 断言失败 … 断言红=['check_clarify_e2e.py']`。
     "check_clarify_e2e.py": ("FAIL  ", "FAILED:"),
+    "check_cardview.py": ("AssertionError",),
 }
 
 
@@ -2325,7 +2438,7 @@ def _classify(script: str, proc: "subprocess.CompletedProcess") -> str:
 def _run_gates(repo: Path) -> "dict[str, tuple[int, str]]":
     out = {}
     for script in ("test_units.py", "check_override.py", "check_hooks.py",
-                   "check_clarify_e2e.py"):
+                   "check_clarify_e2e.py", "check_cardview.py"):
         proc = subprocess.run([sys.executable, str(repo / "tests" / script)],
                               capture_output=True, text=True, cwd=str(repo.parent),
                               env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
@@ -2458,6 +2571,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("-k", default="", help="只跑名字里含该子串的变异")
     ap.add_argument("--keep", action="store_true", help="保留临时目录（排查用）")
+    ap.add_argument("--shard", default="", help="分片：i/n（1-based），用于后台并行")
+    ap.add_argument("--list", action="store_true", dest="list_only",
+                    help="只列出本分片/本 -k 选中的变异，不跑门禁")
+    ap.add_argument("--inventory", default="",
+                    help="把选中变异的机器可读 inventory 写到该 JSON 路径后退出")
     ap.add_argument("--preflight", action="store_true",
                     help="只做纯文本锚点对账（0.1 秒级）后就退出，不跑任何门禁、"
                          "也不做基线自校验；⚠️ 不受 -k 影响（有意：它还负责补 -k 子集"
@@ -2470,6 +2588,62 @@ def main() -> int:
 
     picked = [m for m in MUTATIONS if args.k in m[0]]
     controls = [m for m in CONTROLS if args.k in m[0]]
+
+    # ⚠️ `-k` 未命中必须在 shard/inventory/list 之前拦截，否则空 inventory 会被误读为覆盖完成。
+    if args.k and not picked:
+        print(f"❌ `-k {args.k!r}` 没有命中任何变异（只命中对照 {len(controls)} 条）—— "
+              "对照不能替代变异证据，不给「全绿」结论。")
+        print(f"   （清单里共 {len(MUTATIONS)} 条变异 + {len(CONTROLS)} 条对照；"
+              f"用 `--preflight` 可以看全部名字）")
+        return 2
+    if not args.k and not picked and not controls:
+        print("❌ 清单是空的 —— 没有可跑的变异，不给结论。")
+        return 2
+
+    # v0.7.1 V0：分片（i/n）只影响选择，不改每条的执行方式。
+    if args.shard:
+        try:
+            shard_i, shard_n = (int(x) for x in args.shard.split("/", 1))
+            if shard_i < 1 or shard_n < 1 or shard_i > shard_n:
+                raise ValueError
+        except ValueError:
+            print(f"❌ --shard 需要 i/n（1-based，i<=n），得到 {args.shard!r}")
+            return 2
+        picked = [m for idx, m in enumerate(picked) if idx % shard_n == shard_i - 1]
+        controls = [m for idx, m in enumerate(controls) if idx % shard_n == shard_i - 1]
+        print(f"分片 {shard_i}/{shard_n}：选中 {len(picked)} 条变异 + {len(controls)} 条对照")
+        if not picked and not controls:
+            print("ℹ️ 本分片为空（合法，不是失败）")
+            return 0
+
+    if args.inventory:
+        import hashlib
+        inv = []
+        control_set = set(id(m) for m in CONTROLS)
+        for entry in picked + controls:
+            name, rel, old, _new, expect = entry
+            inv.append({"name": name, "file": rel, "gate": expect,
+                        "anchor_sha256": hashlib.sha256(old.encode("utf-8")).hexdigest(),
+                        "kind": "control" if id(entry) in control_set else "mutation"})
+        payload = {
+            "filter": args.k,
+            "shard": args.shard or "all",
+            "total_mutations": len(MUTATIONS),
+            "total_controls": len(CONTROLS),
+            "selected_mutations": len(picked),
+            "selected_controls": len(controls),
+            "entries": inv,
+        }
+        Path(args.inventory).write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                                        encoding="utf-8")
+        print(f"inventory written: {args.inventory}（{len(inv)} 条，分片 {payload['shard']}）")
+        return 0
+
+    if args.list_only:
+        for name, rel, _old, _new, expect in picked + controls:
+            print(f"{name}\t{rel}\t{expect}")
+        print(f"共 {len(picked)} 条变异 + {len(controls)} 条对照")
+        return 0
 
     # ⚠️ **`-k` 一条都没命中 ⇒ 不许报绿**（审计 D7，既有缺陷）：以前会打印
     #    「全部 0 条变异都被门禁抓住 ✅」+ `exit 0` —— 一个**拼错的 `-k`**（`-k ZZZ`）与

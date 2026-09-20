@@ -362,7 +362,7 @@ BODY_TEXT_SIZE = "normal"       # 我方现有 token；CLS/FC 用 normal_v2，V0
   code=0 只作必要条件。P3 失败 → 先退 B（AP 式分区标题行），必须用户签字确认观感降级。
 
 ### 9.6 变异/门禁（取代 §8.5 的 ≤20 手挑）
-- 开发期 `tests/run_fast.py`（3.65s）只作快速回路，不替代阶段门禁。
+- 开发期 `tests/run_fast.py`（默认约 7.5s；`--full` 约 30s）只作快速回路，不替代阶段门禁。
 - 每条新增/修改断言必须有一条 expected-kill，定向 `mutate_check -k` 跑出 🔴；锚点失效/崩溃不算红。
 - `check_cardview` 必须接入 `mutate_check._run_gates`，含 content 逐字断言 + 子树 JSON +
   每字段至少一次非空；只做结构投影对内容恒真，禁止。

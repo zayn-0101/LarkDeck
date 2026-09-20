@@ -130,6 +130,11 @@ else:
         got_style = ld_mod._cfg_raw("context_style")
         got_cards = ld_mod._cfg("cards")
         print(f"settings bridge: clarify_cards={got_clarify!r} context_style={got_style!r} cards={got_cards!r}")
+        for _key, _expected in (("visual_engine", "legacy"), ("card_status_header", True),
+                                ("show_reasoning", False)):
+            if ld_mod._DEFAULTS.get(_key, object()) != _expected:
+                problems.append(
+                    f"v0.7.1 视觉键默认值错误：{_key}={ld_mod._DEFAULTS.get(_key)!r}（期望 {_expected!r}）")
         if got_clarify is not False:
             problems.append(f"ctx settings 未生效：clarify_cards={got_clarify!r}（期望 False）")
         if got_style != "bar":

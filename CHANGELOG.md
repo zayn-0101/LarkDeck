@@ -13,6 +13,15 @@
 > 卡片投递）。**新增 `theme` 默认值，属于用户可见默认观感变化**；配置键无改名。
 > 已知待验：`text_profile` / `ap_lite` 真机视觉、无网关 cron 真机投递。
 
+
+## [Unreleased] - v0.7.1 视觉层重构
+
+### 变更（V0 登记）
+- 新增过渡配置键 `visual_engine`（默认 `legacy`）、`card_status_header`（默认 `true`）、
+  `show_reasoning`（默认 `false`）；V1–V4 逐步生效，未实现前显式设置非默认值会留 WARNING。
+- 规划与三方审计结论：`docs/plan-v0.7.1-visual.md`、`docs/audits/v0.7.1-visual/`。
+- 开发期快速门禁：`tests/run_fast.py`（默认约 7.5s；`--full` 约 30s）；阶段改动面变异后台分片。
+
 ## [0.7.0] - 2026-09-18
 
 ### 变更

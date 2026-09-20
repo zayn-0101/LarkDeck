@@ -36,6 +36,7 @@ FULL = [
     ("check_override", [_PY, str(_HERE / "check_override.py")], 120.0),
     ("check_hooks", [_PY, str(_HERE / "check_hooks.py")], 180.0),
     ("check_clarify_e2e", [_PY, str(_HERE / "check_clarify_e2e.py")], 120.0),
+    ("check_cardview", [_PY, str(_HERE / "check_cardview.py")], 60.0),
 ]
 
 
@@ -43,7 +44,8 @@ def _run_one(name: str, cmd: list[str], timeout: float) -> dict:
     start = time.monotonic()
     try:
         proc = subprocess.run(cmd, cwd=str(_REPO), stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT, text=True, timeout=timeout)
+                              stderr=subprocess.STDOUT, text=True, timeout=timeout,
+                              env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
         code = proc.returncode
         out = proc.stdout or ""
     except subprocess.TimeoutExpired as exc:

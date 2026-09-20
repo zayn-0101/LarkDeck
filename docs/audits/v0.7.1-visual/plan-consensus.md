@@ -48,7 +48,7 @@
 - P3 失败 → 先退 B（AP 式分区标题行），必须用户签字确认观感降级，release notes 不得宣称 A 已完成。
 
 ### 1.6 变异/门禁（满足反假绿且开发期不等几小时）
-- 开发期 `tests/run_fast.py`（3.65s）只作快速回路，不替代阶段门禁。
+- 开发期 `tests/run_fast.py`（默认约 7.5s；`--full` 约 30s）只作快速回路，不替代阶段门禁。
 - 每条新增/修改断言必须有一条 expected-kill，定向 `mutate_check -k` 跑出 🔴；
   锚点失效/崩溃不算红。
 - `check_cardview` 必须接入 `mutate_check._run_gates`，且含 content 逐字断言 + 子树 JSON +
@@ -99,6 +99,15 @@
   manifest = `plan-freeze-v2.1.json`；其后的 consensus 窗口口径/manifest/tool 变更属元数据 delta，
   按 §9.8 豁免，不改 plan blob。
 - **C 的 C1–C10** 全部接受，B1/B2 最小修法已写入 §9.3/§9.4/§9.6。
+- **V0 冻结配对（v2.2）**：`audit_target = d397252482c0c6b82a472661739bb937aab0c5ce`（V0 代码+文档），
+  plan 仅修正 `run_fast` 实测耗时数字（默认 ~7.5s / --full ~30s），新 plan SHA
+  `cee0715305149f76b17a2f841a57a3a8197817eac2932dc998fd4bbdb00d2477`；
+  `manifest_commit` 在 V0 commit 后补记。旧 v2.1 plan 配对归档不覆盖。
+- **V1 必须迁移 token 到生产常量**：V0-4/8/9/14 的 expected-kill 目前打在 `visual-tokens.json`
+  文档上；V1 结构化构建器落地时必须让生产代码引用同一常量表，check_cardview 改为从生产断言，
+  否则这些是 doc-only kill（A2 F3）。
+- **V0-5/6/7/15/16/17 是 expiring 锚点**：它们靠“未实现告警”路径存活；V2/V3 移除告警后必须改挂
+  “两取值驱动真实 send_stream_frame，断言 card JSON 不同”的断言（A2 F4）。
 - 未验证：嵌套 collapsible_panel 客户端渲染、header/border partial 视觉、normal_v2 支持、
   standard_icon 逐项显示、batch add/delete schema、心跳真机限流/生命周期、result 真实大小与隐私、
   detached 网关重启/回滚、check_cardview 尚未实现、tree manifest 尚未建立。

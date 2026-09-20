@@ -204,6 +204,8 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "config.source_default": {ZH: "默认值", EN: "default"},
     "config.needs_reload": {ZH: "⚠️ 官方文件已改，本进程仍是旧值，执行 `config reload` 生效",
                             EN: "⚠️ official file changed; this process still uses the old value — run `config reload`"},
+    "config.pending_visual": {ZH: "⏳ 已登记，V1–V4 才生效（当前观感不变）",
+                              EN: "⏳ registered; effective in V1–V4 (current rendering unchanged)"},
     "config.read_errors": {ZH: "⚠️ 以下键读取失败（未参与判断）：{keys}",
                            EN: "⚠️ failed to read these keys (not used for judgement): {keys}"},
     "config.none":        {ZH: "无", EN: "none"},

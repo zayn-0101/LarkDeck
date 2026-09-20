@@ -766,6 +766,13 @@ _DEFAULTS: Dict[str, Any] = {
     # v0.7.0：own（默认，正文只认插件 on_stream_delta(kind="text") 累积；core 帧只作
     # 刷新信号 / finalize 兜底）。legacy 只保留给旧用例/回退，P2b 归档后删除。
     "body_source": "own",
+    # v0.7.1 视觉层过渡键（V0 只登记与告警，行为在 V1–V4 逐步生效）：
+    # legacy | structured；structured 引擎尚未实现时按 legacy 运行并留 WARNING。
+    "visual_engine": "legacy",
+    # 卡片顶部状态条显隐；V2 实现前两种取值观感相同并留 WARNING。
+    "card_status_header": True,
+    # 是否展示推理正文；V3 实现前两种取值观感相同并留 WARNING（摘要行始终保留）。
+    "show_reasoning": False,
     "footer": True,           # 页脚：状态 → 耗时 → 模型 → 上下文用量（+ 本卡短码）
     "show_model": True,       # 页脚里显示模型名（面板标题只放思考/工具摘要）
     "context_style": "text",  # 上下文用量样式：text（默认）| bar | both
@@ -789,6 +796,10 @@ _DEFAULTS: Dict[str, Any] = {
     "context_max_override": 0,  # 非 0 时钉住上下文上限（自动探测不准时兜底）
 }
 _CONFIG: Dict[str, Any] = dict(_DEFAULTS)
+
+#: V0 已登记、V1–V4 才生效的视觉键；`/larkdeck config` 要给它们标“未生效”注记。
+_VISUAL_TRANSITION_KEYS = frozenset({"visual_engine", "card_status_header", "show_reasoning"})
+
 
 #: 启动自检结论，供日志 / doctor 查看。
 SELFCHECK: Dict[str, Any] = {"ok": None, "detail": "not run"}
@@ -914,6 +925,50 @@ def _cfg(key: str) -> bool:
     if isinstance(value, str):
         return value.strip().lower() not in ("0", "false", "no", "off", "")
     return bool(value)
+
+
+#: v0.7.1 V0：未实现配置键的告警限流（5 分钟一条，避免刷日志）。
+_VISUAL_WARN_AT: Dict[str, float] = {}
+
+
+def _warn_visual_once(key: str, message: str) -> None:
+    now = time.monotonic()
+    if now - float(_VISUAL_WARN_AT.get(key) or 0.0) < 300.0:
+        return
+    _VISUAL_WARN_AT[key] = now
+    logger.warning("[larkdeck] %s", message)
+
+
+def _ld_visual_engine() -> str:
+    """生产读取 ``visual_engine``；structured 未实现前按 legacy 运行并告警。"""
+    raw = str(_cfg_raw("visual_engine") or "legacy").strip().lower()
+    if raw not in ("legacy", "structured"):
+        _warn_visual_once("visual_engine-invalid",
+                          f"visual_engine={raw!r} 非法，按 legacy 运行")
+        return "legacy"
+    if raw == "structured":
+        _warn_visual_once("visual_engine-structured",
+                          "visual_engine=structured 尚未实现（V1 才落地），当前按 legacy 运行")
+        return "legacy"
+    return "legacy"
+
+
+def _ld_card_status_header_enabled() -> bool:
+    """生产读取 ``card_status_header``；V2 实现前两种取值观感相同，非默认值告警。"""
+    enabled = _cfg("card_status_header")
+    if not enabled:
+        _warn_visual_once("card_status_header",
+                          "card_status_header=false 已记录；状态条 V2 才落地，当前观感不变")
+    return enabled
+
+
+def _ld_show_reasoning() -> bool:
+    """生产读取 ``show_reasoning``；V3 实现前两种取值观感相同，非默认值告警。"""
+    enabled = _cfg("show_reasoning")
+    if enabled:
+        _warn_visual_once("show_reasoning",
+                          "show_reasoning=true 已记录；推理显隐 V3 才落地，当前观感不变")
+    return enabled
 
 
 def _as_int(value: Any) -> Optional[int]:
@@ -2104,6 +2159,7 @@ class LarkDeckMixin:
 
         任何异常都退回空串（面板是装饰，绝不因为它把帧搞失败）。
         """
+        _ld_show_reasoning()  # V0：生产读取配置；V3 前两种取值观感相同并告警
         try:
             if not _cfg("unified_panel"):
                 # 与 `_ld_panel_markdown` 同一条门禁（关掉面板的人不该在 cardkit 下还看到面板）
@@ -2201,6 +2257,7 @@ class LarkDeckMixin:
         ``reply_card`` 会自然跳过这个元素。与页脚同理：**任何情况下不抛异常**，
         面板是装饰，不能因为它把整张卡片搞坏。
         """
+        _ld_show_reasoning()  # V0：patch/普通卡入口也读一次，覆盖 cardkit 之外的路径
         try:
             if not _cfg("unified_panel"):
                 return None
@@ -2247,6 +2304,7 @@ class LarkDeckMixin:
         fail-open 链回落到官方分块（退化成多条纯文本，但**答案完整**）。
         静默截断会让用户以为模型就说了这么多。
         """
+        _ld_card_status_header_enabled()  # V0：生产读取配置；V2 前无观感差异
         card, tier = _cards.fit_reply_card(
             content, streaming=streaming, panel=panel, footer=footer,
             # 客户端打字机（只对流式帧有意义）：0 = 不带这个字段
@@ -2340,6 +2398,9 @@ class LarkDeckMixin:
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None, **kwargs: Any):
         """把回复渲染成卡片；任何一步出问题都回落到内置的纯文本发送。"""
+        _ld_visual_engine()
+        _ld_card_status_header_enabled()
+        _ld_show_reasoning()
         # v0.7.0 P1：native seed 失败后的短窗口里，core 的 `_first_send` 传进来的
         # `content` 可能是 `_compose_frame_content()` 合成文本（含 terminal 命令/args）。
         # own 模式在这个窗口内只允许渲染 own 累积；空则渲染干净的流式占位卡，绝不把
@@ -2391,6 +2452,9 @@ class LarkDeckMixin:
         发出来的字节一致（前缀链纪律，见 `_ld_stream_frame`），改一个字符就会让用户看到
         回答被重发一遍。判据是「这份文本是不是完整文本」，不是「这是哪条调用路径」。
         """
+        _ld_visual_engine()
+        _ld_card_status_header_enabled()
+        _ld_show_reasoning()
         state = self._ld_known(message_id)
         stream_state = (self._ld_stream_for_message(message_id)
                         if self._ld_body_source() == "own" else None)
@@ -2454,6 +2518,7 @@ class LarkDeckMixin:
     def supports_native_streaming(self, chat_type: Optional[str] = None,
                                   metadata: Optional[Dict[str, Any]] = None) -> bool:
         """保守探测：配置关了卡片 / native / 没有 SDK 客户端时返回 False，核心走老路径。"""
+        _ld_visual_engine()  # V0：公共探测入口也读一次，覆盖 native 关闭/早退路径
         return (bool(_cfg("cards")) and bool(_cfg("native_streaming"))
                 and bool(getattr(self, "_client", None)))
 
@@ -2609,6 +2674,7 @@ class LarkDeckMixin:
         决定页脚元素的有无，其实一个字节都没影响。形参与它唯一的生产者
         `_ld_seed_footer_text()` 都已删除，判据只剩这一处。
         """
+        _ld_card_status_header_enabled()  # V0：cardkit 建实体入口也读一次
         reqs = self._ld_ck_requests()
         if reqs is None:
             return None                      # 没有 SDK ⇒ fail-open 回落（不猜、不抛）
@@ -3203,6 +3269,7 @@ class LarkDeckMixin:
         chat = str(chat_id or "").strip()
         if not chat or not getattr(self, "_client", None):
             return self._ld_stream_fail("没有 chat / SDK 客户端")
+        _ld_visual_engine()  # V0：生产读取配置；structured 未实现前按 legacy 运行并告警
         key = f"{chat}:{turn_id}" if turn_id else chat
         state = self._ld_stream_get(key)
         now = time.monotonic()
@@ -3878,6 +3945,9 @@ class LarkDeckMixin:
 
         ）—— 用户在「掉 native / 被 /stop / 关掉 cards」的回合里看不到任何卫生。
         """
+        _ld_visual_engine()
+        _ld_card_status_header_enabled()
+        _ld_show_reasoning()
         try:
             # 面板是状态色**唯一**的载体，所以这里**强制**给一个 stopped 面板：
             # 只靠 `_ld_panel` 会踩到一个实测过的坑 —— 该回合还没有任何过程数据时
@@ -4837,6 +4907,8 @@ def _ld_config_show() -> str:
         if (key in official and not env_active
                 and _cfg_canonical(value) != _cfg_canonical(official[key])):
             note = " " + _i18n.t("config.needs_reload")
+        if key in _VISUAL_TRANSITION_KEYS:
+            note = (note + " " + _i18n.t("config.pending_visual")).strip()
         lines.append(_i18n.t("config.item", name=key, value=_cfg_text(value),
                              source=source, note=note))
     if read_errors:

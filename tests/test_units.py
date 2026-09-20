@@ -11237,6 +11237,77 @@ def test_own_seed_before_first_delta_pins_generation_and_renders_own():
 
 
 
+def test_v0_visual_config_keys_are_read_with_warning():
+    """V0：三键必须被生产读取；未实现前非默认值要留 WARNING（不能静默吞配置）。"""
+    adapter._VISUAL_WARN_AT.clear()
+    try:
+        adapter.configure(visual_engine="structured", card_status_header=False,
+                          show_reasoning=True)
+        with _LogCapture("larkdeck") as records:
+            assert adapter._ld_visual_engine() == "legacy"
+            assert adapter._ld_card_status_header_enabled() is False
+            assert adapter._ld_show_reasoning() is True
+        text = "\n".join(r.getMessage() for r in records)
+        assert "visual_engine=structured" in text, text
+        assert "card_status_header=false" in text, text
+        assert "show_reasoning=true" in text, text
+
+        config_text = adapter._ld_config_show()
+        for key in ("visual_engine", "card_status_header", "show_reasoning"):
+            line = next((ln for ln in config_text.splitlines() if f"· {key} =" in ln), "")
+            assert "已登记，V1–V4 才生效" in line, f"{key}: {line!r}\n{config_text}"
+
+        raw = _make()
+        # 生产调用点必须真的读：删掉任一调用点，对应 capture 不再出现 WARNING。
+        adapter._VISUAL_WARN_AT.clear()
+        with _LogCapture("larkdeck") as panel_records:
+            raw._ld_panel_parts("oc_v0")
+        panel_text = "\n".join(r.getMessage() for r in panel_records)
+        assert "show_reasoning=true" in panel_text, panel_text
+
+        adapter._VISUAL_WARN_AT.clear()
+        with _LogCapture("larkdeck") as build_records:
+            raw._ld_build_card("x", streaming=False, panel=None, footer=None)
+        build_text = "\n".join(r.getMessage() for r in build_records)
+        assert "card_status_header=false" in build_text, build_text
+
+        adapter._VISUAL_WARN_AT.clear()
+        with _LogCapture("larkdeck") as frame_records:
+            assert _run(raw.send_stream_frame("", chat_id="oc_v0", turn_id="t-v0"))
+        frame_text = "\n".join(r.getMessage() for r in frame_records)
+        assert "visual_engine=structured" in frame_text, frame_text
+
+        adapter._VISUAL_WARN_AT.clear()
+        with _LogCapture("larkdeck") as support_records:
+            raw.supports_native_streaming()
+        support_text = "\n".join(r.getMessage() for r in support_records)
+        assert "visual_engine=structured" in support_text, support_text
+
+        adapter._VISUAL_WARN_AT.clear()
+        with _LogCapture("larkdeck") as send_records:
+            _run(raw.send("oc_v0", "x"))
+        send_text = "\n".join(r.getMessage() for r in send_records)
+        assert "show_reasoning=true" in send_text, send_text
+
+        adapter._VISUAL_WARN_AT.clear()
+        with _LogCapture("larkdeck") as edit_records:
+            _run(raw.edit_message("oc_v0", "om_v0", "x"))
+        edit_text = "\n".join(r.getMessage() for r in edit_records)
+        assert "card_status_header=false" in edit_text, edit_text
+
+        adapter._VISUAL_WARN_AT.clear()
+        with _LogCapture("larkdeck") as stop_records:
+            _run(raw._ld_redraw_one_stopped("oc_v0", "om_v0", "x", None))
+        stop_text = "\n".join(r.getMessage() for r in stop_records)
+        assert "visual_engine=structured" in stop_text, stop_text
+    finally:
+        adapter.configure(visual_engine="legacy", card_status_header=True,
+                          show_reasoning=False)
+        adapter._VISUAL_WARN_AT.clear()
+        panel.reset()
+
+
+
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

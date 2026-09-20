@@ -76,6 +76,18 @@ config_schema:
     type: string
     default: "own"
     description: "正文来源（v0.7.0）：own（默认：只认插件 on_stream_delta(kind=text) 累积，core 帧只作刷新信号与 finalize 兜底；无绑定/绑定漂移时严格 fail-open）/ legacy（旧的剥帧路径，仅过渡回退；P2b 后删除）"
+  visual_engine:
+    type: string
+    default: "legacy"
+    description: "v0.7.1 视觉层过渡开关：legacy（默认，当前实现）/ structured（结构化元素树引擎，V1 起逐步落地；未实现前按 legacy 运行并留 WARNING）"
+  card_status_header:
+    type: boolean
+    default: true
+    description: "是否显示卡片顶部状态条（v0.7.1 V2 实现；当前两种取值观感相同，非默认值会留 WARNING）"
+  show_reasoning:
+    type: boolean
+    default: false
+    description: "是否显示推理正文（v0.7.1 V3 实现；默认 false 对齐 CLS/aiduPOP；当前两种取值观感相同，非默认值会留 WARNING；面板 header 的思考耗时摘要始终保留）"
   footer:
     type: boolean
     default: true

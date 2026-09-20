@@ -171,6 +171,10 @@ tests/        见「验证」
   命令：handler 拿不到发送者身份，无法安全授权（安全审计 B1）⇒ 插件**从不**直接写
   `config.yaml`、也不调用 `ctx.set_config()`；写配置走官方 Hermes CLI / 配置文件，再 reload。
   官方 ctx 的**只读**句柄存进程级共享盒子 `adapter.PLUGIN_CTX`（命令可能来自旧世代模块对象）。
+- v0.7.1 视觉三键 `visual_engine` / `card_status_header` / `show_reasoning` 在 V0 只登记
+  （默认 `legacy` / `true` / `false`）；V1–V4 才逐步生效，未实现前非默认值会在日志留 WARNING，
+  `/larkdeck config` 也会标“已登记，V1–V4 才生效”。不要把它们当成已生效开关写进验收结论。
+
 - **平台 entry 字段从 dataclass 派生透传**（`_IDENTITY_ENTRY_FIELDS` 除外），新增字段自动跟随；
   唯一**有意覆盖**的是 `standalone_sender_fn`（P3）：内置 sender 自己 new 官方适配器 ⇒ cron /
   无网关进程只有纯文本；我们换成经 `_factory` 的卡片 sender，发送前用
