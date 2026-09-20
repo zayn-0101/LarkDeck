@@ -107,6 +107,43 @@
 ⇒ 外观与功能缺口全部落在「CardKit 官方 schema/接口能力」和「渲染层实现」上；
 Monkey Patch 只在需要访问**官方钩子没有暴露的内部状态**时才有意义，目前没有这种缺口。
 
+## 0.4 重构蓝图：从「markdown 字符串面板」到「结构化元素树」
+
+**现状问题**：我们把面板压成 `panel_body` / `panel_tools` 两个 markdown 字符串，
+所以无法表达 CLS/FC 的 `div + standard_icon`、22px 缩进、嵌套 `collapsible_panel`、
+逐元素状态色和实时结构更新；这不是调间距能解决的，需要重构渲染层。
+
+**目标架构（官方 CardKit API，不改 Hermes）**：
+1. **视图模型** `core/cardview.py`：
+   - `CardView`：header / answer / panel / footer；
+   - `PanelNode`：类型 `reasoning_round | tool_step | tool_group`，字段
+     `element_id / icon_token / title / status / elapsed_ms / detail / result_block /
+     error_block / children / dirty`；
+   - 纯数据、可序列化、可做 golden snapshot。
+2. **构建器**：把 `PanelNode` 映射成飞书元素：
+   - 工具行 = `div + standard_icon + lark_md(notation)`（CLS `builder.py:155-238`）；
+   - 推理轮 = 嵌套 `collapsible_panel`（CLS `builder.py:248-280` / FC `:283-315`）；
+   - 外层统一面板 = `collapsible_panel`（4px/8px/5px token）；
+   - 卡片 header = `plain_text + i18n_content + template`（CLS/FC `:82-105`）。
+3. **Diff/更新引擎**：每帧对 `CardView` 与上次快照做 diff，产出 `card.batch_update`
+   动作（add / update / delete），维护元素 id、sequence、元素预算与卡链；
+   对应 CLS `streaming/controller.py:180-330` 的 `build_add_segment_action` /
+   `build_tool_update_action` / `build_reasoning_finalized_action` 思路，
+   但用官方 `card.batch_update` 接口实现。
+4. **流式文本**：answer 仍走现有 own 累积；推理/工具节点按 dirty 标记增量写元素内容。
+5. **过渡开关**：新增 `visual_engine: "structured" | "legacy"`（默认先 `legacy`，
+   V1 完成后切 `structured`），任何一步失败可回落旧 markdown 面板；V4 再删 legacy。
+
+**为什么这是路线内重构**：CLS/FC/AP 的 `batch_update` / `card_element.content` /
+`collapsible_panel` 全部是飞书官方 CardKit 接口；我们只是把「拼 markdown」换成
+「维护元素树 + diff」。事件仍来自官方 hooks，不需要 AST patch。
+
+**配套门禁**：
+- `tests/check_cardview.py`：元素树 golden（元素 tag/属性/token/缩进/字号/颜色）；
+- 每帧 diff 的 sequence 单调、元素数不超预算、失败可回落；
+- 工具图标 token 表（§V3）逐项断言；
+- 真机截图仅 V1/V3/V4 三次。
+
 ## 1. 现状 vs 参考：差距清单
 
 | 维度 | 参考 | 我们当前 | 差距等级 |
@@ -169,42 +206,43 @@ BODY_TEXT_SIZE = "normal"       # 我方现有 token；CLS/FC 用 normal_v2，V0
 ## 4. 分阶段实施
 
 ### V0：冻结与基线（0.5 天）
-- 冻结本规划与三份参考截图的关键 token 表；
-- 给 `cards.py` 加视觉 token 常量 + 单测断言（不改行为）；
-- 记录当前卡片 JSON 的 golden snapshot，作为 before/after 对照；
-- 真机截图 0 张（用现有截图作 before）。
+- 冻结 §0.4 视图模型 schema、§2 token 表、CLS 图标 token 表；
+- 新增 `visual_engine` 配置（默认 `legacy`）、`card_status_header`、`show_reasoning`
+  三个配置键的**空实现**（不改变现有行为）；
+- 记录当前卡片 JSON golden snapshot 作为 before/after 对照；
+- 真机截图 0 张。
 
-### V1：静态排版对齐（1–2 天，不改元素结构）
-- 应用 §2 token：圆角、padding、vertical_spacing、markdown margin、text_size；
-- 推理分区标题行样式：`💭 思考 · Xs` + 每轮 `第 N 轮 · Xs`，去掉双空行；
-- 工具行在**现有 markdown 元素内**对齐 CLS 文案：加粗动作名 + 耗时 + 彩色状态词 +
-  灰色细节行（`standard_icon` 与 22px 缩进属于元素结构，放 V3）；
-- 正文 `margin:0`、段距统一；
-- **门禁**：golden snapshot 更新并人工审 diff；无结构变化、无新探针。
-- 真机验收：**1 张截图**（含工具 + 推理 + 收尾）。
+### V1：结构化渲染引擎（3–5 天，核心重构）
+- 新建 `core/cardview.py`：`CardView` / `PanelNode` / 序列化；
+- 新建结构化构建器：`div + standard_icon + lark_md(notation)` 工具行、
+  22px 缩进细节行、`collapsible_panel` 外层；
+- 新建 diff/更新引擎：`card.batch_update` add/update、元素 id、sequence、元素预算；
+- adapter 接入 `visual_engine="structured"`：answer 仍走 own 累积，面板走元素树；
+- 旧 markdown 面板保留为 `legacy` 回退；**默认仍 legacy**，探针/单测通过后 V1 末切 structured；
+- 门禁：`tests/check_cardview.py` 元素树 golden + token 断言 + 元素预算；
+- 真机验收：**1 张截图**（工具行小图标 + 面板结构）。
 
-### V2：实时状态与卡片头（2–3 天，依赖 P1/P2/P4）
-- 建卡时加卡片级状态头（配置 `card_status_header`）；
-- 面板 header 流式实时显示摘要（依赖 P1；不能则收尾更新）；
-- 完成/中止/失败时切 header template 与面板边框色（停止=黄，错误=红）；
-- 心跳定时器显示 Working/耗时（依赖 P4）。
-- 真机验收：**1 张流式截图 + 1 张终态截图**（可同一回合前后）。
+### V2：状态条与实时摘要（2–3 天，依赖 P1/P2/P4）
+- 卡片级 header（配置 `card_status_header`）：处理中蓝 / 完成绿 / 停止黄 / 出错红；
+- 面板 header 单行实时摘要：`💭 思考 Xs · 🛠️ 工具执行 · N 步`；
+- 完成/中止/失败时切 header template 与面板边框色；
+- 心跳定时器显示 Working/耗时（依赖 P4）；
+- 真机验收：**1 张流式截图 + 1 张终态截图**。
 
-### V3：推理/工具结构增强（2–4 天，依赖 P3）
-- 工具标题改成 CLS 同构：`div` + `standard_icon(token=tool_02, grey)` +
-  `lark_md(notation)`，`**动作名** · <font color>状态词</font>`；
-- 工具细节改成 `div` + `margin-left=22px` + 灰色 `plain_text`/`lark_md`；
-- 推理按已拍板 **A**：每轮一个嵌套 `collapsible_panel`（`vertical_spacing=8px`，
-  标题 `plain_text` 灰色 `notation`，内容一个 `markdown` `notation`）；
-- 面板展开层级/缩进/间距对齐 CLS/FC/AP 源码 token；
-- 长内容截断、元素预算、卡链兼容、`show_reasoning=false` 时只留摘要行。
+### V3：推理 A 形态与动态时间线（3–5 天，依赖 P3）
+- 每轮推理一个嵌套 `collapsible_panel`（`vertical_spacing=8px`，标题灰色 notation，
+  内容一个 `markdown` notation）；`show_reasoning=false` 时不创建，只在 header 留摘要；
+- 用 segment/timeline 模型按事件顺序动态追加推理轮与工具行；
+- 工具输出/错误块用官方 `post_tool_call.result/error_type` 渲染
+  `**Result** / **Error**` fenced block；
+- 卡链、元素预算、sequence 兼容；
 - 真机验收：**1 张展开面板截图**。
 
-### V4：边界与收口（1–2 天）
+### V4：收口与发布（1–2 天）
+- `visual_engine` 默认切 `structured`，删除旧 markdown 面板路径；
 - `/stop`、失败、无工具、纯推理、超长面板、元素近上限；
-- 中英文/emoji 图标一致性；
-- 更新 README/AGENTS/CHANGELOG 的观感说明；
-- 完整门禁 + 用户最终截图。
+- 中英文/emoji 图标一致性；更新 README/AGENTS/CHANGELOG；
+- 完整门禁 + 用户最终截图 + 版本发布。
 
 ## 5. 已拍板决策（不再重复询问）
 
