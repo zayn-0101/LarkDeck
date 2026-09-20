@@ -312,18 +312,24 @@ BODY_TEXT_SIZE = "normal"       # 我方现有 token；CLS/FC 用 normal_v2，V0
 
 ### 9.1 live 默认与部署
 - `visual_engine` live 默认保持 **legacy 到 V4**；V1/V2/V3 只用显式 `structured` canary。
-- V1 canary 走独立进程/探针卡，不重启网关；V3 至少一次经用户同意的 live structured 回合。
+- V1 用户确认 = 独立进程/探针卡，不重启网关；**首次 live 重启 = 窗口 1，覆盖 V2**。
 - 任一阶段若 legacy `golden_cardkit_trace` 出现非空 diff，或 live 软链仍指开发树，
   **先建独立部署 worktree** 再继续；否则不得重启网关。
-- V4 才切默认 structured；回滚 = 改回 legacy 配置 + 重启，代码级问题 revert commit。
+- **当前已触发**：`~/.hermes/plugins/larkdeck` 指向开发树且 HEAD 在 `v0.7.1-visual`；
+  V0 必须先把软链重指到已验证 release 的独立部署 worktree（用户同意后），之后才允许重启。
+- 重启 checklist：`hermes gateway status` 确认空闲 → 跑本阶段门禁 → `hermes gateway restart`
+  → 重启后一张探针卡 + `/larkdeck status`；回滚 = 改回 legacy 配置 + 重启，代码级问题 revert commit。
+- V4 才切默认 structured；回退 = 改回 legacy 配置 + 重启，代码级问题 revert commit。
 
 ### 9.2 渲染架构（取代 §0.4 的「通用树 diff」）
 - 操作矩阵：① `card_element.content` 写 answer/推理正文，**最后写**；
   ② `partial_update_element` 替换 header.title / 外层面板 elements / border；
-  ③ `card_element.create` 新增顶层/嵌套 segment（本仓库真机已证）；
+  ③ `card_element.create` 新增**顶层** segment（本仓库真机已证）；**嵌套落点待 P3 人眼**；
   ④ `batch_update add_elements/delete_elements` 本仓库未验，V1 不得依赖，要用先补 schema 探针。
 - 禁止 partial_element 顶层带 `tag`、禁止增量改 markdown `text_size`（300312）。
 - 单 sequence 计数器共用、严格 +1、不回退不复用；uuid 由内容确定；id 唯一、生命周期冻结。
+- **失败分支合并必须保留 create/delete 记账**（白名单合并旧 state 不许丢）；同 id create 本地
+  幂等/拒绝，避免 300301；`_ck_elems_from_card` 的运行时元素表必须是**可增长的 list**。
 
 ### 9.3 覆盖与回退（取代 §4 V1/V3/V4 冲突项）
 - structured 覆盖：流式卡、finalize 收尾卡、`/stop` 重绘、卡链封旧卡/seed。
@@ -331,6 +337,11 @@ BODY_TEXT_SIZE = "normal"       # 我方现有 token；CLS/FC 用 normal_v2，V0
   structured；V4 删除 legacy 配置路径，但保留降级渲染器。
 - 结构化 op 失败必须 fault-injection：正文零丢失、状态色不丢、单卡不重复、WARNING 留痕；
   降级 patch 自身失败才走核心纯文本回退。
+- **心跳/定时器生命周期**：每回合至多 1 个 timer；finalize/`/stop`/error/`on_session_end`/
+  插件卸载必须 cancel；写前查 `ck_degrade`/`ck_dead`/滑窗；回调异常自吞；
+  假时钟断言 finalize 后推进 ≥10s 出站写入 = 0。
+- **show_reasoning 全车道**：DEGRADE/legacy 降级渲染器同样过 `show_reasoning=false` 过滤；
+  断言降级卡 JSON 不含推理正文、只留摘要。
 
 ### 9.4 元素/字节预算（取代 §7 与 V3 的「卡链一句话」）
 - 递归序列化 card JSON 实数计数；元素墙 200、阈值 180 + reserve 2。
@@ -338,6 +349,10 @@ BODY_TEXT_SIZE = "normal"       # 我方现有 token；CLS/FC 用 normal_v2，V0
 - 运行时 create/delete 必须记账；300315 外层 + 300305 内层解析。
 - `max_panel_steps` 改为元素预算推导；超限 trim 最早 + 「已折叠」提示，再考虑封卡；
   元素墙与字节墙同时守。
+- **near-limit fixture 必须证明墙会响**：45 轮 + 5 工具（210 元素）触发 trim/封卡；
+  100KB 含假密钥 result 触发截断/脱敏/字节墙；删 trim/截断/脱敏的 mutation 必须 🔴。
+- **失败分支记账**：create 成功、同帧后续写失败时，合并旧 state 必须保留 create/delete 记账；
+  同 id create 本地幂等/拒绝；元素表 `_ck_elems_from_card` 必须是可增长的 list。
 
 ### 9.5 P3 嵌套面板（取代 §3 P3 / V3 A 形态描述）
 - 目标仍是 A 形态；V3 实现：流式期用已证 API 的顶层面板，完成卡整卡重建 A 嵌套面板。
@@ -353,8 +368,12 @@ BODY_TEXT_SIZE = "normal"       # 我方现有 token；CLS/FC 用 normal_v2，V0
   每字段至少一次非空；只做结构投影对内容恒真，禁止。
 - 阶段门禁 = preflight + 定向红 + **改动面全量后台分片**（≤30 分钟/阶段）；
   任何用户可见重启前必须跑完并绿；merge/rebase 与发布候选跑全量分片 + expected-kill + wall-clock。
+- 阶段门禁清单固定包含：`test_units`、`check_own_body`、`check_override`、`check_hooks`、
+  `check_clarify_e2e`、`probe_render`（改卡片结构时强制）、`mutate_check --preflight`。
 - 高风险族 inventory 至少覆盖：结构+内容、id/sequence、元素/字节预算+卡链、限流+create 记账、
-  回退/降级、状态色双载体、配置键、answer 提交点、截断/脱敏、i18n/theme。
+  回退/降级、状态色双载体、配置键、answer 提交点、截断/脱敏、i18n/theme、**心跳/定时器生命周期**。
+- 心跳 gate：每回合 ≤1 timer、终态 cancel、finalize 后零写入；删 cancel 的 mutation 必须 🔴。
+- 预算 gate 必须用 near-limit fixture（45 轮+5 工具、100KB 假密钥 result）证明墙会响。
 
 ### 9.7 配置与字号（取代 §2/V0 冲突项）
 - V0 同 commit 落地三键：`visual_engine`(legacy)、`card_status_header`(true)、
@@ -364,6 +383,7 @@ BODY_TEXT_SIZE = "normal"       # 我方现有 token；CLS/FC 用 normal_v2，V0
   未实现前显式设置非默认值必须 WARNING。
 - `normal` vs `normal_v2`：V0 真机探针后写回 token；探针前保持 `normal` + `apply_text_profile`；
   结构化构建统一走 profile，不能写死 text_size 废掉配置。
+- `show_reasoning=false` 过滤必须覆盖 DEGRADE/legacy 降级车道：断言降级卡 JSON 不含推理正文。
 - §2 token 表补齐：border 状态色、standard_icon token/size/color、icon_position、
   icon_expanded_angle、header vertical_align、tool 状态色、expanded 默认、loading 锚点、footer hr；
   AP 无卡片级 header（§0.2 的「三家一致」表述修正为 CLS/FC 有）。
@@ -373,15 +393,19 @@ BODY_TEXT_SIZE = "normal"       # 我方现有 token；CLS/FC 用 normal_v2，V0
 - 每阶段审计前：`git stash create`/`write-tree` 得 TREE + `git archive` 不可变导出；
   manifest 记 plan sha、HEAD、TREE、dirty diff sha、解释器、参考源哈希、门禁日志 sha。
 - 审计在飞期间 TREE 变化 ⇒ 三份结论全部作废重跑；审计报告写自己看到的 TREE。
+- **元数据豁免**：只新增/修改 `docs/audits/` 下 manifest 的提交不改变 plan blob，不触发作废；
+  引用时写明 `audit_target: commit/tree` 与 `manifest_commit: commit/tree` 配对。
 - 里程碑：发布三审收敛 + 用户最终截图 + 全量门禁后 fast-forward main，再 push main +
   annotated tag（带 tree sha / expected-kill / wall-clock）；push 前 `git log origin/main..main` 白名单。
 
 ### 9.9 截图/重启矩阵（取代 §0.4/§6/§8.4 口径）
 | 窗口 | 阶段 | 用户看什么 | 张数 | 重启 |
 |---|---|---|---|---|
-| 1 | V1+V2 | ①流式工具行 ②同卡收尾结构不变 ③`/stop` 黄边 | 3 | 一次，显式 structured/header 开 |
+| 0 | V0 | `normal` vs `normal_v2` 探针卡（字号/间距） | 1 | 独立进程，不重启 |
+| 1 | V1+V2 | ①流式工具行 ②同卡收尾结构不变 ③`/stop` 黄边 | 3 | 一次，覆盖 V2；V1 自身=探针卡确认 |
 | 2 | V3 | ④展开嵌套轮+Result/Error ⑤false 同回合只留摘要；P3 探针眼睛并入 | 2 | 一次 |
 | 3 | V4 | ⑥≥20 步长回合 ⑦最终发布确认 + `/larkdeck status` | 2 | 一次，默认切 structured |
 
 每窗口前置 = 定向红 + 改动面分片绿；失败在同窗口修完重看，不新增窗口；看完恢复默认配置。
+重启前按 §9.1 checklist（gateway status 空闲 → 门禁 → restart → 探针卡 + status）。
 

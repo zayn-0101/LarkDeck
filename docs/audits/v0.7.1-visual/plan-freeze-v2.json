@@ -22,5 +22,14 @@
     "B 用户可见/回归",
     "C 执行/反假绿"
   ],
-  "consensus": "docs/audits/v0.7.1-visual/plan-consensus.md"
+  "consensus": "docs/audits/v0.7.1-visual/plan-consensus.md",
+  "audit_target": {
+    "commit": "dbf9c8acfe039f1bfdd4d576765c7cb553b4eda5",
+    "tree": "f45592b47523b6e2257f18d101cac0d0fbbc8701"
+  },
+  "manifest_commit": {
+    "commit": "dd0186dd449c0dc7c942808b62e28a5dcf6d0efd",
+    "tree": "a77ad0d4572c3c1ef3395bb48dbd07a35561c9ae",
+    "note": "仅新增审计 manifest；plan blob 不变，按 §9.8 元数据豁免"
+  }
 }

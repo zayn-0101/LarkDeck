@@ -86,9 +86,14 @@
 
 - **A 的异议（P3 顺序）**：A 首选 `partial_update_element` 替换外层面板 elements（AP 证据）；
   父级按 B/C 的「create 已有本仓库真机证据」排第一，A 路径排第二，保留为 P3 必测项。
-- **B 的部署硬条件**：live 软链若仍指开发树，任何重启都会加载半成品；V0 需评估独立部署 worktree，
-  否则至少保证默认 legacy golden 逐字节不变。
-- **C 的 C1–C10** 全部接受，落入 §1.1–§1.9 与计划 §9。
+- **B 的部署硬条件**：live 软链若仍指开发树，任何重启都会加载半成品；V0 需先建独立部署
+  worktree 并重指软链（当前软链已指向 `v0.7.1-visual` 开发树，条件已触发）。
+- **B 的非阻断残留**：R1 DEGRADE 车道 `show_reasoning=false` 断言；R2 心跳 finalize/stop 后
+  零写入；R3 V0 字号探针并入窗口 0；R4 V1 点名「create 成功、后续写失败⇒记账保留」；
+  R5 §9.2 措辞收紧为「顶层落点已证；嵌套容器待 P3」。以上已写入计划 §9。
+- **冻结配对**：`audit_target = dbf9c8a / tree f45592b4`（plan blob）；
+  `manifest_commit = dd0186d / tree a77ad0d4`（仅新增审计 manifest，按 §9.8 元数据豁免）。
+- **C 的 C1–C10** 全部接受，B1/B2 最小修法已写入 §9.3/§9.4/§9.6。
 - 未验证：嵌套 collapsible_panel 客户端渲染、header/border partial 视觉、normal_v2 支持、
   standard_icon 逐项显示、batch add/delete schema、心跳真机限流/生命周期、result 真实大小与隐私、
   detached 网关重启/回滚、check_cardview 尚未实现、tree manifest 尚未建立。
