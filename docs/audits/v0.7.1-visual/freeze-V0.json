@@ -32,5 +32,10 @@
     "A 架构/源码证据",
     "B 用户可见/回归",
     "C 执行/反假绿"
-  ]
+  ],
+  "audit_target_commit": "aaeb6c1f217e403f3eefcfc45d65c5eafe611e27",
+  "audit_target_tree": "e5ad3a714b7e788d57001bc08501a57af4804e3d",
+  "export_dir": "/private/tmp/audit-v0-e5ad3a714b7e788d57001bc08501a57af4804e3d/larkdeck",
+  "manifest_commit": "2433bb9",
+  "pairing_note": "manifest.tree == audit_target_tree == export tree；manifest 文件本身位于 metadata commit 2433bb9（仅改 docs/audits，按 §9.8 元数据豁免），V0 代码/文档审计对象为 aaeb6c1/tree e5ad3a。"
 }
