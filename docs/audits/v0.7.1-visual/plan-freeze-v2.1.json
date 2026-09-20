@@ -27,5 +27,5 @@
     "tree": "6f315c22f94e5a5e794f276c9f602b176da440cc"
   },
   "metadata_delta": "consensus 窗口口径对齐 + freeze_tree.py + plan-freeze-v2.1.json；plan blob 不变，按 §9.8 元数据豁免",
-  "manifest_commit": "pending metadata commit"
+  "manifest_commit": "ee67aded352068cbb197c5370279eff276a302a6 (仅元数据提交，按 §9.8 豁免)"
 }
