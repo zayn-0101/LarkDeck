@@ -40,7 +40,7 @@
 
 * 发布前实测抓到 `install.sh` 的 FILES **漏 `core/cardview.py`**，且对账门禁把 `tools/` 与
   `.deploy/` 也算运行文件 ⇒ 必然 exit 1。已修 + 加断言 + 变异 `INST-1`。
-* 真跑过：`HERMES_HOME=/tmp/ldinstall bash install.sh --copy` → 10 个运行文件全拷到（含
+* 真跑过：`HERMES_HOME=/tmp/ldinstall bash install.sh --copy` → **11 个运行文件**全拷到（含
   `cardview.py` 20559 bytes）。
 
 ## 5. 对抗审计
