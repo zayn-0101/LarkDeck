@@ -663,16 +663,19 @@ ls -la ~/.hermes/logs/agent.log*
 
 ### 13.1 当前坐标（机械核对过，不是叙述）
 
-> ⚠️ 本节是 2026-09-16 旧会话的坐标快照；2026-09-17 CLS 改造后，现役坐标与
-> 全量结论以 `docs/verify-log.md` 和 `docs/audits/cls-ui/phase-2/consensus.md` 为准。
+> ⚠️ 本节原为 2026-09-16 旧会话的坐标快照；**现役坐标**已更新为 v0.7.2（见下表）。
+> 历史阶段（CLS 改造、v0.6.x）的结论以 `docs/verify-log.md` +
+> `docs/audits/cls-ui/phase-*/consensus.md` 为准。
 
 | 项 | 值 |
 |---|---|
 | HEAD | **以 `git log -1 --format='%h %s'` 为准** —— ⚠️ 本表**写在提交里**，所以哈希天然落后一格（写这几行时是 `b82f71f`，`== origin/main`，已推送；表里原先印的 `bdde6f1` 就是这么过期的） |
 | 工作树 | 主工作树在 Phase 3 收尾提交前为 dirty（8 个文档/ignore 修改 + 未跟踪 phase-3 目录）；`git worktree list` 共 9 行（主 + 8 linked，含 phase3b 审计树），只有 `main` 一个分支；清场需用户确认 |
-| 最后一次全量变异 | **Phase 2 run 3（2026-09-17）：381/381 全红 + 8 对照全绿，`EXIT=0`** —— 冻结 tree `fd96f90f…` / commit `ecf11df`；日志 `docs/audits/cls-ui/phase-2/logs/fullrun_phase2_run3.log`，结论见 `docs/audits/cls-ui/phase-2/consensus.md` |
-| 那条结论**还算不算数** | **算**：最终 v0.6.0 发布树（`0886f2c` / tree `72744bcd`）已在发布前重跑全量 run 4（382/382、8/8 对照、EXIT=0）；此后只增加发布后状态文档 |
-| 遗留进程 | 无（只剩该跑的 Hermes 网关）；`$TMPDIR` 下的影子树已被系统清理，**不影响任何结论** |
+| 现役版本 | **v0.7.2**（`plugin.yaml` = 0.7.2）；本轮收敛用户 9 条真机反馈的剩余 5 条 —— 见 `docs/plan-v0.7.2.md` 与 `docs/releases/v0.7.2.md` |
+| 变异验证 | **协议已改**：不再每版跑 60–90 分钟全量，改「增量 + 周期性全量」—— 账本 `tests/mutation-verdicts.json`（472 条，`--ledger-status` 看覆盖），命令 `tests/mutate_check.py --delta`；协议与实测数字见 `docs/verify-log.md`「09-21 协议变更」。最近一次全量直跑：2026-09-21（470 red-assert + 补充 278 条升级，见 verify-log 09-21 各行） |
+| 发布证据 | `docs/audits/v0.7.2/release-evidence.md`（六支门禁 / 账本 / 真机探针 / `--copy` 安装 / 审计轮次） |
+| 遗留进程 | 无（只剩该跑的 Hermes 网关）；`$TMPDIR` 下的影子树**用完即清**（2026-09-21 实测：旧快照目录会累积到 GB 级，`mutate_check` 每条判完即删） |
+| ⚠️ 部署目录 | 仓库里的 `.deploy/` 是**部署 worktree**（内含整份源码副本）⇒ 写文件遍历/拷贝/清单对账都要排除它（`install.sh` 已修，见 `docs/releases/v0.7.2.md`） |
 
 ### 13.2 路线问题已收口，**不要再重新论证一遍**
 
