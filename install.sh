@@ -15,14 +15,20 @@ PLUGINS_DIR="$HERMES_HOME/plugins"
 TARGET="$PLUGINS_DIR/larkdeck"
 MODE="link"
 FILES=(plugin.yaml __init__.py
-       core/__init__.py core/adapter.py core/cards.py core/i18n.py core/compat.py
-       core/context.py core/hooks.py core/panel.py)
+       core/__init__.py core/adapter.py core/cards.py core/cardview.py core/i18n.py
+       core/compat.py core/context.py core/hooks.py core/panel.py)
 
 # ── 门禁：FILES 是**手写**清单，漏同步会装出一个残缺插件（少了指标采集或钩子订阅），
 # 而默认软链模式**永远测不出来** —— 只有 NAS / --copy 会中招。所以这里把清单与
 # 仓库里真实的运行文件对一遍，不一致就直接拒绝运行。
+# ⚠️ 排除三处**非运行文件**（2026-09-21 实测补）：
+#   * `./tests/*`  —— 门禁/探针，不进插件；
+#   * `./tools/*`  —— 开发用脚本（SLOC/冻结树），不是运行模块；
+#   * `./.deploy/*` —— 部署 worktree（里面有整份源码副本）⇒ 不排除的话这个门禁
+#     **只要部署目录存在就必红**（v0.7.2 发布前实测抓到的阻断项）。
 _actual="$(cd "$REPO_DIR" && find . \( -name '*.py' -o -name 'plugin.yaml' \) \
-           -not -path './tests/*' -not -path '*/__pycache__/*' \
+           -not -path './tests/*' -not -path './tools/*' -not -path './.deploy/*' \
+           -not -path '*/__pycache__/*' \
            | sed 's|^\./||' | sort)"
 _declared="$(printf '%s\n' "${FILES[@]}" | sort)"
 if [ "$_actual" != "$_declared" ]; then

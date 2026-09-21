@@ -13110,6 +13110,34 @@ def test_v4_25_structured_answer_never_renders_the_pending_placeholder():
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
 
+def test_install_sh_files_list_matches_the_runtime_modules():
+    """`install.sh` 的 FILES 是**手写**清单，漏一个运行模块 ⇒ `--copy` 装出残缺插件。
+
+    发布前实测（2026-09-21）抓到真缺陷：`core/cardview.py`（v0.7.1 新增）**没进 FILES**，
+    而脚本自己的对账门禁又把 `tools/`（开发脚本）与 `.deploy/`（部署 worktree，里面有整份
+    源码副本）算进「实际运行文件」⇒ **只要部署目录存在，install.sh 必然拒绝运行**。
+    这里把同一份对账用 Python 再钉一遍（脚本那侧也已修好）。
+    """
+    import re as _re
+    repo = _pathlib.Path(__file__).resolve().parent.parent
+    src = (repo / "install.sh").read_text(encoding="utf-8")
+    m = _re.search(r"FILES=\((.*?)\)", src, _re.S)
+    assert m, "install.sh 里找不到 FILES 数组"
+    declared = sorted(tok for tok in re.split(r"\s+", m.group(1).strip()) if tok)
+    actual = sorted(
+        str(p.relative_to(repo))
+        for p in repo.rglob("*")
+        if p.is_file() and (p.suffix == ".py" or p.name == "plugin.yaml")
+        and "tests" not in p.parts and "tools" not in p.parts
+        and ".deploy" not in p.parts and "__pycache__" not in p.parts
+        and ".git" not in p.parts
+    )
+    assert declared == actual, (
+        f"install.sh 的 FILES 与实际运行文件不一致（--copy 模式会装出残缺插件）："
+        f"缺={sorted(set(actual) - set(declared))} 多={sorted(set(declared) - set(actual))}")
+    assert "core/cardview.py" in declared, "cardview 是运行模块，必须在 FILES 里"
+
+
 def main() -> int:
     # `--only <子串>`：只跑名字里含该子串的用例。**专供变异判读**（审计 A：单条变异 idle 28s、
     # 重载 89s，秒级判读只能靠「preflight + 只跑受影响的那几条用例」）。不是发布门禁 ——

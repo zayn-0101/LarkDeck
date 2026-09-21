@@ -1,6 +1,6 @@
 {
  "_meta": {
-  "_note": "变异验证账本：fp = 锚点区域的指纹（±15 行 + old/new）。fp 未变 ⇒ 该区域的判定仍然成立，增量模式跳过。",
+  "_note": "变异验证账本：fp = 锚点区域的指纹（±15 行 + old/new）。fp 未变 ⇒ 该区域的判定仍然成立，增量模式跳过。`full_audit_at` = 最后一次**不做增量、全量直跑**的提交——继承判定（inherited）的兜底就是它，应该周期性刷新。",
   "full_audit_at": ""
  },
  "entries": {
@@ -8,36 +8,36 @@
    "fp": "551c78ac96accbc2",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "A03-余量放大到 50000（窗口被压小）": {
    "fp": "bf958739cf26fa37",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "A05-余量缩到实测开销 298": {
    "fp": "5c8d66e5ed7972e8",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "A07-阈值改成手写死值": {
    "fp": "1dfebe1543ef4f34",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "A08-正文只留 1 份": {
    "fp": "121886c0538169f5",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "A15-降载日志调用点传 0 字节": {
    "fp": "e69306e9af5a1f7f",
@@ -239,15 +239,15 @@
    "fp": "96db47826f585526",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "C24-坏值不再报警": {
    "fp": "d0407d0a7a34e071",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "e4c9a39"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "CK10-启动自检不再自报 native 传输": {
    "fp": "fe5824233def5fbd",
@@ -736,8 +736,8 @@
    "fp": "a25f2b666f7344f0",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708",
-   "gate_fp": "39ca4f8ecce56159"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "D26-default 改折叠标量": {
    "fp": "b85f8dc88269786a",
@@ -1079,8 +1079,8 @@
    "fp": "31c6627e8f3938ea",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "M07-正文写失败被吞（当作成功继续，不回落）": {
    "fp": "25e53645cfe1e275",
@@ -1114,22 +1114,22 @@
    "fp": "67f86a3c4d73a75c",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "P1-阈值退回降载预算": {
    "fp": "d1d4e6f748a40ce5",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "P1-阈值高到超过飞书硬上限": {
    "fp": "459b25bf8a5ca915",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "P1a-1-把 `_CkOp` 失败码回填撤掉，改回对失败 op 调 `_CkResult.inner_code()`（具体元素与码丢失）": {
    "fp": "30ab7468cf1e6c50",
@@ -1338,15 +1338,15 @@
    "fp": "957c160ff0497deb",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "P2b-坏值（转不动）不再报警": {
    "fp": "b58fec5f70bd49e7",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "P3-1-standalone sender 不再走卡片工厂（cron 投递退回纯文本）": {
    "fp": "eed24a588a471d5e",
@@ -1373,71 +1373,71 @@
    "fp": "9005d2e3e83d5b8c",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "P3a-加一个含连字符的 yaml-only 键": {
    "fp": "dd0109c5b8a6dc96",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "P3b-把一个键挪到别的键之后": {
    "fp": "b7803c04bd869b17",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "P3c-type 与代码默认值不符": {
    "fp": "f6a0a9c91ce670e2",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708",
-   "gate_fp": "39ca4f8ecce56159"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "P3d-整数默认值写成带引号": {
    "fp": "d3e75dc87850e471",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708",
-   "gate_fp": "39ca4f8ecce56159"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "P3e-整数默认值写成浮点": {
    "fp": "b75bb772a0764cc9",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708",
-   "gate_fp": "39ca4f8ecce56159"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "P3f-布尔默认值写成 1": {
    "fp": "8e14ad81b1291299",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "P3g-删掉一个键": {
    "fp": "31de50317299a3db",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708",
-   "gate_fp": "39ca4f8ecce56159"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "P4-streaming_config 不再夹取": {
    "fp": "3a98f71faa3d517d",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "P4-删掉 _positive 的 nan/inf 半段": {
    "fp": "9bd1214395c6344b",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "P5-edit_message 成功分支不留痕（用户看到的每一次改写都查不到）": {
    "fp": "7e8a666edc32acd7",
@@ -1478,29 +1478,29 @@
    "fp": "e4c4a2cd21d63ccf",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "P5c-两条 WARNING 的列表串了": {
    "fp": "d3cd05f327a3d1c6",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "P5d-报告缺键时不再报警": {
    "fp": "cd3334911b41844a",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "P5e-REACTION_ADAPTER_ATTRS 不再登记 _reactions_enabled": {
    "fp": "a57c3c101778c77e",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "P6-轮耗时恒为 0": {
    "fp": "c9112558313e31c4",
@@ -1513,8 +1513,8 @@
    "fp": "04bc9a58f2ff822e",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708",
-   "gate_fp": "39ca4f8ecce56159"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "PA-1-正文增量入账前被「顺手规整」（累积与核心不再逐字节同源）": {
    "fp": "e8adad85575a851b",
@@ -2535,29 +2535,29 @@
    "fp": "fef36f59e0246eb9",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "S2-小面板不受硬上限约束": {
    "fp": "5d441e590f76f6da",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "S3-status_shell 不认状态色": {
    "fp": "fee43ad2b84c7fdd",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "S4-status_shell 丢掉状态文字": {
    "fp": "6845dd62b86ffdd1",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "gate_fp": "39ca4f8ecce56159",
-   "at": "c036362"
+   "gate_fp": "1677d5c68c4e08d2",
+   "at": "95af186"
   },
   "SEQ1-seed 帧不再带等待期占位": {
    "fp": "a52390af598b2b2f",

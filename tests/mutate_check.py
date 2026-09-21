@@ -2621,6 +2621,10 @@ MUTATIONS = [
      '    ("delegate", "robot_outlined"),           # delegate_task（子代理）',
      '',
      'test_units'),
+    ('INST-1-install.sh 的 FILES 漏掉 core/cardview.py（--copy 装出残缺插件）', 'install.sh',
+     '       core/__init__.py core/adapter.py core/cards.py core/cardview.py core/i18n.py',
+     '       core/__init__.py core/adapter.py core/cards.py core/i18n.py',
+     'test_units'),
 ]
 
 #: **对照项**：行为等价的改动（合法 YAML 变体等），期望四门禁**全绿**。
