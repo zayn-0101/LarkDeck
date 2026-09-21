@@ -2638,11 +2638,20 @@ MUTATIONS = [
      '        if engine == "structured" and not (state and state.get("engine_stamp") == "degraded"):',
      '        if engine == "structured" and not (state and state.get("engine_stamp") == "degraded" and not finalize):  # V0-7b',
      'test_units'),
+
 ]
 
 #: **对照项**：行为等价的改动（合法 YAML 变体等），期望四门禁**全绿**。
 #: 与 MUTATIONS 分开成两张表 —— 判断依据是它属于哪张表，不是名字里有没有某个字。
 CONTROLS = [
+    # 等价变异（2026-09-21 收口复核实测）：`reasoning` 与 `rounds` 在数据层是**同时非空**的
+    # （`panel.record_reasoning()` 会立刻产生一个推理轮）⇒ 判据里 `or reasoning` 对
+    # **可到达的状态**没有影响（实测：删掉它，那条「只有 reasoning」的断言照样绿）。
+    # 留着这条对照，是为了把这个「看似有洞、其实不可达」的结论固化下来。
+    ('C-对照：静态空面板判据丢掉 reasoning（该状态不可达）', 'core/adapter.py',
+     '    return bool(snap.get("tools") or snap.get("rounds") or snap.get("reasoning"))',
+     '    return bool(snap.get("tools") or snap.get("rounds"))',
+     ''),
     # 从 MUTATIONS 搬来（它没有目标门禁 ⇒ 全绿是预期；留在 MUTATIONS 里会让
     # `--upgrade-inherited` / full 模式把它当失败，`full_audit_at` 永远刷不上）。
     ("C-对照：structured 判据不传真卡（区间内等价）", "core/adapter.py",
@@ -2819,7 +2828,7 @@ GATE_ORDER = ["test_units.py", "check_override.py", "check_hooks.py",
 
 
 def _run_one_gate(repo: Path, script: str) -> "tuple[int, str]":
-    """跑单支门禁（**有界**：120s 硬超时 —— 与「禁 sleep、等待必须有界」同一条纪律）。"""
+    """跑单支门禁（**有界**：`_GATE_TIMEOUT_S`（45s）硬超时 —— 与「禁 sleep、等待必须有界」同一条纪律）。"""
     try:
         proc = subprocess.run([sys.executable, str(repo / "tests" / script)],
                               capture_output=True, text=True, cwd=str(repo.parent),
@@ -3305,6 +3314,15 @@ def main() -> int:
         return 0
 
     if args.ledger_status:
+        # 先做形状校验：否则一条 `expect==""` 混进 MUTATIONS 时，这里会报出一个**虚高的
+        # 覆盖率**（`--preflight` 会拒，但 status 是大家日常看的那条命令）。收口复核实测。
+        _shape_problems = [(m[0], _shape_error(m, "变异")) for m in MUTATIONS]
+        _shape_problems = [(n, why) for n, why in _shape_problems if why]
+        if _shape_problems:
+            print("❌ 清单形状有问题，先修清单再看覆盖：")
+            for name, why in _shape_problems[:5]:
+                print(f"   - {name}: {why}")
+            return 2
         entries = _load_ledger()
         todo, skipped = _delta_split(MUTATIONS, entries)
         n_assert = sum(1 for m in MUTATIONS

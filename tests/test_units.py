@@ -12985,6 +12985,20 @@ def test_v4_15_static_and_fit_lanes_never_reopen_disabled_panel_or_footer():
         card_on = raw._ld_fit_structured_card(v_on)
         assert [e.get("element_id") for e in card_on["body"]["elements"]] == \
             ["answer", "panel", "footer"], card_on
+        # ⚠️ **只有 reasoning、还没有 rounds 的回合**（终审 C 收口复核的 CAND-B）：
+        #   判据写成 `tools or rounds`（丢掉 reasoning）时六门禁全绿，而这种回合
+        #   （模型刚开始想、还没形成完整推理轮）在真实世界里很常见 —— 用户会**丢掉整个面板**，
+        #   连「💭 思考 Xs」摘要行和状态色一起没了。
+        panel.reset()
+        panel.bind_chat_session("oc_v415r", "s_v415r")
+        panel.record_reasoning("s_v415r", "t-v415r", "刚开始想，还没形成完整推理轮。")
+        adapter.configure(unified_panel=True, footer=True)
+        sent_cards.clear()
+        _run(raw.send("oc_v415r", "只有推理的回复"))
+        ids_r = [e.get("element_id") for e in sent_cards[-1]["body"]["elements"]]
+        assert "panel" in ids_r, \
+            f"快照里只有 reasoning（没有 rounds/tools）时也必须出面板（否则状态色与摘要行一起丢）：{ids_r}"
+
         # ⚠️ **混合档**（终审 C 的绿变异 G1）：`panel=false` + `footer=true`（页脚是默认开的）
         # 必须只剩正文 + 页脚 —— 把「页脚开关」写成 `and requested_panel` 时，六门禁全绿、
         # 而用户把面板关掉就**连页脚一起丢**（状态/模型/ctx/时长全没了）。

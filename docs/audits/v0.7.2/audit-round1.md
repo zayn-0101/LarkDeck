@@ -151,6 +151,21 @@ C2 另有两条「判定力是假的」观察，如实记下：
 * **`expect==""`（审计 A-②/C-H2）**：`--preflight` 干净；`--ledger-status` 的 474/474 与
   `tests/mutation-verdicts.json` 里 `verdict=red-assert` 的条数一致。
 
+### 收口复核（两个复核员，分别在 `90f6bb1` 快照上）
+
+**A/B 收口复核：6/6 通过**（逐条带四元组与证伪），并留下 2 条非阻断残留 —— 均已修：
+* `mutate_check.py` 里 `_run_one_gate` 的 docstring 还写「120s 硬超时」⇒ 改成引用 `_GATE_TIMEOUT_S`（45s）；
+* `--ledger-status` 先于形状校验执行 ⇒ 清单里混入 `expect==""` 时它会报**虚高覆盖率**（而 `--preflight`
+  会拒）；已让 `--ledger-status` 先跑 `_shape_error` 并在有问题时 exit 2。
+
+**C 收口复核：5/5 通过**，另外找到 2 条新绿变异：
+* `CAND-A`「`panel_shell` 显式 `expanded=False` 被 `view.expanded` 覆盖」⇒ 复查发现**根本没有任何
+  调用方显式传这个形参**（终审 B 的修复之后它就成了死 API）⇒ 直接把形参删掉，不留「看着能覆盖、
+  其实没人用」的接口。
+* `CAND-B`「静态空面板判据丢掉 `reasoning`」⇒ 数据层实测：`panel.record_reasoning()` 会**立刻产生
+  一个推理轮**，所以「`reasoning` 非空而 `rounds` 为空」**不可达** ⇒ 该变异是**等价变异**，
+  移进 `CONTROLS` 并把结论固化（顺带在 `test_v4_15` 里留了一条「只有推理」的断言作为文档）。
+
 ### 三条终审一致确认的「假绿」新形态（值得写进 `lessons`）
 
 1. **「配置开关被另一个开关绑死」**（G1）：混合档（A=false + B=true）没人测 ⇒ 一个 `and` 写错就静默丢字段。

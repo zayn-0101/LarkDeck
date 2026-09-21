@@ -368,15 +368,15 @@ def panel_elements(view: PanelView) -> List[Dict[str, Any]]:
     return elements
 
 
-def panel_shell(view: PanelView, *, expanded: Optional[bool] = None) -> Dict[str, Any]:
+def panel_shell(view: PanelView) -> Dict[str, Any]:
     """外层面板的 collapsible_panel 结构。
 
-    ⚠️ `expanded` 默认 `None` = **取 `view.expanded`**（终审 B 实测的配置缺陷）：早先它的
-    形参默认写死 `False`，而两个调用方（`entity_skeleton` / `panel_partial`）都不传这个参数
-    ⇒ 用户把 `panel_expanded: true` 打开后，**结构化车道仍然是收起的**（配置被静默吞掉，
-    只有 legacy 渲染器正常）。显式传值仍然优先（推理轮/降载路径可以覆盖）。
+    展开状态**只取 `view.expanded`**（终审 B 实测的配置缺陷：早先这里有个形参默认写死
+    `False`，而两个调用方都不传它 ⇒ 用户把 `panel_expanded: true` 打开后结构化车道仍然是收起的）。
+    终审 C 的收口复核又指出：那个形参从此**没有任何调用方**（显式传 `False` 被忽略也全绿）
+    ⇒ 直接删掉，不留「看着能覆盖、其实没人用」的死 API。
     """
-    _expanded = view.expanded if expanded is None else bool(expanded)
+    _expanded = view.expanded
     return {
         "tag": "collapsible_panel",
         "element_id": "panel",
