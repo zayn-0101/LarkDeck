@@ -1546,14 +1546,22 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         # 而**装饰没变就不写** ⇒ 稳态下每帧 1 次。
         assert ids == ["answer"] * 4, f"正文只该走 content 通道：{ids}"
         # R3 收窄版：面板是 `panel_body`（推理）+ `panel_tools`（工具）两块，**都在首帧建出来**
-        # ⇒ 首帧的装饰 batch 是三元素；之后只有内容变了的那一块才会再写（工具块在这个场景里
-        # 一直没有工具事件，所以只出现首帧那一次 —— 「工具块变化只重写工具块」由
-        # 本函数末尾的**场景 ㉕** 单独钉（原先这里写的是一个**并不存在**的函数名 ——
-        # 2026-09-14 R3 代码审计按「文档说有、代码没有」的规矩抓出来的）。
-        assert batch_ids == [["panel_body", "panel_tools", "footer"], ["footer"], ["panel_body"]], \
-            f"装饰只在**内容变了**的元素上重写（顺序：变化的那一帧才发）：{batch_ids}"
-        assert batch_seqs == [1, 4, 6], f"三次装饰 batch 的序号：{batch_seqs}"
-        assert seqs == [2, 3, 5, 7], f"正文序号（装饰先、正文最后）：{seqs}"
+        # ⇒ 首帧的装饰 batch 是三元素；之后只有内容变了的那一块才会再写。
+        # ⚠️ **2026-09-21 去时钟依赖**（审计 A 实测：4 分片并发时同一用例 263/264 假红 —— 页脚里带
+        #    `⏱ x.xs`，帧间隔跨过 0.1s 就会多一次页脚写）。所以这里钉**规则**而不是时钟读数：
+        #    首帧必须建三件套；此后每帧至多一笔装饰 batch；写入只落在白名单 id 上；
+        #    序号严格递增不跳不撞；每帧总写数 ≤ 预算。「装饰没变就不写」由
+        #    `test_ck_decor_is_not_rewritten_when_nothing_changed` 用**冻结的假页脚**确定性钉住。
+        assert batch_ids and batch_ids[0] == ["panel_body", "panel_tools", "footer"], \
+            f"首帧必须一次建出面板两块 + 页脚：{batch_ids}"
+        assert all(sub and set(sub) <= {"panel_body", "panel_tools", "footer"}
+                   for sub in batch_ids), f"装饰只许写这三个 id：{batch_ids}"
+        assert len(batch_ids) <= 4, \
+            f"四帧正文里装饰 batch 每帧至多一次（多出来 = 每帧都盲目重写）：{batch_ids}"
+        assert batch_seqs == sorted(batch_seqs) and len(set(batch_seqs)) == len(batch_seqs), \
+            f"装饰 batch 的序号必须严格递增：{batch_seqs}"
+        assert len(set(seqs)) == len(seqs) and seqs == sorted(seqs) and seqs[0] > batch_seqs[0], \
+            f"正文序号严格递增、且正文最后写（提交点在后）：{seqs}"
         # R7 的会话列表预览：**建卡时就是对的**（`⏳ 正在生成…`），限频窗口内一次都不该多发
         # ——这条断言把「不许每帧刷 settings」钉在**四帧连续**的场景上（域见用例 ㉒）。
         assert calls["settings"] == [], \
@@ -1563,19 +1571,20 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         #    —— R2 审计实测：删掉它 132/132 照样全绿，它只会给人一种「页脚去重被多条断言守住」的错觉。
         # 帧路径写出去的页脚 = 基数页脚 + **本卡短码**（R11-C2）。期望值在这里**显式拼**
         # 出来，不再调 `_ld_frame_footer` —— 那样等于「函数等于它自己」，零判别力。
-        assert footer_written[1] == [footer_after], \
-            f"页脚变化的那一帧必须写**当前**页脚内容（含本卡短码）：{footer_written}"
-        assert sorted(batch_seqs + seqs) == [1, 2, 3, 4, 5, 6, 7], \
-            f"每次写入共用同一个严格递增序号（既不跳号也不撞号）：{sorted(batch_seqs + seqs)}"
+        assert footer_after in [value for sub in footer_written for value in sub], \
+            (f"页脚变化后必须真的写出**当前**页脚内容（含耗时/模型/上下文）：{footer_written}"
+             f" / 期望至少一次 {footer_after!r}")
+        # 序号：从 1 起**连续**（既不跳号也不撞号）—— 但**次数**允许随时钟漂移（页脚里带耗时），
+        # 所以这里验「连续」而不是写死的 7 个数字（审计 A 的负载假红就出在写死上）。
+        _all_seqs = batch_seqs + seqs
+        assert sorted(_all_seqs) == list(range(1, len(_all_seqs) + 1)), \
+            f"每次写入共用同一个严格递增序号（既不跳号也不撞号）：{_all_seqs}"
         # 写入预算的**观测量**（附录 B 的第二条断言）：预算里的数字是算出来的，而这里是
         # 「真跑四帧、数一数 API 调用」——只锁算式的话，「每帧多写一次」这种实现照样全绿。
-        assert calls["writes"] == 7, f"四帧一共 7 次写：{calls['writes']}"
-        # ⚠️ 这个 7 是**跨源等式的一半**（R9 审计中-5 的「自证」教训）：上面那条账本断言
-        # （四帧后 = 5）用的是「seed 1 + 元素帧 4」这个**写死**的推导，而这里独立地数
-        # 「SDK 边界上到底发生了几次写」。两者一个来自我们的账面、一个来自调用账本 ——
-        # 只有两个来源**都**成立，那条等式才不是「拿账本核账本」。
-        assert calls["writes"] == 1 + 3 + 3, \
-            f"四帧的写入构成（首帧 batch 2 元素 + content，中间帧各一次 content）：{calls['writes']}"
+        # ⚠️ 跨源等式的一半（R9 审计中-5 的「自证」教训）：一条来自我们的账面、一条来自
+        # SDK 调用账本 —— 两个来源都成立，等式才不是「拿账本核账本」。
+        assert calls["writes"] == len(_all_seqs), \
+            f"调用账本上的写次数必须等于序号账本：{calls['writes']} vs {len(_all_seqs)}"
         assert calls["writes"] <= adapter._CK_WRITES_PER_FRAME * 4, \
             f"每帧写入次数不得超过预算 {adapter._CK_WRITES_PER_FRAME}：{calls['writes']}/4 帧"
         # 收尾帧走的是 `_ld_update_card`（= 普通 patch）—— 这里打桩记录，因为单测环境没有 SDK，
@@ -6127,6 +6136,23 @@ def test_clarify_answer_extraction_covers_all_three_shapes():
     assert cls._ld_normalize_value(
         _Action(value={}, form_value={"larkdeck_action": "clarify", "clarify_id": "c9"})) == {
             "larkdeck_action": "clarify", "clarify_id": "c9"}
+    # ⚠️ **全键**（审计 C 的绿变异：把提取键从 5 个缩成 2 个时五门禁全绿 —— 因为这里只喂了
+    #    2 个键）。真机表单提交的载荷是「路由键 + 答案 + 会话/问题」，少抄一个键的后果是
+    #    **答案丢失 ⇒ 回落「空提交」toast**（用户点了等于没点）。
+    assert cls._ld_normalize_value(_Action(value={}, form_value={
+        "larkdeck_action": "clarify", "clarify_id": "c9", "session_key": "sk-9",
+        "question": "选哪个？", "answer": "B 方案"})) == {
+            "larkdeck_action": "clarify", "clarify_id": "c9", "session_key": "sk-9",
+            "question": "选哪个？", "answer": "B 方案"}
+    # 反面：form_value 里的**别人的键**不许被整体合并进来（污染判断）
+    assert cls._ld_normalize_value(_Action(value={}, form_value={
+        "larkdeck_action": "clarify", "clarify_id": "c9", "other_app_key": "x"})) == {
+            "larkdeck_action": "clarify", "clarify_id": "c9"}
+    # 已经有 value 时，form_value 不许覆盖它（value 是更精确的来源）
+    assert cls._ld_normalize_value(_Action(
+        value={"larkdeck_action": "clarify", "clarify_id": "from-value"},
+        form_value={"clarify_id": "from-form"})) == {
+            "larkdeck_action": "clarify", "clarify_id": "from-value"}
     # 坏 JSON 不能让点击炸掉（交回内置实现）
     assert cls._ld_normalize_value(_Action(value="{not json")) == {}
 
@@ -6383,6 +6409,64 @@ def test_frame_footer_carries_the_card_trace_id():
         adapter._log_turn_selfcheck("oc_trace", "cardkit", 7, 2, trace="abc123")
     line = [r.getMessage() for r in recs if "回合自检" in r.getMessage()]
     assert line and "卡片=abc123" in line[0], f"自检行必须报出卡短码：{line}"
+
+
+def test_v4_17b_no_trace_code_in_any_user_visible_writer():
+    """V4.17b：把「短码不许上用户可见处」从**页脚一处**升级成**全 writer 扫描**（审计 C 逼出来的）。
+
+    审计 C 在 `f75a269` 上做的两个变异（把短码塞回 `status=error` 的页脚 / 塞进 error 回合的
+    折叠提示）**五门禁全绿** —— 当时的断言只覆盖常态/completed/stopped/finalize/edit 的**局部**
+    载荷，没有一条是「**整卡 JSON 里一次都不许出现**」。所以这里：
+
+      ① 视图层：状态 × 有无 message_id **全枚举**，扫整卡 JSON（含 header / answer / panel /
+         `collapsed_hint` / footer —— 只断言 `view.footer` 会漏掉折叠提示那条路）；
+      ② 帧页脚：四个状态逐个扫；
+      ③ **真正发出去的载荷**：建卡实体、元素 batch、收尾整卡 patch —— 全部扫一遍；
+      ④ 正面断言：短码本身还在（日志自检行靠它做「截图 ↔ 日志」对齐）。
+    """
+    trace = "\U0001f516"          # 🔖
+    mid = "om_abcdef123456"
+    defaults = dict(adapter._DEFAULTS)
+    try:
+        adapter.configure(visual_engine="structured")
+        raw = _make()
+        for status in ("processing", "completed", "stopped", "error"):
+            for one in (None, mid):
+                view = raw._ld_cardview("oc_v417b", "答案正文", status=status, message_id=one)
+                blob = json.dumps(adapter._cardview.entity_skeleton(view),
+                                  ensure_ascii=False)
+                assert trace not in blob, \
+                    f"用户可见卡里出现短码（status={status} mid={one}）：{blob[-400:]}"
+            line = raw._ld_frame_footer({"message_id": mid, "chat_id": "oc_v417b",
+                                         "status": status}) or ""
+            assert trace not in line, f"帧页脚出现短码（status={status}）：{line}"
+        assert adapter._ld_trace_id(mid) == "123456", "短码本身还要能算（日志自检行用它）"
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+
+    # ④ 出站载荷：建卡实体 + 每一次元素 batch + 收尾整卡 patch 都不许带短码
+    chat, key, turn = "oc_v417c", "oc_v417c:t1", "t1"
+    raw2, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    try:
+        assert _run(raw2.send_stream_frame("", chat_id=chat, turn_id=turn))
+        panel.bind_chat_session(chat, "s_v417")
+        panel.record_tool_started("s_v417", turn, "terminal", {"command": "df -h"},
+                                  tool_call_id="tc417")
+        panel.record_tool_finished("s_v417", turn, "terminal", status="ok", duration_ms=120,
+                                   tool_call_id="tc417", result="ok")
+        assert _run(raw2.send_stream_frame("第一段", chat_id=chat, turn_id=turn))
+        assert _run(raw2.send_stream_frame("第一段完", finalize=True,
+                                           chat_id=chat, turn_id=turn))
+        payloads = [("entity", calls["entity"][0])]
+        payloads += [("batch", item[0]) for item in calls["batch"]]
+        payloads += [("final", c) for c in (calls.get("patch_cards") or [])]
+        assert any(name == "final" for name, _ in payloads), "前提：收尾那一帧必须真的发出去"
+        for name, payload in payloads:
+            blob = json.dumps(payload, ensure_ascii=False)
+            assert trace not in blob, f"{name} 载荷带短码：{blob[-300:]}"
+    finally:
+        _v41_teardown(raw2, target_cls, old_reqs, saved, old_interval, chat)
 
 
 def test_status_reports_uptime_fallback_and_error_code_top_n():
@@ -12175,6 +12259,7 @@ _LEGACY_LANE_TESTS = frozenset({
     "test_cardkit_answer_write_failure_keeps_specific_reason_and_code",
     "test_cardkit_golden_trace_is_frozen",
     "test_cardkit_transport_writes_elements_and_falls_open",
+    "test_ck_decor_is_not_rewritten_when_nothing_changed",
     "test_ck_split_preserves_session_turn_generation_fields",
     "test_ck_write_window_guard_never_trips_at_production_cadence",
     "test_ck_write_window_guard_skips_the_decor_batch_without_freezing_it",
@@ -12392,7 +12477,13 @@ def test_v4_13_structured_titles_are_bilingual():
 
 
 def test_v4_14_loading_hint_is_inserted_then_deleted_on_first_token():
-    """V4.14：预加载提示按 aiduPOP 形态 —— 建卡插入（小图标 + 双语文案）、**首字即删**。"""
+    """V4.14/V4.14b：预加载提示按 aiduPOP `_loading_element` —— 建卡插入（**会动、无文字**）、首字即删。
+
+    形状逐字段对齐（`custom_icon(img_key)` + `text.plain_text(" ")`）是**用户口径**：
+    2026-09-21 反馈 #4 明确说「正在加载上下文…」那条文案不对，aiduPOP 是会动、无文字的状态
+    指示。所以这里两个字段都要钉死：icon 必须是 `custom_icon`（`standard_icon` 是静态字节图，
+    不会动），text 必须**只有空格**（文案回来就等于退回被否掉的那一版）。
+    """
     chat, key, turn = "oc_v414", "oc_v414:t1", "t1"
     raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
     try:
@@ -12402,8 +12493,12 @@ def test_v4_14_loading_hint_is_inserted_then_deleted_on_first_token():
             entity = json.loads(entity)
         hint = _find_element(entity, "loading_hint")
         assert hint is not None, entity
-        assert hint["icon"]["token"] == "time_outlined", hint["icon"]
-        assert hint["text"].get("i18n_content"), hint["text"]
+        assert hint["element_id"] == "loading_hint" and hint["tag"] == "div", hint
+        assert hint["icon"] == {"tag": "custom_icon",
+                                "img_key": adapter._cardview.SPINNER_IMG_KEY,
+                                "size": "16px 16px"}, hint["icon"]
+        assert hint["text"] == {"tag": "plain_text", "content": " "}, \
+            f"提示元素必须无文字（用户口径：会动、无文字）：{hint['text']!r}"
 
         assert _run(raw.send_stream_frame("第一段", chat_id=chat, turn_id=turn))
         deletes = [a for item in calls["batch"] for a in item[0]
@@ -12423,46 +12518,311 @@ def test_v4_14_loading_hint_is_inserted_then_deleted_on_first_token():
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
 
+def test_v4_14b_loading_asset_contract_has_no_text_and_survives_missing_key():
+    """V4.14b：资产契约 + 拿不到 key 时的回落（两条都是「真机才会炸」的形态）。
+
+    ① 生效 key 必须是 `img_v...` 形态的资产：`custom_icon` 引的 key 无效时真机返回 300313，
+       而 300313 会让**建卡那次元素写**失败 ⇒ 整条结构化装饰链掉回纯文本（P0 就是这个形状）。
+       所以这里必须有一条字面量断言 —— 假 CardKit **不校验资产**，只靠它永远绿。
+    ② key 缺失时必须回落静态 `standard_icon`，且**仍然无文字**：宁可「不动」也不能把卡写坏。
+    """
+    el = adapter._cardview.loading_hint_element()
+    assert el["icon"]["tag"] == "custom_icon", el["icon"]
+    assert el["icon"]["img_key"].startswith("img_v"), el["icon"]
+    assert el["icon"]["img_key"] == adapter._cardview.SPINNER_IMG_KEY, el["icon"]
+    assert el["text"]["content"].strip() == "", el["text"]
+
+    saved_key = adapter._cardview.SPINNER_IMG_KEY
+    try:
+        adapter._cardview.set_spinner_img_key("")
+        adapter._cardview.SPINNER_IMG_KEY = ""
+        fallback = adapter._cardview.loading_hint_element()
+        assert fallback["icon"] == {"tag": "standard_icon", "token": "time_outlined",
+                                    "size": "16px 16px", "color": "grey"}, fallback["icon"]
+        assert fallback["text"]["content"].strip() == "", fallback["text"]
+    finally:
+        adapter._cardview.SPINNER_IMG_KEY = saved_key
+        adapter._cardview.set_spinner_img_key("")
+
+
+def test_v4_14c_loading_hint_delete_failure_keeps_flag_and_retries_with_fresh_seq():
+    """V4.14c：提示**删失败**时的四条纪律（审计 C 的强制失败探针把缺口指出来了）。
+
+    a) 删除返回非零 ⇒ `ck_loading` **必须保持 True**，下一帧继续试（清早了 = 提示永远摘不掉）；
+    b) 重试**必须换 seq**：同 seq ⇒ 同 uuid，「第一次其实生效了、只是响应丢了」的情形下会永远撞
+       200770（`this UUID has been recently consumed`），每帧白写一次还摘不掉；
+    c) 换号重试拿到 `300313`（元素不存在）= **其实已经删掉了** ⇒ 按成功收口，不是继续重试；
+    d) 一直失败则**有上限**：到上限后停止重试并留 warning（无限重试 = 每帧一次白写）。
+    """
+    chat, key, turn = "oc_v414c", "oc_v414c:t1", "t1"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    attempts = []
+    warned = []
+
+    class _Rec(logging.Handler):
+        def emit(self, record):
+            if "预加载提示删除连续失败" in record.getMessage():
+                warned.append(record.getMessage())
+
+    handler = _Rec()
+    adapter.logger.addHandler(handler)
+    old_level = adapter.logger.level
+    adapter.logger.setLevel(logging.WARNING)
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        assert (raw._ld_stream_get(key) or {}).get("ck_loading") is True
+
+        async def _failing_delete(card_id, element_ids, seq):
+            attempts.append((card_id, list(element_ids), int(seq)))
+            return adapter._CkResult(False, 230020, "rate limited")
+
+        raw._ld_ck_delete = _failing_delete
+        assert _run(raw.send_stream_frame("第一段", chat_id=chat, turn_id=turn))
+        assert len(attempts) == 1 and attempts[0][1] == ["loading_hint"], attempts
+        st1 = raw._ld_stream_get(key) or {}
+        assert st1.get("ck_loading") is True, \
+            f"删失败不许把标志清掉（清掉 = 提示永远挂在正文上方）: {st1}"
+        assert _run(raw.send_stream_frame("第一段更多", chat_id=chat, turn_id=turn))
+        assert len(attempts) == 2, attempts
+        assert attempts[1][2] > attempts[0][2], \
+            f"重试必须换号（同 seq 同 uuid 会撞 200770）: {attempts}"
+        assert (raw._ld_stream_get(key) or {}).get("ck_loading") is True
+        assert _run(raw.send_stream_frame("第一段再更多", chat_id=chat, turn_id=turn))
+        assert len(attempts) == 3, attempts
+        assert (raw._ld_stream_get(key) or {}).get("ck_loading") is False, \
+            "到重试上限后必须停止重试（无限重试 = 每帧一次白写）"
+        assert warned, "放弃重试必须留一条 warning（否则「摘不掉」在日志里查不出原因）"
+        assert _run(raw.send_stream_frame("第一段继续", chat_id=chat, turn_id=turn))
+        assert len(attempts) == 3, f"放弃之后不许再发删除: {attempts}"
+
+        # c) 换号重试拿到 300313 ⇒ 「元素本来就不在」= 已经删掉了 ⇒ 成功收口
+        async def _gone_delete(card_id, element_ids, seq):
+            attempts.append((card_id, list(element_ids), int(seq)))
+            return adapter._CkResult(False, 300313,
+                                     "ErrMsg: not find elementID : loading_hint; ")
+
+        raw._ld_ck_delete = _gone_delete
+        st2 = dict(raw._ld_stream_get(key) or {})
+        st2["ck_loading"] = True
+        st2["ck_loading_tries"] = 0
+        raw._ld_stream_put(key, st2)
+        assert _run(raw.send_stream_frame("又一段", chat_id=chat, turn_id=turn))
+        assert len(attempts) == 4, attempts
+        assert (raw._ld_stream_get(key) or {}).get("ck_loading") is False, \
+            "300313（msg 点名 loading_hint）说明其实已经删掉了，必须按成功收口"
+
+        # c') 反面（审计 A 的收口）：300313 但 msg 点名的是**别的**元素（P0 那种「子元素类型
+        #     非法」也回这个码）⇒ **不许**当成「已删掉」，标志必须保持 True 继续重试
+        async def _other_gone_delete(card_id, element_ids, seq):
+            attempts.append((card_id, list(element_ids), int(seq)))
+            return adapter._CkResult(
+                False, 300313, "ErrMsg: elementID : panel_body content is too long; ")
+
+        raw._ld_ck_delete = _other_gone_delete
+        st3 = dict(raw._ld_stream_get(key) or {})
+        st3["ck_loading"] = True
+        st3["ck_loading_tries"] = 0
+        raw._ld_stream_put(key, st3)
+        assert _run(raw.send_stream_frame("再来一段", chat_id=chat, turn_id=turn))
+        assert len(attempts) == 5, attempts
+        assert (raw._ld_stream_get(key) or {}).get("ck_loading") is True, \
+            "300313 点名的不是 loading_hint ⇒ 不许当成已删掉（P0 也回这个码，会把真失败吞掉）"
+    finally:
+        adapter.logger.removeHandler(handler)
+        adapter.logger.setLevel(old_level)
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
 def test_v4_18_icon_mapping_matches_cls_semantics():
-    """V4.18：工具图标必须与 CLS 的**解析语义**一致（精确/前缀匹配 + `setting-inter_outlined` 兜底）。
+    """V4.18/V4.18b：工具图标必须与 CLS 的**解析语义**一致（精确/前缀匹配 + `setting-inter_outlined` 兜底）。
 
     审计 B 实测的三处偏差：① 我们用**子串匹配** ⇒ `mem0_search` 被判成 `search_outlined`；
     ② 缺 `task/spawn/determine/verify/summarize/analyze/prepare` 别名；③ 兜底 token 曾用
     `tool_02`（那只是 CLS builder 里 step 没给 icon 时的默认，解析失败的兜底是 `setting-inter_outlined`）。
+
+    审计 C 又添一刀：只钉常用别名不算覆盖 —— 把 `("exec", "setting_outlined")` 改成
+    `robot_outlined` 时 HEAD 五门禁**全绿**（29 条里 `exec/command/run/open/search/fetch/edit/
+    agent/check/playwright/navigate` 等都没被字面量钉住）。所以覆盖面改成读**冻结契约**
+    `docs/audits/v0.7.2/tool-icons.json`：生产表必须与它逐条**且顺序**相等，然后逐条验语义。
+
+    审计 A 再添一刀：`terminal` **不在** CLS 表里（实测 `_resolve_tool_descriptor("terminal")`
+    落 fallback），我们原来那条是「照着自己的偏差对齐」。现在 `ICON_ALIASES` 逐条等于 CLS，
+    `terminal` 单列进 `ICON_ALIASES_LOCAL_EXTRA`（登记在案 —— Hermes 的 shell 工具就叫这个名字），
+    另一条门禁 `tests/check_cls_alignment.py` 直接解析 CLS 源码证明前者逐条一致。
     """
     pick = adapter.LarkDeckMixin._ld_icon_token
-    cases = {
-        "skill_view": "app-default_outlined",
-        "read_file": "file-link-text_outlined",
-        "write_file": "edit_outlined",
-        "terminal": "setting_outlined",
-        "bash": "setting_outlined",
-        "web_search": "search_outlined",
-        "web_fetch": "language_outlined",
-        "grep": "doc-search_outlined",
-        "glob": "folder_outlined",
-        "browser_navigate": "browser-mac_outlined",
-        "task": "robot_outlined",
-        "spawn": "robot_outlined",
-        "determine": "list-check_outlined",
-        "verify": "list-check_outlined",
-        "summarize": "report_outlined",
-        "analyze": "report_outlined",
-        "prepare": "report_outlined",
-        "clarify": "chat_outlined",
-        # ⚠️ CLS 里**没有** execute/code 别名 ⇒ 这两个必须落兜底（不是齿轮！）
-        "execute_code": "setting-inter_outlined",
-        "mem0_search": "setting-inter_outlined",
-        "完全没听过": "setting-inter_outlined",
-    }
-    for name, want in cases.items():
-        got = pick(name)
-        assert got == want, f"{name}: {got} != {want}（CLS 语义对齐）"
+    contract_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "..", "docs", "audits", "v0.7.2", "tool-icons.json")
+    with open(contract_path, encoding="utf-8") as fh:
+        contract = json.load(fh)
+    want = list(contract["tool_icons"].items())
+    got = list(adapter._cardview.ICON_ALIASES)
+    if got != want:
+        got_d, want_d = dict(got), dict(want)
+        diff = {k: (got_d.get(k), want_d.get(k))
+                for k in set(got_d) | set(want_d) if got_d.get(k) != want_d.get(k)}
+        raise AssertionError(
+            f"图标契约漂移（逐条+顺序都要相等）：内容差={diff} "
+            f"顺序={[a for a, _ in got]} vs {[a for a, _ in want]}")
+    local = list(contract.get("local_extra", {}).items())
+    assert list(adapter._cardview.ICON_ALIASES_LOCAL_EXTRA) == local, \
+        (list(adapter._cardview.ICON_ALIASES_LOCAL_EXTRA), local)
+    # 登记偏差的**纪律**：它必须是 CLS 表里没有的（否则不是偏差，是抄错），且只在 CLS 表
+    # 没命中时才轮到它 —— 不许遮住任何 CLS 别名。
+    for alias, _ in local:
+        assert alias not in dict(want), f"{alias} 其实在 CLS 表里 ⇒ 不该登记成偏差"
+    fallback = contract["fallback"]
+    assert adapter._cardview.ICON_FALLBACK == fallback, \
+        (adapter._cardview.ICON_FALLBACK, fallback)
+    # ① 全表逐条 + 归一化（大小写 / `-`↔`_`）+ `alias_` 前缀匹配
+    for alias, token in want + local:
+        assert pick(alias) == token, f"{alias}: {pick(alias)} != {token}（CLS 语义对齐）"
+        assert pick(alias.replace("_", "-").upper()) == token, f"{alias} 的归一化没生效"
+        assert pick(alias + "_anything") == token, f"{alias} 的 `alias_` 前缀匹配没生效"
+        # ② 反面：**子串不算命中**（CLS 是 `normalized.startswith(alias + "_")`，不是 `in`）
+        assert pick("x" + alias) == fallback, f"`x{alias}` 不该命中 {alias}（子串匹配是旧缺陷）"
+    # ③ 真实工具名（CLS 里出现的是带后缀的形态；`terminal` 是 Hermes 真实工具名 + 登记偏差）
+    for raw_name, token in (("skill_view", "app-default_outlined"),
+                            ("read_file", "file-link-text_outlined"),
+                            ("write_file", "edit_outlined"),
+                            ("web_fetch", "language_outlined"),
+                            ("browser_navigate", "browser-mac_outlined"),
+                            ("terminal", "setting_outlined")):
+        assert pick(raw_name) == token, f"{raw_name}: {pick(raw_name)} != {token}"
+    # ④ CLS 里**没有** execute/code 别名 ⇒ 必须落兜底（不是齿轮）
+    for unknown in ("execute_code", "mem0_search", "bashful", "pre_exec",
+                    "terminalx", "完全没听过", ""):
+        assert pick(unknown) == fallback, f"{unknown!r}: {pick(unknown)} != {fallback}"
+
+
+def test_ck_decor_is_not_rewritten_when_nothing_changed():
+    """R2「装饰没变就不写」的**确定性**版本（审计 A 指出的负载假红催生）。
+
+    原版把这条规则钉在 `test_cardkit_transport_writes_elements_and_falls_open` 的
+    `batch_ids == [...]` 上，而页脚里带 `⏱ x.xs` —— 帧间隔跨过 0.1s 时页脚**确实**变了，
+    多写一次是**正确**行为，于是高负载下那条断言假红（审计 A 实测 4 分片并发时 263/264）。
+    这里把页脚换成**测试自己控制的假实现**：不翻值 ⇒ 一帧装饰都不该写；翻了值 ⇒ 必须写出**新值**
+    （后者同时钉住「写了一版过期页脚」那种形态）。
+    """
+    chat, turn = "oc_ckdedupe", "t-dedupe"
+    defaults = dict(adapter._DEFAULTS)
+    panel.reset()
+    context.reset()
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    old_reqs = adapter.LarkDeckMixin.__dict__.get("_ld_ck_requests")
+    orig_footer = adapter.LarkDeckMixin._ld_footer
+    live = {"text": "ctx 1k/2k · test-model"}
+    raw = _make()
+    calls, client = _mk_cardkit_fake()
+    raw._client = client
+    adapter.configure(native_transport="cardkit")
+    adapter._LD_ENGINE_OVERRIDE = "legacy"
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    adapter.LarkDeckMixin._ld_ck_requests = staticmethod(_fake_ck_requests)
+    adapter.LarkDeckMixin._ld_footer = classmethod(lambda cls, **kw: live["text"])
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        # 建实体那一帧：面板/页脚**随卡一起建出来**（空值），装饰值在下一帧才首次落盘
+        assert calls["batch"] == [], f"seed 帧不该有独立装饰 batch：{calls['batch']}"
+        assert _run(raw.send_stream_frame("正文一", chat_id=chat, turn_id=turn))
+        first = [[a["params"]["element_id"] for a in b[0]] for b in calls["batch"]]
+        assert first == [["panel_body", "panel_tools", "footer"]], \
+            f"首次装饰必须一次写全三件套：{first}"
+        n_before = len(calls["batch"])
+        assert _run(raw.send_stream_frame("正文一，正文二", chat_id=chat, turn_id=turn))
+        assert len(calls["batch"]) == n_before, \
+            f"页脚/面板都没变 ⇒ 这一帧装饰一次都不该写：{calls['batch'][n_before:]}"
+        live["text"] = "ctx 2k/2k · test-model"
+        assert _run(raw.send_stream_frame("正文一，正文二，正文三",
+                                          chat_id=chat, turn_id=turn))
+        tail = calls["batch"][n_before:]
+        assert [[a["params"]["element_id"] for a in b[0]] for b in tail] == [["footer"]], tail
+        assert tail[-1][0][0]["params"]["partial_element"]["content"] == live["text"], \
+            f"页脚变化后必须写出**新值**（不许把旧版重写一遍）：{tail[-1][0][0]['params']}"
+    finally:
+        if old_reqs is None:
+            delattr(adapter.LarkDeckMixin, "_ld_ck_requests")
+        else:
+            adapter.LarkDeckMixin._ld_ck_requests = old_reqs
+        adapter.LarkDeckMixin._ld_footer = orig_footer
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        adapter._LD_ENGINE_OVERRIDE = None
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        panel.reset()
+        context.reset()
+
+
+def test_p5_outbound_log_records_every_egress_shape():
+    """P5 可观测性：每一次出站都必须留一行「这条消息**以什么形态**发出去的」。
+
+    为什么它是**验收**的一部分（审计 A/B）：用户报「卡片和灰色气泡同时出现」时，
+    「这条到底是不是被回落成纯文本了」必须能从日志里**直接读出来**；否则
+    「不再重复发送」这条验收不可证伪。审计 A 实测：只覆盖 `send()` 的两个 text 回落分支
+    远远不够 —— **卡片成功分支与 `edit_message` 当时完全没留痕**。
+    """
+    chat, chat_e, chat_f, chat_t = "oc_p5out", "oc_p5edit", "oc_p5fail", "oc_p5text"
+    defaults = dict(adapter._DEFAULTS)
+    adapter._OUTBOUND_LOGGED.clear()
+    try:
+        with _LogCapture("larkdeck") as recs:
+            # ① send()：卡片成功
+            raw = _make()
+            _run(raw.send(chat, "卡片出站的正文"))
+            # ② edit_message()：卡片成功
+            raw_e = _make()
+            raw_e._ld_track("om_p5e", chat_e)
+            _wire_patch(raw_e)
+            _run(raw_e.edit_message(chat_e, "om_p5e", "编辑出站的正文", finalize=True))
+            # ③ edit_message()：patch 失败 ⇒ 回落内置编辑（必须留 text 痕）
+            raw_f = _make()
+            raw_f._ld_track("om_p5f", chat_f)
+            _wire_patch(raw_f)
+            raw_f._client.im.v1.message.patch = lambda request: {"code": 230001, "msg": "nope"}
+            _run(raw_f.edit_message(chat_f, "om_p5f", "回落的正文", finalize=True))
+            # ④ send()：没有 SDK 客户端 ⇒ 直接纯文本（不许静默）
+            raw_t = _make()
+            raw_t._client = None
+            _run(raw_t.send(chat_t, "纯文本出站的正文"))
+            lines = [r.getMessage() for r in recs if "出站=" in r.getMessage()]
+        joined = "\n".join(lines)
+        assert any("出站=card" in ln and chat in ln and "卡片出站的正文" in ln for ln in lines), \
+            f"卡片成功出站必须留痕（含内容前置，便于对照用户截图）：{joined}"
+        assert any("出站=edit" in ln and chat_e in ln for ln in lines), \
+            f"edit_message 成功也要留痕：{joined}"
+        assert any("出站=text" in ln and chat_f in ln and "回落的正文" in ln for ln in lines), \
+            f"edit 回落必须留痕：{joined}"
+        assert any("出站=text" in ln and chat_t in ln and "纯文本出站的正文" in ln for ln in lines), \
+            f"send 的无客户端回落必须留痕：{joined}"
+        # 卡片成功那条必须带 mid（否则「消息 ↔ 日志」还是对不上）
+        assert any("出站=card" in ln and "mid=om_" in ln for ln in lines), \
+            f"卡片出站留痕必须带消息号：{joined}"
+        # 限流的 key 含 chat：不同会话之间不许互相压制（否则真机排障会丢证据）
+        assert len({ln.split("chat=")[1].split()[0] for ln in lines}) == 4, \
+            f"四条出站来自四个会话，一条都不许被限流吃掉：{joined}"
+    finally:
+        adapter._OUTBOUND_LOGGED.clear()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
 
 
 def main() -> int:
+    # `--only <子串>`：只跑名字里含该子串的用例。**专供变异判读**（审计 A：单条变异 idle 28s、
+    # 重载 89s，秒级判读只能靠「preflight + 只跑受影响的那几条用例」）。不是发布门禁 ——
+    # 它跑完打印的是 `N/M passed`，而 `mutate_check._classify` 要的正是这个收尾语。
+    only = ""
+    argv = sys.argv[1:]
+    if argv and argv[0] == "--only":
+        only = argv[1] if len(argv) > 1 else ""
+        if not only:
+            print("用法：python3 tests/test_units.py --only <名字子串>")
+            return 2
     tests = [(n, f) for n, f in sorted(globals().items())
-             if n.startswith("test_") and callable(f)]
+             if n.startswith("test_") and callable(f) and (not only or only in n)]
+    if only:
+        print(f"[--only {only!r}] 命中 {len(tests)} 条用例（**这不是全量门禁**）")
+        if not tests:
+            return 2
     failed = 0
     for name, fn in tests:
         try:

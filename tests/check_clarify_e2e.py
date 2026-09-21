@@ -150,7 +150,6 @@ async def scenario():
                        operator=NS(open_id="ou_zayn"),
                        context=NS(open_message_id="om_e2e_1", chat_id="oc_test")))
     resp = adapter._on_card_action_trigger(data)
-    await asyncio.sleep(0.3)
 
     answer = cg.wait_for_response(cid, 2.0)
     check(answer == "A 方案", f"网关 waiter 被解除阻塞并拿到答案（实得 {answer!r}）")
@@ -178,7 +177,6 @@ async def scenario():
                         operator=NS(open_id="ou_zayn"),
                         context=NS(open_message_id="om_e2e_2", chat_id="oc_test")))
     adapter._on_card_action_trigger(data2)
-    await asyncio.sleep(0.3)
 
     check(getattr(entry2, "awaiting_text", None) is True,
           "点『其他』后转为等待用户输入文字")
@@ -219,7 +217,6 @@ async def scenario():
                             operator=NS(open_id="ou_zayn"),
                             context=NS(open_message_id="om_e2e_3", chat_id="oc_test")))
         resp_2 = adapter._on_card_action_trigger(click)
-        await asyncio.sleep(0.3)
         check(cg.wait_for_response(cid3, 2.0) == "B 方案",
               "2.0 单选的 action.option 能真正解除网关阻塞（走真判据）")
 
@@ -288,7 +285,6 @@ async def scenario():
                              operator=NS(open_id="ou_zayn"),
                              context=NS(open_message_id="om_e2e_4", chat_id="oc_test")))
         adapter._on_card_action_trigger(click4)
-        await asyncio.sleep(0.3)
         got4 = cg.wait_for_response(cid4, 2.0)
         check(got4 is not None, f"2.0 多选没能解除阻塞（实得 {got4!r}）")
         # 用**工具侧自己的解码器**验证答案 —— 这才是下游真正消费的形态，
@@ -315,7 +311,6 @@ async def scenario():
                              operator=NS(open_id="ou_zayn"),
                              context=NS(open_message_id="om_e2e_5", chat_id="oc_test")))
         adapter._on_card_action_trigger(click5)
-        await asyncio.sleep(0.3)
         check(cg._entries[cid_old].event.is_set() is False,
               "输入框的答案被解到了**另一个**澄清上（假确认 + 错答案）")
         check(cg._entries[cid_new].event.is_set() is True,
@@ -338,11 +333,46 @@ async def scenario():
                              operator=NS(open_id="ou_zayn"),
                              context=NS(open_message_id="om_e2e_6", chat_id="oc_test")))
         adapter._on_card_action_trigger(click6)
-        await asyncio.sleep(0.3)
         check(cg._entries[cid_prose].event.is_set() is True,
               "输入框里的散文没有被接受（打了字、回车、什么都没发生）")
         check(cg._entries[cid_prose].response == "我想先观察一下再说",
               f"散文答案被改写了：{cg._entries[cid_prose].response!r}")
+        # —— 表单提交（官方按钮 `form_action_type: submit`）：`action.value` **是空的**，
+        #    路由键与答案都只在 `action.form_value` 里（官方 `card-callback-communication.md`
+        #    41-49；FC/aiduPOP 都是这个形态）。这里用**真 SDK payload 类**构造事件 ——
+        #    与真机 WS 反序列化出来的对象同源（审计 C 实测：合成 `SimpleNamespace` 抓不到
+        #    「字段名写错」，而字段名写错 = 用户点了没反应）。
+        from lark_oapi.event.callback.model.p2_card_action_trigger import (
+            P2CardActionTrigger as _REAL_EVENT)
+        cid_form, skey_form = "cid-e2e-form", "sk-form"
+        cg.register(cid_form, skey_form, "表单提交要选哪个？", ["A 方案", "B 方案"])
+        ev_form = _REAL_EVENT({"event": {
+            "action": {"value": {},          # ⚠️ 提交按钮的 value 是**空的**
+                       "form_value": {"larkdeck_action": "clarify",
+                                      "clarify_id": cid_form,
+                                      "session_key": skey_form,
+                                      "question": "表单提交要选哪个？",
+                                      "answer": "B 方案"}},
+            "operator": {"open_id": "ou_zayn"},
+            "context": {"open_message_id": "om_e2e_form", "open_chat_id": "oc_test"},
+        }})
+        check(ev_form.event.action.value == {} and ev_form.event.action.form_value,
+              "前提：这是「value 空、答案在 form_value」的提交形态")
+        resp_form = adapter._on_card_action_trigger(ev_form)
+        # ⚠️ 顺序：先读 entry（`wait_for_response` 会在返回前**把 entry pop 掉** —— 它的
+        #    契约是「无论结果如何都清理」），再调用有界等待器；反过来的话这里会 KeyError。
+        check(cg._entries[cid_form].event.is_set() is True,
+              "表单提交后事件必须已 set（同步 handler，无需等）")
+        check(cg._entries[cid_form].response == "B 方案", "答案原值必须落到会话上下文")
+        check(cg.wait_for_response(cid_form, 2.0) == "B 方案",
+              "表单提交（答案只在 form_value）必须真正解除网关阻塞 —— 否则就是「空提交」")
+        dump_form = digest(resp_form)
+        check(resp_form.card is not None and resp_form.toast is None,
+              f"表单提交必须回执换卡（不是空提交 toast）：{dump_form[:200]}")
+        resp_form2 = adapter._on_card_action_trigger(ev_form)
+        check(resp_form2.card is None and resp_form2.toast is not None,
+              "同一条提交再点一次：只许 toast，不许把已确认退回待答")
+
     finally:
         ld_mod._CONFIG["clarify_dialect"] = "1.0"
 

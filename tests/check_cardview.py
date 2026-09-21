@@ -93,9 +93,15 @@ def _assert_token_file() -> None:
         assert key in anchors, f"visual-tokens.json 缺 element_anchors：{key}"
     assert anchors["answer"] == "answer" and anchors["panel"] == "panel"
     assert anchors["panel_body"] == "panel_body" and anchors["panel_tools"] == "panel_tools"
+    # ⚠️ v0.7.1 夹具记的是 aiduPOP 的元素 id（`loading_icon`），我们的命名空间里叫
+    #    `loading_hint` —— 它是**冻结的历史证据**、不是生产契约（v0.7.2 起由
+    #    `_assert_v072_contracts()` 把生产常量钉住，并在 docs/audits/v0.7.2/loading-asset.md 说明）。
     assert anchors["loading"] == "loading_icon"
     assert anchors["down_icon"] == "down-small-ccm_outlined"
     assert "footer_order" in data["panel_header"], "visual-tokens.json 缺 footer_order"
+    # ⚠️ 这条断言的是 **v0.7.1 的冻结记录**（当时页脚确实带短码）。用户 2026-09-21 推翻了这个口径
+    #    （「我从来没有提过这个要求」）⇒ 生产契约改在 `_assert_v072_contracts()` 里断言
+    #    「页脚**没有**短码」。历史文件不改写，所以这里保留旧值 —— 但别把它当成现行口径。
     assert data["panel_header"]["footer_order"] == [
         "status", "elapsed", "model", "context", "short_code"]
     assert data["panel_header"]["format"] == "💭 思考 {elapsed}s · 🛠️ 工具执行 · {n} 步"
@@ -165,6 +171,69 @@ def _assert_structured_builder() -> None:
     assert [e.get("element_id") for e in body] == ["answer", "panel", "footer"], body
 
 
+def _assert_v072_contracts() -> None:
+    """v0.7.2 契约：图标**全表**（28 条 CLS + 顺序 + 登记偏差 + 兜底）与页脚字段（**没有**短码）。
+
+    ⚠️ v0.7.1 的 `visual-tokens.json` 是**冻结的历史产物**（只有 14 个图标键、`footer_order`
+    里还写着 `short_code`）—— 那份记录**不许改写**（它证明当时的状态），但它**不再**是生产契约。
+    生产契约在 `docs/audits/v0.7.2/`：`tool-icons.json`（逐条 + 顺序 + `local_extra`）与
+    `footer-contract.json`。
+
+    为什么这条必须在**门禁**里而不是只在单测里：审计 C 实测把 `("exec", "setting_outlined")`
+    改成 `robot_outlined` 时五门禁全绿 —— 而 `check_cardview.py` 正是「视觉表」那道门禁，
+    它当时只比对 v0.7.1 JSON 的 14 个旧键 ⇒ 生产表怎么漂移都看不见。
+    """
+    icons = json.loads(
+        (_REPO / "docs" / "audits" / "v0.7.2" / "tool-icons.json").read_text(encoding="utf-8"))
+    prod = list(cardview.ICON_ALIASES)
+    want = list(icons["tool_icons"].items())
+    assert prod == want, f"生产图标表与冻结契约不等：{dict(prod)} != {dict(want)}"
+    assert list(cardview.ICON_ALIASES_LOCAL_EXTRA) == list(
+        icons["local_extra"].items()), cardview.ICON_ALIASES_LOCAL_EXTRA
+    assert cardview.ICON_FALLBACK == icons["fallback"], cardview.ICON_FALLBACK
+    for alias, token in want + list(icons["local_extra"].items()):
+        assert token.endswith("_outlined") and not any(ord(ch) > 0x2000 for ch in token), \
+            f"{alias}: 图标必须是 standard_icon 字符串 token，不能是 emoji：{token!r}"
+
+    foot = json.loads(
+        (_REPO / "docs" / "audits" / "v0.7.2" / "footer-contract.json").read_text(encoding="utf-8"))
+    assert foot["footer_order"] == ["status", "elapsed", "model", "context"], foot
+    assert foot["short_code_visible"] is False, foot
+    # 元素 id 的生产常量（v0.7.1 夹具里那个 `loading_icon` 是 aiduPOP 的命名，不是我们的）
+    assert cardview.LOADING_HINT_ID == "loading_hint", cardview.LOADING_HINT_ID
+
+    # 生产源码级的反面守卫：**真正的代码行**里不许再出现短码 emoji
+    # （注释与 docstring 里的历史说明不算 —— 它们正是「为什么去掉」的证据，不该被清掉）
+    for name in ("adapter.py", "cardview.py", "cards.py"):
+        code = "\n".join(_executable_lines(
+            (_REPO / "core" / name).read_text(encoding="utf-8")))
+        assert "\U0001f516" not in code, f"{name} 的代码行里又出现了短码（用户可见处不许有）"
+
+
+def _executable_lines(src: str) -> list:
+    """剥掉注释行与（多行/单行）docstring 后剩下的行 —— 只用来做源码级反面守卫。"""
+    out, in_doc, delim = [], False, ""
+    for ln in src.splitlines():
+        stripped = ln.lstrip()
+        if in_doc:
+            if delim in ln:
+                in_doc = False
+            continue
+        if stripped.startswith("#"):
+            continue
+        if (stripped.count('"""') >= 2 or stripped.count("'''") >= 2):
+            continue                      # 单行 docstring
+        for d in ('"""', "'''"):
+            idx = ln.find(d)
+            if idx != -1 and ln.count(d) == 1:
+                in_doc, delim = True, d
+                ln = ln[:idx]
+                break
+        if ln.strip():
+            out.append(ln)
+    return out
+
+
 def _assert_tool_status_literals() -> None:
     # token 表必须与生产状态映射同源核对，不能只锁 JSON 自己；键存在必须先显式断言。
     for key in ("running", "ok", "success", "error"):
@@ -191,6 +260,7 @@ def _assert_tool_status_literals() -> None:
 
 def main() -> int:
     _assert_token_file()
+    _assert_v072_contracts()
     _assert_legacy_entity_card_content()
     _assert_tool_status_literals()
     _assert_structured_builder()

@@ -48,7 +48,6 @@ ICON_ALIASES: List[Tuple[str, str]] = [
     ("bash", "setting_outlined"),
     ("command", "setting_outlined"),
     ("run", "setting_outlined"),
-    ("terminal", "setting_outlined"),
     ("browser", "browser-mac_outlined"),
     ("playwright", "browser-mac_outlined"),
     ("navigate", "browser-mac_outlined"),
@@ -67,8 +66,19 @@ ICON_ALIASES: List[Tuple[str, str]] = [
 #: 未知工具的图标 —— **CLS 的 fallback**（`tooluse.py:320`：`desc["icon"] if desc else "setting-inter_outlined"`）
 ICON_FALLBACK = "setting-inter_outlined"
 
+#: **唯一有意偏差**（审计 A v0.7.2 对齐实测：CLS `_resolve_tool_descriptor("terminal")` 落 fallback
+#: —— 它的 `Run command` 描述符只收 `exec/bash/command/run`）。但 Hermes 的 shell 工具**就叫
+#: `terminal`**（`tools/terminal_tool.py:1258`）⇒ 严格照抄 CLS 会让最常用的工具挂一个「通用」图标。
+#: 所以偏差单独放这里、登记在案（`docs/audits/v0.7.2/tool-icons.json::local_extra`），
+#: 由 `tests/check_cls_alignment.py` 证明 `ICON_ALIASES` **逐条等于 CLS**（本表不在其中）。
+#: 只有 CLS 表没命中时才轮到它 —— 不会遮住任何 CLS 别名。
+ICON_ALIASES_LOCAL_EXTRA: List[Tuple[str, str]] = [
+    ("terminal", "setting_outlined"),
+]
+
 #: 兼容旧调用点（探针/单测按 key 取 token）：由上面的有序表派生，fallback 另算
 ICON_TOKENS: Dict[str, str] = {alias: token for alias, token in ICON_ALIASES}
+ICON_TOKENS.update(dict(ICON_ALIASES_LOCAL_EXTRA))
 ICON_TOKENS["fallback"] = ICON_FALLBACK
 
 
@@ -137,21 +147,54 @@ class CardView:
     engine_stamp: str = "structured"
 
 
-#: 预加载提示元素 id（建卡时插入、首个正文 token 到达即删 —— aiduPOP 的 `_LOADING_HINT_ELEMENT_ID`）
+#: 预加载提示元素 id（建卡时插入、首个正文 token 到达即删 —— aiduPOP 的 `_LOADING_ELEMENT_ID`）
 LOADING_HINT_ID = "loading_hint"
+
+#: spinner 资产 key —— aiduPOP / CLS / FC **三家硬编码的是同一个 key**（三家都没有自己上传的代码；
+#: 证据：`tests/probe_loading.py` 的对照卡 + 真机目视结论）。
+#: 用户口径是「**会动、无文字**」（2026-09-21 反馈 #4）：`custom_icon` 引用的动图资产在客户端
+#: 会自己动，而 `standard_icon` 是静态字节图 —— 这是换掉 `time_outlined` 的全部理由。
+SPINNER_IMG_KEY = "img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg"
+
+#: 允许被「上传一次并缓存」得到的 key 覆盖（adapter 启动时若拿到自有资产就注入）；
+#: 空串 ⇒ 用三家共享 key。真机探针若判定共享 key **不动**，只需在这里换成上传得到的 key。
+_SPINNER_KEY_OVERRIDE = ""
+
+
+def set_spinner_img_key(img_key: Any) -> None:
+    """注入自有 spinner 资产（上传成功后调用）；空值 ⇒ 回落共享 key。"""
+    global _SPINNER_KEY_OVERRIDE
+    _SPINNER_KEY_OVERRIDE = str(img_key or "").strip()
+
+
+def spinner_img_key() -> str:
+    """当前生效的 spinner 资产 key（自有优先，其次三家共享）。"""
+    return _SPINNER_KEY_OVERRIDE or SPINNER_IMG_KEY
 
 
 def loading_hint_element() -> Dict[str, Any]:
-    """「正在准备上下文…」占位元素（aiduPOP 形态：`standard_icon: time_outlined` + 一行灰字，
-    **双语**；不是把 ⏳ 塞进正文位置那种写法）。"""
-    text = _i18n.i18n_text("stream.loading_context")
+    """「正在加载」占位元素 —— **逐字段对齐 aiduPOP `_loading_element`**（V4.14b）。
+
+    用户真机口径（2026-09-21 反馈 #4）：「正在加载上下文…」**不对**；aiduPOP 那个是
+    「**会动、无文字**」的状态指示。于是本元素的形状与它逐字段相同：
+
+    ``div`` + ``icon.custom_icon(img_key)`` + ``text.plain_text(" ")``（一个空格，**没有文案**）。
+
+    key 为空（资产拿不到）时回落静态 `standard_icon`：宁可「不动」也不能把建卡写坏
+    —— 无效 asset 在真机撞 300313（元素写失败），整条结构化装饰链会跟着掉。
+    """
+    key = spinner_img_key()
+    icon: Dict[str, Any] = ({"tag": "custom_icon", "img_key": key, "size": "16px 16px"}
+                            if key else
+                            {"tag": "standard_icon", "token": "time_outlined",
+                             "size": "16px 16px", "color": "grey"})
     return {
         "tag": "div",
         "element_id": LOADING_HINT_ID,
-        "icon": {"tag": "standard_icon", "token": "time_outlined",
-                 "size": "16px 16px", "color": "grey"},
-        "text": {"tag": "lark_md", **text, "text_color": "grey",
-                 "text_size": PANEL_TEXT_SIZE},
+        "icon": icon,
+        # ⚠️ 那个空格是**契约**（aiduPOP 同字段同值），不是随手写的占位：`div.text` 是
+        # 文本节点属性（不是 collapsible_panel 的子元素），所以这里用 plain_text 合法。
+        "text": {"tag": "plain_text", "content": " "},
     }
 
 

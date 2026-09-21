@@ -353,6 +353,10 @@ _CARD_DEATH_CODES = frozenset({300309, 300313, 300317})
 #:     id、照样写得进去 ⇒ 只标死被点名的那个，**不降级**（保住打字机）。
 _CARD_DEATH_DECOR_CODES = frozenset({300309, 300317})
 
+#: 预加载提示删除的**重试上限**：超了就放弃（收尾整卡 patch 不含它 ⇒ 用户最终看不到），
+#: 但要留一条 warning —— 无限重试等于每帧多一次 API 写，且「摘不掉」必须可诊断。
+_CK_LOADING_MAX_TRIES = 3
+
 #: ⚠️ **``200770`` 不属于上面任何一档**（2026-09-21 真机实测 + 探针复现，V4.1）：
 #: ``code=200770 · msg='ErrMsg: this UUID has been recently consumed; '`` —— 含义是
 #: **同一张卡上出现了两份 (seq, uuid) 相同、内容不同的写**。uuid 由 ``(card_id, seq)``
@@ -1843,7 +1847,7 @@ def _log_outbound(kind: str, chat_id: str, text: str, message_id: str = "") -> N
     都留一行带**内容前置**与**消息号**的记录，可直接 grep。限流 30 秒一条；kind ∈ {card, text}。
     """
     now = time.monotonic()
-    key = f"outbound-{kind}"
+    key = f"outbound-{kind}-{chat_id}"
     if now - float(_OUTBOUND_LOGGED.get(key) or 0.0) < 30.0:
         return
     _OUTBOUND_LOGGED[key] = now
@@ -2614,6 +2618,7 @@ class LarkDeckMixin:
                 message_id = getattr(result, "message_id", "") or ""
                 self._ld_track(message_id, chat_id)
                 self._ld_note_text(message_id, content)
+                _log_outbound("card", chat_id, content, message_id)
                 if guarded:
                     self._ld_clear_seed_failure(str(chat_id or ""))
                 return result
@@ -2686,6 +2691,7 @@ class LarkDeckMixin:
             result = await self._ld_update_card(chat_id, message_id, card)
             if result is not None and getattr(result, "success", False):
                 self._ld_note_text(message_id, content)
+                _log_outbound("edit", chat_id, content, message_id)
                 if finalize:
                     self._ld_forget(message_id)
                 return result
@@ -2693,6 +2699,7 @@ class LarkDeckMixin:
                            getattr(result, "error", "unknown"))
         except Exception as exc:
             logger.warning("[larkdeck] 卡片更新异常，回落内置编辑: %s", exc, exc_info=True)
+        _log_outbound("text", chat_id, content, message_id)
         return await super().edit_message(chat_id, message_id, content, finalize=finalize)
 
     # ------------------------------------------------- native 流式（官方契约）
@@ -3591,9 +3598,16 @@ class LarkDeckMixin:
         归一化（lower + `-`→`_`）后做「**精确匹配 或 `alias_` 前缀匹配**」——**不是子串匹配**
         （旧写法把 `mem0_search` 判成了 `search_outlined`，而 CLS 那边它落到
         `setting-inter_outlined`）。未知工具回落 CLS 的 fallback。
+
+        顺序：**CLS 表 → 本地已登记扩展 → fallback**（见 `ICON_ALIASES_LOCAL_EXTRA`；审计 A
+        实测 CLS 不含 `terminal`，而 Hermes 的 shell 工具就叫这个名字 —— 偏差登记在案，
+        不会遮住任何 CLS 别名）。
         """
         normalized = str(name or "").strip().lower().replace("-", "_")
         for alias, token in _cardview.ICON_ALIASES:
+            if normalized == alias or normalized.startswith(alias + "_"):
+                return token
+        for alias, token in _cardview.ICON_ALIASES_LOCAL_EXTRA:
             if normalized == alias or normalized.startswith(alias + "_"):
                 return token
         return _cardview.ICON_FALLBACK
@@ -3897,16 +3911,31 @@ class LarkDeckMixin:
         seq = _ck_seq(state)
         live = dict(state)
         # 预加载提示（aiduPOP 形态）：建卡时插入，**首个正文 token 到达即删**。
-        # 删不掉就下一帧再试（不占号、不改状态）；收尾帧一律置 False（整卡 patch 不带它）。
+        # 删不掉就下一帧再试；收尾帧一律置 False（整卡 patch 不带它）。
         if finalize:
             live["ck_loading"] = False
         elif live.get("ck_loading", False) and visible:
+            # ⚠️ 重试**必须换号**（审计 C P2-1/P2-2 的反面）：同 seq ⇒ 同 uuid，而
+            # 「第一次其实生效了、只是响应丢了」那种失败下，同 uuid 重发会一直撞
+            # 200770（`this UUID has been recently consumed`）⇒ 提示永远摘不掉、每帧白写一次。
+            # 换号后第二次若拿到 300313（元素不存在）就说明**其实已经删掉了**，按成功收口。
             seq += 1
             _hint_res = await self._ld_ck_delete(card_id, [_cardview.LOADING_HINT_ID], seq)
-            if _hint_res.ok:
+            # ⚠️ 「其实已经删掉了」**只能靠 msg 里点名自己**来判（`bad_element_id()` 仅在
+            # 300313 上解析）：300313 同时是「子元素类型非法」（P0：plain_text 进
+            # collapsible_panel）那张卡的拒收码 —— 一律当成「已删掉」会把真失败吞掉。
+            if _hint_res.ok or _hint_res.bad_element_id() == _cardview.LOADING_HINT_ID:
                 live["ck_loading"] = False
             else:
-                seq -= 1
+                _tries = int(live.get("ck_loading_tries") or 0) + 1
+                live["ck_loading_tries"] = _tries
+                if _tries >= _CK_LOADING_MAX_TRIES:
+                    # 放弃重试：收尾整卡 patch 本来就不含提示元素 ⇒ 用户最终看不到它。
+                    # 但**必须留痕**，否则「提示一直挂在正文上方」在日志里查不出原因。
+                    logger.warning(
+                        "[larkdeck] 预加载提示删除连续失败 %d 次（最后一次 code=%s %s），"
+                        "放弃重试，等收尾整卡 patch 摘除", _tries, _hint_res.code, _hint_res.msg)
+                    live["ck_loading"] = False
         view.loading_hint = bool(live.get("ck_loading", True) and not visible)
         partial = _cardview.panel_partial(view.panel)
         signature = json.dumps(partial, sort_keys=True, ensure_ascii=False)

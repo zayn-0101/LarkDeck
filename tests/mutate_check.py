@@ -1474,11 +1474,17 @@ MUTATIONS = [
      '    if not tail.startswith(_CORE_PROGRESS_SEP) or len(tail) <= len(_CORE_PROGRESS_SEP):',
      '    if not tail.startswith(_CORE_PROGRESS_SEP):',
      'test_units'),
-    ('G2-10-`/stop` 重绘退回基数页脚（最可能被截图的那一帧丢掉短码）', 'core/adapter.py',
+    # ⚠️ **2026-09-21 重新指向过**（审计 A 实测：`-k G2-10` 21.6s 全绿 🟢 —— 用户口径翻转后
+    #    「退回基数页脚」= 退回**正确**行为，变异与现行为等价、没有判别力）。现在指向
+    #    「又在 `/stop` 重绘那一帧把短码挂回去」：这是用户明确否掉的行为，必须被
+    #    test_units 的整卡扫描（`test_v4_17b` / `test_stop_redraw_and_edit_message_keep_the_trace_id`）抓住。
+    ('G2-10-`/stop` 重绘那一帧又挂回短码（用户明确否掉的行为）', 'core/adapter.py',
      '                card = self._ld_build_card(_sanitize_for_send(text) or " ", streaming=False,\n'
      '                                           panel=panel, footer=stopped_footer)',
-     '                card = self._ld_build_card(_sanitize_for_send(text) or " ", streaming=False,\n'
-     '                                           panel=panel, footer=self._ld_footer())',
+     '                card = self._ld_build_card(\n'
+     '                    _sanitize_for_send(text) or " ", streaming=False, panel=panel,\n'
+     '                    footer=(stopped_footer or "") + f" · \\U0001f516"'
+     ' f" {_ld_trace_id(message_id)}")  # G2-10 mutated',
      'test_units'),
     # ⚠️ **锚点在 2026-09-15 晚重新对准过一次**（全量跑发现 `G2-11` 是 🟢 全绿）：
     #    旧锚点是 `if self._ld_transport() == "cardkit":`，那一行在 `state is None` 的
@@ -1714,13 +1720,20 @@ MUTATIONS = [
      '    if started != started or started < _EPOCH_FLOOR or started > now:',
      '    if started != started:',
      "test_units"),
-    ("Y20-收尾整卡替换退回基数页脚（用户**最后看到**的那张卡丢短码）", "core/adapter.py",
+    # ⚠️ **2026-09-21 重新指向过**（同 G2-10：口径翻转后「退回基数页脚」= 正确行为 ⇒ 🟢 等价变异）。
+    #    现在指向「收尾整卡那一帧把短码挂回去」—— 那是用户**最后看到**的卡。
+    ("Y20-收尾整卡那一帧又挂回短码（用户最后看到的那张卡）", "core/adapter.py",
+     '            card = self._ld_build_card(tail_visible or " ", streaming=False,\n'
+     '                                       panel=self._ld_panel(chat, report_empty=True),\n'
      '                                       footer=self._ld_frame_footer(state))\n'
      '            result = await self._ld_update_card(chat, message_id, card)\n'
      '            if result is None or not getattr(result, "success", False):\n'
      '                return self._ld_stream_fail(\n'
      '                    f"收尾帧失败（{getattr(result, \'error\', \'unknown\')}）")',
-     '                                       footer=self._ld_footer())\n'
+     '            card = self._ld_build_card(tail_visible or " ", streaming=False,\n'
+     '                                       panel=self._ld_panel(chat, report_empty=True),\n'
+     '                                       footer=(self._ld_frame_footer(state) or "")'
+     ' + f" · \\U0001f516 {_ld_trace_id(state.get(\'message_id\'))}")\n'
      '            result = await self._ld_update_card(chat, message_id, card)\n'
      '            if result is None or not getattr(result, "success", False):\n'
      '                return self._ld_stream_fail(\n'
@@ -2513,7 +2526,9 @@ MUTATIONS = [
      '        tiers = (("ok", True, True),)  # V4-28 mutated',
      "test_units"),
     ("V4-27-图标匹配退回子串语义（mem0_search 被误判成 search）", "core/adapter.py",
+     '        for alias, token in _cardview.ICON_ALIASES:\n'
      '            if normalized == alias or normalized.startswith(alias + "_"):',
+     '        for alias, token in _cardview.ICON_ALIASES:\n'
      '            if alias in normalized:  # V4-27 mutated（退回子串匹配）',
      "test_units"),
     ("V4-34-未知工具图标回落成 tool_02（与 CLS 观感不一致）", "core/cardview.py",
@@ -2534,6 +2549,50 @@ MUTATIONS = [
 
 
 
+    # ---- v0.7.2 P1/P2/P3/P4：审计 A/C 指出的「绿变异」反向收口 ----------------------
+    # 每一条都对应一个**实测过五门禁全绿**的写法（审计 C 的原文），现在必须实红。
+    ('V4-17B-error 回合的折叠提示里挂短码（整卡扫描抓它）', 'core/adapter.py',
+     '        base_footer = self._ld_footer(chat_id=chat, started=started, status=status) or ""\n'
+     '        return _cardview.CardView(',
+     '        base_footer = self._ld_footer(chat_id=chat, started=started, status=status) or ""\n'
+     '        if status == "error" and message_id:\n'
+     '            panel.collapsed_hint = (\n'
+     '                f"{panel.collapsed_hint} · \\U0001f516 {str(message_id)[-6:]}").strip()\n'
+     '        return _cardview.CardView(',
+     'test_units'),
+    ('V4-40-预加载提示删除失败也把标志清掉（提示永远摘不掉、不再重试）', 'core/adapter.py',
+     '            if _hint_res.ok or _hint_res.bad_element_id() == _cardview.LOADING_HINT_ID:\n'
+     '                live["ck_loading"] = False',
+     '            if True:  # V4-40 mutated（不看删除结果，直接清标志）\n'
+     '                live["ck_loading"] = False',
+     'test_units'),
+    ('V4-41-300313 一律当成「元素已删掉」（把 P0 那种子元素类型拒收吞掉）', 'core/adapter.py',
+     '            if _hint_res.ok or _hint_res.bad_element_id() == _cardview.LOADING_HINT_ID:',
+     '            if _hint_res.ok or _hint_res.code == 300313:  # V4-35 mutated',
+     'test_units'),
+    ('V4-42-加载指示退回静态图标（用户口径：会动、无文字）', 'core/cardview.py',
+     '    key = spinner_img_key()',
+     '    key = ""  # V4-36 mutated（退回 standard_icon，不动）',
+     'test_units'),
+    ('V4-43-加载指示退回文案（用户口径：无文字）', 'core/cardview.py',
+     '        "text": {"tag": "plain_text", "content": " "},',
+     '        "text": {"tag": "plain_text", "content": "正在加载上下文..."},  # V4-37 mutated',
+     'test_units'),
+    ('V4-44-`exec` 图标指向 robot（全表逐条钉住后必须红）', 'core/cardview.py',
+     '    ("exec", "setting_outlined"),',
+     '    ("exec", "robot_outlined"),  # V4-38 mutated',
+     'test_units'),
+    ('V4-45-表单提交只抄路由键（答案丢失 ⇒ 空提交 toast）', 'core/adapter.py',
+     '                for key in (ACTION_KEY, "clarify_id", "session_key", "question", "answer"):',
+     '                for key in (ACTION_KEY, "clarify_id"):  # V4-39 mutated',
+     'test_units'),
+    ('P5-出站留痕不再记录卡片成功分支（「这条以什么形态发出去」不可证伪）', 'core/adapter.py',
+     '                _log_outbound("card", chat_id, content, message_id)\n', '', 'test_units'),
+    ('P5-edit_message 成功分支不留痕（用户看到的每一次改写都查不到）', 'core/adapter.py',
+     '                _log_outbound("edit", chat_id, content, message_id)\n', '', 'test_units'),
+    ('P5-出站限流的 key 不含 chat（多会话并发时证据被吃掉）', 'core/adapter.py',
+     '    key = f"outbound-{kind}-{chat_id}"',
+     '    key = f"outbound-{kind}"', 'test_units'),
 ]
 
 #: **对照项**：行为等价的改动（合法 YAML 变体等），期望四门禁**全绿**。
@@ -2674,25 +2733,53 @@ def _classify(script: str, proc: "subprocess.CompletedProcess") -> str:
     return "red-assert"
 
 
+GATE_ORDER = ["test_units.py", "check_override.py", "check_hooks.py",
+              "check_clarify_e2e.py", "check_cardview.py"]
+
+
+def _run_one_gate(repo: Path, script: str) -> "tuple[int, str]":
+    """跑单支门禁（**有界**：120s 硬超时 —— 与「禁 sleep、等待必须有界」同一条纪律）。"""
+    try:
+        proc = subprocess.run([sys.executable, str(repo / "tests" / script)],
+                              capture_output=True, text=True, cwd=str(repo.parent),
+                              env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+                              timeout=120)
+    except subprocess.TimeoutExpired:
+        return ("red-crash", f"超时 >120s：{script}")
+    tail = (proc.stdout or proc.stderr).strip().splitlines()
+    return (_classify(script, proc), tail[-1] if tail else "")
+
+
+def _run_gates_first_red(repo: Path, preferred: "list[str]") -> "dict[str, tuple[int, str]]":
+    """先跑**声明的目标门禁**；如果它绿了，再按其余门禁继续跑，**遇第一支红即停**。
+
+    为什么不是「只跑目标门禁」（审计 A 的反面意见，成立）：`cf236b1` 的 `only` 模式会让
+    「目标门禁抓不住、只有别的门禁抓得住」的变异被误报成 🟢，违背本文件的判定契约
+    （**至少一门红**）。为什么也不是「跑满五支」：`-k V0-4` 的目标门禁 0.1s 就判红，
+    剩下 14s 纯属浪费。这个策略两者兼得：**红得早 ⇒ 立刻收工；目标门禁绿 ⇒ 继续找红**。
+    """
+    rest = [s for s in GATE_ORDER if s not in preferred]
+    out: "dict[str, tuple[int, str]]" = {}
+    for script in list(preferred) + rest:
+        out[script] = _run_one_gate(repo, script)
+        if out[script][0] != "green":
+            break
+    return out
+
+
 def _run_gates(repo: Path, only: "list[str] | None" = None) -> "dict[str, tuple[int, str]]":
-    """跑门禁。``only`` 给定时**只跑那几支**（变异声明的目标门禁）。
+    """跑门禁。``only`` 给定时**只跑那几支**（基线自校验用；变异判定走 `_run_gates_first_red`）。
 
     为什么要有这个开关（2026-09-21 审计 C 实测）：过去每条变异都跑满五支门禁 ——
     实测 `-k V0-4`（目标门禁是 cardview，0.1 秒就能判红）**实跑 66 秒**，其中
     `test_units 4.1s / override 2.1s / hooks 4.8s / clarify 4.2s` 全是不必要的。
-    变异声明的契约本来就是「**这条变异该被哪支门禁抓住**」，跑别的门禁既不增加判别力，
-    还把阶段审计从秒级拖成分钟级（用户明确要求提速）。
-    ⚠️ 基线自校验**仍然跑满五支**（`:2906`）——那是「改动前系统是绿的」这个前提本身。
+    ⚠️ 基线自校验**仍然跑满五支**（无 `-k` 时）——那是「改动前系统是绿的」这个前提本身；
+    带 `-k` 时基线只跑并集里的那几支（阶段内提速），**发布/阶段收尾必须无 `-k` 全量**。
     """
-    scripts = only or ["test_units.py", "check_override.py", "check_hooks.py",
-                       "check_clarify_e2e.py", "check_cardview.py"]
+    scripts = only or list(GATE_ORDER)
     out = {}
     for script in scripts:
-        proc = subprocess.run([sys.executable, str(repo / "tests" / script)],
-                              capture_output=True, text=True, cwd=str(repo.parent),
-                              env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
-        tail = (proc.stdout or proc.stderr).strip().splitlines()
-        out[script] = (_classify(script, proc), tail[-1] if tail else "")
+        out[script] = _run_one_gate(repo, script)
     return out
 
 
@@ -2959,7 +3046,7 @@ def main() -> int:
                 continue
             target.write_text(text.replace(old, new, 1), encoding="utf-8")
             _only = [expect if expect.endswith(".py") else expect + ".py"] if expect else None
-            results = _run_gates(repo, only=_only)
+            results = _run_gates_first_red(repo, preferred=_only or list(GATE_ORDER))
             red = [k for k, (kind, _) in results.items() if kind != "green"]
             crashed = [k for k, (kind, _) in results.items() if kind == "red-crash"]
             evidence = [k for k in red if k not in crashed]

@@ -1,0 +1,40 @@
+{
+  "_source": "hermes-lark-streaming/streaming/tooluse.py `_resolve_tool_descriptor`（归一化 lower + `-`→`_`，精确匹配或 `alias_` 前缀匹配；未知 → `setting-inter_outlined`）",
+  "_frozen_at": "v0.7.2 P3（2026-09-21）—— 逐条抄写 CLS，**不是**从生产表导出",
+  "_contract": "生产表 `core/cardview.py::ICON_ALIASES` 必须与本文 `tool_icons` 逐条**且顺序**相等；`local_extra` 是唯一登记在案的偏差（CLS 表之后再匹配）；工具名解析语义见 tests/test_units.py::test_v4_18",
+  "tool_icons": {
+    "skill": "app-default_outlined",
+    "read": "file-link-text_outlined",
+    "open": "file-link-text_outlined",
+    "write": "edit_outlined",
+    "edit": "edit_outlined",
+    "web_search": "search_outlined",
+    "search": "search_outlined",
+    "web_fetch": "language_outlined",
+    "fetch": "language_outlined",
+    "grep": "doc-search_outlined",
+    "glob": "folder_outlined",
+    "exec": "setting_outlined",
+    "bash": "setting_outlined",
+    "command": "setting_outlined",
+    "run": "setting_outlined",
+    "browser": "browser-mac_outlined",
+    "playwright": "browser-mac_outlined",
+    "navigate": "browser-mac_outlined",
+    "agent": "robot_outlined",
+    "task": "robot_outlined",
+    "spawn": "robot_outlined",
+    "check": "list-check_outlined",
+    "determine": "list-check_outlined",
+    "verify": "list-check_outlined",
+    "summarize": "report_outlined",
+    "analyze": "report_outlined",
+    "prepare": "report_outlined",
+    "clarify": "chat_outlined"
+  },
+  "local_extra": {
+    "terminal": "setting_outlined"
+  },
+  "local_extra_reason": "审计 A 实测 CLS `_resolve_tool_descriptor(\"terminal\")` = None（它的 Run command 描述符只收 exec/bash/command/run）⇒ 严格照抄会让 Hermes 的真实 shell 工具（tools/terminal_tool.py:1258 的 name=\"terminal\"）挂通用兜底图标。偏差登记在此，只有 CLS 表未命中时才生效。",
+  "fallback": "setting-inter_outlined"
+}

@@ -1,0 +1,8 @@
+{
+  "_source": "用户 2026-09-21 口径（v0.7.2 P1）：「页脚不再有 🔖 短码 —— 我从来没有提过这个要求」；字段对齐同类插件（CLS/aiduPOP/FC）",
+  "_frozen_at": "v0.7.2 P1（2026-09-21）",
+  "footer_order": ["status", "elapsed", "model", "context"],
+  "short_code_visible": false,
+  "short_code_note": "短码只出现在**日志自检行**（`_log_turn_selfcheck` 的 `卡片=<6 位>`），用户可见处一律不出现（卡片头/正文/面板/折叠提示/页脚/收尾 patch 全覆盖，见 tests/test_units.py::test_v4_17b）",
+  "card_status_header_default": false
+}
