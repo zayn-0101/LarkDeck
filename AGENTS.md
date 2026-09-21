@@ -171,9 +171,10 @@ tests/        见「验证」
   命令：handler 拿不到发送者身份，无法安全授权（安全审计 B1）⇒ 插件**从不**直接写
   `config.yaml`、也不调用 `ctx.set_config()`；写配置走官方 Hermes CLI / 配置文件，再 reload。
   官方 ctx 的**只读**句柄存进程级共享盒子 `adapter.PLUGIN_CTX`（命令可能来自旧世代模块对象）。
-- v0.7.1 视觉三键 `visual_engine` / `card_status_header` / `show_reasoning` 在 V0 只登记
-  （默认 `legacy` / `true` / `false`）；V1–V4 才逐步生效，未实现前非默认值会在日志留 WARNING，
-  `/larkdeck config` 也会标“已登记，V1–V4 才生效”。不要把它们当成已生效开关写进验收结论。
+- 视觉三键的**现役默认值**（2026-09-21 v0.7.2 起）：`visual_engine="structured"`（`legacy` 配置键
+  **已退役**：设了只留一条 WARNING，行为仍是 structured；真正回退要 revert 到 v0.7.0）、
+  `card_status_header=false`（用户口径「顶栏默认不显示」）、`show_reasoning=false`（摘要行始终保留）。
+  改这三项口径必须同提交改 README / plugin.yaml / CHANGELOG。
 
 - **平台 entry 字段从 dataclass 派生透传**（`_IDENTITY_ENTRY_FIELDS` 除外），新增字段自动跟随；
   唯一**有意覆盖**的是 `standalone_sender_fn`（P3）：内置 sender 自己 new 官方适配器 ⇒ cron /
@@ -446,7 +447,10 @@ python3 tests/test_units.py        # 纯单测，零网络、零 Hermes 依赖�
 python3 tests/check_override.py    # 真跑 Hermes 插件加载器（临时 HERMES_HOME），必须打印 OVERRIDE OK
 python3 tests/check_hooks.py       # 真钩子派发器验证指标采集 + 面板数据层，必须打印 HOOKS OK
 python3 tests/check_clarify_e2e.py # 澄清卡端到端，必须打印 CLARIFY E2E OK
+python3 tests/check_cardview.py    # 视觉表 golden + **独立字面量**（图标表/真实工具名/spinner 三字段）
+python3 tests/check_cls_alignment.py --require  # 图标表 vs CLS 源码逐条（缺席即 FAIL）
 python3 tests/mutate_check.py      # 变异验证器：撤掉每条修复必须变红（改断言后必跑）
+# ↑ 正式门禁 = **六支**（上面 5 支 + check_cls_alignment；`run_fast.py --full` 就是它们）
 python3 tests/mutate_check.py --preflight   # 只做锚点对账（0.1 秒级）；见下
 ```
 

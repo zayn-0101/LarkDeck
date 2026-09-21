@@ -79,7 +79,7 @@ config_schema:
   visual_engine:
     type: string
     default: "structured"
-    description: "v0.7.1 视觉层引擎：structured（**默认**，结构化元素树：状态条/面板摘要/推理 A 形态/tool div+standard_icon/Result 与 Error 块）。`legacy` 配置路径自 v0.7.1 起**已退役**（设了只留一条退休 WARNING，行为仍是 structured）；降级渲染器由 DEGRADE 车道保留"
+    description: "v0.7.1 视觉层引擎：structured（**默认**，结构化元素树：状态条/面板摘要/推理 A 形态/工具行（v0.7.2 起 **emoji 内联进文本**，不用 div.icon：用户真机选版）/Result 与 Error 块）。`legacy` 配置路径自 v0.7.1 起**已退役**（设了只留一条退休 WARNING，行为仍是 structured）；降级渲染器由 DEGRADE 车道保留"
   card_status_header:
     type: boolean
     default: false
