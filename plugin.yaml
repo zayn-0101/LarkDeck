@@ -78,16 +78,16 @@ config_schema:
     description: "正文来源（v0.7.0）：own（默认：只认插件 on_stream_delta(kind=text) 累积，core 帧只作刷新信号与 finalize 兜底；无绑定/绑定漂移时严格 fail-open）/ legacy（旧的剥帧路径，仅过渡回退；P2b 后删除）"
   visual_engine:
     type: string
-    default: "legacy"
-    description: "v0.7.1 视觉层过渡开关：legacy（默认，当前实现）/ structured（结构化元素树引擎，V1 起逐步落地；未实现前按 legacy 运行并留 WARNING）"
+    default: "structured"
+    description: "v0.7.1 视觉层引擎：structured（**默认**，结构化元素树：状态条/面板摘要/推理 A 形态/tool div+standard_icon/Result 与 Error 块）。`legacy` 配置路径自 v0.7.1 起**已退役**（设了只留一条退休 WARNING，行为仍是 structured）；降级渲染器由 DEGRADE 车道保留"
   card_status_header:
     type: boolean
     default: true
-    description: "是否显示卡片顶部状态条（v0.7.1 V2 实现；当前两种取值观感相同，非默认值会留 WARNING）"
+    description: "是否显示卡片顶部状态条（处理中蓝 / 完成绿 / 停止黄 / 出错红；false 时不渲染卡级 header）"
   show_reasoning:
     type: boolean
     default: false
-    description: "是否显示推理正文（v0.7.1 V3 实现；默认 false 对齐 CLS/aiduPOP；当前两种取值观感相同，非默认值会留 WARNING；面板 header 的思考耗时摘要始终保留）"
+    description: "是否显示推理正文（默认 false 对齐 CLS/aiduPOP：**所有车道**只留 `💭 思考 Xs` 摘要行；true 时按嵌套折叠面板展示推理全文）"
   footer:
     type: boolean
     default: true

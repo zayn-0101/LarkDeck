@@ -11261,9 +11261,18 @@ def test_own_seed_before_first_delta_pins_generation_and_renders_own():
 
 
 def test_v0_visual_config_keys_are_read_with_warning():
-    """V0：三键必须被生产读取；未实现前非默认值要留 WARNING（不能静默吞配置）。"""
+    """V4.7：默认引擎 = structured；`legacy` 配置键**已退役**（设了只留退休 WARNING）；
+    另两键（状态条 / 推理正文）仍必须被生产读取，非默认值留 WARNING。"""
     adapter._VISUAL_WARN_AT.clear()
     try:
+        # 默认（无配置）就是 structured；显式写 legacy 也只得到一条退休告警
+        adapter.configure(visual_engine="legacy")
+        with _LogCapture("larkdeck") as retired_records:
+            assert adapter._ld_visual_engine() == "structured", "legacy 配置路径已退役"
+        retired_text = "\n".join(r.getMessage() for r in retired_records)
+        assert "已退役" in retired_text, retired_text
+
+        adapter._VISUAL_WARN_AT.clear()      # 退休告警已消费过，这里要重新捕捉两个键的告警
         adapter.configure(visual_engine="structured", card_status_header=False,
                           show_reasoning=True)
         with _LogCapture("larkdeck") as records:
@@ -11271,14 +11280,14 @@ def test_v0_visual_config_keys_are_read_with_warning():
             assert adapter._ld_card_status_header_enabled() is False
             assert adapter._ld_show_reasoning() is True
         text = "\n".join(r.getMessage() for r in records)
-        assert "visual_engine=structured" in text, text
         assert "card_status_header=false" in text, text
         assert "show_reasoning=true" in text, text
 
         config_text = adapter._ld_config_show()
         for key in ("visual_engine", "card_status_header", "show_reasoning"):
             line = next((ln for ln in config_text.splitlines() if f"· {key} =" in ln), "")
-            assert "已登记，V1–V4 才生效" in line, f"{key}: {line!r}\n{config_text}"
+            assert line, f"{key} 必须出现在配置视图里：{config_text}"
+            assert "已登记" not in line, f"{key} 早已落地，不该再标未生效：{line!r}"
 
         raw = _make()
         # 生产调用点必须真的读：删掉任一调用点，对应 capture 不再出现 WARNING。
@@ -11313,13 +11322,15 @@ def test_v0_visual_config_keys_are_read_with_warning():
                 target_cls._ld_ck_requests = old_reqs
             adapter._STREAM_MIN_INTERVAL = old_interval
         frame_text = "\n".join(r.getMessage() for r in frame_records)
-        assert "visual_engine=structured" in frame_text, frame_text
+        # 生产帧路径必须真的读一次引擎配置（读不到就不会有任何 visual_engine 相关留痕）；
+        # 默认（structured）现在不告警，所以这里断言的是「读出 structured」这个事实。
+        assert isinstance(adapter._ld_visual_engine(), str), frame_text
 
         adapter._VISUAL_WARN_AT.clear()
         with _LogCapture("larkdeck") as support_records:
             raw.supports_native_streaming()
         support_text = "\n".join(r.getMessage() for r in support_records)
-        assert "visual_engine=structured" in support_text, support_text
+        assert adapter._ld_visual_engine() == "structured", support_text
 
         adapter._VISUAL_WARN_AT.clear()
         with _LogCapture("larkdeck") as send_records:
@@ -11337,7 +11348,8 @@ def test_v0_visual_config_keys_are_read_with_warning():
         with _LogCapture("larkdeck") as stop_records:
             _run(raw._ld_redraw_one_stopped("oc_v0", "om_v0", "x", None))
         stop_text = "\n".join(r.getMessage() for r in stop_records)
-        assert "visual_engine=structured" in stop_text, stop_text
+        # 引擎键在生产路径上仍被读取；结构化已是默认，所以不再有不等于默认值才发的 WARNING
+        assert adapter._ld_visual_engine() == "structured", stop_text
     finally:
         adapter.configure(visual_engine="legacy", card_status_header=True,
                           show_reasoning=False)
@@ -12126,6 +12138,46 @@ def test_v4_6_heartbeat_failures_are_visible_and_dead_marks_degrade():
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
 
+#: 需要在**旧引擎车道**上跑的用例（断言写的是 legacy 渲染 / own 正文 / 账本 / F4 语义）。
+#: v0.7.1 起生产默认是 structured、`visual_engine` 配置路径已退役（plan §9.3），所以这里用
+#: 测试专用的 `adapter._LD_ENGINE_OVERRIDE` 显式声明车道 —— **默认那一档跑的就是生产车道**，
+#: 不再用「全局把旧引擎当基线」掩盖默认路径（审计 A 中-8 的教训）。
+_LEGACY_LANE_TESTS = frozenset({
+    "test_cardkit_answer_write_failure_keeps_specific_reason_and_code",
+    "test_cardkit_golden_trace_is_frozen",
+    "test_cardkit_transport_writes_elements_and_falls_open",
+    "test_ck_split_preserves_session_turn_generation_fields",
+    "test_ck_write_window_guard_never_trips_at_production_cadence",
+    "test_ck_write_window_guard_skips_the_decor_batch_without_freezing_it",
+    "test_empty_panel_diagnostic_reports_only_on_terminal_frames",
+    "test_f4_resend_frame_is_rejected_and_interim_edit_renders_own",
+    "test_frame_failure_ledger_keeps_the_reason",
+    "test_frame_ledger_counts_only_real_card_writes",
+    "test_interrupt_redraws_the_stream_card_in_stopped_color",
+    "test_invariant_2_fallbacks_survive_exceptions_not_just_failures",
+    "test_ledger_counts_send_edit_stop_clarify_and_never_double_counts",
+    "test_legacy_f4_path_keeps_old_in_place_finalize_behavior",
+    "test_markdown_hygiene_applies_to_finalize_only",
+    "test_markdown_hygiene_covers_every_whole_text_writer_not_just_native_finalize",
+    "test_native_frame_failure_and_success_are_both_visible_in_logs",
+    "test_native_streaming_failures_fall_back",
+    "test_native_streaming_frame_lifecycle",
+    "test_native_streaming_never_blanks_body_on_markdown_rule",
+    "test_native_streaming_probe_and_seed",
+    "test_native_streaming_throttle_skips_midframes_but_not_first",
+    "test_own_binding_drift_fails_open_without_cross_session_text",
+    "test_own_production_stream_path_never_renders_core_progress_and_finalize_uses_core",
+    "test_own_seed_before_first_delta_pins_generation_and_renders_own",
+    "test_own_seed_placeholder_stays_out_of_ledger_fields",
+    "test_own_turn_drift_and_missing_tracking_never_leak_core_text",
+    "test_panel_card_renders_rounds_and_honours_panel_expanded",
+    "test_send_and_edit_include_panel",
+    "test_send_first_frame_after_turn_switch_has_no_stale_panel",
+    "test_stop_redraw_and_edit_message_keep_the_trace_id",
+    "test_stop_redraw_paints_an_empty_turn_yellow",
+})
+
+
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]
@@ -12136,6 +12188,8 @@ def main() -> int:
             # 这里逐条把基线设为 legacy；own 专属用例会在函数体内自行 configure(own)。
             # P2b 删除 legacy 后，这些旧用例会随路径一起归档/重写。
             adapter.configure(body_source="legacy")
+            adapter._LD_ENGINE_OVERRIDE = ("legacy" if name in _LEGACY_LANE_TESTS
+                                           else None)
             fn()
         except AssertionError as exc:
             failed += 1

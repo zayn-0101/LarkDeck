@@ -2189,11 +2189,9 @@ MUTATIONS = [
      '            return await _fallback("larkdeck standalone SDK client unavailable")',
      "test_units"),
     # v0.7.1 V0：三配置键必须被生产读取且未实现前告警；token 表必须被 check_cardview 锁住。
-    ("V0-1-visual_engine=structured 告警被静默（配置被吞）", "core/adapter.py",
-     '    if raw == "structured":\n'
-     '        _warn_visual_once("visual_engine-structured",',
-     '    if False:\n'
-     '        _warn_visual_once("visual_engine-structured",',
+    ("V0-1-引擎键的兜底默认退回 legacy（配置被吞）", "core/adapter.py",
+     '    raw = str(_cfg_raw("visual_engine") or "structured").strip().lower()',
+     '    raw = str(_cfg_raw("visual_engine") or "legacy").strip().lower()  # V0-1 mutated',
      "test_units"),
     ("V0-2-show_reasoning=true 告警被静默（配置被吞）", "core/adapter.py",
      '    if enabled:\n'
@@ -2234,12 +2232,12 @@ MUTATIONS = [
      '"title_zh": "⛔ 已停止"',
      '"title_zh": "已停止"',
      "check_cardview"),
-    ("V0-10-/larkdeck config 的 pending_visual 注记被删（配置静默）",
+    ("V0-10-视觉三键从 /larkdeck config 视图里消失（用户看不到自己的配置）",
      "core/adapter.py",
+     '        value = _cfg_raw(key, default)',
+     '        value = _cfg_raw(key, default)\n'
      '        if key in _VISUAL_TRANSITION_KEYS:\n'
-     '            note = (note + " " + _i18n.t("config.pending_visual")).strip()',
-     '        if False:\n'
-     '            note = (note + " " + _i18n.t("config.pending_visual")).strip()',
+     '            continue  # V0-10 mutated',
      "test_units"),
     ("V0-11-生产 tool 状态色 green 被改 blue（check_cardview 必须红）",
      "core/cards.py",
@@ -2458,6 +2456,15 @@ MUTATIONS = [
     ("V4-21-面板 partial 与 settings 共用 uuid 命名空间", "core/adapter.py",
      'f"ld-{card_id}-p{seq}"',
      'f"ld-{card_id}-s{seq}"',
+     "test_units"),
+    # ------------------------------------------------- V4.7 默认翻 structured + legacy 配置退役
+    ("V4-22-legacy 配置键仍能选回旧引擎（配置路径没删）", "core/adapter.py",
+     '    if raw == "legacy":\n        _warn_visual_once("visual_engine-retired",',
+     '    if raw == "legacy":\n        return "legacy"  # V4-22 mutated\n        _warn_visual_once("visual_engine-retired",',
+     "test_units"),
+    ("V4-23-默认引擎退回 legacy（plugin.yaml 与代码不一致）", "core/adapter.py",
+     '    "visual_engine": "structured",',
+     '    "visual_engine": "legacy",  # V4-23 mutated',
      "test_units"),
 
 

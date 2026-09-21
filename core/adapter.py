@@ -779,7 +779,7 @@ _DEFAULTS: Dict[str, Any] = {
     "body_source": "own",
     # v0.7.1 视觉层过渡键（V0 只登记与告警，行为在 V1–V4 逐步生效）：
     # legacy | structured；structured 引擎尚未实现时按 legacy 运行并留 WARNING。
-    "visual_engine": "legacy",
+    "visual_engine": "structured",
     # 卡片顶部状态条显隐；V2 实现前两种取值观感相同并留 WARNING。
     "card_status_header": True,
     # 是否展示推理正文；V3 实现前两种取值观感相同并留 WARNING（摘要行始终保留）。
@@ -808,7 +808,8 @@ _DEFAULTS: Dict[str, Any] = {
 }
 _CONFIG: Dict[str, Any] = dict(_DEFAULTS)
 
-#: V0 已登记、V1–V4 才生效的视觉键；`/larkdeck config` 要给它们标“未生效”注记。
+#: 视觉层三键（V1–V4 已全部落地，不再是「登记未生效」）：改这几个键要**热重载**才换血，
+#: 且 `visual_engine` 的 `legacy` 取值自 v0.7.1 起已退役（见 `_ld_visual_engine`）。
 _VISUAL_TRANSITION_KEYS = frozenset({"visual_engine", "card_status_header", "show_reasoning"})
 
 #: V2 Working 心跳：每回合至多一个任务，key 与 stream state 相同。
@@ -955,18 +956,34 @@ def _warn_visual_once(key: str, message: str) -> None:
     logger.warning("[larkdeck] %s", message)
 
 
+#: **仅供单测/探针**强迫某条车道（``"legacy"`` / ``"structured"`` / ``None`` = 生产行为）。
+#: 生产不可达：`visual_engine` **配置**路径已在 v0.7.1 退役（plan §9.3），这里只是让
+#: 「降级渲染器 + legacy 帧语义」仍能被门禁**直接**打到。
+_LD_ENGINE_OVERRIDE: Optional[str] = None
+
+
 def _ld_visual_engine() -> str:
-    """生产读取 ``visual_engine``；structured 未实现前按 legacy 运行并告警。"""
-    raw = str(_cfg_raw("visual_engine") or "legacy").strip().lower()
-    if raw not in ("legacy", "structured"):
+    """**唯一引擎是 structured**（V4.7 起；`legacy` 配置路径已退役）。
+
+    纪律（plan §9.3）：V4 删除 legacy **配置路径**、**保留降级渲染器** —— DEGRADE 车道由
+    回合状态里的 `engine_stamp=degraded` 驱动（`_ld_stream_frame` 的 `engine_stamp` 判断），
+    与配置无关，所以退役配置键不会动到那条安全网。
+
+    `visual_engine=legacy` 现在只产生一条退休告警（限流一次），运行行为仍是 structured；
+    真正要回退到旧引擎请 revert 到 v0.7.0 —— 这正是「配置路径删除、代码可回滚」的意思。
+    """
+    if _LD_ENGINE_OVERRIDE in ("legacy", "structured"):
+        return _LD_ENGINE_OVERRIDE
+    raw = str(_cfg_raw("visual_engine") or "structured").strip().lower()
+    if raw == "legacy":
+        _warn_visual_once("visual_engine-retired",
+                          "visual_engine=legacy 已退役（v0.7.1 起唯一引擎是 structured，"
+                          "降级渲染器仍由 DEGRADE 车道保留）；本进程按 structured 运行，"
+                          "如需彻底回退请 revert 到 v0.7.0")
+    elif raw != "structured":
         _warn_visual_once("visual_engine-invalid",
-                          f"visual_engine={raw!r} 非法，按 legacy 运行")
-        return "legacy"
-    if raw == "structured":
-        _warn_visual_once("visual_engine-structured",
-                          "visual_engine=structured canary 已启用（默认仍 legacy）")
-        return "structured"
-    return "legacy"
+                          f"visual_engine={raw!r} 非法，按 structured 运行")
+    return "structured"
 
 
 def _ld_card_status_header_enabled() -> bool:
@@ -5517,8 +5534,6 @@ def _ld_config_show() -> str:
         if (key in official and not env_active
                 and _cfg_canonical(value) != _cfg_canonical(official[key])):
             note = " " + _i18n.t("config.needs_reload")
-        if key in _VISUAL_TRANSITION_KEYS:
-            note = (note + " " + _i18n.t("config.pending_visual")).strip()
         lines.append(_i18n.t("config.item", name=key, value=_cfg_text(value),
                              source=source, note=note))
     if read_errors:

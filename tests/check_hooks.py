@@ -838,6 +838,9 @@ else:
 
         _adm = (sys.modules.get("hermes_plugins.larkdeck.core.adapter")
                 or sys.modules["larkdeck.core.adapter"])
+        # v0.7.1：生产默认已是 structured，而这条黄金序列钉的是**旧引擎**（patch 车道 +
+        # legacy 面板）+ `/stop` 的旧行为 ⇒ 显式声明车道，别靠「默认正好是 legacy」。
+        _adm._LD_ENGINE_OVERRIDE = "legacy"
         from gateway.config import PlatformConfig
         from gateway.platform_registry import platform_registry
         # SDK 的请求构造类是**懒绑定**在 connect 时机的；这里不 connect（不碰真网络），
