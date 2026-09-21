@@ -1848,12 +1848,21 @@ def _log_outbound(kind: str, chat_id: str, text: str, message_id: str = "") -> N
     """
     now = time.monotonic()
     key = f"outbound-{kind}-{chat_id}"
-    if now - float(_OUTBOUND_LOGGED.get(key) or 0.0) < 30.0:
+    if now - float(_OUTBOUND_LOGGED.get(key) or 0.0) < _OUTBOUND_LOG_INTERVAL_S:
         return
+    # 陈旧键清理（审计 C2：`(kind, chat)` 无界增长 + 长窗口会把证据压住）：只留最近一圈，
+    # 超过 4× 窗口的键直接丢掉 —— 它们再也不可能命中限流，留着只是内存。
+    for stale, stamp in list(_OUTBOUND_LOGGED.items()):
+        if now - float(stamp or 0.0) > _OUTBOUND_LOG_INTERVAL_S * 4:
+            _OUTBOUND_LOGGED.pop(stale, None)
     _OUTBOUND_LOGGED[key] = now
     head = " ".join(str(text or "").split())[:40]
     logger.info("[larkdeck] 出站=%s chat=%s mid=%s 前置=%r", kind, chat_id, message_id, head)
 
+
+#: 出站留痕的限流窗口（秒）。**抽成常量**是为了让门禁能钉住它（审计 C2 的 G3：
+#: `< 30.0` 改成 `< 3600.0` 时五门禁全绿 —— 而 1 小时的窗口会让「每次出站留一行」不可证伪）。
+_OUTBOUND_LOG_INTERVAL_S = 30.0
 
 #: 出站留痕的限流戳（key -> monotonic）
 _OUTBOUND_LOGGED: Dict[str, float] = {}
@@ -2413,11 +2422,17 @@ class LarkDeckMixin:
         （`entity_skeleton`）⇒ 长正文那一侧没有任何退路（真机会整卡被拒/白丢正文）。
         判据用 `cards.card_bytes`（与服务端同口径）与递归元素数。
         """
+        # ⚠️ **tier 是「上限」，不是「取值」**（审计 B 阻断项实测）：调用方可能已经因为
+        # `unified_panel=false` / `footer=false` / 「本条消息没有任何过程数据」（V4.15 系统提示
+        # 不出空面板）把开关关掉了。早先这里无条件写 True ⇒ 那些开关在 `send()`/`edit_message()`
+        # 与帧路径上被**静默违反**（用户点开空面板 / 配置关不掉页脚），而单测只测「有数据 + 默认开」。
+        requested_panel = bool(view.panel_enabled)
+        requested_footer = bool(view.footer_enabled)
         tiers = (("ok", True, True), ("no-panel", False, True), ("bare", False, False))
         card: Dict[str, Any] = {}
         for name, panel_on, footer_on in tiers:
-            view.panel_enabled = panel_on
-            view.footer_enabled = footer_on
+            view.panel_enabled = bool(panel_on and requested_panel)
+            view.footer_enabled = bool(footer_on and requested_footer)
             card = _cards.apply_text_profile(_cardview.entity_skeleton(view),
                                              _cfg_raw("text_profile"))
             if (_cards.card_bytes(card) <= _cards.FEISHU_CARD_BYTE_LIMIT
@@ -4754,6 +4769,9 @@ class LarkDeckMixin:
                     chat, _sanitize_for_send(text) or " ", status="stopped")
                 stopped_view.footer = stopped_footer
                 card = self._ld_fit_structured_card(stopped_view)
+                # 中止重绘是**终态**：必须关掉流式态（legacy 分支的 `streaming=False` 一直在做，
+                # 结构化分支漏了 —— 审计 B 实测 `config.streaming_mode=true`）。
+                card["config"]["streaming_mode"] = False
             else:
                 panel = self._ld_panel(chat, report_empty=True) or _cards.unified_panel(
                     status=_panel.STATUS_STOPPED)

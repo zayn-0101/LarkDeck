@@ -66,14 +66,48 @@ ICON_ALIASES: List[Tuple[str, str]] = [
 #: 未知工具的图标 —— **CLS 的 fallback**（`tooluse.py:320`：`desc["icon"] if desc else "setting-inter_outlined"`）
 ICON_FALLBACK = "setting-inter_outlined"
 
-#: **唯一有意偏差**（审计 A v0.7.2 对齐实测：CLS `_resolve_tool_descriptor("terminal")` 落 fallback
-#: —— 它的 `Run command` 描述符只收 `exec/bash/command/run`）。但 Hermes 的 shell 工具**就叫
-#: `terminal`**（`tools/terminal_tool.py:1258`）⇒ 严格照抄 CLS 会让最常用的工具挂一个「通用」图标。
-#: 所以偏差单独放这里、登记在案（`docs/audits/v0.7.2/tool-icons.json::local_extra`），
-#: 由 `tests/check_cls_alignment.py` 证明 `ICON_ALIASES` **逐条等于 CLS**（本表不在其中）。
-#: 只有 CLS 表没命中时才轮到它 —— 不会遮住任何 CLS 别名。
+#: **登记在案的本地扩展**（CLS 表**不含**这些名字，但 Hermes 的真实工具名需要它们）。
+#: 为什么需要（审计 B 实测）：把 Hermes `tools/*.py` 里 42 个真实工具名喂进来，**29 个落兜底**
+#: —— 其中 `delegate_task`（子代理）、`execute_code`、`memory`、`session_search`、
+#: `cronjob_manage`、`todo_list` 都是用户配置里**已启用**的 toolset ⇒ 卡片上一排 🔧 兜底图标。
+#: 纪律（三条）：
+#:   ① 只有 CLS 表**没命中**时才轮到它（不遮任何 CLS 别名）；
+#:   ② token 只用 CLS 的 14 个字面量（emoji 表是唯一的额外信息），不引入编造的服务端图标名；
+#:   ③ 每条都要写明理由 —— 这条表的**唯一目的**是用户观感，不是「多抄几家」。
 ICON_ALIASES_LOCAL_EXTRA: List[Tuple[str, str]] = [
-    ("terminal", "setting_outlined"),
+    ("terminal", "setting_outlined"),        # Hermes 的 shell 工具真名（tools/terminal_tool.py:1258）
+    ("execute", "setting_outlined"),         # execute_code / code_execution（跑代码 = 跑命令）
+    ("delegate", "robot_outlined"),           # delegate_task（子代理）
+    ("skills", "app-default_outlined"),       # skills_list（注意 `skill` 别名只匹配 `skill_` 前缀）
+    ("session", "search_outlined"),           # session_search（历史会话检索）
+    ("todo", "list-check_outlined"),          # todo_list（待办清单）
+    ("memory", "folder_outlined"),            # memory（长期记忆库 = 一个库）
+    ("cronjob", "list-check_outlined"),       # cronjob_manage（计划任务）
+    ("process", "setting_outlined"),          # process_manage（进程管理）
+    ("image", "app-default_outlined"),        # image_generate / video_generate（生成类）
+    ("video", "app-default_outlined"),
+    ("speech", "language_outlined"),          # text_to_speech
+    ("vision", "language_outlined"),          # vision_analyze / video_analyze / browser_vision
+    ("computer", "browser-mac_outlined"),     # computer_use（看屏幕/操作界面）
+    ("gui", "browser-mac_outlined"),          # gui_tour
+    ("desktop", "browser-mac_outlined"),      # desktop_preview / desktop_project
+    ("preview", "file-link-text_outlined"),   # *_preview（读某个东西给人看）
+    ("web", "language_outlined"),             # web_extract（web_search/web_fetch 已被 CLS 命中）
+    ("feishu", "chat_outlined"),              # feishu_doc_read / feishu_drive_*（飞书自身）
+    ("drive", "folder_outlined"),
+    ("ha", "app-default_outlined"),           # ha_call_service / ha_get_state（HomeAssistant）
+    ("yb", "chat_outlined"),                  # yb_*（元宝侧工具）
+    ("x_search", "search_outlined"),          # x_search（社交检索）
+    ("patch", "edit_outlined"),               # patch（改文件）
+    ("send", "chat_outlined"),                # send_message（发消息）
+    ("react", "chat_outlined"),               # react_to_message（表情回应）
+    ("text", "language_outlined"),            # text_to_speech（`speech` 匹配不到 `text_` 开头）
+    ("setup", "setting_outlined"),            # setup_mcp
+    ("show_tip", "chat_outlined"),            # show_tip（对用户说话）
+    ("focus", "browser-mac_outlined"),        # focus_pane（界面操作）
+    ("apply", "browser-mac_outlined"),        # apply_layout
+    ("annotate", "browser-mac_outlined"),     # annotate_preview
+    ("close", "setting_outlined"),            # close_preview / close_terminal（关掉一个东西）
 ]
 
 #: 兼容旧调用点（探针/单测按 key 取 token）：由上面的有序表派生，fallback 另算

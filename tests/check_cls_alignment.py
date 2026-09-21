@@ -55,13 +55,15 @@ def _cls_table(cls_dir: pathlib.Path) -> list:
 
 
 def main() -> int:
+    require = "--require" in sys.argv or bool(os.environ.get("LARKDECK_REQUIRE_CLS"))
     cls_dir = pathlib.Path(os.environ.get("LARKDECK_CLS_DIR") or _DEFAULT_CLS)
     if not (cls_dir / "hermes_lark_streaming" / "streaming" / "tooluse.py").is_file():
         msg = f"CLS 仓库不在（{cls_dir}）"
-        if os.environ.get("LARKDECK_REQUIRE_CLS"):
-            print(f"FAIL  {msg} —— LARKDECK_REQUIRE_CLS=1 时缺席即失败")
+        if require:
+            print(f"FAIL  {msg} —— `--require` / LARKDECK_REQUIRE_CLS=1 时缺席即失败"
+                  "（审计 C2：'缺席即 SKIP' 等于可被形式化满足）")
             return 1
-        print(f"SKIP  {msg}（设 LARKDECK_REQUIRE_CLS=1 可要求必须存在）")
+        print(f"SKIP  {msg}（正式门禁走 run_fast 的 `--require`；手工跑可设 LARKDECK_REQUIRE_CLS=1）")
         return 0
 
     contract = json.loads(

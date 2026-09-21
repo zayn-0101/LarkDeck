@@ -38,7 +38,8 @@ FULL = [
     ("check_clarify_e2e", [_PY, str(_HERE / "check_clarify_e2e.py")], 120.0),
     ("check_cardview", [_PY, str(_HERE / "check_cardview.py")], 60.0),
     # 图标表 vs **CLS 源码**（不是 vs 我们自己的冻结契约）；CLS 仓库不在时 SKIP（exit 0）
-    ("check_cls_alignment", [_PY, str(_HERE / "check_cls_alignment.py")], 60.0),
+    # `--require`：CLS 仓库缺席时报 FAIL（而不是 SKIP）——「缺席即跳过」等于可被形式化满足
+    ("check_cls_alignment", [_PY, str(_HERE / "check_cls_alignment.py"), "--require"], 60.0),
 ]
 
 

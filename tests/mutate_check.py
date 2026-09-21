@@ -2604,6 +2604,27 @@ MUTATIONS = [
      '    return ICON_EMOJI.get(str(token or ""), ICON_EMOJI[ICON_FALLBACK])',
      '    return ICON_EMOJI[ICON_FALLBACK]  # V4-47 mutated',
      'test_units'),
+    ('V4-48-fit 的 tier 把调用方关掉的装饰又打开（审计 B 阻断项：空面板/配置失效）', 'core/adapter.py',
+     '            view.panel_enabled = bool(panel_on and requested_panel)\n'
+     '            view.footer_enabled = bool(footer_on and requested_footer)',
+     '            view.panel_enabled = panel_on\n'
+     '            view.footer_enabled = footer_on',
+     'test_units'),
+    ('V4-49-`/stop` 重绘的终态卡不关流式态（审计 B 实测 config.streaming_mode=true）', 'core/adapter.py',
+     '                card = self._ld_fit_structured_card(stopped_view)\n'
+     '                # 中止重绘是**终态**：必须关掉流式态（legacy 分支的 `streaming=False` 一直在做，\n'
+     '                # 结构化分支漏了 —— 审计 B 实测 `config.streaming_mode=true`）。\n'
+     '                card["config"]["streaming_mode"] = False',
+     '                card = self._ld_fit_structured_card(stopped_view)',
+     'test_units'),
+    ('V4-51-出站留痕限流窗口放宽到 1 小时（证据被压住、「每次出站留一行」不可证伪）', 'core/adapter.py',
+     '_OUTBOUND_LOG_INTERVAL_S = 30.0',
+     '_OUTBOUND_LOG_INTERVAL_S = 3600.0  # V4-51 mutated',
+     'test_units'),
+    ('V4-52-真实工具名 delegate_task 退回兜底图标（用户可见落差）', 'core/cardview.py',
+     '    ("delegate", "robot_outlined"),           # delegate_task（子代理）',
+     '',
+     'test_units'),
 ]
 
 #: **对照项**：行为等价的改动（合法 YAML 变体等），期望四门禁**全绿**。
@@ -2673,6 +2694,9 @@ _PASS_MARKERS = {
     "check_hooks.py": "HOOKS OK",
     "check_clarify_e2e.py": "CLARIFY E2E OK",
     "check_cardview.py": "CARDVIEW OK",
+    # 图标表 vs **CLS 源码**（审计 C2 实测：把生产表与我们的冻结 JSON 同时改坏时，前五支全绿
+    # ⇒ 只有「直连 CLS」这一支能抓。它以前躺在五门禁之外 ⇒ 等于可被形式化满足。）
+    "check_cls_alignment.py": "CLS ALIGN OK",
 }
 
 #: 每个门禁**失败时**会打的标记（断言失败/测试报错）。缺了它就说明门禁没跑到断言那一步
@@ -2696,6 +2720,7 @@ _FAIL_MARKERS = {
     # `💥 只有崩溃 …算判别力证据`，改之后是 `🔴 断言失败 … 断言红=['check_clarify_e2e.py']`。
     "check_clarify_e2e.py": ("FAIL  ", "FAILED:"),
     "check_cardview.py": ("AssertionError",),
+    "check_cls_alignment.py": ("CLS 对齐 FAIL", "AssertionError"),
 }
 
 
@@ -2745,7 +2770,7 @@ def _classify(script: str, proc: "subprocess.CompletedProcess") -> str:
 
 
 GATE_ORDER = ["test_units.py", "check_override.py", "check_hooks.py",
-              "check_clarify_e2e.py", "check_cardview.py"]
+              "check_clarify_e2e.py", "check_cardview.py", "check_cls_alignment.py"]
 
 
 def _run_one_gate(repo: Path, script: str) -> "tuple[int, str]":

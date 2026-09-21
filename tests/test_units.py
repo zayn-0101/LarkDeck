@@ -6707,6 +6707,10 @@ def test_stop_redraw_and_edit_message_keep_the_trace_id():
         # 同一次重绘的另一半：面板必须真的变成中止色（两个断言各钉一个症状）
         _pn = _find_collapsible(json.loads(_stop_blob))
         assert _pn is not None and _pn["border"]["color"] == "yellow", _pn
+        # 第三半（审计 B 实测）：中止重绘是**终态**，卡里必须关掉流式态 ——
+        # 不然客户端那边这张卡还停在流式会话里（语义错，且后续写元素会得到 300309）。
+        assert json.loads(_stop_blob)["config"].get("streaming_mode") is False, \
+            f"`/stop` 重绘的终态卡必须 streaming_mode=false：{_stop_blob[:200]}"
     finally:
         adapter._STREAM_MIN_INTERVAL = old_interval
         panel.reset()
@@ -12694,9 +12698,11 @@ def test_v4_18_icon_mapping_matches_cls_semantics():
                             ("browser_navigate", "browser-mac_outlined"),
                             ("terminal", "setting_outlined")):
         assert pick(raw_name) == token, f"{raw_name}: {pick(raw_name)} != {token}"
-    # ④ CLS 里**没有** execute/code 别名 ⇒ 必须落兜底（不是齿轮）
-    for unknown in ("execute_code", "mem0_search", "bashful", "pre_exec",
-                    "terminalx", "完全没听过", ""):
+    # ④ CLS 里**没有** execute/code 别名 ⇒ 落**本地登记扩展**（见 ICON_ALIASES_LOCAL_EXTRA）；
+    #    真正无人认领的名字必须落 CLS 的兜底。
+    assert pick("execute_code") == "setting_outlined", \
+        "execute_code 由本地扩展 `execute` 接管（用户已启用的 code_execution toolset）"
+    for unknown in ("mem0_search", "bashful", "pre_exec", "terminalx", "完全没听过", ""):
         assert pick(unknown) == fallback, f"{unknown!r}: {pick(unknown)} != {fallback}"
 
 
@@ -12805,6 +12811,27 @@ def test_p5_outbound_log_records_every_egress_shape():
         # 限流的 key 含 chat：不同会话之间不许互相压制（否则真机排障会丢证据）
         assert len({ln.split("chat=")[1].split()[0] for ln in lines}) == 4, \
             f"四条出站来自四个会话，一条都不许被限流吃掉：{joined}"
+        # 限流窗口的**字面量**（审计 C2 的 G3：30s → 3600s 时五门禁全绿 ⇒ 必须钉住常量本身）
+        assert adapter._OUTBOUND_LOG_INTERVAL_S == 30.0, \
+            f"出站留痕限流窗口必须字面量 30s：{adapter._OUTBOUND_LOG_INTERVAL_S}"
+        adapter._OUTBOUND_LOGGED.clear()
+        clock = {"t": 1000.0}
+        real_monotonic = adapter.time.monotonic
+        adapter.time.monotonic = lambda: clock["t"]
+        try:
+            with _LogCapture("larkdeck") as recs_same:
+                adapter._log_outbound("card", "oc_throttle", "第一次")
+                adapter._log_outbound("card", "oc_throttle", "第二次")
+            assert sum("出站=card" in r.getMessage() for r in recs_same) == 1, \
+                "同一个会话在窗口内的第二次出站必须被限流（否则日志会洪泛）"
+            clock["t"] += adapter._OUTBOUND_LOG_INTERVAL_S + 0.1
+            with _LogCapture("larkdeck") as recs_later:
+                adapter._log_outbound("card", "oc_throttle", "第三次")
+            assert sum("出站=card" in r.getMessage() for r in recs_later) == 1, \
+                "窗口过后必须恢复留痕（否则「每次出站留一行」不可证伪）"
+        finally:
+            adapter.time.monotonic = real_monotonic
+            adapter._OUTBOUND_LOGGED.clear()
     finally:
         adapter._OUTBOUND_LOGGED.clear()
         adapter._CONFIG.clear()
@@ -12904,6 +12931,121 @@ def test_v4_46_tool_rows_use_inline_emoji_not_div_icon():
         assert row["text"]["content"].startswith("🛠️ "), row["text"]["content"]
     finally:
         panel.reset()
+
+
+def test_v4_15_static_and_fit_lanes_never_reopen_disabled_panel_or_footer():
+    """V4.15 + 审计 B 阻断项：`_ld_fit_structured_card` 的降载 tier 只能是**上限**。
+
+    两件事必须同时成立（审计 B 在 `3064f81` 实测：两条都被静默违反、五门禁全绿）：
+      ① **本条消息没有任何过程数据** ⇒ 系统提示/命令回复**不出空面板**（V4.15 用户口径：
+         点开什么都没有的「执行详情」是冗余）；
+      ② `unified_panel=false` / `footer=false` 是**配置契约**，`send()`/`edit_message()` 的
+         静态卡与 native 帧路径都不许把它们又打开。
+
+    为什么旧断言抓不住：它们只测「有过程数据 + 默认开」那条路径，而 fit 的 tier 循环
+    无条件把 `panel_enabled/footer_enabled` 写成 True ⇒ 关掉的开关被重新打开。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    panel.reset()
+    context.reset()
+    try:
+        raw = _make()
+        # ① 空快照 + 默认配置（unified_panel/footer 默认开）⇒ 仍然不许出面板
+        adapter.configure(unified_panel=True, footer=True)
+        sent_cards = []
+        raw._ld_send_card = lambda chat_id, card, **kw: (
+            sent_cards.append(card) or _StubResult(True, "om_v415"))
+        _run(raw.send("oc_v415", "Gateway online"))
+        tags = [e.get("tag") for e in sent_cards[-1]["body"]["elements"]]
+        assert "collapsible_panel" not in tags, \
+            f"没有任何过程数据时不许出空面板（点开什么都没有）：{tags}"
+
+        # ② 两个开关都关 ⇒ 静态卡里既没有面板也没有页脚（fit 不许把它们打开）
+        adapter.configure(unified_panel=False, footer=False)
+        sent_cards.clear()
+        _run(raw.send("oc_v415b", "纯文本回复"))
+        ids = [e.get("element_id") for e in sent_cards[-1]["body"]["elements"]]
+        assert ids == ["answer"], f"unified_panel=false / footer=false 必须只剩正文：{ids}"
+
+        # ③ fit 本身：tier 是上限，不是取值
+        v_off = adapter._cardview.CardView(answer="x")
+        v_off.panel_enabled = False
+        v_off.footer_enabled = False
+        card_off = raw._ld_fit_structured_card(v_off)
+        assert [e.get("element_id") for e in card_off["body"]["elements"]] == ["answer"], card_off
+        v_on = adapter._cardview.CardView(answer="x")
+        v_on.panel_enabled = True
+        v_on.footer_enabled = True
+        card_on = raw._ld_fit_structured_card(v_on)
+        assert [e.get("element_id") for e in card_on["body"]["elements"]] == \
+            ["answer", "panel", "footer"], card_on
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        panel.reset()
+        context.reset()
+
+
+def test_v4_50_stop_redraw_structured_card_closes_streaming_mode():
+    """`/stop` 重绘的**结构化**终态卡必须关掉流式态（审计 B 现象 3）。
+
+    为什么单独一条：既有的 `/stop` 用例在 `_LEGACY_LANE_TESTS` 里（它按 legacy 形状断言），
+    所以结构化分支的 `config.streaming_mode` 没人看 —— 审计 B 实测那里一直是 `true`
+    （legacy 分支的 `_ld_build_card(streaming=False)` 早就做对了）。
+    终态卡不关流式 = 客户端那张卡还停在流式会话里（语义错，且之后写元素会得 300309）。
+    """
+    chat, turn = "oc_v450", "t1"
+    raw, calls, target_cls, old_reqs, saved_config, old_interval = _v41_setup(chat)
+    adapter.configure(unified_panel=True)
+    try:
+        _ups = _wire_patch(raw)
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        assert _run(raw.send_stream_frame("正文", chat_id=chat, turn_id=turn))
+        n_before = len(_ups)
+        _run(raw.interrupt_session_activity("sk-v450", chat))
+        assert len(_ups) == n_before + 1, "中止后必须真的重绘了一次（否则这一格什么都没验）"
+        body = json.loads(_ups[-1]["content"])
+        assert body["config"].get("streaming_mode") is False, \
+            f"结构化终态卡必须 streaming_mode=false：{json.dumps(body.get('config'), ensure_ascii=False)}"
+        panel_node = _find_collapsible(body)
+        assert panel_node is not None and panel_node["border"]["color"] == "yellow", panel_node
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved_config, old_interval, chat)
+
+
+def test_v4_48b_real_hermes_tool_names_never_fall_back_to_the_generic_icon():
+    """审计 B 实测：Hermes `tools/*.py` 的 42 个真实工具名里 **29 个落兜底**（🔧）——
+    其中 `delegate_task` / `execute_code` / `memory` / `session_search` / `cronjob_manage` /
+    `todo_list` 都在用户**已启用**的 toolset 里 ⇒ 卡片上一排兜底图标（用户可见的落差）。
+
+    这里把真实清单**冻结成字面量**（提取命令：
+    `grep -rhoE 'name\s*=\s*"[a-z0-9_]+"' ~/.hermes/hermes-agent/tools/*.py | sort -u`，
+    再手工剔除配置值），逐条断言**不许落兜底**。为什么要冻结而不是现读：门禁必须能在
+    Hermes 缺席时也跑（现读会让这条变成「环境在就绿、不在就跳过」的形式化满足）。
+    """
+    real_names = [
+        "annotate_preview", "apply_layout", "browser_back", "browser_cdp", "browser_click",
+        "browser_console", "browser_dialog", "browser_exec", "browser_get_images",
+        "browser_navigate", "browser_press", "browser_scroll", "browser_snapshot",
+        "browser_type", "browser_vision", "clarify", "close_preview", "close_terminal",
+        "computer_use", "cronjob_manage", "delegate_task", "desktop_preview",
+        "desktop_project", "drive_preview", "execute_code", "feishu_doc_read",
+        "feishu_drive_add_comment", "focus_pane", "gui_tour", "ha_call_service",
+        "ha_get_state", "image_generate", "memory", "open_preview", "patch",
+        "process_manage", "react_to_message", "read_file", "read_preview", "read_terminal",
+        "read_window_below", "search_files", "send_message", "session_search", "setup_mcp",
+        "show_tip", "skill_manage", "skill_view", "skills_list", "terminal",
+        "text_to_speech", "todo_list", "video_analyze", "video_generate", "vision_analyze",
+        "web_extract", "web_search", "write_file", "x_search",
+    ]
+    pick = adapter.LarkDeckMixin._ld_icon_token
+    fallback = [n for n in real_names if pick(n) == adapter._cardview.ICON_FALLBACK]
+    assert not fallback, f"这些真实工具名落兜底图标（用户可见的落差）：{fallback}"
+    for name, emoji in (("delegate_task", "🤖"), ("execute_code", "🛠️"),
+                        ("terminal", "🛠️"), ("session_search", "🔍"),
+                        ("memory", "📁"), ("web_extract", "🌐"),
+                        ("skills_list", "🧩"), ("todo_list", "✅")):
+        assert adapter._cardview.icon_emoji(pick(name)) == emoji, (name, pick(name))
 
 
 def main() -> int:

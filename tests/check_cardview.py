@@ -186,6 +186,53 @@ def _assert_v072_contracts() -> None:
     改成 `robot_outlined` 时五门禁全绿 —— 而 `check_cardview.py` 正是「视觉表」那道门禁，
     它当时只比对 v0.7.1 JSON 的 14 个旧键 ⇒ 生产表怎么漂移都看不见。
     """
+    # ① **独立字面量**（审计 C2 的绿变异）：把生产表与契约 JSON *同时*改掉（并按 docstring 的
+    #    「有意变更 ⇒ 重生成夹具」流程重跑黄金夹具）时，两边自比会全绿 —— 所以门禁自己必须
+    #    有一小份**不来自生产、也不来自 JSON** 的字面量，钉住最吃重的几条与 spinner 资产。
+    assert cardview.SPINNER_IMG_KEY == "img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg", \
+        f"spinner 资产 key 被改动了（真机无效 asset 会 300313 拖垮装饰链）：{cardview.SPINNER_IMG_KEY}"
+    literal_icons = {
+        "exec": "setting_outlined", "bash": "setting_outlined",
+        "command": "setting_outlined", "run": "setting_outlined",
+        "read": "file-link-text_outlined", "open": "file-link-text_outlined",
+        "write": "edit_outlined", "edit": "edit_outlined",
+        "web_search": "search_outlined", "web_fetch": "language_outlined",
+        "browser": "browser-mac_outlined", "agent": "robot_outlined",
+        "check": "list-check_outlined", "analyze": "report_outlined",
+        "clarify": "chat_outlined",
+    }
+    got_literal = dict(cardview.ICON_ALIASES)
+    for alias, token in literal_icons.items():
+        assert got_literal.get(alias) == token, \
+            f"{alias}: 生产表 {got_literal.get(alias)!r} != 字面量 {token!r}"
+    # Hermes 真实工具名的**常用族**：不许落兜底（审计 B 实测 29/42 落兜底是用户可见落差；
+    # 这张表是**本地登记扩展**，不参与 CLS 逐条比对）
+    literal_local = {
+        "terminal": "setting_outlined", "execute_code": "setting_outlined",
+        "delegate_task": "robot_outlined", "skills_list": "app-default_outlined",
+        "session_search": "search_outlined", "todo_list": "list-check_outlined",
+        "memory": "folder_outlined", "cronjob_manage": "list-check_outlined",
+        "computer_use": "browser-mac_outlined", "text_to_speech": "language_outlined",
+        "patch": "edit_outlined", "send_message": "chat_outlined",
+    }
+    def _resolve(name: str) -> str:
+        """工具名 → token（与 `_ld_icon_token` 同语义：精确或 `alias_` 前缀；CLS 表优先）。"""
+        for alias, token in list(cardview.ICON_ALIASES) + list(cardview.ICON_ALIASES_LOCAL_EXTRA):
+            if name == alias or name.startswith(alias + "_"):
+                return token
+        return cardview.ICON_FALLBACK
+
+    for name, token in literal_local.items():
+        assert _resolve(name) == token, \
+            f"真实工具名 {name}: {_resolve(name)!r} != 字面量 {token!r}（用户会看到兜底图标）"
+    # spinner 元素的**逐字段字面量**（审计 C2 的 G2：`startswith("img_v")` + 与生产常量自比
+    # 会被 `img_v3_FAKE` + 同步重生成夹具绕过 ⇒ 这里把三个字段写成字面量）
+    _hint = cardview.loading_hint_element()
+    assert _hint["icon"] == {"tag": "custom_icon",
+                             "img_key": "img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg",
+                             "size": "16px 16px"}, _hint["icon"]
+    assert _hint["text"] == {"tag": "plain_text", "content": " "}, _hint["text"]
+
     icons = json.loads(
         (_REPO / "docs" / "audits" / "v0.7.2" / "tool-icons.json").read_text(encoding="utf-8"))
     prod = list(cardview.ICON_ALIASES)
