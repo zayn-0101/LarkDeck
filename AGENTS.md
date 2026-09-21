@@ -477,6 +477,11 @@ force-add 前先扫描敏感值，例如：
 是**故意的**等价对照。
 
 **改了任何断言，都要跑 `tests/mutate_check.py --delta`（增量：只跑锚点区域变过的 + 新增的）。**
+跳过判据是**三重指纹**：`代码区域`（锚点 ±15 行，按**完整 old** 定位）× `用例名集合`
+（当年抓它的 `def test_*` 今天是否都还在；只新增用例不算失效）× `helper/fixture`
+（`write_golden_trace.py` + golden 夹具 + 两份契约 JSON）。三者任一变了就重跑。
+⚠️ `MUTATIONS` 里**不许**留 `expect==`（那是**对照**，写进 `CONTROLS`）——否则它永远不跑、
+还会被算成「已跳过」；`--preflight` 会直接报错。
 全量直跑（60–90 分钟那种）**不再是每版必跑**：协议见 `docs/verify-log.md` 的「09-21 协议变更」——
 `--seed-inherited <上次全绿的 tag>` 标继承、`--ledger-status` 看覆盖率、`full_audit_at` 为空或过期时
 在低负载后台补一次全量直跑。⚠️ 继承只对生产代码区域做指纹、**不对测试套件**做 —— 别把 inherited 念成「跑过了」。
