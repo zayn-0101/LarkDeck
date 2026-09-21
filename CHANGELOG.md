@@ -39,6 +39,10 @@
   发出纯文本「⏳ Working — 」。已改 `markdown`（变异 `V4-33` 实红）。
 - 预加载提示删除失败会静默「以为删掉了」⇒ 现在保持标志重试、且**换号**（同 uuid 重发会撞 `200770`）。
 
+### 修复（配置）
+- **`panel_expanded: true` 在结构化卡片上被静默忽略**（`panel_shell()` 的 `expanded` 形参默认写死
+  `False`、调用方不传）⇒ 打开"面板默认展开"后卡片仍是收起的。已修为默认取 `view.expanded`。
+
 ### 修复（打包 / 安装）
 - `install.sh` 的 FILES 清单漏了 `core/cardview.py`（v0.7.1 新增的运行模块）⇒ `--copy` / NAS
   安装会装出 import 就失败的插件；对账门禁还把 `tools/` 与 `.deploy/` 当运行文件 ⇒ 只要部署目录存在脚本必拒跑。
