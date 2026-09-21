@@ -4303,7 +4303,7 @@ def test_unified_panel_applies_caps() -> None:
     assert "💭 思考" in joined and "🛠️ 工具执行 · 1 步" in joined
     trimmed = cards.unified_panel(tools=[f"step{i}" for i in range(40)])
     joined = " ".join(e.get("content", "") for e in trimmed["elements"])
-    assert "更早的 10 步已折叠" in joined
+    assert "已折叠 10 条早期思考/工具记录" in joined
     assert "step0" not in joined and "step39" in joined, "保留最近的步骤"
     # 每条工具结果也各自受限
     big = cards.unified_panel(tools=["y" * 5000])
@@ -4346,7 +4346,7 @@ def test_panel_caps_treat_zero_as_default_not_unlimited():
 
         many = cards.unified_panel(tools=[f"step{i}" for i in range(40)], max_steps=zeroish)
         joined = " ".join(e.get("content", "") for e in many["elements"])
-        assert "更早的 10 步已折叠" in joined, f"max_steps={zeroish} 不能变成「全量保留」"
+        assert "已折叠 10 条早期思考/工具记录" in joined, f"max_steps={zeroish} 不能变成「全量保留」"
 
         big = cards.unified_panel(tools=["y" * 5000], max_tool_chars=zeroish)
         assert "已省略" in " ".join(e.get("content", "") for e in big["elements"]), \
@@ -11523,7 +11523,7 @@ def test_v4_structured_panel_budget_trims_old_steps():
                                        status="ok", duration_ms=10, tool_call_id=tcid)
         view = _make()._ld_cardview("oc_v4", "answer")
         assert len(view.panel.tools) == 20, len(view.panel.tools)
-        assert "5 步已折叠" in view.panel.collapsed_hint, view.panel.collapsed_hint
+        assert "已折叠 5 条早期思考/工具记录" in view.panel.collapsed_hint, view.panel.collapsed_hint
         assert "25 步" in str(view.panel.title.get("content")), view.panel.title
         card = adapter._cardview.entity_skeleton(view)
         assert adapter._cards.count_elements(card) <= 180, adapter._cards.count_elements(card)
@@ -12003,7 +12003,7 @@ def test_v4_5_tool_status_table_is_shared_and_configs_are_honoured():
                                        duration_ms=1, tool_call_id=f"tc{index}")
         view = _make()._ld_cardview("oc_v45cfg", "答案")
         assert len(view.panel.tools) == 3, len(view.panel.tools)
-        assert "4 步已折叠" in view.panel.collapsed_hint, view.panel.collapsed_hint
+        assert "已折叠 4 条早期思考/工具记录" in view.panel.collapsed_hint, view.panel.collapsed_hint
         assert "7 步" in str(view.panel.title.get("content")), view.panel.title
     finally:
         adapter._CONFIG.clear()

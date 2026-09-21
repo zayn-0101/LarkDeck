@@ -3797,9 +3797,13 @@ class LarkDeckMixin:
         if state is None:
             if finalize:
                 return False
-            display = self._ld_body_text(text, chat, finalize=False, stream_state=None)
+            # ⚠️ V4.16：**seed 帧一律不写正文**。own 累积是**按 chat** 存的，新回合第一帧
+            # 可能还留着上一回合的文本（`on_stream_start` 的清空与首帧有竞态）⇒ 用户会看到
+            # 「新卡上先显示上一条回复的内容，随后再被改写」（2026-09-21 真机反馈 #9）。
+            # 空正文 + 预加载提示正是我们要的形态，第一个 delta 到了自然长出来。
+            display = ""
             view = self._ld_cardview(chat, display, started=now)
-            view.loading_hint = True      # 建卡即插入「正在准备上下文…」（首字到达后删）
+            view.loading_hint = True      # 建卡即插入「正在加载上下文...」（首字到达后删）
             made = await self._ld_ck_create(chat, answer=display, panel_text="",
                                             panel_tools_text="", reply_to=reply_to,
                                             structured_view=view)
