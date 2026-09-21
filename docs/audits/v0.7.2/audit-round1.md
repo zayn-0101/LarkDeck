@@ -140,6 +140,17 @@ C2 另有两条「判定力是假的」观察，如实记下：
 | **协议逃逸 H2**：`MUTATIONS` 里 `expect==""` 的条目永远不跑却被计入「已跳过」 | `--delta -k 'C-对照'` exit 0；ledger 只有 470 条而 status 报 471 | 同审计 A 的一条：移入 `CONTROLS` + `_shape_error` 禁止 + `_full` 覆盖校验 |
 | **协议逃逸 H3**：`--seed-inherited` 可以给「ref 清单里根本还没有的变异」盖章（蛰伏路径） | 构造 | `_seed_inherited` 增加资格校验：该 ref 的 `mutate_check.py` 里必须已有同名条目 |
 
+### 收口自验（主执行方在 `936a87f` 上复跑）
+
+* **helper 指纹（审计 A-①）**：在 `/tmp` 拷贝里只把 `tests/write_golden_trace.py` 的 `main()`
+  改成立刻 `return 0`（**不动任何门禁文件、不动生产代码**）⇒ `--delta -k CK25` 从「跳过 1 条」
+  变成 **「待跑 1 条」**，并当场把 `CK25` 判成 **🟢 断言没有判别力**、退出码 1 ——
+  即「改坏 helper 让黄金夹具门禁失效」这条路径**已经不会再被账本误判成已验**。
+* **锚点守卫（审计 C-H1）**：把 `_anchor_region` 换回「只看首行」的坏实现 ⇒ `--preflight`
+  精确拦下 **22/474** 条（与终审 C 的发现数量一次对上）；换回现役实现 ⇒ preflight 干净。
+* **`expect==""`（审计 A-②/C-H2）**：`--preflight` 干净；`--ledger-status` 的 474/474 与
+  `tests/mutation-verdicts.json` 里 `verdict=red-assert` 的条数一致。
+
 ### 三条终审一致确认的「假绿」新形态（值得写进 `lessons`）
 
 1. **「配置开关被另一个开关绑死」**（G1）：混合档（A=false + B=true）没人测 ⇒ 一个 `and` 写错就静默丢字段。
