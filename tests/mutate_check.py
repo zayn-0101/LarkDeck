@@ -2798,7 +2798,9 @@ def _run_one_gate(repo: Path, script: str) -> "tuple[int, str]":
         proc = subprocess.run([sys.executable, str(repo / "tests" / script)],
                               capture_output=True, text=True, cwd=str(repo.parent),
                               env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
-                              timeout=120)
+                              # 45s：超时是**中止**、不是判定（💥 不记账，留给 `--only` 定向复核）。
+                              # 120s 时实测有变异把整轮拖到小时级（用户明确要求提速）。
+                              timeout=45)
     except subprocess.TimeoutExpired:
         return ("red-crash", f"超时 >120s：{script}")
     tail = (proc.stdout or proc.stderr).strip().splitlines()
@@ -2903,6 +2905,25 @@ def _seed_inherited(ref: str) -> int:
     return stamped
 
 
+def _gate_fp(gate: str) -> str:
+    """门禁文件自身的指纹 —— 继承判定的**测试侧**那一半。
+
+    为什么必须有（本轮协议的自审）：只按**生产代码区域**继承有个洞 —— 某条变异当年可能
+    只被一个**后来被改写**的用例抓住，今天它已经绿了，而我们还在拿旧结论跳过它。
+    修法：每条 **red-assert** 记账时同时记下**当时那个门禁文件**的指纹；`--delta` 只在
+    「代码区域指纹 + 门禁文件指纹**都对上**」时才跳过。
+    ⚠️ 历史遗留的 `inherited(...)` 条目没有门禁指纹（当年没记）⇒ 它们仍按代码区域跳过，
+    这是**已披露的残余风险**，由周期性全量直跑兜底（`--ledger-status` 会单独报这个数）。
+    """
+    if not gate:
+        return ""
+    path = REPO / "tests" / (gate if gate.endswith(".py") else gate + ".py")
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    except OSError:
+        return ""
+
+
 def _load_ledger() -> dict:
     try:
         return json.loads(LEDGER_PATH.read_text(encoding="utf-8")).get("entries") or {}
@@ -2940,9 +2961,14 @@ def _delta_split(picked: list, entries: dict) -> "tuple[list, list]":
             skipped.append(name)
             continue
         rec = entries.get(name) or {}
-        # red-assert = 本轮真跑过；inherited = 区域自上次发布以来逐字节未变（可审计的继承）
-        if (rec.get("verdict") in ("red-assert", "inherited")
-                and rec.get("fp") == _fingerprint(rel, old, new)):
+        # red-assert = 本轮真跑过（**代码区域 + 门禁文件**双指纹）；inherited = 只按代码区域
+        # 继承（历史条目没记门禁指纹 —— 已披露的残余，靠周期性全量直跑兜底）
+        fp_ok = rec.get("fp") == _fingerprint(rel, old, new)
+        if rec.get("verdict") == "red-assert":
+            ok = fp_ok and rec.get("gate_fp") == _gate_fp(rec.get("gate") or "")
+        else:
+            ok = rec.get("verdict") == "inherited" and fp_ok
+        if ok:
             skipped.append(name)
         else:
             todo.append(m)
@@ -3115,6 +3141,9 @@ def main() -> int:
                     help="只列出本分片/本 -k 选中的变异，不跑门禁")
     ap.add_argument("--inventory", default="",
                     help="把选中变异的机器可读 inventory 写到该 JSON 路径后退出")
+    ap.add_argument("--upgrade-inherited", action="store_true", dest="upgrade_inherited",
+                    help="把 `inherited(ref)` 条目当成待跑（补记门禁侧指纹 ⇒ 之后才算真·可跳过）。"
+                         "历史继承条目没有门禁指纹，这一步是把那份残余风险关掉")
     ap.add_argument("--delta", action="store_true",
                     help="增量模式：只跑「锚点区域指纹变了 / 从未验过」的变异（其余跳过）；"
                          "全量矩阵只在 --full-audit 或大版本时跑")
@@ -3156,13 +3185,25 @@ def main() -> int:
                        if (entries.get(m[0]) or {}).get("verdict") == "red-assert")
         n_inh = sum(1 for m in MUTATIONS
                     if (entries.get(m[0]) or {}).get("verdict") == "inherited")
+        n_nogate = sum(1 for m in MUTATIONS
+                       if (entries.get(m[0]) or {}).get("verdict") == "inherited"
+                       and not (entries.get(m[0]) or {}).get("gate_fp"))
         print(f"账本覆盖：{len(MUTATIONS) - len(todo)}/{len(MUTATIONS)} 条可跳过"
-              f"（本轮真跑过 {n_assert} + 继承 {n_inh}）；待跑 {len(todo)} 条")
+              f"（本轮真跑过 {n_assert} + 继承 {n_inh}）；待跑 {len(todo)} 条"
+              + (f"；⚠️ {n_nogate} 条继承条目**没有门禁侧指纹**（残余：门禁文件若被改写，"
+                 f"它们不会被自动挑出来重跑）" if n_nogate else ""))
         if skipped[:3]:
             print(f"  例（可跳过）：{skipped[:3]}")
         if todo[:5]:
             print(f"  例（待跑）：{[m[0] for m in todo[:5]]}")
         return 0
+
+    if args.upgrade_inherited:
+        entries = _load_ledger()
+        picked = [m for m in picked
+                  if (entries.get(m[0]) or {}).get("verdict") != "red-assert"]
+        print(f"升级模式：把 {len(picked)} 条 inherited / 缺失条目当待跑"
+              f"（补门禁侧指纹；fresh 的 red-assert 不动）")
 
     if args.delta:
         entries = _load_ledger()
@@ -3330,6 +3371,7 @@ def main() -> int:
                     "fp": _fingerprint(rel, old, new),
                     "verdict": "red-assert",
                     "gate": evidence[0],
+                    "gate_fp": _gate_fp(evidence[0]),
                     "at": _head_short(),
                 }
     finally:

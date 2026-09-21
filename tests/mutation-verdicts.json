@@ -43,13 +43,15 @@
    "fp": "e69306e9af5a1f7f",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "A16-降载日志调用点档位写死": {
    "fp": "266c3bffb1bf38d3",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "A17-瞬态码表删掉官方限流码": {
    "fp": "315e21ce3a224b7f",
@@ -69,13 +71,15 @@
    "fp": "98cfae305351a36c",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "A1b-真判据恒真（不丢正文）": {
    "fp": "66887828b61f989d",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "A1c-真判据不再检查有没有颜色": {
    "fp": "42b031aefb106cd6",
@@ -88,7 +92,8 @@
    "fp": "c5e106a11705eacf",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "A2-判据口径退回原始 utf-8": {
    "fp": "c78bf03882365dec",
@@ -185,13 +190,15 @@
    "fp": "fb3fec0867542213",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "B2-4-容量码当卡级死法（正文列从 FATAL 变 DEGRADE ⇒ 用户盯着一张不再更新的卡）": {
    "fp": "9533e467e88c7f11",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "B2-5-正则去掉 `\\b`（`ErrCode: 11310` 这种前缀粘连也被当成内层码）": {
    "fp": "452b8f435025391b",
@@ -225,7 +232,8 @@
    "fp": "acf67fdd13a3c3c3",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "C18-上限改成字面量 2001（与 cards 分叉）": {
    "fp": "96db47826f585526",
@@ -266,13 +274,15 @@
    "fp": "2f1a67d38b0765cd",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CK14-建实体不再退避重试（限流一次就没卡了）": {
    "fp": "95953ff616df863b",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CK15-建实体不再守字节硬上限（144KB 的卡真的发出去）": {
    "fp": "a11f600075a4d6ee",
@@ -285,13 +295,15 @@
    "fp": "a3613b96d2a7a38b",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CK17-面板元素失败告警不再限流（每帧一条刷爆日志）": {
    "fp": "8f0345cee58c44fc",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CK18-超预算告警不再限流": {
    "fp": "2a840ac80a433f98",
@@ -318,7 +330,8 @@
    "fp": "3a0a193029002e0b",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CK21-发实体卡不带 uuid（重试会多发一张冻结卡）": {
    "fp": "6f789e8b1f3ee56d",
@@ -338,7 +351,8 @@
    "fp": "578e9da28fb1d3fd",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CK24-平台 entry 透传退回手写清单（丢掉 standalone_sender_fn 等）": {
    "fp": "32ced0a021c11b7f",
@@ -365,19 +379,22 @@
    "fp": "3dacfefa6f144bf1",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CK3-序号不递增（成功路径不推进计数器）": {
    "fp": "7ab9df3fc7294532",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CK4-不写面板元素（面板永不更新）": {
    "fp": "a2270e5712c7a514",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CK6-默认传输被顺手改回 patch（或改坏）": {
    "fp": "3bafc505591f03d2",
@@ -390,7 +407,8 @@
    "fp": "6240d0d1e454242a",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CK7b-cards.py 里把面板参数当恒真（结构不看配置）": {
    "fp": "86568445fb4ccd6f",
@@ -403,13 +421,15 @@
    "fp": "0e5f1b11ac2b9957",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CK9-_ld_transport 里写死一条传输（运行时不再跟随配置/默认）": {
    "fp": "cb4e8b5d9224dbee",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CLS-1-工具状态退回旧 emoji 前缀（Succeeded/Running/Failed 状态词消失）": {
    "fp": "0fee15c858f710af",
@@ -464,7 +484,8 @@
    "fp": "101dc7226a3f40d0",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CLS-17-非法 \\uXXXX 不校验（负码点/半截代理崩溃）": {
    "fp": "d8ad13eb733478d5",
@@ -519,7 +540,8 @@
    "fp": "6ace11f6dab03598",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CLS-24-仅推理时返回带 {elapsed} 占位的标题": {
    "fp": "dc4f05bff74a1ab4",
@@ -532,7 +554,8 @@
    "fp": "e5c786d8e132c4bd",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CLS-26-canceled 质量样式表被改成 Failed/red": {
    "fp": "cec491d04cafda16",
@@ -573,7 +596,8 @@
    "fp": "a79cb35385ffd6f3",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CLS-31-success 状态词被改成 Success/grey": {
    "fp": "5f64e6961f536c3e",
@@ -593,13 +617,15 @@
    "fp": "bd318655f9b09ebd",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CLS-34-空累积的核心进度帧不再剥（terminal 代码块又画进答案）": {
    "fp": "8141a95fcec74a21",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CLS-35-编号/标题等 ASCII 标记被当核心进度吞掉（符号类别护栏被放宽）": {
    "fp": "c5bd986208bc81f1",
@@ -640,7 +666,8 @@
    "fp": "65e7e61541e405f0",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CLS-40-符号类别护栏失效（中文/非 emoji 头被当核心进度）": {
    "fp": "7c92ac4d792d5f67",
@@ -660,13 +687,15 @@
    "fp": "2bb009cdbe703ded",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CLS-43-空白累积 + 前导分隔符的进度帧不再剥（真机 15:17 的 terminal 代码块回到正文）": {
    "fp": "961a8c0b56bb53fd",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CLS-5-未知工具状态解包崩溃（cancelled 工具把整块面板带走）": {
    "fp": "d8894c42159a6bf7",
@@ -686,13 +715,15 @@
    "fp": "388f5a320bb96d1c",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CLS-8-分区标题不占面板元素额度（元素墙重新出现 2 个元素的缝）": {
    "fp": "4e55c37846b33150",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "CLS-9-已知类别的预览退回「第一个值」兜底（把 note 当命令展示）": {
    "fp": "f75ce6342bfe23be",
@@ -705,13 +736,15 @@
    "fp": "a25f2b666f7344f0",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "D26-default 改折叠标量": {
    "fp": "b85f8dc88269786a",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "D27-解析器不再响亮失败": {
    "fp": "04c962a4e0e1b852",
@@ -906,13 +939,15 @@
    "fp": "17341bdffec0b183",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "G1-23-条件④的「分隔符之后还有内容」撤掉（裸分隔符也照剥 = 剥掉模型写的分隔线）": {
    "fp": "2ff4bdde0eee106f",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "G1-3-2.0 脚注退回旧文案（没有按钮的卡又说「点按钮」）": {
    "fp": "1255e4b5007b124c",
@@ -974,7 +1009,8 @@
    "fp": "f6a46de6dba6b929",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "G2-11-正常路径（没有活跃流可收尾）也记一次掉回纯文本（口径与文档相反）": {
    "fp": "903f6fccd949cf21",
@@ -994,7 +1030,8 @@
    "fp": "fb709ac88c5a7a84",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "G2-4-自检行不再报卡短码": {
    "fp": "b3554e3bfdb5d7f7",
@@ -1007,13 +1044,15 @@
    "fp": "beae3ff6a2ca8be4",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "G2-6-帧失败不再记错误码（top-N 永远是空的）": {
    "fp": "7d20c86fe6a44113",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "G2-7-`reset()` 把进程起点也清掉（uptime 永远显示「刚重启」）": {
    "fp": "17d8926007cfb45f",
@@ -1033,7 +1072,8 @@
    "fp": "f5ae6070c6a2a4fc",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "HK-页脚不再透传 base_url（窗口退化成家族兜底 128K）": {
    "fp": "31c6627e8f3938ea",
@@ -1095,13 +1135,15 @@
    "fp": "30ab7468cf1e6c50",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "P1a-2-`/larkdeck status` 不再输出能力探测摘要（探测结论重新变回被动日志）": {
    "fp": "c701b0d1dfa548ee",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "P1a-3-成功接管后不写 probe 快照（status 永远显示「未探测」，已接管状态不可达）": {
    "fp": "9bdb6f0bd2504db9",
@@ -1170,19 +1212,22 @@
    "fp": "ab2fa12a68620107",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "P1b-9-普通卡建卡不接字号档位（收尾/回退卡与流式卡字号不一致）": {
    "fp": "fbc5ce282f1eccb7",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "P2-1-默认主题退回 neutral（用户点单的 ap_lite 静默消失）": {
    "fp": "00d3e03593fb2da8",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "P2-11-配置刷新读失败不再整次取消（留下半套新配置）": {
    "fp": "406b941547caca42",
@@ -1272,13 +1317,15 @@
    "fp": "39cc19a8e725e2a7",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "P2-7-能力异常不再加 ⚠️（坏掉的链路看起来和健康一样）": {
    "fp": "dd5d45f242f0cc60",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "P2-8-运行失败不再加 ⚠️（失败计数和零失败看起来一样）": {
    "fp": "b53f1e730e0e2496",
@@ -1347,19 +1394,22 @@
    "fp": "f6a0a9c91ce670e2",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "P3d-整数默认值写成带引号": {
    "fp": "d3e75dc87850e471",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "P3e-整数默认值写成浮点": {
    "fp": "b75bb772a0764cc9",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "P3f-布尔默认值写成 1": {
    "fp": "8e14ad81b1291299",
@@ -1372,7 +1422,8 @@
    "fp": "31de50317299a3db",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "P4-streaming_config 不再夹取": {
    "fp": "3a98f71faa3d517d",
@@ -1392,19 +1443,22 @@
    "fp": "7e8a666edc32acd7",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "P5-出站留痕不再记录卡片成功分支（「这条以什么形态发出去」不可证伪）": {
    "fp": "44b595e2af6e6c43",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "P5-出站限流的 key 不含 chat（多会话并发时证据被吃掉）": {
    "fp": "09fa18f7faae6a1a",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "P5a-probe_report 不再上报 missing_reactions": {
    "fp": "540918212495246a",
@@ -1459,19 +1513,22 @@
    "fp": "04bc9a58f2ff822e",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "PA-1-正文增量入账前被「顺手规整」（累积与核心不再逐字节同源）": {
    "fp": "e8adad85575a851b",
    "verdict": "red-assert",
    "gate": "check_hooks.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "b8dae9f7d0a188ce"
   },
   "PA-2-正文仓库的按会话分桶被换成一把常量键（跨会话串台）": {
    "fp": "ca6537db09991bb2",
    "verdict": "red-assert",
    "gate": "check_hooks.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "b8dae9f7d0a188ce"
   },
   "PL-1-无视配置一律转发父类（工具行又并进正文）": {
    "fp": "d148f247b6164e64",
@@ -1484,13 +1541,15 @@
    "fp": "5551ad3f42908f83",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R10-1-面板状态退回模块局部（插件被加载两次时钩子写一份、卡片读另一份）": {
    "fp": "48281ccd04d6c043",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R10-2-写卡账本退回模块局部（卡片永远说「累计 0 帧」）": {
    "fp": "ffbecf22fd360ef8",
@@ -1517,31 +1576,36 @@
    "fp": "7f4bcdcb8777dbb2",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R11-2-工具窗口判据撤掉（没有工具事件也照剥）": {
    "fp": "8dfa2c853c33e4dc",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R11-3-判据退回「按分隔符切」（模型自己写的分隔线之后的正文被吞）": {
    "fp": "75492e2faac5cc6e",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R11-4-「累积完整」判据撤掉（冻结之后的真答案被吞）": {
    "fp": "c224f5966ddbd13b",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R11-5-工具一结束就关窗口（收尾那一帧恰好就是有进度行的帧）": {
    "fp": "e2718a507ebf50c5",
    "verdict": "red-assert",
    "gate": "check_hooks.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "b8dae9f7d0a188ce"
   },
   "R11-6-自检不再报「剥了几帧」（真机上再没有凭据）": {
    "fp": "7ff6ff3afa615762",
@@ -1554,7 +1618,8 @@
    "fp": "42980fd41603c59d",
    "verdict": "red-assert",
    "gate": "check_hooks.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "b8dae9f7d0a188ce"
   },
   "R11-8-配置项 progress_lines_in_body 又变成空转（文档说的与做的不一致）": {
    "fp": "ece5e8661949b86c",
@@ -1567,13 +1632,15 @@
    "fp": "fdd043b99f7831d5",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R12-1-面板锁退回模块局部（两世代各一把 ⇒ 互斥失效，实测能撞出字典迭代异常）": {
    "fp": "98cec9500708b523",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R12-2-指标层的锁退回模块局部": {
    "fp": "7d4652c318225406",
@@ -1600,7 +1667,8 @@
    "fp": "9252c0bccbc22283",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R12-6-合并适配器时不再剥旧层（自套娃 ⇒ `super()` 回退路径执行两遍）": {
    "fp": "8c191f0b0a77c5b5",
@@ -1620,7 +1688,8 @@
    "fp": "9015677f276a8c34",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R13-1b-本模块序号改去读盒子里的当前值（两份模块对象报同一个数 = 世代标记失效）": {
    "fp": "645fa609df12bc10",
@@ -1682,7 +1751,8 @@
    "fp": "07f717fa0498b71e",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R2-3-装饰失败升级成整帧失败（买下「DM 两张卡」那条链）": {
    "fp": "93f018e894531e91",
@@ -1702,13 +1772,15 @@
    "fp": "ab3f3c5c4e18ad28",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R2-6-页脚内容不进 ops（页脚元素永远是空壳）": {
    "fp": "3d0b4b32f3587151",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R2-7-装饰每帧无条件重写（未变化不重写失效 ⇒ 稳态下写入翻倍）": {
    "fp": "258bca0f2de4b194",
@@ -1742,49 +1814,57 @@
    "fp": "cee561746e6bf5d8",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R3-3-两块写反（工具内容写进推理块、推理内容写进工具块）": {
    "fp": "ce19429a59376f22",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R3-4-推理块把工具行也一起装进去（回到「一个 markdown 装全部」）": {
    "fp": "eff0b7c5f495e54c",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R3-5-工具块忘了截断（长工具输出把卡片顶爆）": {
    "fp": "eca2f406ea1b31e1",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R3-6-工具块的裁减方向写反（丢掉最近的、保留最早的）": {
    "fp": "28787db2cd79c672",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R3-7-降级车道改用实体卡形状（把面板两块塞进普通卡载荷）": {
    "fp": "aa767483f6306fcd",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R4-1-新卡重放整段（用户把前半段再看一遍）": {
    "fp": "3ddc59be96d1a90a",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R4-2-封旧卡忘了关流式态（旧卡永远停在「正在生成」）": {
    "fp": "dabf4533fc086149",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R4-3-切点不看尾巴预算（发一张必被飞书拒的卡）": {
    "fp": "9654dabaceb62395",
@@ -1797,7 +1877,8 @@
    "fp": "ccd9d41a108c2988",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R4-5-切点不避开代码围栏（两张卡的 markdown 各自残缺）": {
    "fp": "2558bb1306d77405",
@@ -1810,13 +1891,15 @@
    "fp": "3057ff51ade15f83",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R4-7-降级分支（元素通道死法）重放整段": {
    "fp": "cdc1ccec08a72497",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R5-1-卡级死法仍然 fail-open（不降级 ⇒ 用户后面看到纯文本）": {
    "fp": "558a27ea6384945d",
@@ -1829,7 +1912,8 @@
    "fp": "f5dd556589ff731e",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R5-11-装饰撞上卡级死法却不降级（后续每帧往关掉的会话写正文）": {
    "fp": "8f7841c694abbbb9",
@@ -1842,13 +1926,15 @@
    "fp": "f72d91e7e1586cae",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R5-13-装饰告警不再列出受影响的元素（排查时不知道冻了哪几个）": {
    "fp": "021bdb3d23d32a5e",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R5-14-解析出的坏 id 不核对是否在本批（截断/误伤 ⇒ 标死好元素、放走坏元素）": {
    "fp": "c0604851224e3073",
@@ -1868,25 +1954,29 @@
    "fp": "8519e0477dbd1224",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R5-17-降级那一帧丢掉本帧算出的标死（同一件事两处真相）": {
    "fp": "438b00d8eec4e6eb",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R5-2-降级时另建一张卡（DM 里两张卡）": {
    "fp": "cc33b2e017bdcef5",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R5-3-降级但不清 card_id（之后每帧仍然写已关的会话 ⇒ 每帧失败）": {
    "fp": "692846d49c393ff2",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R5-4-撤回守卫不生效（消息没了还继续往它写）": {
    "fp": "aafba46ab775ffff",
@@ -1920,37 +2010,43 @@
    "fp": "cb588c9eedbd1185",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R5-9-追踪表按创建时刻淘汰（长回合的卡被踢 ⇒ 卡片永久冻结）": {
    "fp": "b1a2e183ee53d53d",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R6a-1-流式收尾帧不做卫生（前缀链断掉 ⇒ 回答重发一遍）": {
    "fp": "3f603a5bc1f1b527",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R6a-10-`edit_message` 两条路径一起做卫生（中间帧前缀链断掉）": {
    "fp": "1bd9ee649a924ef2",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R6a-11-`send()` 不做卫生（同一段文本两条路径长得不一样）": {
    "fp": "c5acdedf2fedc3f8",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R6a-12-`/stop` 重绘不做卫生（中止的回合看不到任何卫生）": {
    "fp": "52bab7e4fa54ebab",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R6a-13-不剥标题体的尾随闭合法 `#`（`# 标题 ####` 把 #### 露成可见噪声）": {
    "fp": "1ce3073cce8dcefd",
@@ -2047,7 +2143,8 @@
    "fp": "3df0063a00b7415e",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R7-10-预览写失败时把序号退回去（下一次写撞号 ⇒ 静默半更新）": {
    "fp": "b7417a809b7d0057",
@@ -2088,7 +2185,8 @@
    "fp": "e8f6f2df1d26d40f",
    "verdict": "red-assert",
    "gate": "check_override.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "33efa43d1c943e9d"
   },
   "R7-16-会话预览的两个模型并回同一个 import 块（老 SDK 缺它会关掉整条传输）": {
    "fp": "d4e1ae9f0728d4c1",
@@ -2101,7 +2199,8 @@
    "fp": "edfcc0c584686b8a",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R7-3-缺数据编成 0（页脚显示「⚡ 0%」这种假读数）": {
    "fp": "2d90bbddcf8ad591",
@@ -2275,13 +2374,15 @@
    "fp": "fa81f567a897c1c3",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R9-11-元素写成功但装饰拿到卡级死法那一帧不记账（降级决定落地的那一帧）": {
    "fp": "d13a753a3b30a859",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R9-12-`_ld_update_card` 成功却不记账（patch 帧 / 收尾 / 降级补写 / 非流式 edit 全丢）": {
    "fp": "6daaf5d53553b34b",
@@ -2294,19 +2395,22 @@
    "fp": "3433a54671a60e74",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R9-14-`/stop` 的中止重绘自己再记一笔（同一帧被记两次：用户可见的那次重绘虚高）": {
    "fp": "28f6c8c4ef07e2ec",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R9-15-「没有活跃流可收尾」被记成写卡失败（正常返回被染成故障）": {
    "fp": "b49444c74d2f2579",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R9-16-心跳退回「回调最后一行」（兄弟模块抛异常就被吞掉）": {
    "fp": "5c4bbe4425b30126",
@@ -2326,7 +2430,8 @@
    "fp": "2a26fbe823ef1cc4",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R9-19-`_when` 的判据退回 `ts > 0`（脏的小正数渲染成一个看着像真时刻的 1970 年日期）": {
    "fp": "11a9ca55094c4a61",
@@ -2346,7 +2451,8 @@
    "fp": "d1e5929184ac5bdd",
    "verdict": "red-assert",
    "gate": "check_override.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "33efa43d1c943e9d"
   },
   "R9-21-启动自检硬编码「命令已注册」（不看真实注册结果，而运维会信这句话）": {
    "fp": "81c8502fcf024230",
@@ -2401,7 +2507,8 @@
    "fp": "4db0083822322151",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R9-7-版本号改成写死的常量（卡片自信地报一个错的版本）": {
    "fp": "12facde6f0ef4fc5",
@@ -2414,13 +2521,15 @@
    "fp": "73e7bda0b12762e9",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "R9-9-cardkit 的 seed 建实体不记账（默认传输下首发帧等于不存在）": {
    "fp": "c645e87e34333b7e",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "S1-超预算档不再补状态小面板": {
    "fp": "fef36f59e0246eb9",
@@ -2461,19 +2570,22 @@
    "fp": "9f6b46b509358a1b",
    "verdict": "red-assert",
    "gate": "check_hooks.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "b8dae9f7d0a188ce"
   },
   "SEQ3-收尾帧不关 streaming_mode": {
    "fp": "663ff3cfc304449e",
    "verdict": "red-assert",
    "gate": "check_hooks.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "b8dae9f7d0a188ce"
   },
   "SEQ4-/stop 重绘不再带中止色（legacy 分支丢强制面板）": {
    "fp": "9d66264540fe5e0d",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "T1-建卡不再显示占位（空白卡）": {
    "fp": "a52390af598b2b2f",
@@ -2521,13 +2633,15 @@
    "fp": "e686b28a66c650df",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "U3-元素表改成「另读一遍配置」（与建出来的卡是两个真相源）": {
    "fp": "0933bd3040391da6",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "U4-角色判据放宽（正文失败被误诊成面板失败）": {
    "fp": "6ca3464dae47bbac",
@@ -2540,7 +2654,8 @@
    "fp": "46b739d68cc43cbd",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V0-10-视觉三键从 /larkdeck config 视图里消失（用户看不到自己的配置）": {
    "fp": "9583398f4a24da16",
@@ -2567,356 +2682,415 @@
    "fp": "2381a582a4e16e48",
    "verdict": "red-assert",
    "gate": "check_cardview.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "c69b12301998eed4"
   },
   "V0-14-panel_header.format 漂移（check_cardview 必须红）": {
    "fp": "5e73065abffdab20",
    "verdict": "red-assert",
    "gate": "check_cardview.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "c69b12301998eed4"
   },
   "V0-16-edit_message 里的 header 生产调用点被删（配置静默）": {
    "fp": "a739b5acd0c7a00c",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V0-2-show_reasoning=true 告警被静默（配置被吞）": {
    "fp": "4abdd63bc1793549",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V0-3-card_status_header=false 告警被静默（配置被吞）": {
    "fp": "7c81b36de5cdb5a4",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V0-4-token 表 panel_radius 漂移（check_cardview 必须红）": {
    "fp": "bc6ab0b26411b6c1",
    "verdict": "red-assert",
    "gate": "check_cardview.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "c69b12301998eed4"
   },
   "V0-5-删掉 _ld_show_reasoning 生产调用点（配置静默）": {
    "fp": "870c48f9291c6a53",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V0-6-删掉 _ld_card_status_header_enabled 生产调用点（配置静默）": {
    "fp": "61b029289ceec4e6",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V0-7-degraded 回合也走结构化帧（降级安全网失效）": {
    "fp": "eb8f02319d317828",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V0-8-read 图标 token 漂移（check_cardview 必须红）": {
    "fp": "2db9be6377df2347",
    "verdict": "red-assert",
    "gate": "check_cardview.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "c69b12301998eed4"
   },
   "V0-9-status stopped 标题 emoji 漂移（check_cardview 必须红）": {
    "fp": "6fade63362612565",
    "verdict": "red-assert",
    "gate": "check_cardview.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "c69b12301998eed4"
   },
   "V1-1-structured seed 分支被关（退回 legacy 卡结构）": {
    "fp": "a9cc77b2966becd4",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V1-10-结构化 DEGRADE 不 patch 同卡（只 stamp 后冻结）": {
    "fp": "b32b418a4fb3b39e",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V1-2-结构化面板变化时不发 partial_update（工具行不出现）": {
    "fp": "89a2e4cbc70f7996",
    "verdict": "red-assert",
    "gate": "test_units.py",
    "at": "2b51708",
-   "note": "定向复现：test_units --only v1_structured_seed_and_panel_update 0.4s 断言红；整跑在负载下 120s 超时（💥 属工件，不是判别力问题）"
+   "note": "定向复现：test_units --only v1_structured_seed_and_panel_update 0.4s 断言红；整跑在负载下 120s 超时（💥 属工件，不是判别力问题）",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V1-3-结构化帧不写 answer content（打字机停住）": {
    "fp": "61469c2e7a9fe306",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V1-4-结构化面板圆角常量漂移（check_cardview 必须红）": {
    "fp": "f31d2037944b48d6",
    "verdict": "red-assert",
    "gate": "check_cardview.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "c69b12301998eed4"
   },
   "V1-5-结构化面板间距常量漂移（check_cardview 必须红）": {
    "fp": "8abedd1d706581eb",
    "verdict": "red-assert",
    "gate": "check_cardview.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "c69b12301998eed4"
   },
   "V1-6-结构化帧 sequence 重置（复用/回退）": {
    "fp": "69fd7b24a80a3f47",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V1-7-entity_skeleton 把 panel 排到 answer 前（提交点顺序）": {
    "fp": "3b0b68b3fec63c86",
    "verdict": "red-assert",
    "gate": "check_cardview.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "c69b12301998eed4"
   },
   "V1-8-structured finalize 不清理回合状态（后续 /stop 误伤已完成卡）": {
    "fp": "4a7ed239c9135b61",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V1-9-structured finalize 不关闭 streaming_mode": {
    "fp": "b78b31716a66f0f1",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V2-1-finalize 不 cancel 心跳（终态后仍可能写卡）": {
    "fp": "959694894efa7bc8",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V2-2-card_status_header=false 被忽略（状态条恒显）": {
    "fp": "27620d4c86d8854c",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V3-1-post_tool_call 不采集 result（Result 块永远空）": {
    "fp": "eb69ae09209d6a60",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V3-2-result 入库前不脱敏（密钥上卡）": {
    "fp": "66b10bd0383323e8",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-1-结构化面板不做步数 trim（长回合撞元素墙）": {
    "fp": "c8a1ed631cd9d7b5",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-10-非流式车道不渲染结构化元素树（回落到旧面板）": {
    "fp": "97c0c0455f2d037e",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-11-cardkit 旧车道的推理块不过滤（正文上卡）": {
    "fp": "0be739d0c4d95e6a",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-12-普通卡/降级车道不过滤推理正文": {
    "fp": "9b0e05deaf1ddf81",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-13-纯 reasoning 字符串分支绕过过滤（正文漏上卡）": {
    "fp": "91156978cd7c77f2",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-14-结构化收尾写死 completed（失败回合绿头）": {
    "fp": "c4eca3acc3fe20d6",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-15-工具状态表缺 blocked/timeout（红变灰、词漂移）": {
    "fp": "e0e552d21cac9b0a",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-16-unified_panel=false 仍出面板（配置被吃掉）": {
    "fp": "17bc690cc8489eda",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-17-max_panel_steps 被写死（配置被吃掉）": {
    "fp": "cfe0812e5809db54",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-17B-error 回合的折叠提示里挂短码（整卡扫描抓它）": {
    "fp": "e287685d1fb61caa",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-18-结构化路径不补种答案世代（own 下正文永不流式）": {
    "fp": "bc1c2fea8abd10fc",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-19-正文卡级死法不降级（掉 native、卡冻住）": {
    "fp": "d396f6123e293de1",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-2-帧路径不拿回合写锁（心跳与帧同时算号）": {
    "fp": "2e962695b7816e85",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-20-心跳把写失败伪装成 unchanged/stop": {
    "fp": "5dd1098a310012b8",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-21-面板 partial 与 settings 共用 uuid 命名空间": {
    "fp": "70c43e1cab1a10bf",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-22-legacy 配置键仍能选回旧引擎（配置路径没删）": {
    "fp": "6624ffc19e873dad",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-23-默认引擎退回 legacy（plugin.yaml 与代码不一致）": {
    "fp": "032ceb12a40137e3",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-24-心跳只预检不持锁（反向交错撞号）": {
    "fp": "1aea3a8cd6ca2629",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-25-structured 又渲染 ⏳ 占位符（用户嫌丑）": {
    "fp": "550be668e37b720e",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-26-成功步又挂 Result 大代码块（用户嫌丑）": {
    "fp": "72184af687d142f9",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-27-图标匹配退回子串语义（mem0_search 被误判成 search）": {
    "fp": "3115f99a54fbdcf4",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-28-结构化卡不做分级降载（长正文直接撞字节墙）": {
    "fp": "c332c27e15aeb8a2",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-3-心跳不跳过持锁拍（排队写同号）": {
    "fp": "193b45b72959edce",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-30-structured 判据无视字节墙（超限也说能画）": {
    "fp": "a729c731f2b62d8d",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-31-结构化标题退回硬编码中文（英文客户端看中文）": {
    "fp": "ed3e3107686643a4",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-32-预加载提示首字后不删（正文上方留一行多余的字）": {
    "fp": "14be1c761c1a586a",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-33-折叠提示用 plain_text（真机 300313，长回合卡片必坏）": {
    "fp": "0e12a0430ab6d8a6",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-34-未知工具图标回落成 tool_02（与 CLS 观感不一致）": {
    "fp": "0a2ade87a696f4a8",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-4-心跳序号不加一（原地重写旧号）": {
    "fp": "c352f89f59476544",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-40-预加载提示删除失败也把标志清掉（提示永远摘不掉、不再重试）": {
    "fp": "50e2ad422cf206a1",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-41-300313 一律当成「元素已删掉」（把 P0 那种子元素类型拒收吞掉）": {
    "fp": "80ffe3c83ddc59e2",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-42-加载指示退回静态图标（用户口径：会动、无文字）": {
    "fp": "a1fa97b4ff4879cc",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-43-加载指示退回文案（用户口径：无文字）": {
    "fp": "ca18d525fc863fac",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-44-`exec` 图标指向 robot（全表逐条钉住后必须红）": {
    "fp": "17a2ba01fe2805b8",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-45-表单提交只抄路由键（答案丢失 ⇒ 空提交 toast）": {
    "fp": "1e4e164e32fe6b0a",
@@ -2929,97 +3103,113 @@
    "fp": "c05284382415f003",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-47-工具图标退化成同一个兜底 emoji（per-tool 对应关系丢失）": {
    "fp": "b7b268c5a6bd3022",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-48-fit 的 tier 把调用方关掉的装饰又打开（审计 B 阻断项：空面板/配置失效）": {
    "fp": "a0906c726c91c40c",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-49-`/stop` 重绘的终态卡不关流式态（审计 B 实测 config.streaming_mode=true）": {
    "fp": "aac251cb2f435759",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-5-心跳不回写账本（下一拍复用同一号）": {
    "fp": "5ff797af8ef6a207",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-51-出站留痕限流窗口放宽到 1 小时（证据被压住、「每次出站留一行」不可证伪）": {
    "fp": "1c2e2ac438600ae3",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-52-真实工具名 delegate_task 退回兜底图标（用户可见落差）": {
    "fp": "42993f7d20886aa3",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-6-装饰失败日志不带 msg（真机只剩一个码）": {
    "fp": "9b07575af09becc4",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-7-结构化页脚不传 started（时长那一段消失）": {
    "fp": "bf7e19baaf565111",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-8-结构化页脚又挂回短码（用户口径：页脚不要这个）": {
    "fp": "7d7be1444e1e6baf",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "V4-9-页脚状态词表不认 completed（状态段静默消失）": {
    "fp": "9cc1eb1ead584d76",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "W5-失败帧把序号写死成 1（下一帧撞号 ⇒ 300317 ⇒ 掉 native）": {
    "fp": "971a1d7b2f8a27cb",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "W6-面板内容被写成常量（内容整条丢失）": {
    "fp": "11b76aad92d804f6",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "W6b-正文内容被写成常量": {
    "fp": "09cd0ef722b0ab71",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "X14a-send() 发送未成功不再记「掉回纯文本」（用户看到纯文本的主路径漏账）": {
    "fp": "1c419889df2183c4",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "X14b-send() 抛异常那条支路不再记「掉回纯文本」（且原因里没有异常类型）": {
    "fp": "935b92122e88859b",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "X18-错误码表上限 24→2（top-N 静默退化成 top-2；原断言拿常量自己算上界）": {
    "fp": "00a87e70c9a6d69a",
@@ -3053,7 +3243,8 @@
    "fp": "31d5531ff358490d",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "Y21-探针点击不再留凭据（真人点完，我们拿不到任何判定依据 ⇒ 会把成功读成失败）": {
    "fp": "6f96d1d51ca0cef4",
@@ -3066,7 +3257,8 @@
    "fp": "4ebf969e31dedbe6",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   },
   "Y23-探针判据从「真值性」放宽成「键存在」（探针自检与适配器分叉 ⇒ 点击静默无凭据）": {
    "fp": "002d6007c13d5e4b",
@@ -3100,7 +3292,8 @@
    "fp": "d81073e8264f87ee",
    "verdict": "red-assert",
    "gate": "test_units.py",
-   "at": "2b51708"
+   "at": "2b51708",
+   "gate_fp": "39ca4f8ecce56159"
   }
  }
 }
