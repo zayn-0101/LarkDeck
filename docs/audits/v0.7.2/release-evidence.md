@@ -34,6 +34,7 @@
 | 工具行图标「偏上」 | 用户选**乙（emoji 内联）**，且「丙 没有换行」 | 三臂卡 `om_x100b6424d23e24a8c3368dfbdaad661`；`probe_icons.py` |
 | 定版确认（emoji 选型 + 对齐） | **待用户回话** | `om_x100b64256c1470acdfadc4d33133fca`（`probe_icons_final.py`，生产渲染器输出） |
 | 长回合（>20 工具步）不掉纯文本 / 无灰气泡 | **待用户复验** | 离线判据已绿：`test_v4_33_long_turn_card_never_puts_text_nodes_inside_collapsible_panels` |
+| `show_reasoning=true` 的**嵌套** `collapsible_panel` 客户端渲染（仓库自己的 `plan-consensus.md:111` 列为未验证） | **待用户回话** | 生产渲染器输出已发：`om_x100b6427ec67d4a4de74424945f4ca0`（`probe_nested_panel.py`） |
 
 ## 4. 安装路径（`--copy` / NAS）
 
