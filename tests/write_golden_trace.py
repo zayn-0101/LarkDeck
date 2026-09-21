@@ -25,9 +25,54 @@ if str(_HERE) not in sys.path:
 import test_units  # noqa: E402  （它自己会把仓库父目录加进 sys.path）
 
 
-def main() -> int:
-    trace = test_units._golden_trace()
+def _first_diff(got, want, path: str = "") -> str:
+    """返回第一处差异的可读描述（相同则空串）。给 `--check` 用。"""
+    if type(got) is not type(want):
+        return f"{path}: 类型不同 {type(got).__name__} vs {type(want).__name__}"
+    if isinstance(got, dict):
+        for key in sorted(set(got) | set(want)):
+            if key not in got or key not in want:
+                return f"{path}.{key}: 只出现在一侧"
+            found = _first_diff(got[key], want[key], f"{path}.{key}")
+            if found:
+                return found
+    elif isinstance(got, list):
+        if len(got) != len(want):
+            return f"{path}: 长度不同 {len(got)} vs {len(want)}"
+        for index, (left, right) in enumerate(zip(got, want)):
+            found = _first_diff(left, right, f"{path}[{index}]")
+            if found:
+                return found
+    elif got != want:
+        return f"{path}: {str(got)[:120]!r} vs {str(want)[:120]!r}"
+    return ""
+
+
+def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # 与测试同源：先复位到默认配置（否则记下来的是「当前环境」，换个前序用例就假红）
+    _adapter = test_units.adapter
+    _saved = dict(_adapter._CONFIG)
+    _adapter._CONFIG.clear()
+    _adapter._CONFIG.update(_adapter._DEFAULTS)
+    try:
+        trace = test_units._golden_trace()
+    finally:
+        _adapter._CONFIG.clear()
+        _adapter._CONFIG.update(_saved)
     out = _HERE / "golden_cardkit_trace.json"
+    if "--check" in argv:
+        # 在**独立进程**里比对：夹具不受前序用例的全局残留影响（2026-09-21 实测：同一段场景
+        # 在「单跑」与「全套件跑」下会得到不同的卡，根因是类方法/模块级打桩残留）。
+        if not out.exists():
+            print(f"缺少夹具：{out}")
+            return 2
+        diff = _first_diff(trace, json.loads(out.read_text(encoding="utf-8")))
+        if diff:
+            print(f"夹具不一致：{diff}")
+            return 1
+        print("夹具一致 OK")
+        return 0
     out.write_text(json.dumps(trace, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     print(f"已写出 {out}（{out.stat().st_size} 字节）")
     print(f"  帧返回值     : {trace['returns']}")
@@ -37,4 +82,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

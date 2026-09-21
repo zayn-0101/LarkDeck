@@ -918,6 +918,9 @@ def _golden_trace() -> dict:
     记录四类事实：建实体卡的 JSON、每次元素写入的 (元素, 内容, 序号, uuid)、
     收尾整卡 patch 的 JSON、每一帧的返回值。
     """
+    # ⚠️ 夹具必须**自足**：面板/指标快照是全局的，前序用例的残留会让同一段场景跑出不同的卡
+    panel.reset()
+    context.reset()
     calls = {"content": [], "patch": [], "entity": [], "batch": [], "settings": []}
     # v0.6.2 production default is `panel_color_tags: true` (official Card 2.0
     # markdown confirms <font color>); keep the golden trace pinned to it.
@@ -925,7 +928,10 @@ def _golden_trace() -> dict:
     # 这个夹具冻结的是 **legacy 帧语义** 的 CardKit 写路径；own 默认的正文来源
     # 另有 check_own_body / test_own_* 门禁。显式钉住，避免翻默认时夹具被 process
     # 级配置差异带偏（否则测试进程的 harness 与生成脚本的默认值会打架）。
-    adapter.configure(body_source="legacy")
+    # ⚠️ 夹具必须是**确定**的：把会影响这张卡的配置钉死在这里（不再吃「上一条用例残留」的
+    # 默认值 —— 2026-09-21 实测：`card_status_header` 默认翻 false 后，全套件跑时被前序用例
+    # 留下的 true 污染，夹具就开始假红）
+    adapter.configure(body_source="legacy", card_status_header=False)
 
     class _Resp:
         def __init__(self, code=0, **data):
@@ -1250,18 +1256,19 @@ def test_cardkit_golden_trace_is_frozen():
     ⚠️ 夹具**故意**是字面量文件而不是「跑一遍再跟自己对」：后者是自证循环，
     它永远绿，也就永远抓不到「重构悄悄改了行为」。
     """
-    trace = _golden_trace()
-    path = _pathlib.Path(__file__).with_name("golden_cardkit_trace.json")
-    assert path.exists(), f"缺少 golden trace 夹具：{path}（跑 `tests/write_golden_trace.py` 生成）"
-    want = json.loads(path.read_text(encoding="utf-8"))
-    got = json.loads(json.dumps(trace, ensure_ascii=False))
-    assert got == want, (
-        "CardKit 写路径的行为变了（golden trace 不相等）。"
-        "若这是**有意**的行为变更，请在同一提交里更新夹具并说明改了什么；"
-        "若不是，说明重构破坏了既有行为。\n"
-        f"  期望：{json.dumps(want, ensure_ascii=False)[:400]}\n"
-        f"  实得：{json.dumps(got, ensure_ascii=False)[:400]}")
-
+    # V4.17：夹具比对**在独立子进程**里做（`write_golden_trace.py --check`）——
+    # 实测同一段场景在「单跑」与「全套件跑」下会得到不同的卡（前序用例的类方法/模块级
+    # 打桩残留），在进程内比就会「单跑绿、全套件红」。子进程隔离后既确定、又保留
+    # 「夹具 diff = 行为变更声明」的本意。
+    import subprocess
+    proc = subprocess.run(
+        [sys.executable, str(_pathlib.Path(__file__).with_name("write_golden_trace.py")),
+         "--check"],
+        capture_output=True, text=True, timeout=180)
+    assert proc.returncode == 0, (
+        "CardKit 写路径的行为变了（夹具不一致）。若这是**有意**的行为变更，"
+        "请在同一提交里跑 `python3 tests/write_golden_trace.py` 更新夹具并说明改了什么；"
+        f"若不是，说明重构破坏了既有行为。\n{proc.stdout.strip()}\n{proc.stderr.strip()[-800:]}")
 
 def _mk_cardkit_fake(*, fail_write_after=10 ** 9, create_ok=True, fail_answer_only=False,
              fail_panel_only=False, create_empty_id=False,
@@ -1556,7 +1563,7 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         #    —— R2 审计实测：删掉它 132/132 照样全绿，它只会给人一种「页脚去重被多条断言守住」的错觉。
         # 帧路径写出去的页脚 = 基数页脚 + **本卡短码**（R11-C2）。期望值在这里**显式拼**
         # 出来，不再调 `_ld_frame_footer` —— 那样等于「函数等于它自己」，零判别力。
-        assert footer_written[1] == [f"{footer_after} · \U0001f516 m_ck_1"], \
+        assert footer_written[1] == [footer_after], \
             f"页脚变化的那一帧必须写**当前**页脚内容（含本卡短码）：{footer_written}"
         assert sorted(batch_seqs + seqs) == [1, 2, 3, 4, 5, 6, 7], \
             f"每次写入共用同一个严格递增序号（既不跳号也不撞号）：{sorted(batch_seqs + seqs)}"
@@ -6352,11 +6359,14 @@ def test_frame_footer_carries_the_card_trace_id():
             seen.update(kwargs)
             return "ctx 1k/2k"
         adapter.LarkDeckMixin._ld_footer = classmethod(_fake_footer)
-        assert raw._ld_frame_footer({"message_id": "om_abcdef123456"}) == \
-            "ctx 1k/2k · \U0001f516 123456", "帧页脚必须接上本卡短码"
-        # 还没建卡（没有 message_id / card_id）⇒ 不加短码，只有基数页脚
+        # V4.17（用户口径）：帧页脚**不带短码**（同类插件页脚都没有这东西）；
+        # 短码只进日志自检行（本文件后面那条 `卡片=<短码>` 断言仍在钉它）。
+        assert raw._ld_frame_footer({"message_id": "om_abcdef123456"}) == "ctx 1k/2k", \
+            "帧页脚不该再挂短码"
         assert raw._ld_frame_footer({}) == "ctx 1k/2k"
-        assert raw._ld_frame_footer({"card_id": "card_zzz999"}) == "ctx 1k/2k · \U0001f516 zzz999"
+        assert raw._ld_frame_footer({"card_id": "card_zzz999"}) == "ctx 1k/2k"
+        assert adapter._ld_trace_id("om_abcdef123456") == "123456", \
+            "短码本身还要能算（日志自检行用它）"
         assert seen == {"chat_id": "", "started": None, "status": None}, \
             "三次都没有 chat_id / t0 / status 时，往下传的必须是中性缺省（不猜）"
         raw._ld_frame_footer({"message_id": "om_abcdef123456", "chat_id": "oc_t",
@@ -6608,7 +6618,7 @@ def test_stop_redraw_and_edit_message_keep_the_trace_id():
         assert len(_ups) == _n_before + 1, "中止后必须**真的**重绘了一次（否则这一格什么都没验）"
         _mid = _ups[-1]["message_id"]
         _stop_blob = _ups[-1]["content"]
-        assert f"🔖 {_mid[-6:]}" in _stop_blob, \
+        assert f"🔖 {_mid[-6:]}" not in _stop_blob, \
             f"`/stop` 重绘那一帧丢了短码（用户最可能截图的就是它）：mid={_mid!r} 尾部={_stop_blob[-300:]}"
         # 同一次重绘的另一半：面板必须真的变成中止色（两个断言各钉一个症状）
         _pn = _find_collapsible(json.loads(_stop_blob))
@@ -6645,7 +6655,7 @@ def test_stop_redraw_and_edit_message_keep_the_trace_id():
             "收尾帧必须成功（否则这一格验的是失败路径）"
         assert len(_ups_b) == _n_b + 1, "收尾必须**真的**整卡替换一次（否则这一格什么都没验）"
         _mid_b = _ups_b[-1]["message_id"]
-        assert f"🔖 {_mid_b[-6:]}" in _ups_b[-1]["content"], \
+        assert f"🔖 {_mid_b[-6:]}" not in _ups_b[-1]["content"], \
             (f"收尾整卡替换是用户**最后看到**的那张卡，短码不许丢："
              f"mid={_mid_b!r} 尾部={_ups_b[-1]['content'][-300:]}")
     finally:
@@ -11524,6 +11534,14 @@ def test_v4_structured_panel_budget_trims_old_steps():
         view = _make()._ld_cardview("oc_v4", "answer")
         assert len(view.panel.tools) == 20, len(view.panel.tools)
         assert "已折叠 5 条早期思考/工具记录" in view.panel.collapsed_hint, view.panel.collapsed_hint
+        # ⚠️ P0 回归（真机 2026-09-21 14:44 实测 300313）：`collapsible_panel` 的直接子元素
+        # **不能是 `plain_text`** —— 服务端 unmarshal 会拒收整帧，长回合卡片直接坏掉、核心回落纯文本
+        # （用户反馈「卡片和灰色气泡同时出现」的根因）。这里钉住子元素类型。
+        shell = adapter._cardview.panel_shell(view.panel)
+        tags = [e.get("tag") for e in shell["elements"]]
+        assert "plain_text" not in tags, f"面板里不许有 plain_text 直接子元素：{tags}"
+        hint = shell["elements"][0]
+        assert hint["tag"] == "markdown" and "折叠" in str(hint.get("content")), hint
         assert "25 步" in str(view.panel.title.get("content")), view.panel.title
         card = adapter._cardview.entity_skeleton(view)
         assert adapter._cards.count_elements(card) <= 180, adapter._cards.count_elements(card)
@@ -11756,9 +11774,9 @@ def test_v4_2_structured_footer_carries_elapsed_and_short_code():
         footer = view.footer
         assert "✅ 已完成" in footer, footer
         assert "\u23f1 3.0s" in footer, f"页脚必须有耗时那一段: {footer}"
-        assert footer.endswith("\U0001f516 123456"), f"短码 = id 后 6 位且在末尾: {footer}"
-        assert (footer.index("✅ 已完成") < footer.index("3.0s")
-                < footer.index("\U0001f516")), f"顺序必须是 状态→时长→短码: {footer}"
+        assert "\U0001f516" not in footer, f"V4.17：页脚不带短码: {footer}"
+        assert footer.index("✅ 已完成") < footer.index("3.0s"), \
+            f"顺序必须是 状态 → 时长: {footer}"
         # 没有基数页脚时**不许**凭空挂短码（短码不能把「页脚=无」这个诊断信号抹掉）
         adapter.configure(footer=False)
         bare = raw._ld_cardview("oc_v42", "answer", status="completed",
@@ -11790,8 +11808,7 @@ def test_v4_2_finalize_card_contains_duration_and_trace_element():
         assert footers, elements
         content = str(footers[-1].get("content") or "")
         assert "\u23f1 4.0s" in content, f"收尾页脚缺时长: {content}"
-        assert "\U0001f516 " in content, f"收尾页脚缺短码: {content}"
-        assert "🔖 " + "om_ck_1"[-6:] in content, content
+        assert "\U0001f516 " not in content, f"V4.17 起页脚不带短码: {content}"
     finally:
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
@@ -11860,7 +11877,7 @@ def test_v4_4_static_cards_use_structured_panel():
         body = json.loads(captured[0]["content"])
         blob2 = json.dumps(body, ensure_ascii=False)
         assert _find_element(body, "panel") is not None, blob2
-        assert "🔖" in blob2, f"补丁车道也要带短码：{blob2}"
+        assert "🔖" not in blob2, f"V4.17：补丁车道页脚也不带短码：{blob2}"
     finally:
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)

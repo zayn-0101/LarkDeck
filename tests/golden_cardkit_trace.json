@@ -1,49 +1,36 @@
 {
  "entity_card": [
-  "{\"schema\": \"2.0\", \"config\": {\"streaming_mode\": true, \"update_multi\": true, \"summary\": {\"content\": \"Hermes\"}, \"style\": {\"text_size\": {\"ld_body\": {\"default\": \"normal\", \"pc\": \"normal\", \"mobile\": \"normal\"}, \"ld_panel\": {\"default\": \"notation\", \"pc\": \"notation\", \"mobile\": \"notation\"}, \"ld_notice\": {\"default\": \"notation\", \"pc\": \"notation\", \"mobile\": \"notation\"}}}}, \"body\": {\"elements\": [{\"tag\": \"markdown\", \"element_id\": \"answer\", \"content\": \"⏳ 正在生成…\", \"text_size\": \"ld_body\"}, {\"tag\": \"collapsible_panel\", \"element_id\": \"panel\", \"expanded\": false, \"header\": {\"title\": {\"tag\": \"plain_text\", \"content\": \"执行详情\", \"i18n_content\": {\"zh_cn\": \"执行详情\", \"en_us\": \"Run details\"}}, \"vertical_align\": \"center\", \"icon\": {\"tag\": \"standard_icon\", \"token\": \"down-small-ccm_outlined\", \"size\": \"16px 16px\"}, \"icon_position\": \"right\", \"icon_expanded_angle\": -180}, \"border\": {\"color\": \"grey\", \"corner_radius\": \"8px\"}, \"padding\": \"8px 8px 8px 8px\", \"elements\": [{\"tag\": \"markdown\", \"element_id\": \"panel_body\", \"content\": \"<font color='grey'>💭 思考</font>\", \"text_size\": \"ld_panel\"}, {\"tag\": \"markdown\", \"element_id\": \"panel_tools\", \"content\": \"<font color='grey'>🛠️ 工具执行 · 1 步</font>\\n⌨️ **Run command** · <font color='turquoise'>Running</font>\\n<font color='grey'>↳ ls</font>\", \"text_size\": \"ld_panel\"}]}, {\"tag\": \"markdown\", \"element_id\": \"footer\", \"content\": \" \", \"text_size\": \"ld_notice\"}]}}"
+  "{\"schema\": \"2.0\", \"config\": {\"streaming_mode\": true, \"streaming_config\": {\"print_frequency_ms\": {\"default\": 15}, \"print_step\": {\"default\": 1}, \"print_strategy\": \"fast\"}, \"style\": {\"text_size\": {\"ld_body\": {\"default\": \"normal\", \"pc\": \"normal\", \"mobile\": \"normal\"}, \"ld_panel\": {\"default\": \"notation\", \"pc\": \"notation\", \"mobile\": \"notation\"}, \"ld_notice\": {\"default\": \"notation\", \"pc\": \"notation\", \"mobile\": \"notation\"}}}}, \"body\": {\"elements\": [{\"tag\": \"markdown\", \"element_id\": \"answer\", \"content\": \" \", \"margin\": \"0px 0px 0px 0px\", \"text_size\": \"ld_body\"}, {\"tag\": \"div\", \"element_id\": \"loading_hint\", \"icon\": {\"tag\": \"standard_icon\", \"token\": \"time_outlined\", \"size\": \"16px 16px\", \"color\": \"grey\"}, \"text\": {\"tag\": \"plain_text\", \"content\": \"正在加载上下文...\", \"i18n_content\": {\"zh_cn\": \"正在加载上下文...\", \"en_us\": \"Loading context...\"}, \"text_color\": \"grey\", \"text_size\": \"notation\"}}, {\"tag\": \"collapsible_panel\", \"element_id\": \"panel\", \"header\": {\"title\": {\"tag\": \"plain_text\", \"content\": \"💭 思考 0.0s · 🛠️ 工具执行 · 1 步\", \"i18n_content\": {\"zh_cn\": \"💭 思考 0.0s · 🛠️ 工具执行 · 1 步\", \"en_us\": \"💭 Thought 0.0s · 🛠️ Tools · 1 step\"}, \"text_size\": \"notation\", \"text_color\": \"grey\"}, \"vertical_align\": \"center\", \"icon\": {\"tag\": \"standard_icon\", \"token\": \"down-small-ccm_outlined\", \"size\": \"16px 16px\", \"color\": \"grey\"}, \"icon_position\": \"right\", \"icon_expanded_angle\": -180}, \"expanded\": false, \"vertical_spacing\": \"4px\", \"padding\": \"8px 8px 8px 8px\", \"border\": {\"color\": \"grey\", \"corner_radius\": \"5px\"}, \"elements\": [{\"tag\": \"div\", \"icon\": {\"tag\": \"standard_icon\", \"token\": \"setting_outlined\", \"color\": \"grey\"}, \"text\": {\"tag\": \"lark_md\", \"content\": \"**terminal** · <font color='turquoise'>Running</font>\", \"text_size\": \"notation\"}}, {\"tag\": \"div\", \"margin\": \"0px 0px 0px 22px\", \"text\": {\"tag\": \"plain_text\", \"content\": \"↳ {\\\"command\\\": \\\"ls\\\"}\", \"text_color\": \"grey\", \"text_size\": \"notation\"}}]}, {\"tag\": \"markdown\", \"element_id\": \"footer\", \"content\": \" \", \"text_size\": \"ld_notice\", \"margin\": \"0px 0px 0px 0px\"}]}}"
  ],
  "element_writes": [
   [
    "answer",
    "第一段",
-   2,
-   "ld-ck_golden-answer-2"
+   4,
+   "ld-ck_golden-answer-4"
   ],
   [
    "answer",
    "第一段，第二段。",
-   4,
-   "ld-ck_golden-answer-4"
+   6,
+   "ld-ck_golden-answer-6"
+  ],
+  [
+   "answer",
+   "第一段，第二段。",
+   9,
+   "ld-ck_golden-answer-9"
   ]
  ],
  "decor_batches": [
   [
    [
     {
-     "action": "partial_update_element",
+     "action": "delete_elements",
      "params": {
-      "element_id": "panel_body",
-      "partial_element": {
-       "content": "<font color='grey'>💭 思考</font>"
-      }
-     }
-    },
-    {
-     "action": "partial_update_element",
-     "params": {
-      "element_id": "panel_tools",
-      "partial_element": {
-       "content": "<font color='grey'>🛠️ 工具执行 · 2 步</font>\n⌨️ **Run command** · <font color='turquoise'>Running</font>\n<font color='grey'>↳ ls</font>\n📖 **Read file** · <font color='turquoise'>Running</font>\n<font color='grey'>↳ /tmp/golden.txt</font>"
-      }
-     }
-    },
-    {
-     "action": "partial_update_element",
-     "params": {
-      "element_id": "footer",
-      "partial_element": {
-       "content": " "
-      }
+      "element_ids": [
+       "loading_hint"
+      ]
      }
     }
    ],
@@ -54,19 +41,297 @@
     {
      "action": "partial_update_element",
      "params": {
-      "element_id": "panel_tools",
+      "element_id": "panel",
       "partial_element": {
-       "content": "<font color='grey'>🛠️ 工具执行 · 2 步</font>\n⌨️ **Run command** · <font color='turquoise'>Running</font>\n<font color='grey'>↳ ls</font>\n📖 **Read file** (2.3 s) · <font color='green'>Succeeded</font>\n<font color='grey'>↳ /tmp/golden.txt</font>"
+       "header": {
+        "title": {
+         "tag": "plain_text",
+         "content": "💭 思考 0.0s · 🛠️ 工具执行 · 2 步",
+         "i18n_content": {
+          "zh_cn": "💭 思考 0.0s · 🛠️ 工具执行 · 2 步",
+          "en_us": "💭 Thought 0.0s · 🛠️ Tools · 2 steps"
+         },
+         "text_size": "notation",
+         "text_color": "grey"
+        },
+        "vertical_align": "center",
+        "icon": {
+         "tag": "standard_icon",
+         "token": "down-small-ccm_outlined",
+         "size": "16px 16px",
+         "color": "grey"
+        },
+        "icon_position": "right",
+        "icon_expanded_angle": -180
+       },
+       "expanded": false,
+       "vertical_spacing": "4px",
+       "border": {
+        "color": "grey",
+        "corner_radius": "5px"
+       },
+       "elements": [
+        {
+         "tag": "div",
+         "icon": {
+          "tag": "standard_icon",
+          "token": "setting_outlined",
+          "color": "grey"
+         },
+         "text": {
+          "tag": "lark_md",
+          "content": "**terminal** · <font color='turquoise'>Running</font>",
+          "text_size": "notation"
+         }
+        },
+        {
+         "tag": "div",
+         "margin": "0px 0px 0px 22px",
+         "text": {
+          "tag": "plain_text",
+          "content": "↳ {\"command\": \"ls\"}",
+          "text_color": "grey",
+          "text_size": "notation"
+         }
+        },
+        {
+         "tag": "div",
+         "icon": {
+          "tag": "standard_icon",
+          "token": "file-link-text_outlined",
+          "color": "grey"
+         },
+         "text": {
+          "tag": "lark_md",
+          "content": "**read_file** · <font color='turquoise'>Running</font>",
+          "text_size": "notation"
+         }
+        },
+        {
+         "tag": "div",
+         "margin": "0px 0px 0px 22px",
+         "text": {
+          "tag": "plain_text",
+          "content": "↳ {\"path\": \"/tmp/golden.txt\"}",
+          "text_color": "grey",
+          "text_size": "notation"
+         }
+        }
+       ]
+      }
+     }
+    }
+   ],
+   2
+  ],
+  [
+   [
+    {
+     "action": "partial_update_element",
+     "params": {
+      "element_id": "footer",
+      "partial_element": {
+       "content": " "
       }
      }
     }
    ],
    3
+  ],
+  [
+   [
+    {
+     "action": "partial_update_element",
+     "params": {
+      "element_id": "panel",
+      "partial_element": {
+       "header": {
+        "title": {
+         "tag": "plain_text",
+         "content": "💭 思考 0.0s · 🛠️ 工具执行 · 2 步",
+         "i18n_content": {
+          "zh_cn": "💭 思考 0.0s · 🛠️ 工具执行 · 2 步",
+          "en_us": "💭 Thought 0.0s · 🛠️ Tools · 2 steps"
+         },
+         "text_size": "notation",
+         "text_color": "grey"
+        },
+        "vertical_align": "center",
+        "icon": {
+         "tag": "standard_icon",
+         "token": "down-small-ccm_outlined",
+         "size": "16px 16px",
+         "color": "grey"
+        },
+        "icon_position": "right",
+        "icon_expanded_angle": -180
+       },
+       "expanded": false,
+       "vertical_spacing": "4px",
+       "border": {
+        "color": "grey",
+        "corner_radius": "5px"
+       },
+       "elements": [
+        {
+         "tag": "div",
+         "icon": {
+          "tag": "standard_icon",
+          "token": "setting_outlined",
+          "color": "grey"
+         },
+         "text": {
+          "tag": "lark_md",
+          "content": "**terminal** · <font color='turquoise'>Running</font>",
+          "text_size": "notation"
+         }
+        },
+        {
+         "tag": "div",
+         "margin": "0px 0px 0px 22px",
+         "text": {
+          "tag": "plain_text",
+          "content": "↳ {\"command\": \"ls\"}",
+          "text_color": "grey",
+          "text_size": "notation"
+         }
+        },
+        {
+         "tag": "div",
+         "icon": {
+          "tag": "standard_icon",
+          "token": "file-link-text_outlined",
+          "color": "grey"
+         },
+         "text": {
+          "tag": "lark_md",
+          "content": "**read_file** (2300 ms) · <font color='green'>Succeeded</font>",
+          "text_size": "notation"
+         }
+        },
+        {
+         "tag": "div",
+         "margin": "0px 0px 0px 22px",
+         "text": {
+          "tag": "plain_text",
+          "content": "↳ {\"path\": \"/tmp/golden.txt\"}",
+          "text_color": "grey",
+          "text_size": "notation"
+         }
+        }
+       ]
+      }
+     }
+    }
+   ],
+   5
+  ],
+  [
+   [
+    {
+     "action": "partial_update_element",
+     "params": {
+      "element_id": "panel",
+      "partial_element": {
+       "header": {
+        "title": {
+         "tag": "plain_text",
+         "content": "💭 思考 0.0s · 🛠️ 工具执行 · 2 步",
+         "i18n_content": {
+          "zh_cn": "💭 思考 0.0s · 🛠️ 工具执行 · 2 步",
+          "en_us": "💭 Thought 0.0s · 🛠️ Tools · 2 steps"
+         },
+         "text_size": "notation",
+         "text_color": "grey"
+        },
+        "vertical_align": "center",
+        "icon": {
+         "tag": "standard_icon",
+         "token": "down-small-ccm_outlined",
+         "size": "16px 16px",
+         "color": "grey"
+        },
+        "icon_position": "right",
+        "icon_expanded_angle": -180
+       },
+       "expanded": false,
+       "vertical_spacing": "4px",
+       "border": {
+        "color": "green",
+        "corner_radius": "5px"
+       },
+       "elements": [
+        {
+         "tag": "div",
+         "icon": {
+          "tag": "standard_icon",
+          "token": "setting_outlined",
+          "color": "grey"
+         },
+         "text": {
+          "tag": "lark_md",
+          "content": "**terminal** · <font color='turquoise'>Running</font>",
+          "text_size": "notation"
+         }
+        },
+        {
+         "tag": "div",
+         "margin": "0px 0px 0px 22px",
+         "text": {
+          "tag": "plain_text",
+          "content": "↳ {\"command\": \"ls\"}",
+          "text_color": "grey",
+          "text_size": "notation"
+         }
+        },
+        {
+         "tag": "div",
+         "icon": {
+          "tag": "standard_icon",
+          "token": "file-link-text_outlined",
+          "color": "grey"
+         },
+         "text": {
+          "tag": "lark_md",
+          "content": "**read_file** (2300 ms) · <font color='green'>Succeeded</font>",
+          "text_size": "notation"
+         }
+        },
+        {
+         "tag": "div",
+         "margin": "0px 0px 0px 22px",
+         "text": {
+          "tag": "plain_text",
+          "content": "↳ {\"path\": \"/tmp/golden.txt\"}",
+          "text_color": "grey",
+          "text_size": "notation"
+         }
+        }
+       ]
+      }
+     }
+    }
+   ],
+   7
+  ],
+  [
+   [
+    {
+     "action": "partial_update_element",
+     "params": {
+      "element_id": "footer",
+      "partial_element": {
+       "content": "✅ 已完成 · 🤖 test-model"
+      }
+     }
+    }
+   ],
+   8
   ]
  ],
  "summary_writes": [],
  "final_patch": [
-  "{\"schema\": \"2.0\", \"config\": {\"wide_screen_mode\": true, \"update_multi\": true, \"streaming_mode\": false, \"summary\": {\"content\": \"第一段，第二段。\"}, \"style\": {\"text_size\": {\"ld_body\": {\"default\": \"normal\", \"pc\": \"normal\", \"mobile\": \"normal\"}, \"ld_panel\": {\"default\": \"notation\", \"pc\": \"notation\", \"mobile\": \"notation\"}, \"ld_notice\": {\"default\": \"notation\", \"pc\": \"notation\", \"mobile\": \"notation\"}}}}, \"body\": {\"elements\": [{\"tag\": \"markdown\", \"content\": \"第一段，第二段。\", \"text_size\": \"ld_body\"}, {\"tag\": \"collapsible_panel\", \"expanded\": false, \"header\": {\"title\": {\"tag\": \"plain_text\", \"content\": \"💭 思考 · 🛠️ 工具执行 · 2 步\", \"i18n_content\": {\"zh_cn\": \"💭 思考 · 🛠️ 工具执行 · 2 步\", \"en_us\": \"💭 Thought · 🛠️ Tools · 2 steps\"}}, \"vertical_align\": \"center\", \"icon\": {\"tag\": \"standard_icon\", \"token\": \"down-small-ccm_outlined\", \"size\": \"16px 16px\"}, \"icon_position\": \"right\", \"icon_expanded_angle\": -180}, \"border\": {\"color\": \"green\", \"corner_radius\": \"8px\"}, \"padding\": \"8px 8px 8px 8px\", \"elements\": [{\"tag\": \"markdown\", \"content\": \"<font color='grey'>💭 思考</font>\", \"text_size\": \"ld_panel\"}, {\"tag\": \"markdown\", \"content\": \"<font color='grey'>🛠️ 工具执行 · 2 步</font>\", \"text_size\": \"ld_panel\"}, {\"tag\": \"markdown\", \"content\": \"⌨️ **Run command** · <font color='turquoise'>Running</font>\\n<font color='grey'>↳ ls</font>\", \"text_size\": \"ld_panel\"}, {\"tag\": \"markdown\", \"content\": \"📖 **Read file** (2.3 s) · <font color='green'>Succeeded</font>\\n<font color='grey'>↳ /tmp/golden.txt</font>\", \"text_size\": \"ld_panel\"}], \"element_id\": \"auxiliary_timeline\"}, {\"tag\": \"markdown\", \"content\": \"✅ 已完成 · 🤖 test-model · 🔖 golden\", \"text_size\": \"notation\"}]}}"
+  "{\"schema\": \"2.0\", \"config\": {\"streaming_mode\": false, \"style\": {\"text_size\": {\"ld_body\": {\"default\": \"normal\", \"pc\": \"normal\", \"mobile\": \"normal\"}, \"ld_panel\": {\"default\": \"notation\", \"pc\": \"notation\", \"mobile\": \"notation\"}, \"ld_notice\": {\"default\": \"notation\", \"pc\": \"notation\", \"mobile\": \"notation\"}}}}, \"body\": {\"elements\": [{\"tag\": \"markdown\", \"element_id\": \"answer\", \"content\": \"第一段，第二段。\", \"margin\": \"0px 0px 0px 0px\", \"text_size\": \"ld_body\"}, {\"tag\": \"collapsible_panel\", \"element_id\": \"panel\", \"header\": {\"title\": {\"tag\": \"plain_text\", \"content\": \"💭 思考 0.0s · 🛠️ 工具执行 · 2 步\", \"i18n_content\": {\"zh_cn\": \"💭 思考 0.0s · 🛠️ 工具执行 · 2 步\", \"en_us\": \"💭 Thought 0.0s · 🛠️ Tools · 2 steps\"}, \"text_size\": \"notation\", \"text_color\": \"grey\"}, \"vertical_align\": \"center\", \"icon\": {\"tag\": \"standard_icon\", \"token\": \"down-small-ccm_outlined\", \"size\": \"16px 16px\", \"color\": \"grey\"}, \"icon_position\": \"right\", \"icon_expanded_angle\": -180}, \"expanded\": false, \"vertical_spacing\": \"4px\", \"padding\": \"8px 8px 8px 8px\", \"border\": {\"color\": \"green\", \"corner_radius\": \"5px\"}, \"elements\": [{\"tag\": \"div\", \"icon\": {\"tag\": \"standard_icon\", \"token\": \"setting_outlined\", \"color\": \"grey\"}, \"text\": {\"tag\": \"lark_md\", \"content\": \"**terminal** · <font color='turquoise'>Running</font>\", \"text_size\": \"notation\"}}, {\"tag\": \"div\", \"margin\": \"0px 0px 0px 22px\", \"text\": {\"tag\": \"plain_text\", \"content\": \"↳ {\\\"command\\\": \\\"ls\\\"}\", \"text_color\": \"grey\", \"text_size\": \"notation\"}}, {\"tag\": \"div\", \"icon\": {\"tag\": \"standard_icon\", \"token\": \"file-link-text_outlined\", \"color\": \"grey\"}, \"text\": {\"tag\": \"lark_md\", \"content\": \"**read_file** (2300 ms) · <font color='green'>Succeeded</font>\", \"text_size\": \"notation\"}}, {\"tag\": \"div\", \"margin\": \"0px 0px 0px 22px\", \"text\": {\"tag\": \"plain_text\", \"content\": \"↳ {\\\"path\\\": \\\"/tmp/golden.txt\\\"}\", \"text_color\": \"grey\", \"text_size\": \"notation\"}}]}, {\"tag\": \"markdown\", \"element_id\": \"footer\", \"content\": \"✅ 已完成 · 🤖 test-model\", \"text_size\": \"ld_notice\", \"margin\": \"0px 0px 0px 0px\"}]}}"
  ],
  "returns": [
   true,

@@ -2127,13 +2127,10 @@ class LarkDeckMixin:
            多会话并发时不会串台（页脚指标那种串台是**已知取舍**，但短码是**定位**用的，
            串了就等于没有）。
         """
-        base = self._ld_footer(chat_id=str(state.get("chat_id") or ""),
+        # V4.17：短码不上用户可见页脚（见 `_ld_cardview` 同段说明），只留基数页脚
+        return self._ld_footer(chat_id=str(state.get("chat_id") or ""),
                                started=state.get("t0"),
                                status=state.get("status"))
-        trace = _ld_trace_id(state.get("message_id") or state.get("card_id"))
-        if not base or not trace:
-            return base
-        return f"{base} · \U0001f516 {trace}"
 
     @classmethod
     def _ld_footer(cls, chat_id: str = "", started: Optional[float] = None,
@@ -3661,8 +3658,10 @@ class LarkDeckMixin:
             border={"processing": "grey", "completed": "green",
                     "stopped": "yellow", "error": "red"}.get(status, "grey"),
         )
+        # V4.17（用户口径）：页脚**不再挂 🔖 短码** —— 它从来不是用户的要求，
+        # 是 V2/V3 阶段内部审计为「截图↔日志对齐」加的。短码仍进日志自检行（`_ld_trace_id`），
+        # 只是不出现在用户看得见的卡片上。页脚字段对齐同类插件：状态 · 时长 · 模型 · ctx。
         base_footer = self._ld_footer(chat_id=chat, started=started, status=status) or ""
-        trace = _ld_trace_id(message_id) if base_footer else ""
         return _cardview.CardView(
             answer=answer,
             # V4.5：关掉面板的人不该还看到面板。
@@ -3670,7 +3669,7 @@ class LarkDeckMixin:
             # `card_element.content` 能改 ⇒ seed 不建面板 = 这一回合永远没有面板（工具行没地方放）。
             # 「系统提示那种空面板冗余」由非流式车道（`_ld_render_card`）单独处理。
             panel_enabled=bool(_cfg("unified_panel")),
-            footer=f"{base_footer} · \U0001f516 {trace}" if trace else base_footer,
+            footer=base_footer,
             footer_enabled=bool(_cfg("footer")), panel=panel,
             header_enabled=_ld_card_status_header_enabled(),
             header_status=status,

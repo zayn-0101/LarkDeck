@@ -232,7 +232,13 @@ def reasoning_panel(round_view: ReasoningRoundView) -> Dict[str, Any]:
 def panel_elements(view: PanelView) -> List[Dict[str, Any]]:
     elements: List[Dict[str, Any]] = []
     if view.collapsed_hint:
-        elements.append({"tag": "plain_text", "content": view.collapsed_hint,
+        # ⚠️ **不能用 `plain_text`**（真机 2026-09-21 14:44 实测）：`collapsible_panel` 的
+        # `elements` 不收 `plain_text` 子元素 —— 服务端会回
+        # `300313 failed to unmarshal … body->elements[0]` ⇒ **整帧装饰失败 + 收尾整卡失败**
+        # ⇒ 核心回落纯文本，用户看到「卡片 + 灰色气泡」两张（用户反馈 #4 的根因）。
+        # 而且这条只在工具步数 > `max_steps`（默认 20）时才出现 ⇒ 长回合必炸。
+        # `markdown` 与 `div` 都是合法子元素，这里用 markdown（同 legacy 面板的写法）。
+        elements.append({"tag": "markdown", "content": view.collapsed_hint,
                          "text_size": PANEL_TEXT_SIZE, "text_color": "grey"})
     for round_view in view.reasoning_rounds:
         elements.append(reasoning_panel(round_view))
