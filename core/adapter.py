@@ -4752,12 +4752,6 @@ class LarkDeckMixin:
         _ld_show_reasoning()
         self._ld_heartbeat_cancel_chat(chat)
         try:
-            # 面板是状态色**唯一**的载体，所以这里**强制**给一个 stopped 面板：
-            # 只靠 `_ld_panel` 会踩到一个实测过的坑 —— 该回合还没有任何过程数据时
-            # （模型还在思考、还没调工具），快照里什么都没有 ⇒ 面板为 None ⇒
-            # 「状态改了、卡片没变、还不报错」。这正是本项目最怕的形态。
-            panel = self._ld_panel(chat, report_empty=True) or _cards.unified_panel(
-                status=_panel.STATUS_STOPPED)
             # `/stop` 重绘是**用户最可能截图的那一帧**（v0.7.2 起页脚本来就没有短码；
             # 这里仍把真实 message_id/chat/t0/status 传下去 —— 页脚字段的值要**当下**的，
             # 不许退回「进程级快照」那套）。
@@ -4773,6 +4767,13 @@ class LarkDeckMixin:
                 # 结构化分支漏了 —— 审计 B 实测 `config.streaming_mode=true`）。
                 card["config"]["streaming_mode"] = False
             else:
+                # 面板是状态色**唯一**的载体，legacy 分支必须**强制**给一个 stopped 面板：
+                # 只靠 `_ld_panel` 会踩到一个实测过的坑 —— 该回合还没有任何过程数据时
+                # （模型还在思考、还没调工具），快照里什么都没有 ⇒ 面板为 None ⇒
+                # 「状态改了、卡片没变、还不报错」。
+                # ⚠️ 2026-09-21 审计：函数**顶部**原先还有一句同样内容的赋值 —— 它是**死代码**
+                # （structured 分支不读它、legacy 分支覆盖它），变异 `SEQ4` 打在那里被判 🟢 是
+                # **正确**的（等价变异）。真正的载体就是这一行，变异也已重新指向它。
                 panel = self._ld_panel(chat, report_empty=True) or _cards.unified_panel(
                     status=_panel.STATUS_STOPPED)
                 card = self._ld_build_card(_sanitize_for_send(text) or " ", streaming=False,

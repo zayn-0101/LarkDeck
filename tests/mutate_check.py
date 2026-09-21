@@ -265,10 +265,13 @@ MUTATIONS = [
      "            card = self._ld_build_card(tail_visible or \" \", streaming=False,\n                                       panel=self._ld_panel(chat, report_empty=True),\n                                       footer=self._ld_frame_footer(state))",
      "            card = self._ld_build_card(tail_visible or \" \", streaming=True,\n                                       panel=self._ld_panel(chat, report_empty=True),\n                                       footer=self._ld_frame_footer(state))",
      "check_hooks"),
-    ("SEQ4-/stop 重绘不再带中止色", "core/adapter.py",
-     "            panel = self._ld_panel(chat, report_empty=True) or _cards.unified_panel(\n                status=_panel.STATUS_STOPPED)",
-     "            panel = None",
-     "check_hooks"),
+    # ⚠️ **2026-09-21 重新指向**（全量变异实测：老锚点打在函数**顶部**那句**死代码**上 ——
+    #    structured 分支不读它、legacy 分支会覆盖它 ⇒ 等价变异，🟢 是正确判定）。
+    #    真正的载体是 legacy 分支里那一句（16 空格缩进），打在它上面 `test_units` 必须红。
+    ("SEQ4-/stop 重绘不再带中止色（legacy 分支丢强制面板）", "core/adapter.py",
+     "                panel = self._ld_panel(chat, report_empty=True) or _cards.unified_panel(\n                    status=_panel.STATUS_STOPPED)",
+     "                panel = None",
+     "test_units"),
     # ---- 第十路审计：真判据 / 崩溃分类 / 口径 / 调用点 / 码表 ------------------ #
     ("A1a-判据退回「只看近似阈值」", "core/adapter.py",
      "        if size > _HOPELESS_BYTES or not _stop_redraw_would_paint(\n"
