@@ -1622,7 +1622,8 @@ def _tools_heading(count: Any) -> str:
 
 
 def panel_rounds_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
-                          max_reasoning_chars: int = MAX_REASONING_CHARS) -> str:
+                          max_reasoning_chars: int = MAX_REASONING_CHARS,
+                          include_text: bool = True) -> str:
     """面板里**推理轮**那一块的 markdown（R3 收窄版：这一块单独一个元素）。
 
     与 :func:`panel_markdown` 的推理段**逐字节同源**（后者现在就是把它和
@@ -1631,11 +1632,14 @@ def panel_rounds_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any
     """
     max_reasoning_chars = _cap(max_reasoning_chars, MAX_REASONING_CHARS)
     lines: List[str] = []
-    round_list = [item for item in rounds if isinstance(item, dict) and str(item.get("text") or "")]
-    heading = _thinking_heading(round_list, reasoning)
+    all_rounds = [item for item in rounds if isinstance(item, dict)]
+    round_list = [item for item in all_rounds if str(item.get("text") or "")]
+    # show_reasoning=false（``include_text=False``）⇒ **只留灰色摘要行**（时长来自所有轮），
+    # 正文一个字都不进面板。摘要行必须留着：它是「推理被关掉」与「这一回合没推理」的区别所在。
+    heading = _thinking_heading(round_list if include_text else all_rounds, reasoning)
     if heading:
         lines.append(heading)
-    if round_list:
+    if include_text and round_list:
         keep = max(1, min(len(round_list), max_reasoning_chars // _MIN_ROUND_CHARS))
         share = max(_MIN_ROUND_CHARS, max_reasoning_chars // keep)
         dropped = len(round_list) - keep
@@ -1644,7 +1648,7 @@ def panel_rounds_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any
         for index, item in enumerate(round_list[-keep:], start=dropped + 1):
             body = _dense_lines(truncate(str(item.get("text") or ""), share))
             lines.append(f"**{_round_title(index, item.get('elapsed_ms'))}**\n{body}")
-    elif reasoning:
+    elif reasoning and include_text:
         lines.append(_dense_lines(truncate(reasoning, max_reasoning_chars)))
     return "\n".join(lines)
 
@@ -1688,7 +1692,8 @@ def panel_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = ()
                    tools: Sequence[str] = (),
                    max_reasoning_chars: int = MAX_REASONING_CHARS,
                    max_tool_chars: int = MAX_TOOL_RESULT_CHARS,
-                   max_steps: int = MAX_PANEL_STEPS) -> str:
+                   max_steps: int = MAX_PANEL_STEPS,
+                   include_reasoning_text: bool = True) -> str:
     """面板内容的 **markdown 文本**（**普通卡**与 `patch` 传输用，一个元素装全部）。
 
     为什么需要它：CardKit 只能按 ``element_id`` 往元素里**写文本**，不能边流边改结构，
@@ -1710,7 +1715,8 @@ def panel_markdown(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = ()
     """
     parts = [part for part in (
         panel_rounds_markdown(reasoning=reasoning, rounds=rounds,
-                              max_reasoning_chars=max_reasoning_chars),
+                              max_reasoning_chars=max_reasoning_chars,
+                              include_text=include_reasoning_text),
         panel_tools_markdown(tools=tools, max_tool_chars=max_tool_chars,
                              max_steps=max_steps),
     ) if part]
@@ -1789,6 +1795,7 @@ def unified_panel(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
                   expanded: bool = False,
                   status: Any = None,
                   summary: Optional[Union[str, Dict[str, Any]]] = None,
+                  include_reasoning_text: bool = True,
                   max_reasoning_chars: int = MAX_REASONING_CHARS,
                   max_tool_chars: int = MAX_TOOL_RESULT_CHARS,
                   max_steps: int = MAX_PANEL_STEPS,
@@ -1821,11 +1828,14 @@ def unified_panel(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
     # 面板自认为放得下 ⇒ 阶梯也认，不会出现「面板被整块摘掉」的缝。
     panel_room = max(2, _PANEL_CHILDREN_ROOM)
 
-    round_list = [item for item in rounds if isinstance(item, dict) and str(item.get("text") or "")]
-    thinking_heading = _thinking_heading(round_list, reasoning)
+    all_rounds = [item for item in rounds if isinstance(item, dict)]
+    round_list = [item for item in all_rounds if str(item.get("text") or "")]
+    # `show_reasoning=false` ⇒ 只留灰色摘要行（时长来自所有轮），正文一段都不进面板。
+    thinking_heading = _thinking_heading(round_list if include_reasoning_text else all_rounds,
+                                         reasoning)
     if thinking_heading:
         inner.append(md(thinking_heading))
-    if round_list:
+    if include_reasoning_text and round_list:
         # 每轮至少给 _MIN_ROUND_CHARS 才读得下去，但这意味着**轮数必须收住**：
         # 旧写法 share = max(120, 预算 // N) 在 N > 预算/120 时让渲染总量恒等于 120·N，
         # 与配置无关 —— 默认预算 1200 时第 11 轮起线性膨胀，实测 40 轮撑到 7845 字符，
@@ -1847,7 +1857,7 @@ def unified_panel(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
         for index, item in enumerate(round_list[-keep:], start=dropped + 1):
             body = _dense_lines(truncate(str(item.get("text") or ""), share))
             inner.append(md(f"**{_round_title(index, item.get('elapsed_ms'))}**\n{body}"))
-    elif reasoning:
+    elif reasoning and include_reasoning_text:
         inner.append(md(_dense_lines(truncate(reasoning, max_reasoning_chars))))
     steps = [str(item) for item in tools]
     remaining = panel_room - len(inner)

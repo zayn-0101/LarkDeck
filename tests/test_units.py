@@ -767,6 +767,10 @@ def test_send_and_edit_include_panel():
         _run(raw.send("oc_1", "你好"))
         payload = json.loads(raw.calls[0][2])
         assert "collapsible_panel" in _all_tags(payload), "首帧就该带上面板"
+        # §9.3「show_reasoning 全车道」：默认 false ⇒ 面板里只留摘要行，正文一个字不上卡
+        first = json.dumps(payload, ensure_ascii=False)
+        assert "推理中……" not in first, first
+        assert "思考" in first, "摘要行必须留着（它是「关了」与「没推理」的区别所在）"
 
         raw.calls.clear()
         captured = _wire_patch(raw)
@@ -775,9 +779,17 @@ def test_send_and_edit_include_panel():
         body = json.loads(captured[0]["content"])
         assert "collapsible_panel" in _all_tags(body)
         joined = json.dumps(body, ensure_ascii=False)
-        assert "推理中……" in joined and "Run command" in joined, joined
+        assert "推理中……" not in joined, f"默认关闭 ⇒ 正文不许上卡：{joined}"
+        assert "Run command" in joined, joined
         assert "bash" not in joined, \
             f"默认 ap_lite 不该再把原始英文工具名倒进卡片：{joined}"
+        # 打开开关后，同一份快照在同一条车道上必须把正文放回来（过滤不能是单向门）
+        adapter.configure(show_reasoning=True)
+        raw.calls.clear()
+        captured_on = _wire_patch(raw)
+        _run(raw.edit_message("oc_1", "om_card_1", "更新2", finalize=False))
+        joined_on = json.dumps(json.loads(captured_on[0]["content"]), ensure_ascii=False)
+        assert "推理中……" in joined_on, joined_on
     finally:
         panel.reset()
         adapter._CONFIG.clear()
@@ -1442,6 +1454,8 @@ def test_cardkit_transport_writes_elements_and_falls_open():
     必须在这里也成立 —— 这里逐条打桩验证。
     """
     defaults = dict(adapter._DEFAULTS)
+    panel.reset()          # 面板快照是全局的：本用例断言写入次序，必须从干净状态起跑
+    context.reset()
     try:
         _mk_fake = _mk_cardkit_fake
 
@@ -1454,7 +1468,8 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         raw._client = client
         raw._ld_send_card = lambda *a, **k: (_ for _ in ()).throw(
             AssertionError("cardkit 模式不该走 _ld_send_card"))
-        adapter.configure(native_transport="cardkit", theme="neutral")
+        adapter.configure(native_transport="cardkit", theme="neutral",
+                          show_reasoning=True)   # 题目是写入次序，需要推理块真的在长
         old_reqs = adapter.LarkDeckMixin._ld_ck_requests
         old_interval = adapter._STREAM_MIN_INTERVAL
         adapter._STREAM_MIN_INTERVAL = 0.0        # 帧节流窗口：测试里连发两帧要都能过
@@ -3156,6 +3171,7 @@ def test_native_streaming_frame_lifecycle():
     adapter._STREAM_MIN_INTERVAL = 0.0
     try:
         panel.reset()
+        adapter.configure(show_reasoning=True)   # 本用例断言「面板推理随帧更新」
         panel.record_reasoning("s1", "t1", "先想一下")
         raw = _make()
         updates = _wire_patch(raw)
@@ -3947,6 +3963,7 @@ def test_adapter_theme_wiring_uses_default_ap_lite_and_neutral_fallback():
     try:
         adapter._CONFIG.clear()
         adapter._CONFIG.update(adapter._DEFAULTS)
+        adapter.configure(show_reasoning=True)   # 题目是主题接线，不是推理显隐
         panel.record_reasoning("s1", "t1", "先看文件。")
         panel.record_tool_started("s1", "t1", "read_file", {"path": "/tmp/a.txt"}, "c1")
         node = adapter.LarkDeckMixin._ld_panel()
@@ -5082,7 +5099,8 @@ def test_adapter_panel_wiring() -> None:
     defaults = dict(adapter._DEFAULTS)
     try:
         panel.reset()
-        adapter.configure(unified_panel=True, theme="neutral")
+        # 本用例的题目是「面板接线」而不是显隐开关 ⇒ 显式打开推理正文
+        adapter.configure(unified_panel=True, theme="neutral", show_reasoning=True)
         assert adapter.LarkDeckMixin._ld_panel() is None, "没有数据不该渲染面板"
 
         panel.record_reasoning("s1", "t1", "先想一下。")
@@ -5463,6 +5481,7 @@ def test_panel_card_renders_rounds_and_honours_panel_expanded():
     defaults = dict(adapter._DEFAULTS)
     panel.reset()
     try:
+        adapter.configure(show_reasoning=True)   # 本用例断言 rounds 真的进了卡片
         panel.bind_chat_session("oc_1", "s1")
         panel.record_reasoning("s1", "t1", "第一段推理")
         panel.record_answer_delta("s1", "t1")
@@ -11581,6 +11600,12 @@ def test_v4_1_inflight_frame_write_is_not_raced_by_heartbeat():
         seqs = [item[1] for item in calls["batch"]] + [c[2] for c in calls["content"]]
         uuids = [item[2] for item in calls["batch"]] + [c[3] for c in calls["content"]]
         assert len(set(uuids)) == len(uuids), f"uuid 撞车（真机就是 200770）: {uuids}"
+        # 审计 A 中-2：面板 partial 必须用**独立 uuid 命名空间**（`-p`），
+        # 不能与 `card.settings`（`-s`）共用 —— 共用时跨车道并发会撞出重复 uuid。
+        panel_uuids = [item[2] for item in calls["batch"]
+                       if any(a.get("params", {}).get("element_id") == "panel"
+                              for a in item[0])]
+        assert panel_uuids and all("-p" in u for u in panel_uuids), panel_uuids
         assert len(set(seqs)) == len(seqs), f"序号复用（真机是 300317）: {seqs}"
         assert sorted(seqs) == list(range(1, len(seqs) + 1)), f"序号不连续: {seqs}"
         assert key in getattr(raw, "_ld_card_locks", {}), "写锁表键必须就是 `chat:turn_id`"
@@ -11745,6 +11770,359 @@ def test_v4_2_finalize_card_contains_duration_and_trace_element():
         assert "\U0001f516 " in content, f"收尾页脚缺短码: {content}"
         assert "🔖 " + "om_ck_1"[-6:] in content, content
     finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def _async_result(value):
+    """把一个值包成可 await 的协程（给替身方法用）。"""
+    async def _coro():
+        return value
+    return _coro()
+
+
+def _find_element(node, element_id: str):
+    """在卡片 JSON 里按 element_id 递归找一个元素（找不到 None）。"""
+    if isinstance(node, dict):
+        if node.get("element_id") == element_id:
+            return node
+        for value in node.values():
+            found = _find_element(value, element_id)
+            if found is not None:
+                return found
+    elif isinstance(node, list):
+        for item in node:
+            found = _find_element(item, element_id)
+            if found is not None:
+                return found
+    return None
+
+
+def test_v4_4_static_cards_use_structured_panel():
+    """V4.4：非流式回落车道（`send()` / `edit_message()`）也必须渲染结构化元素树。
+
+    真机证据（用户 2026-09-21 的 `/stop` 回复截图）：那张卡是旧 markdown 面板 —— 工具名是
+    `Load skill`/`Search`/`Run command`、没有 22px 细节缩进、页脚没有时长与短码，
+    而且**推理正文照样上卡**（`show_reasoning=false` 在这条车道上被绕过，违反 §9.3）。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    panel.reset()
+    context.reset()
+    try:
+        adapter.configure(visual_engine="structured", unified_panel=True,
+                          show_reasoning=False, card_status_header=True)
+        panel.bind_chat_session("oc_v44", "s_v44")
+        panel.record_reasoning("s_v44", "s_v44", "这段推理不该上卡。")
+        panel.record_tool_started("s_v44", "s_v44", "terminal", {"command": "df -h"},
+                                  tool_call_id="tc44")
+        panel.record_tool_finished("s_v44", "s_v44", "terminal", status="ok",
+                                   duration_ms=347, tool_call_id="tc44",
+                                   result="Filesystem 460G 92%")
+        raw = _make()
+        _run(raw.send("oc_v44", "磁盘占用 92%"))
+        payload = json.loads(raw.calls[0][2])
+        blob = json.dumps(payload, ensure_ascii=False)
+        assert "header" in payload, "结构化静态卡必须带卡级状态头"
+        assert _find_element(payload, "panel") is not None, "必须是结构化 panel 元素"
+        assert "standard_icon" in blob and "22px" in blob, blob
+        assert "Succeeded" in blob and "Result" in blob, blob
+        assert "这段推理不该上卡" not in blob, f"show_reasoning=false 不许上推理正文：{blob}"
+        assert "💭 思考" in blob, f"摘要行必须留着：{blob}"
+        assert payload["config"].get("streaming_mode") is False, payload["config"]
+
+        raw2 = _make()
+        raw2._ld_track("om_v44", "oc_v44")
+        captured = _wire_patch(raw2)
+        _run(raw2.edit_message("oc_v44", "om_v44", "磁盘占用 92%", finalize=True))
+        body = json.loads(captured[0]["content"])
+        blob2 = json.dumps(body, ensure_ascii=False)
+        assert _find_element(body, "panel") is not None, blob2
+        assert "🔖" in blob2, f"补丁车道也要带短码：{blob2}"
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        panel.reset()
+        context.reset()
+
+
+def test_v4_4_legacy_lanes_honour_show_reasoning_filter():
+    """§9.3「show_reasoning 全车道」：旧渲染器/降级车道也必须过滤推理正文、保留摘要行。"""
+    defaults = dict(adapter._DEFAULTS)
+    panel.reset()
+    try:
+        panel.bind_chat_session("oc_v44b", "s_v44b")
+        panel.record_reasoning("s_v44b", "s_v44b", "秘密推理正文。")
+        panel.record_reasoning("s_v44b", "s_v44b", "第二段推理正文。")
+
+        adapter.configure(show_reasoning=False)
+        node = adapter.LarkDeckMixin._ld_panel("oc_v44b")
+        blob = json.dumps(node, ensure_ascii=False)
+        assert "秘密推理正文" not in blob and "第二段推理正文" not in blob, blob
+        assert "💭 思考" in blob, f"摘要行必须留着（否则分不清「关了」与「没推理」）: {blob}"
+
+        body, _tools = adapter.LarkDeckMixin._ld_panel_parts("oc_v44b")
+        assert "秘密推理正文" not in body, body
+        assert "💭 思考" in body, body
+
+        md = adapter.LarkDeckMixin._ld_panel_markdown("oc_v44b")
+        assert "秘密推理正文" not in md, md
+        assert "💭 思考" in md, md
+
+        adapter.configure(show_reasoning=True)
+        node_on = json.dumps(adapter.LarkDeckMixin._ld_panel("oc_v44b"), ensure_ascii=False)
+        assert "秘密推理正文" in node_on, f"开关打开后正文必须回来: {node_on}"
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        panel.reset()
+
+
+def test_v4_5_structured_cards_carry_error_and_stopped_status():
+    """V4.5：结构化车道的结局色必须可达 —— 失败=红、中止=黄（审计 B 实测的「错误色不可达」）。
+
+    生产形态：`status` 在结构化收尾帧里被写死成 `"completed"` ⇒ 失败回合的收尾卡照样是
+    绿头绿边；`/stop` 只是因为另有一条显式传 stopped 的重绘路才侥幸正确。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    panel.reset()
+    context.reset()
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    try:
+        adapter.configure(visual_engine="structured", native_transport="cardkit",
+                          card_status_header=True)
+        panel.bind_chat_session("oc_v45", "s_v45")
+        panel.record_turn_end("s_v45", "s_v45", failed=True)
+        assert adapter._ld_view_status("oc_v45") == "error", panel.snapshot("oc_v45")
+        view = _make()._ld_cardview("oc_v45", "出错了", status="error")
+        card = adapter._cardview.entity_skeleton(view)
+        assert card["header"]["template"] == "red", card["header"]
+        assert adapter._cardview.panel_shell(view.panel)["border"]["color"] == "red"
+        assert "❌" in card["body"]["elements"][-1]["content"], card["body"]["elements"][-1]
+
+        panel.bind_chat_session("oc_v45b", "s_v45b")
+        panel.record_turn_end("s_v45b", "s_v45b", interrupted=True)
+        assert adapter._ld_view_status("oc_v45b") == "stopped", panel.snapshot("oc_v45b")
+        stopped = _make()._ld_cardview("oc_v45b", "停", status="stopped")
+        card2 = adapter._cardview.entity_skeleton(stopped)
+        assert card2["header"]["template"] == "yellow", card2["header"]
+        assert adapter._cardview.panel_shell(stopped.panel)["border"]["color"] == "yellow"
+        # 正常回合仍是绿（映射不能把 ok 弄丢）
+        panel.bind_chat_session("oc_v45c", "s_v45c")
+        panel.record_turn_end("s_v45c", "s_v45c", completed=True)
+        assert adapter._ld_view_status("oc_v45c") == "completed"
+
+        # 端到端：失败回合走**真的 finalize 帧**，收尾那张整卡 patch 必须是红头红边
+        # （审计 B 的 case 7 —— 只断言视图/实体是不够的，写死 status 的就是帧路径那一行）。
+        calls, client = _mk_cardkit_fake()
+        raw = _make()
+        raw._client = client
+        target_cls = type(raw)
+        old_reqs = target_cls.__dict__.get("_ld_ck_requests")
+        target_cls._ld_ck_requests = staticmethod(_fake_ck_requests)
+        try:
+            assert _run(raw.send_stream_frame("出错了", chat_id="oc_v45e", turn_id="t45e"))
+            panel.bind_chat_session("oc_v45e", "s_v45e")
+            panel.record_turn_end("s_v45e", "s_v45e", failed=True)
+            assert _run(raw.send_stream_frame("出错了", finalize=True,
+                                             chat_id="oc_v45e", turn_id="t45e"))
+            finals = [card for card in (calls.get("patch_cards") or [])
+                      if not card.get("config", {}).get("streaming_mode", True)]
+            assert finals, "失败回合也必须走收尾整卡 patch"
+            assert finals[-1]["header"]["template"] == "red", finals[-1]["header"]
+            border = _find_element(finals[-1], "panel")["border"]["color"]
+            assert border == "red", f"面板边框也要红：{border}"
+        finally:
+            raw._ld_heartbeat_cancel_chat("oc_v45e")
+            if old_reqs is None:
+                delattr(target_cls, "_ld_ck_requests")
+            else:
+                target_cls._ld_ck_requests = old_reqs
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        panel.reset()
+        context.reset()
+
+
+def test_v4_5_tool_status_table_is_shared_and_configs_are_honoured():
+    """V4.5：① 工具状态表两条车道同源；② 结构化也尊重 `unified_panel` / `max_panel_steps`。
+
+    审计 B 中-5/中-4 的实测：cardview 只认 4 个状态键 ⇒ `blocked`/`timeout` 在结构化里
+    变灰、词也变了；而 `unified_panel=false` 时结构化照样出面板、`max_panel_steps=3`
+    照样保留 20 步（配置被写死吃掉）。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    panel.reset()
+    try:
+        # ① 同一张状态表（两张表漂移过，就是审计抓到的那条）
+        for status in ("running", "ok", "success", "error", "blocked", "cancelled",
+                       "canceled", "skipped", "timeout"):
+            step = adapter._cardview.ToolStepView(name="t", title="t", status=status)
+            assert step.status_style == adapter._cards._TOOL_STATUS_STYLES[status], \
+                (status, step.status_style, adapter._cards._TOOL_STATUS_STYLES[status])
+
+        # ② unified_panel=false ⇒ 卡里不许有 panel 元素；max_panel_steps=3 ⇒ 只留最近 3 步
+        adapter.configure(visual_engine="structured", unified_panel=False)
+        off_view = _make()._ld_cardview("oc_v45cfg", "答案")
+        assert off_view.panel_enabled is False, off_view.panel_enabled
+        tags = [e.get("element_id") for e in
+                adapter._cardview.entity_skeleton(off_view)["body"]["elements"]]
+        assert "panel" not in tags, tags
+
+        adapter.configure(unified_panel=True, max_panel_steps=3)
+        panel.bind_chat_session("oc_v45cfg", "s_cfg")
+        for index in range(7):
+            panel.record_tool_started("s_cfg", "s_cfg", "read_file",
+                                      {"path": f"/tmp/{index}"}, tool_call_id=f"tc{index}")
+            panel.record_tool_finished("s_cfg", "s_cfg", "read_file", status="ok",
+                                       duration_ms=1, tool_call_id=f"tc{index}")
+        view = _make()._ld_cardview("oc_v45cfg", "答案")
+        assert len(view.panel.tools) == 3, len(view.panel.tools)
+        assert "4 步已折叠" in view.panel.collapsed_hint, view.panel.collapsed_hint
+        assert "7 步" in view.panel.title, view.panel.title
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        panel.reset()
+
+
+def test_v4_6_structured_own_body_streams_mid_turn():
+    """V4.6：`visual_engine=structured` + **生产默认 `body_source=own`** 时正文必须真的流式。
+
+    审计 A 中-1 实测的形状：seed 帧早于第一个 delta（那一刻正文桶还不存在，gen=0），
+    delta 之后桶变成 gen>=1，而结构化路径**没有世代补种**（legacy 有）⇒ 每一中间帧都被
+    `_ld_stream_own_text` 的守卫判成「漂移」按空正文 fail-open，正文元素一直写占位符
+    `⏳ 正在生成…`，只有收尾帧靠 core 终稿兜底 —— **打字机在结构化下等于没有**。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    panel.reset()
+    context.reset()
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    raw = _make()
+    calls, client = _mk_cardkit_fake()
+    raw._client = client
+    target_cls = type(raw)
+    old_reqs = target_cls.__dict__.get("_ld_ck_requests")
+    adapter.configure(visual_engine="structured", native_transport="cardkit",
+                      body_source="own")
+    target_cls._ld_ck_requests = staticmethod(_fake_ck_requests)
+    try:
+        assert _run(raw.send_stream_frame("", chat_id="oc_v46", turn_id="t46"))
+        state = raw._ld_stream_get("oc_v46:t46") or {}
+        assert int(state.get("answer_gen") or 0) == 0, state
+        # delta 到了：绑定的会话桶建起来（gen=1）并累积正文
+        panel.bind_chat_session("oc_v46", "s46")
+        panel.record_answer_delta("s46", "t46", "第一段")
+        assert panel.answer_generation("oc_v46", require_binding=True) >= 1
+        assert _run(raw.send_stream_frame("第一段", chat_id="oc_v46", turn_id="t46"))
+        answers = [c for c in calls["content"] if c[0] == adapter._cards.CARDKIT_ANSWER_ID]
+        assert answers, calls["content"]
+        assert answers[-1][1] == "第一段", \
+            f"结构化 + own 的中间帧必须写累积正文，而不是占位符：{answers[-1]}"
+        state = raw._ld_stream_get("oc_v46:t46") or {}
+        assert int(state.get("answer_gen") or 0) >= 1, f"世代必须补种进状态：{state}"
+    finally:
+        raw._ld_heartbeat_cancel_chat("oc_v46")
+        if old_reqs is None:
+            delattr(target_cls, "_ld_ck_requests")
+        else:
+            target_cls._ld_ck_requests = old_reqs
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        panel.reset()
+        context.reset()
+
+
+def test_v4_6_structured_body_death_degrades_same_card():
+    """V4.6：正文（提交点）拿到卡级死法时必须**同卡 DEGRADE**，不许直接掉 native（审计 A 高-4）。"""
+    defaults = dict(adapter._DEFAULTS)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    panel.reset()
+    context.reset()
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    raw = _make()
+    calls, client = _mk_cardkit_fake(fail_write_after=0)   # 第一次正文写就回 300309
+    raw._client = client
+    target_cls = type(raw)
+    old_reqs = target_cls.__dict__.get("_ld_ck_requests")
+    adapter.configure(visual_engine="structured", native_transport="cardkit")
+    target_cls._ld_ck_requests = staticmethod(_fake_ck_requests)
+    try:
+        assert _run(raw.send_stream_frame("正文", chat_id="oc_v46d", turn_id="t46d"))
+        assert _run(raw.send_stream_frame("正文在长", chat_id="oc_v46d", turn_id="t46d")), \
+            "死法必须被 DEGRADE 接住（帧仍然算成功），而不是 fail-open 掉 native"
+        state = raw._ld_stream_get("oc_v46d:t46d") or {}
+        assert state.get("engine_stamp") == "degraded", state
+        assert state.get("ck_degrade") == 300309, state
+        assert state.get("card_id") == "", f"账本要切到 patch 车道：{state}"
+        assert calls["patch"] >= 1, calls["patch"]
+    finally:
+        raw._ld_heartbeat_cancel_chat("oc_v46d")
+        if old_reqs is None:
+            delattr(target_cls, "_ld_ck_requests")
+        else:
+            target_cls._ld_ck_requests = old_reqs
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        panel.reset()
+        context.reset()
+
+
+def test_v4_6_heartbeat_failures_are_visible_and_dead_marks_degrade():
+    """V4.6：心跳的写失败必须留痕（failed）／卡级死法必须落账（dead）（审计 A 中-3）。"""
+    chat, key, turn = "oc_v46hb", "oc_v46hb:t1", "t1"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    assert 300309 in adapter._CARD_DEATH_DECOR_CODES
+    adapter._log_ck_degrade_once = lambda code: None   # 只关心状态与返回值
+    logged: list = []
+
+    class _RecLogger:
+        def warning(self, fmt, *args):
+            logged.append(fmt % args)
+
+        def info(self, *a, **k):
+            return None
+
+        def debug(self, *a, **k):
+            return None
+
+        def error(self, fmt, *args):
+            logged.append(fmt % args)
+
+    old_logger = adapter.logger
+    try:
+        assert _run(raw.send_stream_frame("hello", chat_id=chat, turn_id=turn))
+        # 让面板签名失效 ⇒ 这一拍真的会去写（否则 tick 在签名比较那一步就返回 unchanged）
+        def _force_write():
+            snap = raw._ld_stream_get(key) or {}
+            snap["ck_panel_sig"] = ""
+            raw._ld_stream_put(key, snap)
+
+        # ① 非死法失败（200770 是审计实测的 uuid 重复消费码）⇒ failed + 限流 WARNING
+        _force_write()
+        adapter._log_ck_decor_write_failed_once._at = 0.0
+        raw._ld_ck_partial = (lambda *a, **k: _async_result(adapter._CkResult(
+            False, 200770, "ErrMsg: this UUID has been recently consumed; ")))
+        adapter.logger = _RecLogger()
+        assert _run(raw._ld_heartbeat_tick(chat, key)) == "failed", "非死法失败要显式 failed"
+        # ⚠️ 必须钉住**服务端的 msg 文案**，不能只钉码：只判码时「日志丢掉 msg」这条变异
+        # 是**绿的**（码是分类、msg 才是事实 —— 这正是 200770 那次真机只留一个码的教训）。
+        assert any("200770" in line and "recently consumed" in line for line in logged), logged
+        # ② 卡级死法 ⇒ dead + 落账（让帧路径接手 DEGRADE）
+        _force_write()
+        raw._ld_ck_partial = (lambda *a, **k: _async_result(adapter._CkResult(
+            False, 300309, "ErrMsg: card session closed")))
+        assert _run(raw._ld_heartbeat_tick(chat, key)) == "dead"
+        state = raw._ld_stream_get(key) or {}
+        assert state.get("ck_degrade") == 300309, state
+        assert state.get("engine_stamp") == "degraded", state
+        assert state.get("card_id") == "", state
+    finally:
+        adapter.logger = old_logger
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
 

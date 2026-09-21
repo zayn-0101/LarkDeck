@@ -145,3 +145,30 @@ Result/Error 行都是**独立 div + margin 22px**、推理轮是嵌套 `collaps
 
 **仍未完成（挡住发布）**：用户窗口 1 的**中途截图**与 **`/stop` 黄边截图**；V4 阶段三方
 对抗审计收敛；翻默认 `visual_engine=structured`；终验截图；push/tag/release。
+
+---
+
+## V4.4–V4.6：三方审计回报后的收口（2026-09-21 12:xx）
+
+三个对抗审计（并发正确性 / 规格一致性 / 测试反假绿）回报后，**用户窗口 1 的截图**与审计
+一起暴露了 6 类真问题。逐条与处置：
+
+| # | 症状（谁发现） | 根因 | 处置 |
+| --- | --- | --- | --- |
+| 1 | `/stop` 回复卡还是旧 markdown 面板：工具名 `Load skill`/`Search`/`Run command`、无 22px 缩进、页脚无时长与短码（**用户截图 4**） | `send()`/`edit_message()` 两条**非流式回落车道**从没接过结构化元素树 | 新增 `_ld_render_card()`：引擎是 structured 就用同一棵 `entity_skeleton`（超预算退回旧渲染器），`send`/`edit_message` 两处接入（V4.4） |
+| 2 | `show_reasoning=false` 时推理正文照样上卡（审计 B 高-1；同一张截图也看得到推理轮） | 三个 legacy 渲染器只「读」配置不「用」配置 | `cards.panel_rounds_markdown/unified_panel` 增 `include_text` 语义：false ⇒ **只留 `💭 思考 · 1.6s` 摘要行**，正文一个字不进面板；三条 legacy 车道（含 DEGRADE）全部接上（V4.4，golden 夹具同步声明变更） |
+| 3 | 失败回合的收尾卡照样**绿头绿边**（审计 B 高-2：`error` 色在结构化下不可达） | 帧路径写死 `status = "completed" if finalize else "processing"`，没有把面板快照的 `ok/error/stopped` 映射过来 | 新增 `_ld_view_status()`；帧路径 / 静态车道 / 收尾整卡都按快照结局着色，并加**端到端**门禁（失败回合 finalize ⇒ `header.template == "red"`、面板边框红）（V4.5） |
+| 4 | **结构化 + 默认 `body_source=own` 时打字机等于没有**：中间帧正文元素一直写 `⏳ 正在生成…`，只有收尾靠 core 终稿兜底（审计 A 中-1；**用户截图 2 正是这个形态**） | 结构化 seed 状态不写 `answer_gen`，delta 之后世代守卫每帧都判「漂移」按空正文 fail-open；legacy 有补种分支、structured 漏了 | 结构化路径补上与 legacy 同形的**世代补种**，并加门禁（structured+own 中间帧必须写累积正文，不许占位符）（V4.6） |
+| 5 | 正文/页脚拿到卡级死法（`300309`/`300317`）时**不降级**：直接掉 native、卡冻在流式态；面板那条缝则是不落账、下一帧重号再 patch 一遍（审计 A 高-4 / 中-5） | 码表判断只在面板分支里，且 DEGRADE 早返回不写 `ck_seq`/`card_id` | DEGRADE 抽成单点 `_ld_structured_degrade()`，面板/页脚/正文三处共用；成功即落 `ck_seq=seq`、`card_id=""`（账本切 patch 车道）（V4.6） |
+| 6 | 心跳把「写失败」伪装成 `unchanged`、把「卡级死法」伪装成 `stop`：无日志、不落账、每 3 秒静默重试同号（审计 A 中-3） | `_ld_heartbeat_tick` 的返回值语义与事实不符 | 拆出 `failed`（限流 WARNING 带 msg）与 `dead`（落 `ck_degrade`/`engine_stamp` 并让帧路径接手），循环只在 `stop/dead` 退出（V4.6） |
+
+同批修掉的还有：面板 partial 的 **uuid 命名空间**与 `card.settings` 分开（`-p` vs `-s`，审计 A 中-2
+实测过同卡同 seq 撞出重复 uuid）；`/stop` 重绘**拿同一把回合锁**、锁被持有时不摘表、帧收尾
+**不复活已被 pop 的回合**（审计 A 中-6）；工具状态表与 `cards._TOOL_STATUS_STYLES` 对齐
+（`blocked/timeout` 红、词不再漂移，审计 B 中-5）；结构化也尊重 `unified_panel` /
+`panel_expanded` / `max_panel_steps` / `max_reasoning_chars` / `max_tool_result_chars` /
+`streaming_print_ms`，且收尾/停止/切卡的整卡 patch 都补上 `apply_text_profile`（审计 B 中-4）；
+心跳的面板标题与帧路径统一口径（墙钟 + 真实步数，审计 B 中-3）。
+
+**门禁**：`test_units` 259/259；`run_fast --full` 全绿（含 `mutate_preflight` 锚点全唯一）；
+新增变异 V4-10…V4-21 覆盖上表每一条（`mutate_check.py -k V4-`）。

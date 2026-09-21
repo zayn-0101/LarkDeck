@@ -54,11 +54,20 @@ class ToolStepView:
 
     @property
     def status_style(self) -> tuple[str, str]:
+        """状态词 + 颜色。**必须与 `cards._TOOL_STATUS_STYLES` 同表**（V4.5，审计 B 中-5）：
+        结构化只认 4 个键时，`blocked`/`timeout` 会掉进 fallback 变成**灰色**、词也变
+        （`Timeout` ≠ legacy 的 `Timed out`）—— 同一件事在两条车道上两种颜色是最难查的漂移。
+        """
         return {
             "running": ("Running", "turquoise"),
             "ok": ("Succeeded", "green"),
             "success": ("Succeeded", "green"),
             "error": ("Failed", "red"),
+            "blocked": ("Blocked", "red"),
+            "cancelled": ("Cancelled", "grey"),
+            "canceled": ("Cancelled", "grey"),
+            "skipped": ("Skipped", "grey"),
+            "timeout": ("Timed out", "red"),
         }.get(self.status, (self.status.capitalize() or "Unknown", "grey"))
 
 
@@ -83,6 +92,8 @@ class PanelView:
 @dataclass
 class CardView:
     answer: str = ""
+    #: ``unified_panel: false`` ⇒ **整块面板不进卡**（legacy 车道同一条门禁；V4.5）
+    panel_enabled: bool = True
     header_enabled: bool = True
     header_status: str = "processing"
     header_title: str = "🫧 处理中…"
@@ -210,7 +221,8 @@ def entity_skeleton(view: CardView) -> Dict[str, Any]:
         "tag": "markdown", "element_id": "answer", "content": view.answer or " ",
         "margin": MARKDOWN_MARGIN,
     }]
-    elements.append(panel_shell(view.panel))
+    if view.panel_enabled:
+        elements.append(panel_shell(view.panel))
     if view.footer_enabled:
         elements.append({"tag": "markdown", "element_id": "footer",
                          "content": view.footer or " ",

@@ -795,8 +795,10 @@ MUTATIONS = [
     # 现在锚点对着**真正写进卡的那条路径**，判据是「配了上限却没用上就必须红」。
     ("CK16-实体卡面板无视用户的三个上限（推理块与工具块都不截断）", "core/adapter.py",
      '''                _cards.panel_rounds_markdown(
+                    # show_reasoning=false ⇒ 只留 `💭 思考 · 1.6s` 摘要行，正文一个字不上卡
                     reasoning=str(snap.get("reasoning") or ""),
                     rounds=snap.get("rounds") or [],
+                    include_text=show_reasoning,
                     max_reasoning_chars=_cfg_int("max_reasoning_chars", _cards.MAX_REASONING_CHARS),
                 ),
                 _cards.panel_tools_markdown(
@@ -876,8 +878,10 @@ MUTATIONS = [
      "test_units"),
     ("R3-4-推理块把工具行也一起装进去（回到「一个 markdown 装全部」）", "core/adapter.py",
      '                _cards.panel_rounds_markdown(\n'
+     '                    # show_reasoning=false ⇒ 只留 `💭 思考 · 1.6s` 摘要行，正文一个字不上卡\n'
      '                    reasoning=str(snap.get("reasoning") or ""),\n'
      '                    rounds=snap.get("rounds") or [],\n'
+     '                    include_text=show_reasoning,\n'
      '                    max_reasoning_chars=_cfg_int("max_reasoning_chars", _cards.MAX_REASONING_CHARS),\n'
      '                ),',
      '                _cards.panel_markdown(\n'
@@ -2209,8 +2213,8 @@ MUTATIONS = [
      '"panel_radius": "8px"',
      "check_cardview"),
     ("V0-5-删掉 _ld_show_reasoning 生产调用点（配置静默）", "core/adapter.py",
-     '        _ld_show_reasoning()  # V0：生产读取配置；V3 前两种取值观感相同并告警',
-     '        pass  # V0-5 mutated',
+     '        show_reasoning = _ld_show_reasoning()   # §9.3：DEGRADE/旧车道同样要过这条过滤',
+     '        show_reasoning = True  # V0-5 mutated（不再读配置）',
      "test_units"),
     ("V0-6-删掉 _ld_card_status_header_enabled 生产调用点（配置静默）", "core/adapter.py",
      '        _ld_card_status_header_enabled()  # V0：生产读取配置；V2 前无观感差异',
@@ -2293,7 +2297,7 @@ MUTATIONS = [
      '        if False:  # V1-1 mutated',
      "test_units"),
     ("V1-2-结构化面板变化时不发 partial_update（工具行不出现）", "core/adapter.py",
-     '        if signature != state.get("ck_panel_sig"):',
+     '        if view.panel_enabled and signature != state.get("ck_panel_sig"):',
      '        if False:  # V1-2 mutated',
      "test_units"),
     ("V1-3-结构化帧不写 answer content（打字机停住）", "core/adapter.py",
@@ -2329,13 +2333,12 @@ MUTATIONS = [
      '            pass  # V1-9 mutated',
      "test_units"),
     ("V1-10-结构化 DEGRADE 不 patch 同卡（只 stamp 后冻结）", "core/adapter.py",
-     '                    updated = await self._ld_update_card(\n'
-     '                        chat, str(state.get("message_id") or ""), fallback)',
-     '                    updated = None  # V1-10 mutated',
+     '        updated = await self._ld_update_card(chat, str(state.get("message_id") or ""), fallback)',
+     '        updated = None  # V1-10 mutated',
      "test_units"),
     ("V2-1-finalize 不 cancel 心跳（终态后仍可能写卡）", "core/adapter.py",
      '            self._ld_heartbeat_cancel(key)\n'
-     '            final_card = _cardview.entity_skeleton(view)',
+     '            final_card = _cards.apply_text_profile(_cardview.entity_skeleton(view),',
      '            pass  # V2-1 mutated\n'
      '            final_card = _cardview.entity_skeleton(view)',
      "test_units"),
@@ -2355,11 +2358,11 @@ MUTATIONS = [
      '            result_block = str(raw or "")[:600]',
      "test_units"),
     ("V3-3-cardview 不把 result_block 传进工具块", "core/adapter.py",
-     '                result_block=str(item.get("result_block") or ""),',
+     '                result_block=_cards.truncate(str(item.get("result_block") or ""), cap),',
      '                result_block="",  # V3-3 mutated',
      "test_units"),
     ("V4-1-结构化面板不做步数 trim（长回合撞元素墙）", "core/adapter.py",
-     '        max_steps = 20',
+     '        max_steps = max(1, min(_cfg_int("max_panel_steps", 20), 20))',
      '        max_steps = 10 ** 9  # V4-1 mutated',
      "test_units"),
     # ------------------------------------------------------------- V4.1 并发收口（面板 200770）
@@ -2368,8 +2371,8 @@ MUTATIONS = [
     # 并给出对照「同 seq 不同 uuid / 纯并发 ⇒ 300317」（300317 是卡级死法 ⇒ 会整卡降级）。
     # 五条分别对应：帧路径不拿锁 / 心跳不跳过 / 心跳序号算错 / 心跳不回写账本 / 丢 msg。
     ("V4-2-帧路径不拿回合写锁（心跳与帧同时算号）", "core/adapter.py",
-     '        async with self._ld_card_lock(key):',
-     '        if True:  # V4-2 mutated',
+     '        async with self._ld_card_lock(key):\n            return await self._ld_stream_frame_structured_locked(',
+     '        if True:  # V4-2 mutated\n            return await self._ld_stream_frame_structured_locked(',
      "test_units"),
     ("V4-3-心跳不跳过持锁拍（排队写同号）", "core/adapter.py",
      '        if lock.locked():\n            return "skip"',
@@ -2384,8 +2387,8 @@ MUTATIONS = [
      '            updated["ck_seq"] = state.get("ck_seq")  # V4-5 mutated',
      "test_units"),
     ("V4-6-装饰失败日志不带 msg（真机只剩一个码）", "core/adapter.py",
-     '[_CkOp("panel", "", _CK_ROLE_PANEL)], res.code, msg=res.msg)',
-     '[_CkOp("panel", "", _CK_ROLE_PANEL)], res.code, msg="")  # V4-6 mutated',
+     '                    [_CkOp("panel", "", _CK_ROLE_PANEL)], res.code, msg=res.msg)\n                return "failed"',
+     '                    [_CkOp("panel", "", _CK_ROLE_PANEL)], res.code, msg="")  # V4-6 mutated\n                return "failed"',
      "test_units"),
     # ---------------------------------------------------------- V4.2 页脚（时长 / 短码 / 状态词汇）
     # 真机截图（2026-09-21 10:2x）：`✅ 已完成 · 🧠 deepseek-flash · ctx 20.5k/1m · 2%` ——
@@ -2401,6 +2404,60 @@ MUTATIONS = [
     ("V4-9-页脚状态词表不认 completed（状态段静默消失）", "core/adapter.py",
      '        "completed": "panel.status_ok",',
      '        # "completed": "panel.status_ok",  # V4-9 mutated',
+     "test_units"),
+    # ------------------------------------------------- V4.4 非流式车道 + show_reasoning 全车道
+    # 真机证据（用户 2026-09-21 的 /stop 回复截图）：回落车道还是旧 markdown 面板，
+    # 且 show_reasoning=false 被绕过（推理正文上了卡）。
+    ("V4-10-非流式车道不渲染结构化元素树（回落到旧面板）", "core/adapter.py",
+     '        if _ld_visual_engine() == "structured":\n            try:\n                status = _ld_view_status(chat_id, default=status)',
+     '        if False:  # V4-10 mutated\n            try:\n                status = _ld_view_status(chat_id, default=status)',
+     "test_units"),
+    ("V4-11-cardkit 旧车道的推理块不过滤（正文上卡）", "core/adapter.py",
+     '                    include_text=show_reasoning,',
+     '                    include_text=True,  # V4-11 mutated',
+     "test_units"),
+    ("V4-12-普通卡/降级车道不过滤推理正文", "core/adapter.py",
+     '                include_reasoning_text=show_reasoning,\n                tools=steps,\n'
+     '                expanded=_cfg("panel_expanded"),',
+     '                include_reasoning_text=True,  # V4-12 mutated\n                tools=steps,\n'
+     '                expanded=_cfg("panel_expanded"),',
+     "test_units"),
+    ("V4-13-纯 reasoning 字符串分支绕过过滤（正文漏上卡）", "core/cards.py",
+     '    elif reasoning and include_reasoning_text:',
+     '    elif reasoning:  # V4-13 mutated',
+     "test_units"),
+    # ------------------------------------------------- V4.5 结局色 / 配置开关 / 状态表（审计 B）
+    ("V4-14-结构化收尾写死 completed（失败回合绿头）", "core/adapter.py",
+     '        status = _ld_view_status(chat, default="processing" if not finalize else "completed")',
+     '        status = "completed" if finalize else "processing"  # V4-14 mutated',
+     "test_units"),
+    ("V4-15-工具状态表缺 blocked/timeout（红变灰、词漂移）", "core/cardview.py",
+     '            "blocked": ("Blocked", "red"),\n', '',
+     "test_units"),
+    ("V4-16-unified_panel=false 仍出面板（配置被吃掉）", "core/adapter.py",
+     '            panel_enabled=bool(_cfg("unified_panel")),   # V4.5：关掉面板的人不该还看到面板',
+     '            panel_enabled=True,  # V4-16 mutated',
+     "test_units"),
+    ("V4-17-max_panel_steps 被写死（配置被吃掉）", "core/adapter.py",
+     '        max_steps = max(1, min(_cfg_int("max_panel_steps", 20), 20))',
+     '        max_steps = 20  # V4-17 mutated',
+     "test_units"),
+    # ---------------------------------------- V4.6 审计 A 报告（正文流式 / 死亡降级 / 心跳留痕 / uuid 命名空间）
+    ("V4-18-结构化路径不补种答案世代（own 下正文永不流式）", "core/adapter.py",
+     '        if (self._ld_body_source() == "own"\n                and int(state.get("answer_gen") or 0) == 0):',
+     '        if False:  # V4-18 mutated',
+     "test_units"),
+    ("V4-19-正文卡级死法不降级（掉 native、卡冻住）", "core/adapter.py",
+     '        if not wrote.ok and wrote.code in _CARD_DEATH_CODES:',
+     '        if False:  # V4-19 mutated',
+     "test_units"),
+    ("V4-20-心跳把写失败伪装成 unchanged/stop", "core/adapter.py",
+     '                if res.code in _CARD_DEATH_DECOR_CODES:\n                    self._ld_stream_put(key, dict(',
+     '                if False:\n                    self._ld_stream_put(key, dict(',
+     "test_units"),
+    ("V4-21-面板 partial 与 settings 共用 uuid 命名空间", "core/adapter.py",
+     'f"ld-{card_id}-p{seq}"',
+     'f"ld-{card_id}-s{seq}"',
      "test_units"),
 
 
