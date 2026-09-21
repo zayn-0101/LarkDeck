@@ -2672,8 +2672,10 @@ CONTROLS = [
 def _prepare(dest_parent: Path) -> Path:
     """把工作树拷成 ``<dest_parent>/larkdeck``（目录名必须是 larkdeck，见模块 docstring）。"""
     dest = dest_parent / "larkdeck"
+    # ⚠️ `.deploy` 必须排除（2026-09-21 实测量出来的）：它是部署 worktree，里面有**整份源码**
+    #    ⇒ 每份拷贝白多 ~5.5MB（占 ~40%），全量跑下来光 /tmp 就能堆到 3GB+，还把磁盘拖慢。
     shutil.copytree(REPO, dest, ignore=shutil.ignore_patterns(
-        ".git", "__pycache__", "*.pyc", ".pytest_cache", "docs/deliveries"))
+        ".git", ".deploy", "__pycache__", "*.pyc", ".pytest_cache", "docs/deliveries"))
     return dest
 
 
@@ -3062,6 +3064,8 @@ def main() -> int:
     try:
         for idx, (name, rel, old, new, expect) in enumerate(picked):
             parent = tmp_root / f"mut{idx:02d}"
+            if idx:                      # 只留上一代：磁盘占用从 O(N) 降到 O(1)（否则 238 份 ≈ 1.6GB）
+                shutil.rmtree(tmp_root / f"mut{idx - 1:02d}", ignore_errors=True)
             parent.mkdir(parents=True)
             repo = _prepare(parent)
             target = repo / rel
