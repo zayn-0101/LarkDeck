@@ -3563,11 +3563,17 @@ class LarkDeckMixin:
 
     @staticmethod
     def _ld_icon_token(name: str) -> str:
-        lowered = str(name or "").lower()
-        for key, token in _cardview.ICON_TOKENS.items():
-            if key in lowered:
+        """工具名 → `standard_icon` token。**语义与 CLS `_resolve_tool_descriptor` 逐条对齐**（V4.18）：
+
+        归一化（lower + `-`→`_`）后做「**精确匹配 或 `alias_` 前缀匹配**」——**不是子串匹配**
+        （旧写法把 `mem0_search` 判成了 `search_outlined`，而 CLS 那边它落到
+        `setting-inter_outlined`）。未知工具回落 CLS 的 fallback。
+        """
+        normalized = str(name or "").strip().lower().replace("-", "_")
+        for alias, token in _cardview.ICON_ALIASES:
+            if normalized == alias or normalized.startswith(alias + "_"):
                 return token
-        return _cardview.ICON_TOKENS["fallback"]
+        return _cardview.ICON_FALLBACK
 
     def _ld_cardview(self, chat: str, answer: str, *, status: str = "processing",
                      finalize: bool = False, started: Optional[float] = None,

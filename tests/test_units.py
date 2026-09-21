@@ -12423,6 +12423,43 @@ def test_v4_14_loading_hint_is_inserted_then_deleted_on_first_token():
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
 
+def test_v4_18_icon_mapping_matches_cls_semantics():
+    """V4.18：工具图标必须与 CLS 的**解析语义**一致（精确/前缀匹配 + `setting-inter_outlined` 兜底）。
+
+    审计 B 实测的三处偏差：① 我们用**子串匹配** ⇒ `mem0_search` 被判成 `search_outlined`；
+    ② 缺 `task/spawn/determine/verify/summarize/analyze/prepare` 别名；③ 兜底 token 曾用
+    `tool_02`（那只是 CLS builder 里 step 没给 icon 时的默认，解析失败的兜底是 `setting-inter_outlined`）。
+    """
+    pick = adapter.LarkDeckMixin._ld_icon_token
+    cases = {
+        "skill_view": "app-default_outlined",
+        "read_file": "file-link-text_outlined",
+        "write_file": "edit_outlined",
+        "terminal": "setting_outlined",
+        "bash": "setting_outlined",
+        "web_search": "search_outlined",
+        "web_fetch": "language_outlined",
+        "grep": "doc-search_outlined",
+        "glob": "folder_outlined",
+        "browser_navigate": "browser-mac_outlined",
+        "task": "robot_outlined",
+        "spawn": "robot_outlined",
+        "determine": "list-check_outlined",
+        "verify": "list-check_outlined",
+        "summarize": "report_outlined",
+        "analyze": "report_outlined",
+        "prepare": "report_outlined",
+        "clarify": "chat_outlined",
+        # ⚠️ CLS 里**没有** execute/code 别名 ⇒ 这两个必须落兜底（不是齿轮！）
+        "execute_code": "setting-inter_outlined",
+        "mem0_search": "setting-inter_outlined",
+        "完全没听过": "setting-inter_outlined",
+    }
+    for name, want in cases.items():
+        got = pick(name)
+        assert got == want, f"{name}: {got} != {want}（CLS 语义对齐）"
+
+
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import i18n as _i18n
 
@@ -27,38 +27,49 @@ DOWN_ICON = "down-small-ccm_outlined"
 
 #: 工具名 → `standard_icon` token。**与 CLS `streaming/tooluse.py` 的别名表逐条对齐**
 #: （V4.8：用户真机反馈「图标和对标插件不一样」——过去只有 skill/read/edit/search/fetch 等
-#: 少数键，`write_file`/`bash`/`exec`/`web_fetch` 这类都掉进 fallback，字形与别家完全不同）。
-ICON_TOKENS: Dict[str, str] = {
-    "skill": "app-default_outlined",
-    "read": "file-link-text_outlined",
-    "edit": "edit_outlined",
-    "search": "search_outlined",
-    "fetch": "language_outlined",
-    "grep": "doc-search_outlined",
-    "glob": "folder_outlined",
-    "terminal": "setting_outlined",
-    "browser": "browser-mac_outlined",
-    "agent": "robot_outlined",
-    "check": "list-check_outlined",
-    "analyze": "report_outlined",
-    "clarify": "chat_outlined",
-    "fallback": "tool_02",          # CLS 的兜底 token（`step.get("icon", "tool_02")`）
-    # ——— CLS 别名表的其余条目（顺序有意义：先匹配到的赢）———
-    "write": "edit_outlined",
-    "open": "file-link-text_outlined",
-    "exec": "setting_outlined",
-    "bash": "setting_outlined",
-    "command": "setting_outlined",
-    "run": "setting_outlined",
-    "web_search": "search_outlined",
-    "web-search": "search_outlined",
-    "web_fetch": "language_outlined",
-    "web-fetch": "language_outlined",
-    "playwright": "browser-mac_outlined",
-    "navigate": "browser-mac_outlined",
-    "patch": "edit_outlined",
-    "todo": "list-check_outlined",
-}
+#: 工具名 → `standard_icon` token：**逐条对齐 CLS `streaming/tooluse.py::_TOOL_DESCRIPTORS`**
+#: （2026-09-21 审计 B 实测：我们过去用**子串匹配**，`mem0_search` 会被误判成 `search_outlined`；
+#: 且缺 `task/spawn/determine/verify/summarize/analyze/prepare` 这些别名、fallback 也不是 CLS 那个）。
+#: ⚠️ **有序**：CLS 的语义是「归一化（lower + `-`→`_`）后 **精确匹配或 `alias_` 前缀匹配**」，
+#: 先匹配到的赢（见 `_resolve_tool_descriptor`）。
+ICON_ALIASES: List[Tuple[str, str]] = [
+    ("skill", "app-default_outlined"),
+    ("read", "file-link-text_outlined"),
+    ("open", "file-link-text_outlined"),
+    ("write", "edit_outlined"),
+    ("edit", "edit_outlined"),
+    ("web_search", "search_outlined"),
+    ("search", "search_outlined"),
+    ("web_fetch", "language_outlined"),
+    ("fetch", "language_outlined"),
+    ("grep", "doc-search_outlined"),
+    ("glob", "folder_outlined"),
+    ("exec", "setting_outlined"),
+    ("bash", "setting_outlined"),
+    ("command", "setting_outlined"),
+    ("run", "setting_outlined"),
+    ("terminal", "setting_outlined"),
+    ("browser", "browser-mac_outlined"),
+    ("playwright", "browser-mac_outlined"),
+    ("navigate", "browser-mac_outlined"),
+    ("agent", "robot_outlined"),
+    ("task", "robot_outlined"),
+    ("spawn", "robot_outlined"),
+    ("check", "list-check_outlined"),
+    ("determine", "list-check_outlined"),
+    ("verify", "list-check_outlined"),
+    ("summarize", "report_outlined"),
+    ("analyze", "report_outlined"),
+    ("prepare", "report_outlined"),
+    ("clarify", "chat_outlined"),
+]
+
+#: 未知工具的图标 —— **CLS 的 fallback**（`tooluse.py:320`：`desc["icon"] if desc else "setting-inter_outlined"`）
+ICON_FALLBACK = "setting-inter_outlined"
+
+#: 兼容旧调用点（探针/单测按 key 取 token）：由上面的有序表派生，fallback 另算
+ICON_TOKENS: Dict[str, str] = {alias: token for alias, token in ICON_ALIASES}
+ICON_TOKENS["fallback"] = ICON_FALLBACK
 
 
 @dataclass

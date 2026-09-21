@@ -2512,9 +2512,13 @@ MUTATIONS = [
      '        tiers = (("ok", True, True), ("no-panel", False, True), ("bare", False, False))',
      '        tiers = (("ok", True, True),)  # V4-28 mutated',
      "test_units"),
-    ("V4-27-工具图标表退回旧 fallback token（观感与对标插件不同）", "core/cardview.py",
-     '    "fallback": "tool_02",          # CLS 的兜底 token（`step.get("icon", "tool_02")`）',
-     '    "fallback": "setting-inter_outlined",  # V4-27 mutated',
+    ("V4-27-图标匹配退回子串语义（mem0_search 被误判成 search）", "core/adapter.py",
+     '            if normalized == alias or normalized.startswith(alias + "_"):',
+     '            if alias in normalized:  # V4-27 mutated（退回子串匹配）',
+     "test_units"),
+    ("V4-34-未知工具图标回落成 tool_02（与 CLS 观感不一致）", "core/cardview.py",
+     'ICON_FALLBACK = "setting-inter_outlined"',
+     'ICON_FALLBACK = "tool_02"  # V4-34 mutated',
      "test_units"),
 
 
