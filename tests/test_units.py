@@ -11499,7 +11499,12 @@ def test_v3_result_error_collected_truncated_and_redacted():
         assert "sk-verysecret" not in step.result_block, step
         assert "ToolError" in step.error_block, step
         rendered = adapter._cardview.tool_step_elements(step)
-        assert any("**Result**" in json.dumps(e, ensure_ascii=False) for e in rendered), rendered
+        # V4.8（用户口径优先）：**成功步不再挂 Result 大代码块**；失败步的 `**Error**` 块保留，
+        # 而且它必须带上截断+脱敏后的文本。
+        blob = json.dumps(rendered, ensure_ascii=False)
+        assert "**Error**" in blob, rendered
+        assert "**Result**" not in blob, rendered
+        assert "sk-verysecret" not in blob, rendered
         assert any("**Error**" in json.dumps(e, ensure_ascii=False) for e in rendered), rendered
     finally:
         panel.reset()
@@ -11838,7 +11843,8 @@ def test_v4_4_static_cards_use_structured_panel():
         assert "header" in payload, "结构化静态卡必须带卡级状态头"
         assert _find_element(payload, "panel") is not None, "必须是结构化 panel 元素"
         assert "standard_icon" in blob and "22px" in blob, blob
-        assert "Succeeded" in blob and "Result" in blob, blob
+        assert "Succeeded" in blob, blob
+        assert "Result" not in blob, f"成功步不该挂 Result 大块（V4.8 用户口径）: {blob}"
         assert "这段推理不该上卡" not in blob, f"show_reasoning=false 不许上推理正文：{blob}"
         assert "💭 思考" in blob, f"摘要行必须留着：{blob}"
         assert payload["config"].get("streaming_mode") is False, payload["config"]

@@ -2471,6 +2471,20 @@ MUTATIONS = [
      '        async with lock:\n            state = self._ld_stream_get(key)',
      '        if True:  # V4-24 mutated\n            state = self._ld_stream_get(key)',
      "test_units"),
+    # ---------------------------------------- V4.8 用户真机口径（占位符 / Result 大块 / 图标 token）
+    ("V4-25-structured 又渲染 ⏳ 占位符（用户嫌丑）", "core/adapter.py",
+     '        answer_text = visible or " "',
+     '        answer_text = _cards.answer_or_pending(visible, not finalize) or " "  # V4-25 mutated',
+     "test_units"),
+    ("V4-26-成功步又挂 Result 大代码块（用户嫌丑）", "core/cardview.py",
+     '    if step.error_block:\n        elements.append(_tool_output_div(step.error_block, "Error"))',
+     '    for label, block in (("Error", step.error_block), ("Result", step.result_block)):\n'
+     '        if block:\n            elements.append(_tool_output_div(block, label))  # V4-26 mutated',
+     "test_units"),
+    ("V4-27-工具图标表退回旧 fallback token（观感与对标插件不同）", "core/cardview.py",
+     '    "fallback": "tool_02",          # CLS 的兜底 token（`step.get("icon", "tool_02")`）',
+     '    "fallback": "setting-inter_outlined",  # V4-27 mutated',
+     "test_units"),
 
 
 

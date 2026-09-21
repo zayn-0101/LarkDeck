@@ -3805,7 +3805,10 @@ class LarkDeckMixin:
                 _context.note_frame_ok()
                 return True
         seq += 1
-        answer_text = _cards.answer_or_pending(visible, not finalize) or " "
+        # ⚠️ V4.8（用户反馈）：structured 卡片**不渲染 `⏳ 正在生成…` 占位符** ——
+        # 首个 delta 之前正文元素留空即可（占位符会在「模型还在想」的十几秒里一直杵着，
+        # 用户明确说丑、且对标插件不这么做）。
+        answer_text = visible or " "
         wrote = await self._ld_ck_write(card_id, _cards.CARDKIT_ANSWER_ID, answer_text, seq)
         if not wrote.ok and wrote.code in _CARD_DEATH_CODES:
             # 审计 A 高-4：正文（提交点）拿到卡级死法时必须**同卡 DEGRADE** —— 旧写法直接

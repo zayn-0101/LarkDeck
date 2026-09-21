@@ -23,6 +23,9 @@ ICON_SIZE = "16px 16px"
 ICON_COLOR = "grey"
 DOWN_ICON = "down-small-ccm_outlined"
 
+#: 工具名 → `standard_icon` token。**与 CLS `streaming/tooluse.py` 的别名表逐条对齐**
+#: （V4.8：用户真机反馈「图标和对标插件不一样」——过去只有 skill/read/edit/search/fetch 等
+#: 少数键，`write_file`/`bash`/`exec`/`web_fetch` 这类都掉进 fallback，字形与别家完全不同）。
 ICON_TOKENS: Dict[str, str] = {
     "skill": "app-default_outlined",
     "read": "file-link-text_outlined",
@@ -37,7 +40,22 @@ ICON_TOKENS: Dict[str, str] = {
     "check": "list-check_outlined",
     "analyze": "report_outlined",
     "clarify": "chat_outlined",
-    "fallback": "setting-inter_outlined",
+    "fallback": "tool_02",          # CLS 的兜底 token（`step.get("icon", "tool_02")`）
+    # ——— CLS 别名表的其余条目（顺序有意义：先匹配到的赢）———
+    "write": "edit_outlined",
+    "open": "file-link-text_outlined",
+    "exec": "setting_outlined",
+    "bash": "setting_outlined",
+    "command": "setting_outlined",
+    "run": "setting_outlined",
+    "web_search": "search_outlined",
+    "web-search": "search_outlined",
+    "web_fetch": "language_outlined",
+    "web-fetch": "language_outlined",
+    "playwright": "browser-mac_outlined",
+    "navigate": "browser-mac_outlined",
+    "patch": "edit_outlined",
+    "todo": "list-check_outlined",
 }
 
 
@@ -138,9 +156,11 @@ def tool_step_elements(step: ToolStepView) -> List[Dict[str, Any]]:
     elements: List[Dict[str, Any]] = [_tool_title_div(step)]
     if step.detail:
         elements.append(_tool_detail_div(step.detail))
-    for label, block in (("Error", step.error_block), ("Result", step.result_block)):
-        if block:
-            elements.append(_tool_output_div(block, label))
+    # ⚠️ V4.8（用户真机口径优先）：**成功步不再挂 Result 大代码块** —— 每步一个 fenced block
+    # 又长又丑，且对标插件只在有错误/需要排查时才展开输出。失败步的 Error 块保留
+    # （plan 里「Result/Error 块」那条按用户这份反馈收窄，共识文档里有记）。
+    if step.error_block:
+        elements.append(_tool_output_div(step.error_block, "Error"))
     return elements
 
 
