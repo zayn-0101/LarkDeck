@@ -1694,6 +1694,28 @@ def probe_button_card(client, chat: str, cards) -> int:
     return 0 if code == 0 else 1
 
 
+def probe_font_size(client, chat: str, cards) -> int:
+    """窗口 0：normal vs normal_v2 两张正文对照卡，肉眼确认客户端字号。"""
+    def _card(size: str) -> dict:
+        card = cards.cardkit_entity_card(
+            f"字号探针 **{size}**\n\n中文正文 ABC 123 —— 对比 14px 与 normal_v2 的可见差异。",
+            panel_text=f"面板 {size}", streaming=False)
+        for element in card.get("body", {}).get("elements", []):
+            if element.get("element_id") == cards.CARDKIT_ANSWER_ID:
+                element["text_size"] = size
+        return card
+
+    for size in ("normal", "normal_v2"):
+        code, msg, message_id = send(client, chat, _card(size))
+        print(f"字号探针 {size}: code={code} msg={msg} message_id={message_id}")
+    print("请肉眼对比两张卡：正文可读性/紧凑度；确认后再决定是否写回 normal_v2 token。")
+    return 0
+
+
+def main(argv: list) -> int:
+    clean_only = "--clean-only" in argv
+    do_clean = "--no-clean" not in argv
+
 def main(argv: list) -> int:
     clean_only = "--clean-only" in argv
     do_clean = "--no-clean" not in argv
@@ -1720,6 +1742,8 @@ def main(argv: list) -> int:
         return probe_byte_limit(client, chat, cards)
     if "--elements" in argv:
         return probe_element_limit(client, chat, cards)
+    if "--font-size" in argv:
+        return probe_font_size(client, chat, cards)
     if "--rate-limit" in argv:
         return probe_rate_limit(client, chat, cards)
     if "--stop-redraw" in argv:
