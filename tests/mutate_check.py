@@ -20,8 +20,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
@@ -2791,7 +2793,84 @@ def _run_one_gate(repo: Path, script: str) -> "tuple[int, str]":
     return (_classify(script, proc), tail[-1] if tail else "")
 
 
-def _run_gates_first_red(repo: Path, preferred: "list[str]") -> "dict[str, tuple[int, str]]":
+#: 增量验证账本（提交进库）：`变异名 -> {fp, verdict, gate, at}`。
+#: 为什么要有它（用户 2026-09-21 直接质疑「每次跑一两个小时的所谓全量矩阵」）：
+#: 全量矩阵的**信息价值**只在「这段代码区域自上次判定以来变过吗」——没变过的区域，
+#: 上次的判定仍然成立。所以指纹按**锚点所在区域**（±_FP_WINDOW 行）算，不是整文件：
+#: 改一处无关注释不该让 475 条变异全部重跑。
+#: 账本路径可用环境变量覆盖（分片并行时各写各的，最后合并 —— 避免两个进程互相覆盖）。
+LEDGER_PATH = pathlib.Path(os.environ.get("LARKDECK_LEDGER_PATH")
+                           or (REPO / "tests" / "mutation-verdicts.json"))
+_FP_WINDOW = 15
+
+
+def _anchor_region(rel: str, old: str) -> "str | None":
+    """锚点所在代码区域（±_FP_WINDOW 行 + 锚点自身）。锚点找不到 ⇒ None（preflight 会报）。"""
+    try:
+        lines = (REPO / rel).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    first = old.splitlines()[0] if old.splitlines() else old
+    span = max(1, len(old.splitlines()))
+    for i, line in enumerate(lines):
+        if first in line:
+            lo = max(0, i - _FP_WINDOW)
+            hi = min(len(lines), i + span + _FP_WINDOW)
+            return "\n".join(lines[lo:hi])
+    return None
+
+
+def _fingerprint(rel: str, old: str, new: str) -> str:
+    region = _anchor_region(rel, old)
+    if region is None:
+        return "anchor-missing"
+    h = hashlib.sha256()
+    h.update(region.encode("utf-8"))
+    h.update(b"\x00")
+    h.update(old.encode("utf-8"))
+    h.update(b"\x00")
+    h.update(new.encode("utf-8"))
+    return h.hexdigest()[:16]
+
+
+def _head_short() -> str:
+    try:
+        return subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=str(REPO),
+                              capture_output=True, text=True).stdout.strip()
+    except Exception:
+        return ""
+
+
+def _load_ledger() -> dict:
+    try:
+        return json.loads(LEDGER_PATH.read_text(encoding="utf-8")).get("entries") or {}
+    except Exception:
+        return {}
+
+
+def _save_ledger(entries: dict) -> None:
+    LEDGER_PATH.write_text(json.dumps({
+        "_note": "变异验证账本：fp = 锚点区域的指纹（±15 行 + old/new）。"
+                 "fp 未变 ⇒ 该区域的判定仍然成立，增量模式跳过。",
+        "entries": dict(sorted(entries.items())),
+    }, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+
+
+def _delta_split(picked: list, entries: dict) -> "tuple[list, list]":
+    """把选中变异分成 (需要重跑, 已验可跳过)。只把 **red-assert** 记成已验。"""
+    todo, skipped = [], []
+    for m in picked:
+        name, rel, old, new, _expect = m
+        rec = entries.get(name) or {}
+        if rec.get("verdict") == "red-assert" and rec.get("fp") == _fingerprint(rel, old, new):
+            skipped.append(name)
+        else:
+            todo.append(m)
+    return todo, skipped
+
+
+def _run_gates_first_red(repo: Path, preferred: "list[str]",
+                         expand: bool = True) -> "dict[str, tuple[int, str]]":
     """先跑**声明的目标门禁**；如果它绿了，再按其余门禁继续跑，**遇第一支红即停**。
 
     为什么不是「只跑目标门禁」（审计 A 的反面意见，成立）：`cf236b1` 的 `only` 模式会让
@@ -2799,7 +2878,10 @@ def _run_gates_first_red(repo: Path, preferred: "list[str]") -> "dict[str, tuple
     （**至少一门红**）。为什么也不是「跑满五支」：`-k V0-4` 的目标门禁 0.1s 就判红，
     剩下 14s 纯属浪费。这个策略两者兼得：**红得早 ⇒ 立刻收工；目标门禁绿 ⇒ 继续找红**。
     """
-    rest = [s for s in GATE_ORDER if s not in preferred]
+    # `expand=False`（`--target-only`）：只跑声明的目标门禁就收工 —— 快 3-5 倍。
+    # ⚠️ 这个模式判**红**有效（目标门禁真的红了）；判**绿**不能当「守住」，
+    # 所以绿的会被账本拒收、并由 `--delta` 的第二趟用完整模式复核。
+    rest = [s for s in GATE_ORDER if s not in preferred] if expand else []
     out: "dict[str, tuple[int, str]]" = {}
     for script in list(preferred) + rest:
         out[script] = _run_one_gate(repo, script)
@@ -2953,6 +3035,16 @@ def main() -> int:
                     help="只列出本分片/本 -k 选中的变异，不跑门禁")
     ap.add_argument("--inventory", default="",
                     help="把选中变异的机器可读 inventory 写到该 JSON 路径后退出")
+    ap.add_argument("--delta", action="store_true",
+                    help="增量模式：只跑「锚点区域指纹变了 / 从未验过」的变异（其余跳过）；"
+                         "全量矩阵只在 --full-audit 或大版本时跑")
+    ap.add_argument("--update-ledger", action="store_true", dest="update_ledger",
+                    help="把本轮判为 red-assert 的变异写进 tests/mutation-verdicts.json")
+    ap.add_argument("--ledger-status", action="store_true", dest="ledger_status",
+                    help="只看账本覆盖情况（多少条已验、多少条待跑），不跑门禁")
+    ap.add_argument("--target-only", action="store_true", dest="target_only",
+                    help="只跑变异声明的目标门禁（快 3-5 倍）；⚠️ 判绿不写账本，"
+                         "绿的会被挑出来用完整「第一支红」模式复核")
     ap.add_argument("--preflight", action="store_true",
                     help="只做纯文本锚点对账（0.1 秒级）后就退出，不跑任何门禁、"
                          "也不做基线自校验；⚠️ 不受 -k 影响（有意：它还负责补 -k 子集"
@@ -2965,6 +3057,27 @@ def main() -> int:
 
     picked = [m for m in MUTATIONS if args.k in m[0]]
     controls = [m for m in CONTROLS if args.k in m[0]]
+
+    if args.ledger_status:
+        entries = _load_ledger()
+        todo, skipped = _delta_split(MUTATIONS, entries)
+        print(f"账本覆盖：{len(MUTATIONS) - len(todo)}/{len(MUTATIONS)} 条已验且指纹未变；"
+              f"待跑 {len(todo)} 条")
+        if skipped[:3]:
+            print(f"  例（可跳过）：{skipped[:3]}")
+        if todo[:5]:
+            print(f"  例（待跑）：{[m[0] for m in todo[:5]]}")
+        return 0
+
+    if args.delta:
+        entries = _load_ledger()
+        todo, skipped = _delta_split(picked, entries)
+        print(f"增量模式：待跑 {len(todo)} 条 / 跳过 {len(skipped)} 条"
+              f"（已验且锚点区域指纹未变 = {len(entries)} 条账本）")
+        picked = todo
+        if args.k and not picked:
+            print(f"✅ `-k {args.k!r}` 命中的变异都已在账本里（指纹未变）—— 无需重跑。")
+            return 0
 
     # ⚠️ `-k` 未命中必须在 shard/inventory/list 之前拦截，否则空 inventory 会被误读为覆盖完成。
     if args.k and not picked:
@@ -3060,6 +3173,7 @@ def main() -> int:
         return 2
 
     bad = []
+    verified: dict = {}
     tmp_root = Path(tempfile.mkdtemp(prefix="larkdeck-mut-"))
     try:
         for idx, (name, rel, old, new, expect) in enumerate(picked):
@@ -3089,7 +3203,8 @@ def main() -> int:
                 continue
             target.write_text(text.replace(old, new, 1), encoding="utf-8")
             _only = [expect if expect.endswith(".py") else expect + ".py"] if expect else None
-            results = _run_gates_first_red(repo, preferred=_only or list(GATE_ORDER))
+            results = _run_gates_first_red(repo, preferred=_only or list(GATE_ORDER),
+                                           expand=not args.target_only)
             red = [k for k, (kind, _) in results.items() if kind != "green"]
             crashed = [k for k, (kind, _) in results.items() if kind == "red-crash"]
             evidence = [k for k in red if k not in crashed]
@@ -3115,7 +3230,19 @@ def main() -> int:
                 bad.append(f"{name}: 只有崩溃、没有断言失败 —— 不能算被门禁抓住")
             elif expect_script not in evidence:
                 print(f"   ⚠️ 期望 {expect} 变红，实际是 {evidence}（也算被守住了，但归因不准）")
+            if evidence:      # red-assert ⇒ 记进账本（绿/崩溃都不记，下一次增量还会重跑）
+                verified[name] = {
+                    "fp": _fingerprint(rel, old, new),
+                    "verdict": "red-assert",
+                    "gate": evidence[0],
+                    "at": _head_short(),
+                }
     finally:
+        if args.update_ledger and verified:
+            entries = _load_ledger()
+            entries.update(verified)
+            _save_ledger(entries)
+            print(f"账本已更新：+{len(verified)} 条 red-assert ⇒ 共 {len(entries)} 条")
         if args.keep:
             print(f"临时目录保留在 {tmp_root}")
         else:
