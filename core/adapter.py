@@ -1834,6 +1834,27 @@ def _log_theme_once(raw: Any, fallback: str) -> None:
                    "ap_bubble）", shown, fallback)
 
 
+def _log_outbound(kind: str, chat_id: str, text: str, message_id: str = "") -> None:
+    """**出站留痕**（P5 可观测性）：记录「这一条到底以什么形态发出去的」。
+
+    为什么必须有（2026-09-21 审计 B）：用户反馈「卡片和灰色气泡同时出现」时，日志里
+    **无法证明**某条消息是不是被回落成纯文本 —— 内核那条 `send()` 出口没有我们自己的留痕，
+    于是「不再重复发送」这条验收不可证伪。现在每次 `send()` 出站（卡片 / 纯文本回落）
+    都留一行带**内容前置**与**消息号**的记录，可直接 grep。限流 30 秒一条；kind ∈ {card, text}。
+    """
+    now = time.monotonic()
+    key = f"outbound-{kind}"
+    if now - float(_OUTBOUND_LOGGED.get(key) or 0.0) < 30.0:
+        return
+    _OUTBOUND_LOGGED[key] = now
+    head = " ".join(str(text or "").split())[:40]
+    logger.info("[larkdeck] 出站=%s chat=%s mid=%s 前置=%r", kind, chat_id, message_id, head)
+
+
+#: 出站留痕的限流戳（key -> monotonic）
+_OUTBOUND_LOGGED: Dict[str, float] = {}
+
+
 def _ld_view_status(chat_id: str, *, default: str = "processing") -> str:
     """面板快照的结局词汇（``ok``/``error``/``stopped``）→ **卡级状态词汇**。
 
@@ -2573,6 +2594,7 @@ class LarkDeckMixin:
             chat_id, content, reply_to=reply_to, metadata=metadata, **kwargs,
         )
         if not _cfg("cards") or not getattr(self, "_client", None) or (not content and not guarded):
+            _log_outbound("text", chat_id, locals().get("content", ""))
             return await fallback()
         try:
             # 首帧没有「已耗时」可言（这一帧就是起点），所以不带 ⏱；⏱ 由后续
@@ -2601,6 +2623,7 @@ class LarkDeckMixin:
         except Exception as exc:  # 卡片是增强，绝不能因为卡片把消息弄丢
             _context.note_plaintext_fallback(f"send 异常：{type(exc).__name__}")
             logger.warning("[larkdeck] 卡片发送异常，回落纯文本: %s", exc, exc_info=True)
+        _log_outbound("text", chat_id, locals().get("content", ""))
         return await fallback()
 
     # ------------------------------------------------------------ edit_message

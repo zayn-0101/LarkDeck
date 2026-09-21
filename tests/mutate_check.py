@@ -2674,10 +2674,20 @@ def _classify(script: str, proc: "subprocess.CompletedProcess") -> str:
     return "red-assert"
 
 
-def _run_gates(repo: Path) -> "dict[str, tuple[int, str]]":
+def _run_gates(repo: Path, only: "list[str] | None" = None) -> "dict[str, tuple[int, str]]":
+    """跑门禁。``only`` 给定时**只跑那几支**（变异声明的目标门禁）。
+
+    为什么要有这个开关（2026-09-21 审计 C 实测）：过去每条变异都跑满五支门禁 ——
+    实测 `-k V0-4`（目标门禁是 cardview，0.1 秒就能判红）**实跑 66 秒**，其中
+    `test_units 4.1s / override 2.1s / hooks 4.8s / clarify 4.2s` 全是不必要的。
+    变异声明的契约本来就是「**这条变异该被哪支门禁抓住**」，跑别的门禁既不增加判别力，
+    还把阶段审计从秒级拖成分钟级（用户明确要求提速）。
+    ⚠️ 基线自校验**仍然跑满五支**（`:2906`）——那是「改动前系统是绿的」这个前提本身。
+    """
+    scripts = only or ["test_units.py", "check_override.py", "check_hooks.py",
+                       "check_clarify_e2e.py", "check_cardview.py"]
     out = {}
-    for script in ("test_units.py", "check_override.py", "check_hooks.py",
-                   "check_clarify_e2e.py", "check_cardview.py"):
+    for script in scripts:
         proc = subprocess.run([sys.executable, str(repo / "tests" / script)],
                               capture_output=True, text=True, cwd=str(repo.parent),
                               env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
@@ -2907,7 +2917,11 @@ def main() -> int:
     # 每条变异当然都「变红」—— 于是这个验证器会满口「全部被门禁抓住 ✅」。
     # 实测复现：把历史阻断项那句老赋值塞回基线（test_units 115/116），再跑 `-k P1`
     # 依然报全绿 + exit 0。所以基线必须是绿的，否则直接退出、不给结论。
-    baseline = _run_gates(REPO)
+    # 基线只跑**本次选中的变异**会用到的门禁（提速；`-k V0-4` 过去要跑满五支 ≈26s，
+    # 现在只跑 cardview ≈1s）。不传 `-k` 时并集就是全部五支，行为不变。
+    _baseline_only = sorted({(e[4] if e[4].endswith(".py") else e[4] + ".py")
+                             for e in (picked + controls) if e[4]}) or None
+    baseline = _run_gates(REPO, only=_baseline_only)
     print(f"基线自校验：{baseline}")
     baseline_red = {k: v for k, v in baseline.items() if v[0] != "green"}
     if baseline_red:
@@ -2944,7 +2958,8 @@ def main() -> int:
                 print(f"❓ {name}: {why}")
                 continue
             target.write_text(text.replace(old, new, 1), encoding="utf-8")
-            results = _run_gates(repo)
+            _only = [expect if expect.endswith(".py") else expect + ".py"] if expect else None
+            results = _run_gates(repo, only=_only)
             red = [k for k, (kind, _) in results.items() if kind != "green"]
             crashed = [k for k, (kind, _) in results.items() if kind == "red-crash"]
             evidence = [k for k in red if k not in crashed]
