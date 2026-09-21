@@ -11690,9 +11690,6 @@ def test_v4_1_duplicate_uuid_failure_is_not_card_death():
     raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(
         chat, fail_batch=True, fail_batch_code=200770,
         fail_batch_msg="ErrMsg: this UUID has been recently consumed; ")
-    assert 200770 not in adapter._CARD_DEATH_DECOR_CODES, "200770 不该进卡级死法码表"
-    assert 200770 not in adapter._CARD_DEATH_CODES, "200770 不该进整卡死法码表"
-    adapter._log_ck_decor_write_failed_once._at = 0.0     # 解开 60s 限流，保证这次真的留痕
     logged: list = []
 
     class _RecLogger:
@@ -11709,8 +11706,12 @@ def test_v4_1_duplicate_uuid_failure_is_not_card_death():
             logged.append(fmt % args)
 
     old_logger = adapter.logger
+    old_decor_at = getattr(adapter._log_ck_decor_write_failed_once, "_at", 0.0)
     adapter.logger = _RecLogger()                        # type: ignore[assignment]
     try:
+        assert 200770 not in adapter._CARD_DEATH_DECOR_CODES, "200770 不该进卡级死法码表"
+        assert 200770 not in adapter._CARD_DEATH_CODES, "200770 不该进整卡死法码表"
+        adapter._log_ck_decor_write_failed_once._at = 0.0  # 解开 60s 限流，保证这次留痕
         assert _run(raw.send_stream_frame("hello", chat_id=chat, turn_id=turn))
         panel.bind_chat_session(chat, "sess_dup")
         panel.record_tool_started("sess_dup", "turn_dup", "terminal",
@@ -11725,6 +11726,7 @@ def test_v4_1_duplicate_uuid_failure_is_not_card_death():
         assert any("200770" in line and "recently consumed" in line for line in logged), logged
     finally:
         adapter.logger = old_logger                       # type: ignore[assignment]
+        adapter._log_ck_decor_write_failed_once._at = old_decor_at   # 审计 C：限流戳要还原
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
 
