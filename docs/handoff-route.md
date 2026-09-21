@@ -676,7 +676,7 @@ ls -la ~/.hermes/logs/agent.log*
 | 变异验证 | **协议已改**：不再每版跑 60–90 分钟全量，改「增量 + 周期性全量」—— 账本 `tests/mutation-verdicts.json`（**475 条**，`--ledger-status` 看覆盖），命令 `tests/mutate_check.py --delta`；协议与实测数字见 `docs/verify-log.md`「09-21 协议变更」。**最近一次全量直跑 = 2026-09-21 深夜**（分 2 片并行 ≈18 分钟 + 缺口补跑 ≈7 分钟）：475/475 red-assert、待跑 0、`full_audit_at=7e7a62d`（逐段证据在账本 `_meta`，日志在 `~/.larkdeck-scratch/v0.7.2-full-20260921/`） |
 | ⚠️ 部署 | Mac 现役：`~/.hermes/plugins/larkdeck` → 本仓 `.deploy`（worktree @ `7e7a62d`，与本版生产代码逐字节相同；本轮收口只改测试/文档 ⇒ **无需重启**）；网关进程自 2026-09-21 22:54:37 起跑。⚠️ `.deploy/` 内含整份源码副本 ⇒ 写文件遍历/拷贝/清单对账都要排除它（`install.sh` 已修，见 `docs/releases/v0.7.2.md`） |
 | 发布证据 | `docs/audits/v0.7.2/release-evidence.md`（六支门禁 / 账本 / 真机探针 / `--copy` 安装 / 审计轮次） |
-| 遗留进程 | 无（只剩该跑的 Hermes 网关）；⚠️ `$TMPDIR` 下的影子树**异常退出会留残影**（2026-09-21 实测 22 个、约 1.5 GB；正常路径每条判完即删）—— 待确认后清理 |
+| 遗留进程 | 无（只剩一个逻辑网关：wrapper + child 两个 PID）；⚠️ `$TMPDIR` 影子树**异常退出会留残影**（2026-09-21 曾达 22 个 / ≈1.5 GB，当天已清 0；`/private/tmp` 另有 3 个 09-18 的 `larkdeck-mut-*` + 27 个其它 `larkdeck-*` 临时目录 ≈40 MB）—— 待确认后清理 |
 
 ### 13.2 路线问题已收口，**不要再重新论证一遍**
 

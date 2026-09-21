@@ -18,8 +18,11 @@
 
 ## 2. 变异验证（**475 条全 red-assert**，`full_audit_at = 7e7a62d`）
 
-* 账本 `tests/mutation-verdicts.json`：`475/475 可跳过（真跑过 475 + 继承 0）；待跑 0 条`；
+* 账本 `tests/mutation-verdicts.json`：`--ledger-status` = `475/475 可跳过（真跑过 475 + 继承 0）；待跑 0 条`；
   `--delta --list` = 待跑 0 / 跳过 475；`--preflight` = 487/487（475 变异 + 12 对照）。
+  ⚠️ `--ledger-status` **不打印** `full_audit_at` —— 它在账本 `_meta` 里（现为 `7e7a62d`，
+  逐段证据见 `_meta.full_audit_evidence`）；要看用
+  `python3 -c "import json;print(json.load(open('tests/mutation-verdicts.json'))['_meta']['full_audit_at'])"`。
 * 每条记录同时带**代码区域指纹**（锚点 ±15 行）与**测试侧指纹**（当年抓它的那批用例名，
   判定用「这些名字今天是否都还在」——删/改名会重跑，**加新用例不会**让 400+ 条作废）。
   ⇒ 不需要任何「继承」声明。
