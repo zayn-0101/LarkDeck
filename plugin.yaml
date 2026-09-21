@@ -82,7 +82,7 @@ config_schema:
     description: "v0.7.1 视觉层引擎：structured（**默认**，结构化元素树：状态条/面板摘要/推理 A 形态/tool div+standard_icon/Result 与 Error 块）。`legacy` 配置路径自 v0.7.1 起**已退役**（设了只留一条退休 WARNING，行为仍是 structured）；降级渲染器由 DEGRADE 车道保留"
   card_status_header:
     type: boolean
-    default: true
+    default: false
     description: "是否显示卡片顶部状态条（处理中蓝 / 完成绿 / 停止黄 / 出错红；false 时不渲染卡级 header）"
   show_reasoning:
     type: boolean

@@ -130,7 +130,7 @@ else:
         got_style = ld_mod._cfg_raw("context_style")
         got_cards = ld_mod._cfg("cards")
         print(f"settings bridge: clarify_cards={got_clarify!r} context_style={got_style!r} cards={got_cards!r}")
-        for _key, _expected in (("visual_engine", "structured"), ("card_status_header", True),
+        for _key, _expected in (("visual_engine", "structured"), ("card_status_header", False),
                                 ("show_reasoning", False)):
             if ld_mod._DEFAULTS.get(_key, object()) != _expected:
                 problems.append(

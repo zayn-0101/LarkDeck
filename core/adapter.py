@@ -781,7 +781,7 @@ _DEFAULTS: Dict[str, Any] = {
     # legacy | structured；structured 引擎尚未实现时按 legacy 运行并留 WARNING。
     "visual_engine": "structured",
     # 卡片顶部状态条显隐；V2 实现前两种取值观感相同并留 WARNING。
-    "card_status_header": True,
+    "card_status_header": False,
     # 是否展示推理正文；V3 实现前两种取值观感相同并留 WARNING（摘要行始终保留）。
     "show_reasoning": False,
     "footer": True,           # 页脚：状态 → 耗时 → 模型 → 上下文用量（+ 本卡短码）
@@ -2432,6 +2432,12 @@ class LarkDeckMixin:
                 status = _ld_view_status(chat_id, default=status)
                 view = self._ld_cardview(chat_id, content, status=status,
                                         started=started, message_id=message_id)
+                # V4.15：非流式车道（`send()`/`edit_message()`）本条消息**没有任何过程数据**时
+                # 不出面板 —— 系统提示类（"Gateway online…" / 命令回复）过去会带一个
+                # 「执行详情」空面板，点开什么都没有（用户明确说冗余，要旧形态）。
+                _snap = _panel.snapshot(chat_id) or {}
+                if not (_snap.get("tools") or _snap.get("rounds") or _snap.get("reasoning")):
+                    view.panel_enabled = False
                 if footer:
                     # 调用方已经算好的页脚优先（它可能带短码）；空则保留视图自己那份
                     view.footer = footer
@@ -3659,7 +3665,11 @@ class LarkDeckMixin:
         trace = _ld_trace_id(message_id) if base_footer else ""
         return _cardview.CardView(
             answer=answer,
-            panel_enabled=bool(_cfg("unified_panel")),   # V4.5：关掉面板的人不该还看到面板
+            # V4.5：关掉面板的人不该还看到面板。
+            # ⚠️ 流式 seed 时**必须保留**面板元素：卡片结构在建实体那一刻定死，之后只有
+            # `card_element.content` 能改 ⇒ seed 不建面板 = 这一回合永远没有面板（工具行没地方放）。
+            # 「系统提示那种空面板冗余」由非流式车道（`_ld_render_card`）单独处理。
+            panel_enabled=bool(_cfg("unified_panel")),
             footer=f"{base_footer} · \U0001f516 {trace}" if trace else base_footer,
             footer_enabled=bool(_cfg("footer")), panel=panel,
             header_enabled=_ld_card_status_header_enabled(),

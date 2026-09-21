@@ -2456,7 +2456,7 @@ MUTATIONS = [
      '            "blocked": ("Blocked", "red"),\n', '',
      "test_units"),
     ("V4-16-unified_panel=false 仍出面板（配置被吃掉）", "core/adapter.py",
-     '            panel_enabled=bool(_cfg("unified_panel")),   # V4.5：关掉面板的人不该还看到面板',
+     '            panel_enabled=bool(_cfg("unified_panel")),',
      '            panel_enabled=True,  # V4-16 mutated',
      "test_units"),
     ("V4-17-max_panel_steps 被写死（配置被吃掉）", "core/adapter.py",
