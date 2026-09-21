@@ -1,0 +1,40 @@
+{
+  "stage": "V1",
+  "plan_path": "docs/plan-v0.7.1-visual.md",
+  "plan_sha256": "cee0715305149f76b17a2f841a57a3a8197817eac2932dc998fd4bbdb00d2477",
+  "plan_bytes": 29689,
+  "head": "66d8a0189366b56d632ef31842c1a231dc0a1992",
+  "head_tree": "3e5e2b0b63f651ccd711b5dd21944cdb002957c1",
+  "tree": "91b104cc1e3c420b524716e22da1c029dac13137",
+  "worktree_commit": "9a739a7631c676e9211bbe5e9b261c74a1e80174",
+  "branch": "v0.7.1-visual",
+  "git_status": "M  core/adapter.py\nA  core/cardview.py\nM  tests/check_cardview.py\nM  tests/mutate_check.py\nM  tests/test_units.py",
+  "staged_diff_sha256": "fef654bfcb1f04fd993c6276d186b34d43bd27080832637b524e8467978c5910",
+  "unstaged_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "untracked_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "audit_object": "V1 代码+文档 tree（不含 freeze-V1.json 自身）；manifest 在后续 metadata commit，按 §9.8 元数据豁免",
+  "python": "/Users/Zayn/.hermes/hermes-agent/venv/bin/python3 3.11.15",
+  "hermes_version": "0.21.1",
+  "references": {
+    "cls_builder": "8842bb142be001d0fa7aab41c4968db04629de5620559723edb7e5d32886e1c6",
+    "cls_segment_helper": "187d99afb51baed63d65517f965871f20bd8dcef5feac4c0c78d0139ba8e0ebc",
+    "cls_tooluse": "6f6734e7a7ef4ce3f927b208186593bdf27ce9a1d64f81d3897c1ac113dd5911",
+    "fc_builder": "1ba53ce48d0ec95a42f11af560bd4bc96127b0826e6ba9119f02ec230e2749e6",
+    "ap_elements": "461ccd099f74ac2345058ca5acf2e94c67405264a746f43b26a133522440f658"
+  },
+  "gate_logs": {
+    "gates": "002154a91692607ab391550927f69fc61ed4feb062fa1f59d1aca0e22ed806ac",
+    "V1-1": "2e2e61a0a6f0aa0f483ea115a3336a1708552eef85e2148ca73f9abad7f8a307",
+    "V1-6": "d26db903274e28e68b2a3d1844e84d37a4155e0b38edd2fc3cc2417fac6bd706",
+    "V1-10": "27602a8606b79eea1bc95fa8847f4c86beace9cb85b89aa461a45dd9310f8592"
+  },
+  "auditors": [
+    "A 架构/源码证据",
+    "B 用户可见/回归",
+    "C 执行/反假绿"
+  ],
+  "audit_target_tree": "91b104cc1e3c420b524716e22da1c029dac13137",
+  "audit_target_commit": "pending V1 commit (staged)",
+  "export_dir": "/private/tmp/audit-v1-91b104cc1e3c420b524716e22da1c029dac13137/larkdeck",
+  "pairing_note": "manifest.tree == audit_target_tree == export tree；审计 tree 不含 manifest，无自指；tree 由当前 staged index（含 V1 修复）减 freeze-V1.json 生成。"
+}

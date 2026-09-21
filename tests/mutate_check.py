@@ -1448,11 +1448,10 @@ MUTATIONS = [
      '    if not tail.startswith(_CORE_PROGRESS_SEP):',
      'test_units'),
     ('G2-10-`/stop` 重绘退回基数页脚（最可能被截图的那一帧丢掉短码）', 'core/adapter.py',
-     '                                       panel=panel,\n'
-     '                                       footer=self._ld_frame_footer(\n'
-     '                                           {"message_id": message_id, "chat_id": chat,\n'
-     '                                            "t0": started, "status": _panel.STATUS_STOPPED}))',
-     '                                       panel=panel, footer=self._ld_footer())',
+     '                card = self._ld_build_card(_sanitize_for_send(text) or " ", streaming=False,\n'
+     '                                           panel=panel, footer=stopped_footer)',
+     '                card = self._ld_build_card(_sanitize_for_send(text) or " ", streaming=False,\n'
+     '                                           panel=panel, footer=self._ld_footer())',
      'test_units'),
     # ⚠️ **锚点在 2026-09-15 晚重新对准过一次**（全量跑发现 `G2-11` 是 🟢 全绿）：
     #    旧锚点是 `if self._ld_transport() == "cardkit":`，那一行在 `state is None` 的
@@ -2218,8 +2217,8 @@ MUTATIONS = [
      '        pass  # V0-6 mutated',
      "test_units"),
     ("V0-7-删掉 _ld_visual_engine 生产调用点（配置静默）", "core/adapter.py",
-     '        _ld_visual_engine()  # V0：生产读取配置；structured 未实现前按 legacy 运行并告警',
-     '        pass  # V0-7 mutated',
+     '        engine = _ld_visual_engine()  # V0：生产读取配置；V1 structured canary',
+     '        engine = "legacy"  # V0-7 mutated',
      "test_units"),
     ("V0-8-read 图标 token 漂移（check_cardview 必须红）",
      "docs/audits/v0.7.1-visual/visual-tokens.json",
@@ -2289,6 +2288,54 @@ MUTATIONS = [
      '        _ld_card_status_header_enabled()\n'
      '        _ld_show_reasoning()',
      "test_units"),
+    ("V1-1-structured seed 分支被关（退回 legacy 卡结构）", "core/adapter.py",
+     '        if structured_view is not None:',
+     '        if False:  # V1-1 mutated',
+     "test_units"),
+    ("V1-2-结构化面板变化时不发 partial_update（工具行不出现）", "core/adapter.py",
+     '        if signature != state.get("ck_panel_sig"):',
+     '        if False:  # V1-2 mutated',
+     "test_units"),
+    ("V1-3-结构化帧不写 answer content（打字机停住）", "core/adapter.py",
+     '        wrote = await self._ld_ck_write(card_id, _cards.CARDKIT_ANSWER_ID, answer_text, seq)',
+     '        wrote = _CkResult(True, 0, "")  # V1-3 mutated',
+     "test_units"),
+    ("V1-4-结构化面板圆角常量漂移（check_cardview 必须红）", "core/cardview.py",
+     'PANEL_RADIUS = "5px"',
+     'PANEL_RADIUS = "9px"',
+     "check_cardview"),
+    ("V1-5-结构化面板间距常量漂移（check_cardview 必须红）", "core/cardview.py",
+     'PANEL_SPACING = "4px"',
+     'PANEL_SPACING = "0px"',
+     "check_cardview"),
+    ("V1-6-结构化帧 sequence 重置（复用/回退）", "core/adapter.py",
+     '        seq = _ck_seq(state)',
+     '        seq = 0  # V1-6 mutated',
+     "test_units"),
+    ("V1-7-entity_skeleton 把 panel 排到 answer 前（提交点顺序）", "core/cardview.py",
+     '    elements.append(panel_shell(view.panel))',
+     '    elements.insert(0, panel_shell(view.panel))',
+     "check_cardview"),
+    ("V1-8-structured finalize 不清理回合状态（后续 /stop 误伤已完成卡）",
+     "core/adapter.py",
+     '            self._ld_stream_pop(key)\n'
+     '            self._ld_forget(str(state.get("message_id") or ""))',
+     '            pass  # V1-8 mutated',
+     "test_units"),
+    ("V1-9-structured finalize 不关闭 streaming_mode", "core/adapter.py",
+     '            final_card["config"]["streaming_mode"] = False',
+     '            pass  # V1-9 mutated',
+     "test_units"),
+    ("V1-10-结构化 DEGRADE 不 patch 同卡（只 stamp 后冻结）", "core/adapter.py",
+     '                    updated = await self._ld_update_card(\n'
+     '                        chat, str(state.get("message_id") or ""), fallback)',
+     '                    updated = None  # V1-10 mutated',
+     "test_units"),
+
+
+
+
+
 
 
 

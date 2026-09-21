@@ -11244,7 +11244,7 @@ def test_v0_visual_config_keys_are_read_with_warning():
         adapter.configure(visual_engine="structured", card_status_header=False,
                           show_reasoning=True)
         with _LogCapture("larkdeck") as records:
-            assert adapter._ld_visual_engine() == "legacy"
+            assert adapter._ld_visual_engine() == "structured"
             assert adapter._ld_card_status_header_enabled() is False
             assert adapter._ld_show_reasoning() is True
         text = "\n".join(r.getMessage() for r in records)
@@ -11272,8 +11272,23 @@ def test_v0_visual_config_keys_are_read_with_warning():
         assert "card_status_header=false" in build_text, build_text
 
         adapter._VISUAL_WARN_AT.clear()
-        with _LogCapture("larkdeck") as frame_records:
-            assert _run(raw.send_stream_frame("", chat_id="oc_v0", turn_id="t-v0"))
+        calls, ck_client = _mk_cardkit_fake()
+        raw._client = ck_client
+        target_cls = type(raw)
+        old_reqs = target_cls.__dict__.get("_ld_ck_requests")
+        old_interval = adapter._STREAM_MIN_INTERVAL
+        target_cls._ld_ck_requests = staticmethod(_fake_ck_requests)
+        adapter._STREAM_MIN_INTERVAL = 0.0
+        try:
+            with _LogCapture("larkdeck") as frame_records:
+                assert _run(raw.send_stream_frame("", chat_id="oc_v0", turn_id="t-v0")), \
+                    "structured seed frame returned False"
+        finally:
+            if old_reqs is None:
+                delattr(target_cls, "_ld_ck_requests")
+            else:
+                target_cls._ld_ck_requests = old_reqs
+            adapter._STREAM_MIN_INTERVAL = old_interval
         frame_text = "\n".join(r.getMessage() for r in frame_records)
         assert "visual_engine=structured" in frame_text, frame_text
 
@@ -11306,6 +11321,115 @@ def test_v0_visual_config_keys_are_read_with_warning():
         adapter._VISUAL_WARN_AT.clear()
         panel.reset()
 
+
+
+
+def test_v1_structured_seed_and_panel_update():
+    """V1：结构化 canary 必须真的建出 panel 元素树，并在工具变化时替换 panel。"""
+    panel.reset()
+    context.reset()
+    saved_config = dict(adapter._CONFIG)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    raw = _make()
+    calls, client = _mk_cardkit_fake()
+    raw._client = client
+    target_cls = type(raw)
+    old_reqs = target_cls.__dict__.get("_ld_ck_requests")
+    adapter.configure(visual_engine="structured", native_transport="cardkit")
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    target_cls._ld_ck_requests = staticmethod(_fake_ck_requests)
+    try:
+        assert _run(raw.send_stream_frame("hello", chat_id="oc_v1", turn_id="t1"))
+        entity = calls["entity"][0]
+        if not isinstance(entity, dict):
+            entity = json.loads(entity)
+        ids = [e.get("element_id") for e in entity["body"]["elements"]]
+        assert "panel" in ids and "answer" in ids, ids
+        assert "panel_body" not in json.dumps(entity), entity
+        assert "standard_icon" in json.dumps(entity), entity
+
+        panel.bind_chat_session("oc_v1", "sess1")
+        panel.record_tool_started("sess1", "turn1", "read_file", {"path": "/tmp/a.txt"})
+        assert _run(raw.send_stream_frame("hello world", chat_id="oc_v1", turn_id="t1"))
+        actions = []
+        for item in calls["batch"]:
+            batch_actions = item[0] if isinstance(item[0], list) else json.loads(item[0])
+            if isinstance(batch_actions, list):
+                actions.extend(batch_actions)
+            else:
+                actions.append(batch_actions)
+        panel_actions = [a for a in actions
+                         if a.get("action") == "partial_update_element"
+                         and a.get("params", {}).get("element_id") == "panel"]
+        assert panel_actions, actions
+        payload = json.dumps(panel_actions[-1], ensure_ascii=False)
+        assert "standard_icon" in payload and "22px" in payload, payload
+        answer_writes = [c for c in calls["content"] if c[0] == cards.CARDKIT_ANSWER_ID]
+        assert answer_writes and answer_writes[-1][1] == "hello world", answer_writes
+        # 序号账本：panel partial 与 answer content 共用严格 +1，answer 永远最后写。
+        ordered = sorted(
+            [("panel", item[1]) for item in calls["batch"]]
+            + [(c[0], c[2]) for c in calls["content"]],
+            key=lambda item: item[1])
+        assert [seq for _, seq in ordered] == list(range(1, len(ordered) + 1)), ordered
+        assert ordered[-1][0] == cards.CARDKIT_ANSWER_ID, ordered
+        # 跨帧全局序号必须严格递增且不复用（seq 重置只在多帧下暴露）。
+        assert _run(raw.send_stream_frame("hello world!", chat_id="oc_v1", turn_id="t1"))
+        all_seqs = [item[1] for item in calls["batch"]] + [c[2] for c in calls["content"]]
+        assert len(set(all_seqs)) == len(all_seqs), all_seqs
+        assert sorted(all_seqs) == list(range(1, max(all_seqs) + 1)), all_seqs
+        assert _run(raw.send_stream_frame("hello world!", finalize=True,
+                                          chat_id="oc_v1", turn_id="t1"))
+        patched = calls.get("patch_cards") or []
+        assert any(card.get("header", {}).get("template") == "green" for card in patched), patched
+        assert any(not card.get("config", {}).get("streaming_mode", True) for card in patched), patched
+        assert raw._ld_stream_get("oc_v1:t1") is None
+    finally:
+        if old_reqs is None:
+            delattr(target_cls, "_ld_ck_requests")
+        else:
+            target_cls._ld_ck_requests = old_reqs
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_config)
+        panel.reset()
+        context.reset()
+
+
+
+def test_v1_structured_degrade_patches_same_card():
+    """V1：结构化面板写遇卡级死法时，必须同卡 patch 回退，不另建卡。"""
+    panel.reset()
+    context.reset()
+    saved_config = dict(adapter._CONFIG)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    raw = _make()
+    calls, client = _mk_cardkit_fake(fail_batch=True, fail_batch_code=300309)
+    raw._client = client
+    target_cls = type(raw)
+    old_reqs = target_cls.__dict__.get("_ld_ck_requests")
+    adapter.configure(visual_engine="structured", native_transport="cardkit")
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    target_cls._ld_ck_requests = staticmethod(_fake_ck_requests)
+    try:
+        assert _run(raw.send_stream_frame("hello", chat_id="oc_v1d", turn_id="t1"))
+        panel.bind_chat_session("oc_v1d", "sess1d")
+        panel.record_tool_started("sess1d", "turn1d", "read_file", {"path": "/tmp/a.txt"})
+        assert _run(raw.send_stream_frame("hello world", chat_id="oc_v1d", turn_id="t1"))
+        state = raw._ld_stream_get("oc_v1d:t1") or {}
+        assert state.get("engine_stamp") == "degraded", state
+        assert calls["create"] == 1, calls["create"]
+        assert calls["patch"] >= 1, calls["patch"]
+    finally:
+        if old_reqs is None:
+            delattr(target_cls, "_ld_ck_requests")
+        else:
+            target_cls._ld_ck_requests = old_reqs
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_config)
+        panel.reset()
+        context.reset()
 
 
 def main() -> int:

@@ -58,6 +58,7 @@ from typing import (Any, Deque, Dict, List, Mapping, NamedTuple, Optional, Seque
                     Tuple)
 
 from . import cards as _cards
+from . import cardview as _cardview
 from . import compat as _compat
 from . import context as _context
 from . import hooks as _hooks
@@ -948,8 +949,8 @@ def _ld_visual_engine() -> str:
         return "legacy"
     if raw == "structured":
         _warn_visual_once("visual_engine-structured",
-                          "visual_engine=structured 尚未实现（V1 才落地），当前按 legacy 运行")
-        return "legacy"
+                          "visual_engine=structured canary 已启用（默认仍 legacy）")
+        return "structured"
     return "legacy"
 
 
@@ -2658,7 +2659,8 @@ class LarkDeckMixin:
 
     async def _ld_ck_create(self, chat: str, *, answer: str, panel_text: str,
                             panel_tools_text: str,
-                            reply_to: Optional[str] = None) -> Any:
+                            reply_to: Optional[str] = None,
+                            structured_view: Optional["_cardview.CardView"] = None) -> Any:
         """建 CardKit 实体 + 发实体卡。返回 ``(result, card_id, card_json)`` 或 ``None``。
 
         ⚠️ 第三个返回值是**建出来的那张卡的 JSON**：回合状态的元素表要从它里面抽
@@ -2678,21 +2680,25 @@ class LarkDeckMixin:
         reqs = self._ld_ck_requests()
         if reqs is None:
             return None                      # 没有 SDK ⇒ fail-open 回落（不猜、不抛）
-        card = _cards.cardkit_entity_card(answer, panel_text, streaming=True,
-                                         expanded=bool(_cfg("panel_expanded")),
-                                         panel=bool(_cfg("unified_panel")),
-                                         # R3 收窄版：工具块是面板里的第二个元素（建实体时定死）
-                                         panel_tools_text=panel_tools_text,
-                                         # `footer: false` ⇒ 传 None ⇒ 页脚元素**不进卡**；
-                                         # 开着但这一刻还没数据 ⇒ 空串 ⇒ 元素留在卡里等后续帧更新。
-                                         # ⚠️ **判据是「要不要这个元素」（配置），不是「这一刻有没有
-                                         # 数据」** —— 这里必须是**写死的表达式**，不能是
-                                         # `self._ld_footer()`：那个函数在本进程第一次 API 调用之前
-                                         # 返回 `None`（页脚指标来自官方钩子），而
-                                         # `cardkit_entity_card` 的纪律是 `None ⇒ 元素不进卡`，
-                                         # 元素表在建实体时定死 ⇒ 那一回合**永远没有页脚、也永远
-                                         # 没有短码**（短码就写在页脚里）。变异 `G2-9` 钉这一行。
-                                         footer_text=("" if _cfg("footer") else None))
+        if structured_view is not None:
+            # V1：结构化元素树（canary）。结构在 entity_skeleton 里一次定死。
+            card = _cardview.entity_skeleton(structured_view)
+        else:
+            card = _cards.cardkit_entity_card(answer, panel_text, streaming=True,
+                                             expanded=bool(_cfg("panel_expanded")),
+                                             panel=bool(_cfg("unified_panel")),
+                                             # R3 收窄版：工具块是面板里的第二个元素（建实体时定死）
+                                             panel_tools_text=panel_tools_text,
+                                             # `footer: false` ⇒ 传 None ⇒ 页脚元素**不进卡**；
+                                             # 开着但这一刻还没数据 ⇒ 空串 ⇒ 元素留在卡里等后续帧更新。
+                                             # ⚠️ **判据是「要不要这个元素」（配置），不是「这一刻有没有
+                                             # 数据」** —— 这里必须是**写死的表达式**，不能是
+                                             # `self._ld_footer()`：那个函数在本进程第一次 API 调用之前
+                                             # 返回 `None`（页脚指标来自官方钩子），而
+                                             # `cardkit_entity_card` 的纪律是 `None ⇒ 元素不进卡`，
+                                             # 元素表在建实体时定死 ⇒ 那一回合**永远没有页脚、也永远
+                                             # 没有短码**（短码就写在页脚里）。变异 `G2-9` 钉这一行。
+                                             footer_text=("" if _cfg("footer") else None))
         # P1b：设备字号档位（建实体时定死 text_size；之后只写内容，不做结构性 patch）。
         card = _cards.apply_text_profile(card, _cfg_raw("text_profile"))
         # ⚠️ **基线闸门（两道墙）**：patch 路径超预算会分级丢装饰（面板→页脚→裸卡），而 cardkit
@@ -2988,11 +2994,16 @@ class LarkDeckMixin:
         old_message_id = str(state.get("message_id") or "")
         # ① 封旧卡：整卡 patch（那一刻流式本来就结束 —— 我们**绝不会**再往它写元素）
         sealed = text[offset:cut]
-        card = self._ld_build_card(sealed + "\n\n" + _i18n.t("stream.continued"),
-                                   streaming=False,
-                                   panel=self._ld_panel(chat, report_empty=True),
-                                   footer=self._ld_footer(chat_id=chat,
-                                                          started=state.get("t0")))
+        if _ld_visual_engine() == "structured":
+            sealed_view = self._ld_cardview(
+                chat, sealed + "\n\n" + _i18n.t("stream.continued"), status="completed")
+            card = _cardview.entity_skeleton(sealed_view)
+        else:
+            card = self._ld_build_card(sealed + "\n\n" + _i18n.t("stream.continued"),
+                                       streaming=False,
+                                       panel=self._ld_panel(chat, report_empty=True),
+                                       footer=self._ld_footer(chat_id=chat,
+                                                              started=state.get("t0")))
         result = await self._ld_update_card(chat, old_message_id, card)
         if result is None or not getattr(result, "success", False):
             logger.warning("[larkdeck] 卡链：封旧卡失败（%s），本帧回落",
@@ -3003,9 +3014,16 @@ class LarkDeckMixin:
         self._ld_forget(old_message_id)
         # ② 开新卡：只写**剩下的那一段**（写整段会让用户把前半段再看一遍 —— R4 最大的观感坑）
         new_body, new_tools = self._ld_panel_parts(chat)
-        made = await self._ld_ck_create(chat, answer=text[cut:],
-                                        panel_text=new_body, panel_tools_text=new_tools,
-                                        reply_to=reply_to)
+        structured = _ld_visual_engine() == "structured"
+        if structured:
+            new_view = self._ld_cardview(chat, text[cut:])
+            made = await self._ld_ck_create(chat, answer=text[cut:],
+                                            panel_text=new_body, panel_tools_text=new_tools,
+                                            reply_to=reply_to, structured_view=new_view)
+        else:
+            made = await self._ld_ck_create(chat, answer=text[cut:],
+                                            panel_text=new_body, panel_tools_text=new_tools,
+                                            reply_to=reply_to)
         if made is None:
             logger.warning("[larkdeck] 卡链：开新卡失败，本帧回落")
             return None
@@ -3017,7 +3035,7 @@ class LarkDeckMixin:
         self._ld_track(new_message_id, chat)
         logger.info("[larkdeck] 卡链：封 %s（%d 字）→ 新卡 %s（余 %d 字）",
                     old_message_id[-8:], len(sealed), new_message_id[-8:], len(text) - cut)
-        return {
+        new_state = {
             **state,
             "message_id": new_message_id, "chat_id": chat, "t0": state.get("t0") or now,
             "last": text, "last_at": now, "frames": 0, "skipped": 0,
@@ -3028,7 +3046,14 @@ class LarkDeckMixin:
             "ck_offset": cut,
             "ck_cards": list(state.get("ck_cards") or []) + [old_message_id],
             "ck_sealed_bytes": int(state.get("ck_sealed_bytes") or 0) + _card_body_bytes(sealed),
+            # 新卡不能继承旧卡的元素级死法/去重记账（R5/A3）。
+            "ck_dead": set(), "ck_decor": {},
         }
+        if structured:
+            new_state["engine"] = "structured"
+            new_state["ck_panel_sig"] = json.dumps(
+                _cardview.panel_partial(new_view.panel), sort_keys=True, ensure_ascii=False)
+        return new_state
 
     async def _ld_ck_maybe_summary(self, card_id: str, display: str, state_ref: Dict[str, Any],
                                    seq: int, now: float) -> Tuple[int, Dict[str, Any]]:
@@ -3264,14 +3289,213 @@ class LarkDeckMixin:
                 tools[:8], text[:200])
         return display
 
+    @staticmethod
+    def _ld_icon_token(name: str) -> str:
+        lowered = str(name or "").lower()
+        for key, token in _cardview.ICON_TOKENS.items():
+            if key in lowered:
+                return token
+        return _cardview.ICON_TOKENS["fallback"]
+
+    def _ld_cardview(self, chat: str, answer: str, *, status: str = "processing",
+                     finalize: bool = False) -> "_cardview.CardView":
+        """从面板快照构造结构化视图（V1 canary）。"""
+        snap = _panel.snapshot(chat) or {}
+        rounds: List["_cardview.ReasoningRoundView"] = []
+        for index, item in enumerate(snap.get("rounds") or []):
+            if not isinstance(item, dict):
+                continue
+            rounds.append(_cardview.ReasoningRoundView(
+                index=index, text=str(item.get("text") or ""),
+                elapsed_ms=item.get("elapsed_ms"), finalized=bool(item.get("finalized"))))
+        tools: List["_cardview.ToolStepView"] = []
+        for item in snap.get("tools") or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "tool")
+            preview = str(item.get("preview") or "")
+            try:
+                detail = _cards._detail_safe(preview)  # type: ignore[attr-defined]
+            except Exception:
+                detail = preview
+            tools.append(_cardview.ToolStepView(
+                name=name, title=name, status=str(item.get("status") or "running"),
+                duration_ms=item.get("duration_ms"), detail=detail,
+                icon_token=self._ld_icon_token(name)))
+        total_ms = sum(int(r.elapsed_ms or 0) for r in rounds)
+        collapsed_hint = ""
+        max_steps = 20
+        if len(tools) > max_steps:
+            collapsed_hint = f"…更早的 {len(tools) - max_steps} 步已折叠"
+            tools = tools[-max_steps:]
+        panel = _cardview.PanelView(
+            title=f"💭 思考 {total_ms / 1000:.1f}s · 🛠️ 工具执行 · {len(tools)} 步",
+            tools=tools,
+            reasoning_rounds=rounds if _ld_show_reasoning() else [],
+            collapsed_hint=collapsed_hint,
+            border={"processing": "grey", "completed": "green",
+                    "stopped": "yellow", "error": "red"}.get(status, "grey"),
+        )
+        return _cardview.CardView(
+            answer=answer, footer=self._ld_footer(chat_id=chat) or "",
+            footer_enabled=bool(_cfg("footer")), panel=panel,
+            header_enabled=_ld_card_status_header_enabled(),
+            header_status=status,
+            header_title={"processing": "🫧 处理中…", "completed": "✅ 已完成",
+                          "stopped": "⛔ 已停止", "error": "❌ 执行出错"}.get(
+                              status, "🫧 处理中…"))
+
+    async def _ld_ck_partial(self, card_id: str, element_id: str,
+                             partial: Dict[str, Any], seq: int) -> "_CkResult":
+        """结构化面板整段替换（partial_update_element，顶层不带 tag）。"""
+        reqs = self._ld_ck_requests()
+        if reqs is None:
+            return _CkResult(False, 0, "没有 CardKit SDK")
+        actions = [{"action": "partial_update_element",
+                    "params": {"element_id": element_id, "partial_element": partial}}]
+        resp = await self._ld_write_with_retry(
+            lambda: reqs.batch_update(card_id, actions, int(seq), f"ld-{card_id}-s{seq}"),
+            self._client.cardkit.v1.card.batch_update, "结构化面板")
+        return _CkResult(_ld_response_code(resp) == 0, _ld_response_code(resp),
+                         str(getattr(resp, "msg", "") or ""))
+
+    async def _ld_stream_frame_structured(self, text: str, *, finalize: bool,
+                                          chat_id: Optional[str], reply_to: Optional[str],
+                                          turn_id: str) -> bool:
+        """V1 结构化流式帧（canary）：seed 建结构化实体卡，后续帧替换面板 + 写正文。"""
+        chat = str(chat_id or "").strip()
+        key = f"{chat}:{turn_id}" if turn_id else chat
+        state = self._ld_stream_get(key)
+        now = time.monotonic()
+        if state is None:
+            if finalize:
+                return False
+            display = self._ld_body_text(text, chat, finalize=False, stream_state=None)
+            view = self._ld_cardview(chat, display)
+            made = await self._ld_ck_create(chat, answer=display, panel_text="",
+                                            panel_tools_text="", reply_to=reply_to,
+                                            structured_view=view)
+            if made is None:
+                return self._ld_stream_fail("structured 建实体失败")
+            result, card_id, card_json = made
+            message_id = getattr(result, "message_id", "") or ""
+            if not message_id:
+                return self._ld_stream_fail("structured 建卡成功但没拿到 message_id")
+            self._ld_track(message_id, chat)
+            self._ld_stream_put(key, {
+                "message_id": message_id, "chat_id": chat, "t0": now, "last": text,
+                "last_at": now, "frames": 0, "skipped": 0, "strips": 0,
+                "card_id": card_id, "ck_seq": 0, "engine": "structured",
+                "ck_elems": _ck_elems_from_card(card_json),
+                "ck_panel_sig": json.dumps(_cardview.panel_partial(view.panel),
+                                           sort_keys=True, ensure_ascii=False),
+                "last_rendered_body": display, "last_failed_frame": "",
+                "session_id": _panel.bound_session_id(chat) or "",
+                "turn_id": str(turn_id or ""),
+            })
+            _context.note_frame_ok()
+            return True
+        if self._ld_body_source() == "own" and self._ld_seed_failure_active(chat):
+            return self._ld_stream_fail("structured 拒绝 F4 合成帧窗口")
+        display = self._ld_body_text(text, chat, finalize=finalize, stream_state=state,)
+        offset = int(state.get("ck_offset") or 0)
+        visible = display[offset:]
+        if _card_body_bytes(visible) > _CK_SPLIT_SEAL_AT:
+            split_state = await self._ld_ck_split(chat, display, state, offset, reply_to, now)
+            if split_state is None:
+                return self._ld_stream_fail("structured 正文超过单卡上限且切不出新卡")
+            state = split_state
+            self._ld_stream_put(key, state)
+            offset = int(state.get("ck_offset") or 0)
+            visible = display[offset:]
+        status = "completed" if finalize else "processing"
+        view = self._ld_cardview(chat, visible, status=status, finalize=finalize)
+        card_id = str(state.get("card_id") or "")
+        if not card_id:
+            return self._ld_stream_fail("structured 状态缺 card_id")
+        seq = _ck_seq(state)
+        live = dict(state)
+        partial = _cardview.panel_partial(view.panel)
+        signature = json.dumps(partial, sort_keys=True, ensure_ascii=False)
+        if signature != state.get("ck_panel_sig"):
+            seq += 1
+            res = await self._ld_ck_partial(card_id, "panel", partial, seq)
+            _ck_window_note(live, now)
+            if not res.ok:
+                if res.code in _CARD_DEATH_DECOR_CODES:
+                    live["ck_degrade"] = res.code
+                    live["engine_stamp"] = "degraded"
+                    _log_ck_degrade_once(res.code)
+                    # §9.3：DEGRADE 是唯一同卡回退车道 —— 立刻用 legacy 渲染 patch 同一张卡，
+                    # 保住正文/状态色，再让后续帧走 legacy 车道。
+                    fallback = self._ld_build_card(
+                        visible, streaming=False,
+                        panel=self._ld_panel(chat, report_empty=True),
+                        footer=self._ld_frame_footer(state))
+                    updated = await self._ld_update_card(
+                        chat, str(state.get("message_id") or ""), fallback)
+                    if updated is not None and getattr(updated, "success", False):
+                        live["last_rendered_body"] = visible
+                        self._ld_stream_put(key, live)
+                        _context.note_frame_ok()
+                        return True
+                _log_ck_decor_write_failed_once(
+                    [_CkOp("panel", "", _CK_ROLE_PANEL)], res.code)
+            else:
+                live["ck_panel_sig"] = signature
+        footer_text = self._ld_frame_footer(state) or " "
+        if (_cards.CARDKIT_FOOTER_ID in self._ld_ck_elems(state)
+                and state.get("ck_footer") != footer_text):
+            seq += 1
+            fres = await self._ld_ck_batch(
+                card_id, [_CkOp(_cards.CARDKIT_FOOTER_ID, footer_text, _CK_ROLE_DECOR)], seq)
+            if fres.ok:
+                live["ck_footer"] = footer_text
+        seq += 1
+        answer_text = _cards.answer_or_pending(visible, not finalize) or " "
+        wrote = await self._ld_ck_write(card_id, _cards.CARDKIT_ANSWER_ID, answer_text, seq)
+        if not wrote.ok:
+            live["ck_seq"] = seq
+            self._ld_stream_put(key, live)
+            return self._ld_stream_fail("structured 正文写入失败")
+        if finalize:
+            # V1：收尾必须重绘卡级 header + 关闭 streaming_mode；同卡 patch，不另建卡。
+            final_card = _cardview.entity_skeleton(view)
+            final_card["config"]["streaming_mode"] = False
+            updated = await self._ld_update_card(
+                chat, str(state.get("message_id") or ""), final_card)
+            if updated is None or not getattr(updated, "success", False):
+                logger.warning("[larkdeck] structured 收尾整卡 patch 未成功（%s）",
+                               getattr(updated, "error", "unknown"))
+                live["ck_seq"] = seq
+                self._ld_stream_put(key, live)
+                return self._ld_stream_fail("structured 收尾整卡 patch 失败")
+            self._ld_stream_pop(key)
+            self._ld_forget(str(state.get("message_id") or ""))
+            _context.note_frame_ok()
+            return True
+        live.update({"last_rendered_body": visible, "last": text, "last_at": now,
+                     "ck_seq": seq, "frames": int(state.get("frames") or 0) + 1})
+        if live.get("ck_degrade"):
+            live["engine_stamp"] = "degraded"
+            live["card_id"] = ""
+            self._ld_stream_put(key, live)
+            return False
+        self._ld_stream_put(key, live)
+        _context.note_frame_ok()
+        return True
+
     async def _ld_stream_frame(self, text: str, *, finalize: bool, chat_id: Optional[str],
                                reply_to: Optional[str], turn_id: str) -> bool:
         chat = str(chat_id or "").strip()
         if not chat or not getattr(self, "_client", None):
             return self._ld_stream_fail("没有 chat / SDK 客户端")
-        _ld_visual_engine()  # V0：生产读取配置；structured 未实现前按 legacy 运行并告警
         key = f"{chat}:{turn_id}" if turn_id else chat
         state = self._ld_stream_get(key)
+        engine = _ld_visual_engine()  # V0：生产读取配置；V1 structured canary
+        if engine == "structured" and not (state and state.get("engine_stamp") == "degraded"):
+            return await self._ld_stream_frame_structured(
+                text, finalize=finalize, chat_id=chat_id, reply_to=reply_to, turn_id=turn_id)
         now = time.monotonic()
         if finalize and state is not None and self._ld_body_source() == "own":
             failed_text = str(state.get("last_failed_frame") or "")
@@ -3957,11 +4181,19 @@ class LarkDeckMixin:
                 status=_panel.STATUS_STOPPED)
             # ⚠️ 同上（审计 C1）：`/stop` 重绘是**用户最可能截图的那一帧**，而且它以前会把
             #    卡片上**已有的** 🔖 抹掉（用基数页脚重画 ⇒ 短码没了）。这里手上就有 message_id。
-            card = self._ld_build_card(_sanitize_for_send(text) or " ", streaming=False,
-                                       panel=panel,
-                                       footer=self._ld_frame_footer(
-                                           {"message_id": message_id, "chat_id": chat,
-                                            "t0": started, "status": _panel.STATUS_STOPPED}))
+            stopped_footer = self._ld_frame_footer(
+                {"message_id": message_id, "chat_id": chat,
+                 "t0": started, "status": _panel.STATUS_STOPPED})
+            if _ld_visual_engine() == "structured":
+                stopped_view = self._ld_cardview(
+                    chat, _sanitize_for_send(text) or " ", status="stopped")
+                stopped_view.footer = stopped_footer
+                card = _cardview.entity_skeleton(stopped_view)
+            else:
+                panel = self._ld_panel(chat, report_empty=True) or _cards.unified_panel(
+                    status=_panel.STATUS_STOPPED)
+                card = self._ld_build_card(_sanitize_for_send(text) or " ", streaming=False,
+                                           panel=panel, footer=stopped_footer)
             blob = json.dumps(card, ensure_ascii=False)
             if '"collapsible_panel"' not in blob:
                 # 第十路审计：正文贴着飞书硬上限时，降载阶梯会把承载状态色的面板摘掉 ⇒

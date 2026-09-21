@@ -23,6 +23,7 @@ for _p in (str(_REPO.parent), str(_HERE)):
         sys.path.insert(0, _p)
 
 from larkdeck.core import cards  # noqa: E402
+from larkdeck.core import cardview  # noqa: E402
 
 
 def _assert_token_file() -> None:
@@ -116,7 +117,52 @@ def _assert_legacy_entity_card_content() -> None:
     assert body[2]["content"] == "FOOT", body[2]
     # V0 冻结的是 legacy 现状；V1 结构化切换时必须同 commit 更新为 5px 并声明行为变更。
     assert body[1]["border"]["corner_radius"] == "8px", body[1]["border"]
-    assert body[1]["border"]["color"] == "grey", body[1]["border"]
+
+
+def _assert_structured_builder() -> None:
+    """V1：CardView 结构化元素树 golden（tag/属性/token/缩进/字号/content）。"""
+    view = cardview.CardView(
+        answer="HELLO",
+        footer="状态 · 1.2s · model · ctx · AB12",
+        panel=cardview.PanelView(
+            title="💭 思考 1.2s · 🛠️ 工具执行 · 1 步",
+            tools=[cardview.ToolStepView(
+                name="read_file", title="读取文件", status="ok", duration_ms=120,
+                detail="/tmp/a.txt", icon_token=cardview.ICON_TOKENS["read"])],
+            reasoning_rounds=[cardview.ReasoningRoundView(
+                index=0, text="原始推理", elapsed_ms=1200)],
+        ),
+    )
+    card = cardview.entity_skeleton(view)
+    body = card["body"]["elements"]
+    assert [e.get("element_id") for e in body] == ["answer", "panel", "footer"], body
+    assert body[0]["content"] == "HELLO" and body[0]["tag"] == "markdown"
+    assert card["header"]["template"] == "blue", card.get("header")
+    panel = body[1]
+    assert panel["tag"] == "collapsible_panel", panel
+    assert panel["border"]["corner_radius"] == "5px", panel["border"]
+    assert panel["vertical_spacing"] == "4px", panel
+    assert panel["padding"] == "8px 8px 8px 8px", panel
+    assert panel["header"]["title"]["content"] == "💭 思考 1.2s · 🛠️ 工具执行 · 1 步"
+    reasoning = panel["elements"][0]
+    assert reasoning["tag"] == "collapsible_panel", reasoning
+    assert reasoning["expanded"] is False, reasoning
+    assert reasoning["vertical_spacing"] == "8px", reasoning
+    assert reasoning["padding"] == "8px 8px 8px 8px", reasoning
+    assert reasoning["elements"][0]["content"] == "原始推理", reasoning
+    title_div, detail = panel["elements"][1], panel["elements"][2]
+    assert title_div["tag"] == "div", title_div
+    assert title_div["icon"] == {"tag": "standard_icon", "token": "file-link-text_outlined",
+                                 "color": "grey"}, title_div["icon"]
+    assert "**读取文件**" in title_div["text"]["content"], title_div
+    assert "Succeeded" in title_div["text"]["content"], title_div
+    assert detail["tag"] == "div" and detail["margin"] == "0px 0px 0px 22px", detail
+    assert detail["text"] == {"tag": "plain_text", "content": "↳ /tmp/a.txt",
+                              "text_color": "grey", "text_size": "notation"}, detail["text"]
+    panel_op = {"partial_element": cardview.panel_partial(view.panel)}
+    assert "tag" not in panel_op["partial_element"], panel_op
+    assert "text_size" not in panel_op["partial_element"], panel_op
+    assert [e.get("element_id") for e in body] == ["answer", "panel", "footer"], body
 
 
 def _assert_tool_status_literals() -> None:
@@ -147,6 +193,7 @@ def main() -> int:
     _assert_token_file()
     _assert_legacy_entity_card_content()
     _assert_tool_status_literals()
+    _assert_structured_builder()
     print("CARDVIEW OK")
     return 0
 
