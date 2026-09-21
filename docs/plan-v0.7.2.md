@@ -98,7 +98,8 @@
 | `show_reasoning=true` 的嵌套 `collapsible_panel` 客户端渲染未验证（默认 false 规避） | 真机 | 探针已发 `om_x100b6427ec67d4a4de74424945f4ca0`（「内层面板能展开吗」），**等用户目视结论** | v0.7.3 |
 | 低层出站原语（`_ld_ck_create`/`_ld_send_card`/`_ld_update_card`）无统一留痕 | 本仓 | 调用点枚举断言 + 灰度日志 | v0.7.3 |
 | `seq += 1` 的换号重试只被黄金夹具保护（C2：夹具同步重生成即失守） | 本仓 | 构造「删除是这一帧最后一次写」的场景断言 | v0.7.3 |
-| `--shard i/n`（n≥2）分片跑**不会自己盖** `full_audit_at`（`_full` 要求 picked == 全量条数，n≥2 时必然不等）⇒ 分片账本必须按「当日 🔴 名字并集覆盖 + 对照 0 假红 + 三重指纹一致」合并后才可盖章；另注意分片 `--update-ledger` **要各写各的 `LARKDECK_LEDGER_PATH`**（同一文件并发写会丢更新，2026-09-21 归档日志实测 414 vs 413） | 本仓 | 固化进 `tools/`（含自检与分片账本参数），并在 `--shard` 结束时打印「本次只覆盖 i/n，`full_audit_at` 需合并后才可盖」 | v0.7.3 |
+| `--shard i/n`（n≥2）分片跑**不会自己盖** `full_audit_at`（`_full` 要求 picked == 全量条数，n≥2 时必然不等）⇒ 分片账本必须按「当日 🔴 名字并集覆盖 + 对照**全 12 个名字** + **现场重算**三指纹」合并后才可盖章（2026-09-21 的 v3 合并脚本被审计 B 实测证明可被伪造日志绕过 ⇒ 已补加固参考实现 `merge_ledger4.py`）；另注意分片 `--update-ledger` **要各写各的 `LARKDECK_LEDGER_PATH`**（同一文件并发写会丢更新，归档日志实测 414 vs 413） | 本仓 | 把 `merge_ledger4.py` 固化进 `tools/`（含分片账本参数与自检），并在 `--shard` 结束时打印「本次只覆盖 i/n，`full_audit_at` 需合并后才可盖」 | v0.7.3 |
+| 账本的**来源凭证**只在 `at`（= `_head_short()` 的 HEAD 短码，**不看脏树**）与 `_meta.full_audit_evidence`（叙述）里；合并脚本可无条件覆盖 `at`，且「伪造日志 → 盖章」无法从文本层防住。2026-09-21 审计 B 实测：CAND-B2 在 `7e7a62d` 的清单里根本不存在、`at` 却写成 `7e7a62d`（已在 `396f0ae` 干净树补跑并把这两条 `at` 改对） | 本仓 | 每条 entry 记 **tree hash（含 dirty 标记）+ 来源日志路径 + 行号**，由 `mutate_check` 自己产出；`--ledger-status` 能按来源过滤；合并器不再需要「凭日志文本盖章」 | v0.7.3 |
 | 测试里可能仍有**无界等待**：`await <Event>.wait()`（一旦被测分支被变异短路，整支门禁挂到 45s 超时 ⇒ 记 💥「没有证据」而不是断言红）；**更强的一类是无界 task join**（`await frame` / `await tick` / `await holder`）—— 一个让帧路径 async 死锁的变异会以同样方式把「断言红」变成 💥。本轮只修了实测踩到的两处；2026-09-21 对抗审计 A 实测仍有 3 处裸 `await release.wait()`（`test_units.py:11730/11786/12346`，当前无语料能挂死）+ 上述 join 类 | 本仓 | 全仓扫 `await \w+\.wait()` **与** `await <Task>` 裸 join，统一改 `_await_event`/`asyncio.wait_for`；再加静态门禁（发现无界等待/join 即 FAIL） | v0.7.3 |
 
 ## 4. 风险与已知坑（沿用 v0.7.1 教训）
