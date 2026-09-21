@@ -211,6 +211,20 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+async def _await_event(event: "asyncio.Event", timeout: float, what: str) -> None:
+    """**有界**等待事件（2026-09-21 收口复核实测的盲点）：测试里写无界的
+    ``await ev.wait()``，一旦被测分支被变异短路，事件永远不会 set ⇒ **整支 test_units
+    挂到 45s 门禁超时** ⇒ `mutate_check` 把这条变异记成 💥「只有崩溃」，而不是断言红
+    ⇒ 变异清单里出现一条**没有判别力证据**的盲点（实测：`V1-2` 短路 panel partial 后，
+    `test_v4_1_inflight_frame_write_is_not_raced_by_heartbeat` 就永远等不到 `started`，
+    整支套件 >60s）。等不到就**断言失败**：可判读、秒级、能记账。
+    """
+    try:
+        await asyncio.wait_for(event.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        raise AssertionError(f"等不到 {what}（>{timeout:g}s）—— 这一路被短路了？") from None
+
+
 def _make(**cfg: Any):
     """按与真实路径完全相同的方式造一个「内置适配器 + 卡片层」实例。
 
@@ -11721,7 +11735,7 @@ def test_v4_1_inflight_frame_write_is_not_raced_by_heartbeat():
         async def _flow():
             frame = asyncio.ensure_future(
                 raw.send_stream_frame("hello world", chat_id=chat, turn_id=turn))
-            await started.wait()             # 帧路径此刻正持锁、写还没回来
+            await _await_event(started, 2.0, "帧路径发起的 panel 写")  # 帧路径此刻正持锁、写还没回来
             try:
                 raced = await asyncio.wait_for(
                     raw._ld_heartbeat_tick(chat, key), timeout=1.0)
@@ -12339,7 +12353,7 @@ def test_v4_1_heartbeat_inflight_blocks_frame_and_keeps_seq_unique():
             snap["ck_panel_sig"] = ""     # 逼心跳这一拍真的去写
             raw._ld_stream_put(key, snap)
             tick = asyncio.ensure_future(raw._ld_heartbeat_tick(chat, key))
-            await started.wait()          # 心跳的写已经发出、锁在它手里
+            await _await_event(started, 2.0, "心跳发起的写")   # 心跳的写已经发出、锁在它手里
             frame = asyncio.ensure_future(
                 raw.send_stream_frame("hello world", chat_id=chat, turn_id=turn))
             for _ in range(20):           # 让帧跑到它的第一个 await（拿锁）
@@ -12985,10 +12999,11 @@ def test_v4_15_static_and_fit_lanes_never_reopen_disabled_panel_or_footer():
         card_on = raw._ld_fit_structured_card(v_on)
         assert [e.get("element_id") for e in card_on["body"]["elements"]] == \
             ["answer", "panel", "footer"], card_on
-        # ⚠️ **只有 reasoning、还没有 rounds 的回合**（终审 C 收口复核的 CAND-B）：
-        #   判据写成 `tools or rounds`（丢掉 reasoning）时六门禁全绿，而这种回合
-        #   （模型刚开始想、还没形成完整推理轮）在真实世界里很常见 —— 用户会**丢掉整个面板**，
-        #   连「💭 思考 Xs」摘要行和状态色一起没了。
+        # ⚠️ **只有 reasoning 的快照**（终审 C 收口复核的 CAND-B）：
+        #   注意：`snapshot()` 的 `reasoning` 是**从 rounds 拼出来的** ⇒「reasoning 非空但
+        #   rounds 为空」在数据层**不可达**，删掉判据里的 `or reasoning` 六门禁全绿
+        #   （已登记为 `CONTROLS` 里的等价对照）。这条断言留着是为了把语义钉住
+        #   （推理只有一种来源：推理轮），**不是**能抓变异的判别力来源。
         panel.reset()
         panel.bind_chat_session("oc_v415r", "s_v415r")
         panel.record_reasoning("s_v415r", "t-v415r", "刚开始想，还没形成完整推理轮。")
@@ -12997,7 +13012,27 @@ def test_v4_15_static_and_fit_lanes_never_reopen_disabled_panel_or_footer():
         _run(raw.send("oc_v415r", "只有推理的回复"))
         ids_r = [e.get("element_id") for e in sent_cards[-1]["body"]["elements"]]
         assert "panel" in ids_r, \
-            f"快照里只有 reasoning（没有 rounds/tools）时也必须出面板（否则状态色与摘要行一起丢）：{ids_r}"
+            f"只有推理轮的回合也必须出面板（否则状态色与摘要行一起丢）：{ids_r}"
+
+        # ⚠️ **纯工具回合**（终审 C 复验收口新查出的真·绿变异 CAND-B2）：判据写成
+        #   `rounds or reasoning`（丢掉 `tools`）时六门禁全绿，而用户可以只调工具、
+        #   还没有任何推理正文 —— 这种回合走静态 `send()` 会**整块吞掉执行面板**：
+        #   工具名/状态/耗时，连面板这个**状态色唯一载体**一起消失（正好是 V4.15
+        #   想避免的「看不到过程」，方向相反）。先直接查判据，再查真实出卡。
+        panel.reset()
+        panel.bind_chat_session("oc_v415t", "s_v415t")
+        panel.record_tool_started("s_v415t", "t1", "terminal", {"command": "df -h"},
+                                  tool_call_id="tc1")
+        assert adapter._panel_has_data("oc_v415t") is True, \
+            "纯工具快照（没有推理轮）也必须算「有过程数据」"
+        adapter.configure(unified_panel=True, footer=True)
+        sent_cards.clear()
+        _run(raw.send("oc_v415t", "工具有了"))
+        ids_t = [e.get("element_id") for e in sent_cards[-1]["body"]["elements"]]
+        assert "panel" in ids_t, \
+            f"纯工具回合走静态 send 也必须保留执行面板（否则工具名/耗时/状态色全丢）：{ids_t}"
+        assert "df -h" in json.dumps(sent_cards[-1], ensure_ascii=False), \
+            "面板里必须真的带那行工具（只断言「有面板」会放过空壳）"
 
         # ⚠️ **混合档**（终审 C 的绿变异 G1）：`panel=false` + `footer=true`（页脚是默认开的）
         # 必须只剩正文 + 页脚 —— 把「页脚开关」写成 `and requested_panel` 时，六门禁全绿、

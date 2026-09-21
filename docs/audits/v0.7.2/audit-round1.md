@@ -174,3 +174,60 @@ C2 另有两条「判定力是假的」观察，如实记下：
    ⇒ 判据要在**所有分支**上验证，不能只测最常走的那条。
 3. **「指纹锚点取错位置」**（H1）：跳过判据依赖的锚点定位若只按首行匹配，就会在**另一个同形代码块**上算指纹 ⇒ 跳过永远成立。
    ⇒ 凡「用位置算指纹」的地方，必须用**完整原文**定位，并在跳过前复核锚点唯一。
+
+---
+
+## 八、收口复核第二轮：新增绿变异 CAND-B2 + 一条「无界等待」盲点 + 全量账本刷新（2026-09-21 深夜）
+
+### 8.1 CAND-B2（真绿变异，已收口；账本 475 条）
+
+终审 C 的收口复核员在 `90f6bb1` 快照上直接构造出：`core/adapter.py::_panel_has_data` 的判据
+`tools or rounds or reasoning` 改成 `rounds or reasoning`（**丢掉 `tools`**）⇒ 六门禁全绿，
+而**纯工具、无推理正文**的回合走静态 `send()`/`edit_message()` 会把执行面板**整块吞掉**
+（工具名/状态/耗时，连面板这个状态色唯一载体一起消失）—— 这正是 V4.15「空面板冗余」的
+**镜像错误方向**：用户看不到过程。
+
+收口：
+
+* `test_v4_15_static_and_fit_lanes_never_reopen_disabled_panel_or_footer` 增加「纯工具」块：
+  先直接断言 `_panel_has_data(chat) is True`（秒级定位），再走真实 `send()` 断言卡里
+  `panel` 在、且 `df -h` **真的在卡里**（防止「有面板但是空壳」的断言）。
+  两层都实测过判别力（去掉直接判据后，出卡断言仍然红：`['answer','footer']`）。
+* 变异清单新增 `CAND-B2`（目标门禁 `test_units`）⇒ 清单 **475 条**；`--preflight` = 487/487。
+* 判据侧说明：「丢掉 `reasoning`」是**等价变异**（`record_reasoning()` 立刻产生推理轮 ⇒
+  `reasoning` 非空必伴随 `rounds` 非空），已登记在 `CONTROLS`；`test_v4_15` 里那条
+  「只有推理」的断言是**语义固化**，不是判别力来源（注释已改写，免得后人误判）。
+
+### 8.2 变异清单里的一条盲点：测试的**无界等待**会把断言红伪装成 💥
+
+`V1-2`（短路 `panel partial` 分支）的定向用例 0.4s 断言红，但**整支** `test_units` 挂 >60s
+⇒ 45s 门禁超时 ⇒ `mutate_check` 记 💥「只有崩溃」⇒ 一条**有判别力的变异**被记成「没有证据」
+（历史账本里它靠一条手工 `--only` 的 `note` 续命）。
+
+根因不在被测代码，而在用例：`test_v4_1_inflight_frame_write_is_not_raced_by_heartbeat`
+里的 `await started.wait()` 是**无界**的 —— 帧路径既然不再写 panel，`started` 就永远不 set。
+
+收口：新增 `_await_event(event, timeout, what)`（`asyncio.wait_for` + 超时转
+`AssertionError`），两处无界等待（上述用例 + `test_v4_1_heartbeat_inflight_blocks_frame_and_keeps_seq_unique`）
+改用它。修后：V1-2 整支 **4.7s** 判红并计入账本（`red-assert`）。
+
+### 8.3 全量账本刷新（475/475，`full_audit_at=7e7a62d`）
+
+* 两个分片在冻结树 `7e7a62d` 上**直跑**（不用增量）：`fullA1.log` 179🔴、`fullA2.log` 175🔴。
+* 23:09 出现一次**瞬时环境故障**（约两分钟内所有门禁运行秒失败 ⇒ 被记 💥；同一批快照现在
+  重跑正常 ⇒ 环境工件，不是代码问题）：分片 1 进程被误杀于 179/237，分片 2 尾部 62 条记 💥
+  （其中含 12 条对照「假红」）。
+* 缺口用 `--delta` 补跑：把 120 条缺口从**种子账本**里删掉（`gap_seed.py`），
+  再 `--shard 1/2`、`2/2` 各跑 60 条 ⇒ `gapA1.log` 60🔴、`gapA2.log` 59🔴 + 12 条对照全绿。
+* 定向复跑：`V1-2`（`v12b.log`，有界等待修复后 1🔴）、`CAND-B2`（`candb2b.log` 1🔴）。
+* 合并按**当日证据**（`merge_ledger3.py`，判据写死在脚本里）：日志里
+  `🔴 断言失败 <name>` 的并集必须覆盖全部 475 条、对照 ≥6 条全绿且 0 条假红、
+  `fp`/`helper_fp` 逐字一致、`gate_fp` 与 `_delta_split` 同口径（**子集**即可：新增用例只
+  增强判别力）⇒ 才盖 `full_audit_at`。
+  合并后：`--ledger-status` = **475/475 可跳过（真跑过 475 + 继承 0）；待跑 0 条**；
+  `--delta --list` = 待跑 0 / 跳过 475。
+* 证据与工具归档：`~/.larkdeck-scratch/v0.7.2-full-20260921/`（六个日志 + `gap_seed.py` +
+  `launch_gap.py` + `merge_ledger3.py`）。
+* 遗留（登记 v0.7.3）：`--shard` 模式下 `_full` 恒为 False（「本分片条数 == 全量条数」必然不成立）
+  ⇒ 分片跑不会自己盖 `full_audit_at`，本轮靠合并脚本补；**分片账本合并脚本值得固化进 `tools/`**，
+  并在工具里补一条「当日证据覆盖」自检。

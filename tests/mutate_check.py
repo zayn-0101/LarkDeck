@@ -2638,6 +2638,10 @@ MUTATIONS = [
      '        if engine == "structured" and not (state and state.get("engine_stamp") == "degraded"):',
      '        if engine == "structured" and not (state and state.get("engine_stamp") == "degraded" and not finalize):  # V0-7b',
      'test_units'),
+    ('CAND-B2-`_panel_has_data` 丢掉 tools（纯工具回合成静态卡时整块吞掉执行面板）', 'core/adapter.py',
+     '    return bool(snap.get("tools") or snap.get("rounds") or snap.get("reasoning"))',
+     '    return bool(snap.get("rounds") or snap.get("reasoning"))',
+     'test_units'),
 
 ]
 
