@@ -293,6 +293,12 @@ MUTATIONS = [
      '                structured_card=structured_card):',
      '                structured_card=None):  # control',
      ""),
+    ("V4-31-结构化标题退回硬编码中文（英文客户端看中文）", "core/adapter.py",
+     '            title = _i18n.i18n_text(\n'
+     '                "panel.summary_both_one" if total_tools == 1 else "panel.summary_both",',
+     '            title = _i18n.t(  # V4-31 mutated（退回单语字符串）\n'
+     '                "panel.summary_both_one" if total_tools == 1 else "panel.summary_both",',
+     "test_units"),
     ("V4-30-structured 判据无视字节墙（超限也说能画）", "core/adapter.py",
      '            return _cards.card_bytes(structured_card) <= _cards.FEISHU_CARD_BYTE_LIMIT',
      '            return True  # V4-30 mutated',

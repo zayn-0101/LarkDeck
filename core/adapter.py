@@ -3624,15 +3624,30 @@ class LarkDeckMixin:
         # 而 `max_panel_steps` 的 plugin.yaml 默认是 30，直接照抄会撞墙 ⇒ 这里取小。
         max_steps = max(1, min(_cfg_int("max_panel_steps", 20), 20))
         if total_tools > max_steps:
-            collapsed_hint = f"…更早的 {total_tools - max_steps} 步已折叠"
+            collapsed_hint = _i18n.t("panel.trimmed", n=total_tools - max_steps)
             tools = tools[-max_steps:]
         max_rounds = 20
         if total_rounds > max_rounds:
-            extra = f"…更早的 {total_rounds - max_rounds} 轮已折叠"
+            extra = _i18n.t("panel.rounds_trimmed", n=total_rounds - max_rounds)
             collapsed_hint = f"{collapsed_hint} {extra}".strip()
             rounds = rounds[-max_rounds:]
+        elapsed_s = total_ms / 1000.0
+        title: Any
+        if total_tools and (total_rounds or snap.get("reasoning")):
+            title = _i18n.i18n_text(
+                "panel.summary_both_one" if total_tools == 1 else "panel.summary_both",
+                elapsed=_cards.format_elapsed(elapsed_s), n=total_tools)
+        elif total_tools:
+            title = _i18n.i18n_text(
+                "panel.sec_tools_one" if total_tools == 1 else "panel.sec_tools", n=total_tools)
+        elif total_rounds or snap.get("reasoning"):
+            title = (_i18n.i18n_text("panel.sec_thinking",
+                                     elapsed=_cards.format_elapsed(elapsed_s))
+                     if elapsed_s > 0 else _i18n.i18n_text("panel.sec_thinking_plain"))
+        else:
+            title = _i18n.i18n_text("panel.title")     # 无过程数据：不再显示假摘要
         panel = _cardview.PanelView(
-            title=f"💭 思考 {total_ms / 1000:.1f}s · 🛠️ 工具执行 · {total_tools} 步",
+            title=title,
             expanded=bool(_cfg("panel_expanded")),   # V4.5：与 legacy 同一条配置
             tools=tools,
             reasoning_rounds=rounds if _ld_show_reasoning() else [],
@@ -3649,9 +3664,10 @@ class LarkDeckMixin:
             footer_enabled=bool(_cfg("footer")), panel=panel,
             header_enabled=_ld_card_status_header_enabled(),
             header_status=status,
-            header_title={"processing": "🫧 处理中…", "completed": "✅ 已完成",
-                          "stopped": "⛔ 已停止", "error": "❌ 执行出错"}.get(
-                              status, "🫧 处理中…"))
+            header_title=_i18n.i18n_text(
+                {"processing": "card.status_processing", "completed": "panel.status_ok",
+                 "stopped": "panel.status_stopped", "error": "panel.status_error"}.get(
+                     status, "card.status_processing")))
 
     async def _ld_ck_partial(self, card_id: str, element_id: str,
                              partial: Dict[str, Any], seq: int) -> "_CkResult":

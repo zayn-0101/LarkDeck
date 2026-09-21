@@ -11524,7 +11524,7 @@ def test_v4_structured_panel_budget_trims_old_steps():
         view = _make()._ld_cardview("oc_v4", "answer")
         assert len(view.panel.tools) == 20, len(view.panel.tools)
         assert "5 步已折叠" in view.panel.collapsed_hint, view.panel.collapsed_hint
-        assert "25 步" in view.panel.title, view.panel.title
+        assert "25 步" in str(view.panel.title.get("content")), view.panel.title
         card = adapter._cardview.entity_skeleton(view)
         assert adapter._cards.count_elements(card) <= 180, adapter._cards.count_elements(card)
     finally:
@@ -11586,6 +11586,9 @@ def test_v4_1_inflight_frame_write_is_not_raced_by_heartbeat():
     release = asyncio.Event()
     try:
         assert _run(raw.send_stream_frame("hello", chat_id=chat, turn_id=turn))
+        # 标题要有「可变来源」：V4.13 起无过程数据时标题是固定文案（t0 变化不改签名）
+        panel.bind_chat_session(chat, "s_hb")
+        panel.record_reasoning("s_hb", turn, "先看一眼。")
         panel.bind_chat_session(chat, "sess_race")
         panel.record_tool_started("sess_race", "turn_race", "terminal",
                                   {"command": "df -h"}, tool_call_id="tc-race")
@@ -11671,6 +11674,7 @@ def test_v4_1_heartbeat_tick_skips_while_frame_write_in_flight():
             # 走「签名没变 ⇒ 不写」那一档，测不到账本推进）
             state = raw._ld_stream_get(key)
             state["t0"] = time.monotonic() - 5.0
+            state["ck_panel_sig"] = ""      # 本用例考的是**序号账本**；签名失效即可触发写
             raw._ld_stream_put(key, state)
             second = await raw._ld_heartbeat_tick(chat, key)
             return skipped, wrote, second
@@ -12000,7 +12004,7 @@ def test_v4_5_tool_status_table_is_shared_and_configs_are_honoured():
         view = _make()._ld_cardview("oc_v45cfg", "答案")
         assert len(view.panel.tools) == 3, len(view.panel.tools)
         assert "4 步已折叠" in view.panel.collapsed_hint, view.panel.collapsed_hint
-        assert "7 步" in view.panel.title, view.panel.title
+        assert "7 步" in str(view.panel.title.get("content")), view.panel.title
     finally:
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)
@@ -12327,6 +12331,43 @@ def test_v4_11_structured_card_degrades_instead_of_exceeding_the_byte_wall():
                                        "content": "汉" * 43000}]}
         _over["header"] = card3.get("header")
         assert adapter._stop_redraw_would_paint("x", structured_card=_over) is False
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        panel.reset()
+
+
+def test_v4_13_structured_titles_are_bilingual():
+    """V4.13：结构化标题必须是**双语节点**（`content` + `i18n_content`）—— 英文客户端不许看中文。
+
+    审计 B 的「中英文一致性」缺口：卡级状态头 / 面板摘要 / 推理轮标题过去都是硬编码中文。
+    """
+    raw = _make()
+    defaults = dict(adapter._CONFIG)
+    panel.reset()
+    try:
+        adapter.configure(visual_engine="structured", show_reasoning=True)
+        panel.bind_chat_session("oc_v413", "s_v413")
+        panel.record_reasoning("s_v413", "s_v413", "想一下。")
+        panel.record_tool_started("s_v413", "s_v413", "terminal", {"command": "df -h"},
+                                  tool_call_id="tc413")
+        view = raw._ld_cardview("oc_v413", "答案", status="completed",
+                                started=None, message_id="om_v413")
+        title = view.panel.title
+        assert isinstance(title, dict), title
+        assert title.get("content") and title.get("i18n_content"), title
+        assert "en_us" in title["i18n_content"], title
+        assert any("思考" in str(v) or "Thought" in str(v)
+                   for v in title["i18n_content"].values()), title
+
+        card = adapter._cardview.entity_skeleton(view)
+        head = card["header"]["title"]
+        assert isinstance(head, dict) and head.get("i18n_content"), head
+        assert "en_us" in head["i18n_content"], head
+        # 推理轮标题也要双语
+        reason = card["body"]["elements"][1]["elements"][0]
+        rtitle = reason["header"]["title"]
+        assert isinstance(rtitle, dict) and rtitle.get("i18n_content"), rtitle
     finally:
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)

@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from . import i18n as _i18n
+
 PANEL_RADIUS = "5px"
 PANEL_PADDING = "8px 8px 8px 8px"
 PANEL_SPACING = "4px"
@@ -122,6 +124,15 @@ class CardView:
     engine_stamp: str = "structured"
 
 
+def _title_node(title: Any, **extra: Any) -> Dict[str, Any]:
+    """标题 → `plain_text` 节点。`title` 可以是裸字符串，也可以是 i18n 节点（自带
+    `content` + `i18n_content`，中英文客户端各显示各的）。V4.13：结构化标题过去是硬编码中文。"""
+    node = ({"tag": "plain_text", **title} if isinstance(title, dict)
+            else {"tag": "plain_text", "content": str(title)})
+    node.update(extra)
+    return node
+
+
 def _tool_title_div(step: ToolStepView) -> Dict[str, Any]:
     status_text, color = step.status_style
     duration = f" ({step.duration_ms} ms)" if step.duration_ms else ""
@@ -166,15 +177,18 @@ def tool_step_elements(step: ToolStepView) -> List[Dict[str, Any]]:
 
 def reasoning_panel(round_view: ReasoningRoundView) -> Dict[str, Any]:
     """推理轮：嵌套 collapsible_panel（FC/CLS 终态形态）。"""
-    title = f"💭 思考 · {round_view.index + 1}"
+    title: Any = _i18n.i18n_text("panel.reasoning_round", n=round_view.index + 1)
     if round_view.elapsed_ms:
-        title += f" · {round_view.elapsed_ms / 1000:.1f}s"
+        suffix = f" · {round_view.elapsed_ms / 1000:.1f}s"
+        title = {**title,
+                 "content": str(title.get("content", "")) + suffix,
+                 "i18n_content": {lang: str(val) + suffix
+                                  for lang, val in (title.get("i18n_content") or {}).items()}}
     return {
         "tag": "collapsible_panel",
         "element_id": f"reasoning_{round_view.index}_panel",
         "header": {
-            "title": {"tag": "plain_text", "content": title,
-                      "text_size": PANEL_TEXT_SIZE, "text_color": "grey"},
+            "title": _title_node(title, text_size=PANEL_TEXT_SIZE, text_color="grey"),
             "vertical_align": "center",
             "icon": {"tag": "standard_icon", "token": DOWN_ICON,
                      "size": ICON_SIZE, "color": ICON_COLOR},
@@ -212,8 +226,8 @@ def panel_shell(view: PanelView, *, expanded: bool = False) -> Dict[str, Any]:
         "tag": "collapsible_panel",
         "element_id": "panel",
         "header": {
-            "title": {"tag": "plain_text", "content": view.title,
-                      "text_size": PANEL_TEXT_SIZE, "text_color": "grey"},
+            "title": _title_node(view.title, text_size=PANEL_TEXT_SIZE,
+                                 text_color="grey"),
             "vertical_align": "center",
             "icon": {"tag": "standard_icon", "token": DOWN_ICON,
                      "size": ICON_SIZE, "color": ICON_COLOR},
@@ -256,7 +270,7 @@ def entity_skeleton(view: CardView) -> Dict[str, Any]:
         card["header"] = {
             "template": {"processing": "blue", "completed": "green",
                          "stopped": "yellow", "error": "red"}.get(view.header_status, "blue"),
-            "title": {"tag": "plain_text", "content": view.header_title},
+            "title": _title_node(view.header_title),
         }
     return card
 
