@@ -3393,12 +3393,19 @@ class LarkDeckMixin:
                 icon_token=self._ld_icon_token(name)))
         total_ms = sum(int(r.elapsed_ms or 0) for r in rounds)
         collapsed_hint = ""
+        total_tools = len(tools)
+        total_rounds = len(rounds)
         max_steps = 20
-        if len(tools) > max_steps:
-            collapsed_hint = f"…更早的 {len(tools) - max_steps} 步已折叠"
+        if total_tools > max_steps:
+            collapsed_hint = f"…更早的 {total_tools - max_steps} 步已折叠"
             tools = tools[-max_steps:]
+        max_rounds = 20
+        if total_rounds > max_rounds:
+            extra = f"…更早的 {total_rounds - max_rounds} 轮已折叠"
+            collapsed_hint = f"{collapsed_hint} {extra}".strip()
+            rounds = rounds[-max_rounds:]
         panel = _cardview.PanelView(
-            title=f"💭 思考 {total_ms / 1000:.1f}s · 🛠️ 工具执行 · {len(tools)} 步",
+            title=f"💭 思考 {total_ms / 1000:.1f}s · 🛠️ 工具执行 · {total_tools} 步",
             tools=tools,
             reasoning_rounds=rounds if _ld_show_reasoning() else [],
             collapsed_hint=collapsed_hint,

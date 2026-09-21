@@ -11470,6 +11470,27 @@ def test_v3_result_error_collected_truncated_and_redacted():
         panel.reset()
 
 
+def test_v4_structured_panel_budget_trims_old_steps():
+    """V4 near-limit：长工具回合必须 trim 最早步骤并保留折叠提示，不撞元素墙。"""
+    panel.reset()
+    try:
+        panel.bind_chat_session("oc_v4", "sess_v4")
+        for index in range(25):
+            tcid = f"tc{index}"
+            panel.record_tool_started("sess_v4", "turn_v4", "read_file",
+                                      {"path": f"/tmp/{index}.txt"}, tool_call_id=tcid)
+            panel.record_tool_finished("sess_v4", "turn_v4", "read_file",
+                                       status="ok", duration_ms=10, tool_call_id=tcid)
+        view = _make()._ld_cardview("oc_v4", "answer")
+        assert len(view.panel.tools) == 20, len(view.panel.tools)
+        assert "5 步已折叠" in view.panel.collapsed_hint, view.panel.collapsed_hint
+        assert "25 步" in view.panel.title, view.panel.title
+        card = adapter._cardview.entity_skeleton(view)
+        assert adapter._cards.count_elements(card) <= 180, adapter._cards.count_elements(card)
+    finally:
+        panel.reset()
+
+
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

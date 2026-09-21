@@ -2358,6 +2358,11 @@ MUTATIONS = [
      '                result_block=str(item.get("result_block") or ""),',
      '                result_block="",  # V3-3 mutated',
      "test_units"),
+    ("V4-1-结构化面板不做步数 trim（长回合撞元素墙）", "core/adapter.py",
+     '        max_steps = 20',
+     '        max_steps = 10 ** 9  # V4-1 mutated',
+     "test_units"),
+
 
 
 
