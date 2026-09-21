@@ -12242,8 +12242,10 @@ def test_v4_1_heartbeat_inflight_blocks_frame_and_keeps_seq_unique():
 def test_v4_11_structured_card_degrades_instead_of_exceeding_the_byte_wall():
     """V4.11：结构化卡超字节墙时必须**分级丢装饰**（面板→页脚→裸卡），正文永不截断。
 
-    legacy 车道有 `fit_reply_card` 的三级阶梯，而结构化卡过去一次成型 —— 长正文那一侧
-    没有任何退路（真机会整卡被拒 / 白丢正文）。
+    legacy 车道有 `fit_reply_card` 的三级阶梯，结构化卡过去一次成型 ⇒ 长正文那一侧
+    没有任何退路（真机整卡被拒 / 白丢正文）。本用例**不依赖时钟**：先二分求出三档装饰
+    各自装得下的最大正文，再逐档断言 `_ld_fit_structured_card` 的行为 —— 撤掉任意一级
+    （变异 V4-28）都会在这里变红。
     """
     raw = _make()
     defaults = dict(adapter._CONFIG)
@@ -12253,17 +12255,66 @@ def test_v4_11_structured_card_degrades_instead_of_exceeding_the_byte_wall():
         panel.bind_chat_session("oc_v411", "s_v411")
         panel.record_tool_started("s_v411", "s_v411", "terminal", {"command": "df -h"},
                                   tool_call_id="tc411")
-        body = "汉" * 42000
-        view = raw._ld_cardview("oc_v411", body, status="stopped",
-                                started=time.monotonic() - 3.0, message_id="om_v411")
-        card = raw._ld_fit_structured_card(view)
-        assert adapter._cards.card_bytes(card) <= adapter._cards.FEISHU_CARD_BYTE_LIMIT, \
-            adapter._cards.card_bytes(card)
-        answers = [e for e in card["body"]["elements"] if e.get("element_id") == "answer"]
-        assert answers and len(str(answers[0].get("content") or "")) == len(body), \
-            "正文一个字都不许截断"
-        # 装饰可以被丢掉，但**停止色必须还在**（结构化卡的色落在卡级 header）
-        assert card.get("header", {}).get("template") == "yellow", card.get("header")
+        limit = adapter._cards.FEISHU_CARD_BYTE_LIMIT
+
+        def _bytes_for(n: int, panel_on: bool, footer_on: bool) -> int:
+            view = raw._ld_cardview("oc_v411", "汉" * n, status="stopped",
+                                    started=None, message_id="om_v411")
+            view.panel_enabled, view.footer_enabled = panel_on, footer_on
+            # 必须与 `_ld_fit_structured_card` **逐字节同源**（它还会 apply_text_profile），
+            # 否则算出来的边界偏乐观、档①会误判成「必须丢面板」
+            card = adapter._cards.apply_text_profile(
+                adapter._cardview.entity_skeleton(view), adapter._cfg_raw("text_profile"))
+            return adapter._cards.card_bytes(card)
+
+        def _max_n(panel_on: bool, footer_on: bool) -> int:
+            lo, hi = 1, 60000
+            assert _bytes_for(lo, panel_on, footer_on) <= limit, "最小正文都超限？"
+            while lo + 1 < hi:
+                mid = (lo + hi) // 2
+                if _bytes_for(mid, panel_on, footer_on) <= limit:
+                    lo = mid
+                else:
+                    hi = mid
+            return lo
+
+        n_full = _max_n(True, True)          # 三档装饰都在
+        n_nopanel = _max_n(False, True)      # 只丢面板
+        n_bare = _max_n(False, False)        # 面板+页脚都丢
+        assert n_full < n_nopanel < n_bare, (n_full, n_nopanel, n_bare)
+
+        def _fitted(n: int):
+            view = raw._ld_cardview("oc_v411", "汉" * n, status="stopped",
+                                    started=None, message_id="om_v411")
+            return raw._ld_fit_structured_card(view)
+
+        def _answer_text(card) -> str:
+            for element in card["body"]["elements"]:
+                if element.get("element_id") == "answer":
+                    return str(element.get("content") or "")
+            return ""
+
+        # 档①：装饰全在（正文到 n_full 都装得下）⇒ 面板与页脚都不许丢
+        card1 = _fitted(n_full)
+        assert adapter._cards.card_bytes(card1) <= limit
+        assert len(_answer_text(card1)) == n_full, "正文一字不截"
+        assert any(e.get("element_id") == "panel" for e in card1["body"]["elements"]), card1
+        assert any(e.get("element_id") == "footer" for e in card1["body"]["elements"]), card1
+
+        # 档②：只有丢面板才装得下 ⇒ 面板必须被丢、正文完整、颜色仍在（卡级 header）
+        card2 = _fitted(n_nopanel)
+        assert adapter._cards.card_bytes(card2) <= limit
+        assert len(_answer_text(card2)) == n_nopanel, "正文一字不截"
+        assert not any(e.get("element_id") == "panel" for e in card2["body"]["elements"]), \
+            "这一档必须把面板丢掉（V4-28 撤掉阶梯时这里会红）"
+        assert card2.get("header", {}).get("template") == "yellow", card2.get("header")
+
+        # 档③：连页脚都要丢 ⇒ 裸卡 + 卡级 header，正文仍完整
+        card3 = _fitted(n_bare)
+        assert adapter._cards.card_bytes(card3) <= limit
+        assert len(_answer_text(card3)) == n_bare, "正文一字不截"
+        assert not any(e.get("element_id") in ("panel", "footer")
+                       for e in card3["body"]["elements"]), card3["body"]["elements"]
     finally:
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)
