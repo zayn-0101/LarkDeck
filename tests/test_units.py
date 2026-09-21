@@ -6762,6 +6762,12 @@ def test_stop_redraw_and_edit_message_keep_the_trace_id():
         "没有活跃流时 finalize 帧按契约返回 False（交还核心）"
     assert context.status_snapshot()["fallback_count"] == 0, \
         "⚠️ 那条**正常路径**不许进「掉回纯文本」账本（口径见 note_plaintext_fallback）"
+    # ⚠️ 全量增量跑实测（变异 `R9-15` 五门禁全绿）：同一格还要钉**写卡失败**账本 ——
+    # `note_frame_fail` 与 `note_plaintext_fallback` 是**两本账**，只钉一本会漏掉另一本
+    # （用户会看到 `/larkdeck status` 的「写卡失败」虚高，而正常路径被染成故障）。
+    assert context.status_snapshot()["frame_fail_count"] == 0, \
+        f"「没有活跃流可收尾」是**正常路径**，不许记进写卡失败账本：" \
+        f"{context.status_snapshot()['frame_fail_reason']!r}"
 
 
 def test_help_text_record_count_matches_the_status_card():
@@ -13046,6 +13052,62 @@ def test_v4_48b_real_hermes_tool_names_never_fall_back_to_the_generic_icon():
                         ("memory", "📁"), ("web_extract", "🌐"),
                         ("skills_list", "🧩"), ("todo_list", "✅")):
         assert adapter._cardview.icon_emoji(pick(name)) == emoji, (name, pick(name))
+
+
+def test_v0_7_degraded_turn_never_reenters_the_structured_frame_path():
+    """`engine_stamp=degraded` 是**安全网**：降级之后这一回合不许再走结构化元素通道。
+
+    全量增量跑实测：变异 `V0-7`（去掉 `and not degraded` ⇒ degraded 回合也走结构化帧）
+    **五门禁全绿** —— 这条安全网当时**没有任何断言**。后果：卡片已经被判死/降级之后，
+    每一帧还去写 CardKit 元素（真机上就是每帧一次失败 + 反复重试，用户看到卡冻住）。
+    """
+    chat, turn = "oc_v07", "t1"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        key = f"{chat}:{turn}"
+        state = dict(raw._ld_stream_get(key) or {})
+        state["engine_stamp"] = "degraded"
+        raw._ld_stream_put(key, state)
+        called = []
+        orig = type(raw)._ld_stream_frame_structured
+
+        async def _boom(*a, **kw):
+            called.append(1)
+            raise AssertionError("degraded 回合不许再走结构化帧路径")
+
+        type(raw)._ld_stream_frame_structured = _boom
+        try:
+            _run(raw.send_stream_frame("降级后的帧", chat_id=chat, turn_id=turn))
+        finally:
+            type(raw)._ld_stream_frame_structured = orig
+        assert not called, "degraded 回合又进了结构化元素通道（降级安全网失效）"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v4_25_structured_answer_never_renders_the_pending_placeholder():
+    """结构化**正文元素**永不渲染 `⏳ 正在生成…`（V4.8 用户口径：占位符丑、对标插件不做）。
+
+    增量跑实测：变异 `V4-25`（结构化帧退回 `answer_or_pending(...)`）**五门禁全绿** ——
+    占位符只在 **legacy** 渲染器 `cards.reply_card` 上有断言，结构化帧路径没人看。
+    后果：fail-open / 漂移帧会把「正在生成…」写进正文元素，而且它**不会自己消失**。
+    """
+    chat, turn = "oc_v425", "t1"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        pending = adapter._cards._i18n.t(adapter._cards._PENDING_TEXT_KEY)
+        writes = [c[1] for c in calls["content"] if c[0] == adapter._cards.CARDKIT_ANSWER_ID]
+        assert writes, "前提：正文元素必须写过（否则这一格什么都没验）"
+        assert all(pending not in str(w) for w in writes), \
+            f"结构化正文元素不许出现占位文案 {pending!r}：{writes}"
+        blobs = [json.dumps(calls["entity"][0], ensure_ascii=False)]
+        blobs += [json.dumps(item[0], ensure_ascii=False) for item in calls["batch"]]
+        assert all(pending not in b for b in blobs), "出站载荷里出现了占位文案"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
 
 def main() -> int:

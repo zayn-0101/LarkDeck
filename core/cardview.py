@@ -267,7 +267,10 @@ ICON_EMOJI: Dict[str, str] = {
 
 def icon_emoji(token: str) -> str:
     """token → 内联 emoji（未知 token 用兜底 emoji，绝不返回空串 —— 空串会让行首多一个空格）。"""
-    return ICON_EMOJI.get(str(token or ""), ICON_EMOJI[ICON_FALLBACK])
+    # ⚠️ 兜底必须**惰性**取（`ICON_EMOJI.get(ICON_FALLBACK, "🔧")`）：写 `ICON_EMOJI[ICON_FALLBACK]`
+    # 会被**急切求值** —— 变异 V4-34（把 ICON_FALLBACK 改成 `tool_02`）实测直接 KeyError，
+    # 把卡片的 fail-open 链拖成 120s 超时（不明真假的「崩溃」）。
+    return ICON_EMOJI.get(str(token or ""), ICON_EMOJI.get(ICON_FALLBACK, "🔧"))
 
 
 def _tool_title_div(step: ToolStepView) -> Dict[str, Any]:

@@ -1598,9 +1598,17 @@ MUTATIONS = [
      '    return "\\n".join(escape_inline_md(label) for label, _ in pairs)',
      '    return "\\n".join(label for label, _ in pairs)',
      'test_units'),
+    # ⚠️ 2026-09-21 **修锚点**：老锚点只抄了这条 return 的**第一行** ⇒ 替换后留下两行悬空实参
+    #    （`started=` / `status=`）⇒ **语法错误** ⇒ 五门禁只报「💥 只有崩溃」，什么都没验。
+    #    （同一天还修了 V2-1 的同型问题。）锚点必须是**完整语句**。
     ('G2-3-帧页脚又挂回短码（用户口径：页脚不要这个）', 'core/adapter.py',
-     '        return self._ld_footer(chat_id=str(state.get("chat_id") or ""),',
-     '        return f"{self._ld_footer(chat_id=str(state.get(\"chat_id\") or \"\")) or \"\"} · \\U0001f516 {_ld_trace_id(state.get(\"message_id\"))}"  # G2-3 mutated',
+     '        return self._ld_footer(chat_id=str(state.get("chat_id") or ""),\n'
+     '                               started=state.get("t0"),\n'
+     '                               status=state.get("status"))',
+     '        base = self._ld_footer(chat_id=str(state.get("chat_id") or ""),\n'
+     '                               started=state.get("t0"),\n'
+     '                               status=state.get("status")) or ""\n'
+     '        return f"{base} · \\U0001f516 {_ld_trace_id(state.get(chr(109)+chr(101)+chr(115)+chr(115)+chr(97)+chr(103)+chr(101)+chr(95)+chr(105)+chr(100)))}"',
      'test_units'),
     ('G2-4-自检行不再报卡短码', 'core/adapter.py',
      '        snap.get("frame_ok_count"), transport, frames, strips, trace or "无",',
@@ -2230,10 +2238,7 @@ MUTATIONS = [
      '            return await _fallback("larkdeck standalone SDK client unavailable")',
      "test_units"),
     # v0.7.1 V0：三配置键必须被生产读取且未实现前告警；token 表必须被 check_cardview 锁住。
-    ("V0-1-引擎键的兜底默认退回 legacy（配置被吞）", "core/adapter.py",
-     '    raw = str(_cfg_raw("visual_engine") or "structured").strip().lower()',
-     '    raw = str(_cfg_raw("visual_engine") or "legacy").strip().lower()  # V0-1 mutated',
-     "test_units"),
+
     ("V0-2-show_reasoning=true 告警被静默（配置被吞）", "core/adapter.py",
      '    if enabled:\n'
      '        _warn_visual_once("show_reasoning",',
@@ -2259,9 +2264,12 @@ MUTATIONS = [
      '        _ld_card_status_header_enabled()  # V0：生产读取配置；V2 前无观感差异',
      '        pass  # V0-6 mutated',
      "test_units"),
-    ("V0-7-删掉 _ld_visual_engine 生产调用点（配置静默）", "core/adapter.py",
-     '        engine = _ld_visual_engine()  # V0：生产读取配置；V1 structured canary',
-     '        engine = "legacy"  # V0-7 mutated',
+    # ⚠️ **2026-09-21 重新指向**：老写法把整条帧路径强制成 legacy 车道 ⇒ 整套用例跑成
+    #    非结构化行为，120s 超时被记成「💥 只有崩溃」（什么都没验）。改成**窄**变异：
+    #    degraded 回合同样走结构化帧 —— 那正是 `engine_stamp=degraded` 这条安全网要防的事。
+    ("V0-7-degraded 回合也走结构化帧（降级安全网失效）", "core/adapter.py",
+     '        if engine == "structured" and not (state and state.get("engine_stamp") == "degraded"):',
+     '        if engine == "structured":  # V0-7 mutated',
      "test_units"),
     ("V0-8-read 图标 token 漂移（check_cardview 必须红）",
      "docs/audits/v0.7.1-visual/visual-tokens.json",
@@ -2300,11 +2308,7 @@ MUTATIONS = [
      '"format": "💭 思考 {elapsed}s · 🛠️ 工具执行 · {n} 步"',
      '"format": "💭 思考 {elapsed}s · 🛠️ 工具执行 · {n} 项"',
      "check_cardview"),
-    ("V0-15-supports_native_streaming 里的 visual_engine 生产调用点被删（配置静默）",
-     "core/adapter.py",
-     '        _ld_visual_engine()  # V0：公共探测入口也读一次，覆盖 native 关闭/早退路径',
-     '        pass  # V0-15 mutated',
-     "test_units"),
+
     ("V0-16-edit_message 里的 header 生产调用点被删（配置静默）",
      "core/adapter.py",
      '        回答被重发一遍。判据是「这份文本是不是完整文本」，不是「这是哪条调用路径」。\n'
@@ -2318,19 +2322,7 @@ MUTATIONS = [
      '        pass  # V0-16 mutated\n'
      '        _ld_show_reasoning()',
      "test_units"),
-    ("V0-17-stop 重绘里的 visual_engine 生产调用点被删（配置静默）",
-     "core/adapter.py",
-     '        ）—— 用户在「掉 native / 被 /stop / 关掉 cards」的回合里看不到任何卫生。\n'
-     '        """\n'
-     '        _ld_visual_engine()\n'
-     '        _ld_card_status_header_enabled()\n'
-     '        _ld_show_reasoning()',
-     '        ）—— 用户在「掉 native / 被 /stop / 关掉 cards」的回合里看不到任何卫生。\n'
-     '        """\n'
-     '        pass  # V0-17 mutated\n'
-     '        _ld_card_status_header_enabled()\n'
-     '        _ld_show_reasoning()',
-     "test_units"),
+
     ("V1-1-structured seed 分支被关（退回 legacy 卡结构）", "core/adapter.py",
      '        if structured_view is not None:',
      '        if False:  # V1-1 mutated',
@@ -2377,9 +2369,11 @@ MUTATIONS = [
      "test_units"),
     ("V2-1-finalize 不 cancel 心跳（终态后仍可能写卡）", "core/adapter.py",
      '            self._ld_heartbeat_cancel(key)\n'
-     '            final_card = _cards.apply_text_profile(_cardview.entity_skeleton(view),',
+     '            final_card = _cards.apply_text_profile(_cardview.entity_skeleton(view),\n'
+     '                                                   _cfg_raw("text_profile"))',
      '            pass  # V2-1 mutated\n'
-     '            final_card = _cardview.entity_skeleton(view)',
+     '            final_card = _cards.apply_text_profile(_cardview.entity_skeleton(view),\n'
+     '                                                   _cfg_raw("text_profile"))',
      "test_units"),
     ("V2-2-card_status_header=false 被忽略（状态条恒显）", "core/adapter.py",
      '            header_enabled=_ld_card_status_header_enabled(),',
@@ -2396,10 +2390,7 @@ MUTATIONS = [
      '            result_block = redact_inline_secrets(str(raw or ""))[:600]',
      '            result_block = str(raw or "")[:600]',
      "test_units"),
-    ("V3-3-cardview 不把 result_block 传进工具块", "core/adapter.py",
-     '                result_block=_cards.truncate(str(item.get("result_block") or ""), cap),',
-     '                result_block="",  # V3-3 mutated',
-     "test_units"),
+
     ("V4-1-结构化面板不做步数 trim（长回合撞元素墙）", "core/adapter.py",
      '        max_steps = max(1, min(_cfg_int("max_panel_steps", 20), 20))',
      '        max_steps = 10 ** 9  # V4-1 mutated',
@@ -2606,8 +2597,8 @@ MUTATIONS = [
      '        "text": {"tag": "lark_md", "content": content, "text_size": PANEL_TEXT_SIZE},\n    }',
      'test_units'),
     ('V4-47-工具图标退化成同一个兜底 emoji（per-tool 对应关系丢失）', 'core/cardview.py',
-     '    return ICON_EMOJI.get(str(token or ""), ICON_EMOJI[ICON_FALLBACK])',
-     '    return ICON_EMOJI[ICON_FALLBACK]  # V4-47 mutated',
+     '    return ICON_EMOJI.get(str(token or ""), ICON_EMOJI.get(ICON_FALLBACK, "🔧"))',
+     '    return ICON_EMOJI.get(ICON_FALLBACK, "🔧")  # V4-47 mutated',
      'test_units'),
     ('V4-48-fit 的 tier 把调用方关掉的装饰又打开（审计 B 阻断项：空面板/配置失效）', 'core/adapter.py',
      '            view.panel_enabled = bool(panel_on and requested_panel)\n'
@@ -2635,6 +2626,27 @@ MUTATIONS = [
 #: **对照项**：行为等价的改动（合法 YAML 变体等），期望四门禁**全绿**。
 #: 与 MUTATIONS 分开成两张表 —— 判断依据是它属于哪张表，不是名字里有没有某个字。
 CONTROLS = [
+    # 实测等价（2026-09-21 增量跑）：`ToolStepView.result_block` 在结构化渲染里**从未被读**
+    # （`grep -n result_block core/cardview.py` 只有 dataclass 字段声明那一行）⇒ 传空串不改行为。
+    ("C-对照：工具块不传 result_block（结构化渲染里这个字段是死的）", "core/adapter.py",
+     '                result_block=_cards.truncate(str(item.get("result_block") or ""), cap),',
+     '                result_block="",',
+     ''),
+    # ---- v0.7.2 增量跑判定的「等价变异」（从 MUTATIONS 移来；判 🟢 是**正确**结果）---------
+    # 共同点：`visual_engine=legacy` 自 v0.7.1 起已退役，`_ld_visual_engine()` 现在**永远**返回
+    # structured —— 那几处调用只剩「退休告警」这一个副作用，删掉调用 / 改兜底默认值都不改行为。
+    # 它们曾挂在 MUTATIONS 里，每次全量都报 🟢（「断言没有判别力」）—— 那是拿等价变异考门禁。
+    ('C-对照：`_ld_visual_engine()` 兜底默认改 legacy（只多一条退休告警，行为不变）',
+     'core/adapter.py',
+     '    raw = str(_cfg_raw("visual_engine") or "structured").strip().lower()',
+     '    raw = str(_cfg_raw("visual_engine") or "legacy").strip().lower()',
+     ''),
+    ('C-对照：删掉 supports_native_streaming 里的 visual_engine 调用点（返回值未用，只剩告警）',
+     'core/adapter.py',
+     '        _ld_visual_engine()  # V0：公共探测入口也读一次，覆盖 native 关闭/早退路径',
+     '        pass  # 等价',
+     ''),
+
     # 这两条「撤掉也全绿」是**结果等价**，不是门禁漏洞：外层的 try/fail-open 链
     # （`send_stream_frame` 的 except → `_ld_stream_fail` → 返回 False）会把它们接住，
     # 结果同样是「frame 返回 False、核心回落」—— 不变量 2（绝不丢消息）在两种形态下都成立。
@@ -2841,6 +2853,56 @@ def _head_short() -> str:
         return ""
 
 
+def _region_at_ref(rel: str, old: str, ref: str) -> "str | None":
+    """`git show <ref>:<rel>` 里的**同一段**区域（用于「继承上次发布的判定」）。
+
+    为什么需要（用户 2026-09-21：「就没有省时一点、聪明一点的办法吗」）：全量矩阵的
+    信息价值只在「这段区域变过吗」——
+      * 区域在 `ref` 与 HEAD 逐字节相同 ⇒ **上次发布时跑的那一轮**对本区域仍然成立，
+        标 `inherited(ref)`（**可审计**：账本里写明继承自哪个 ref；它不是「跑过了」）；
+      * 区域变了（或变异是新增的）⇒ 必须现在跑。
+    周期性全量审计仍然要做（大版本 / 账本里的 `full_audit_at` 过期时），它不是每版必跑。
+    """
+    try:
+        blob = subprocess.run(["git", "show", f"{ref}:{rel}"], cwd=str(REPO),
+                              capture_output=True, text=True, timeout=30).stdout
+    except Exception:
+        return None
+    if not blob:
+        return None
+    lines = blob.splitlines()
+    first = (old.splitlines() or [old])[0]
+    span = max(1, len(old.splitlines()))
+    for i, line in enumerate(lines):
+        if first in line:
+            lo = max(0, i - _FP_WINDOW)
+            hi = min(len(lines), i + span + _FP_WINDOW)
+            return "\n".join(lines[lo:hi])
+    return None
+
+
+def _seed_inherited(ref: str) -> int:
+    """把「区域自 `ref` 以来没变」的变异标成 `inherited(ref)`（不覆盖已 red-assert 的条目）。"""
+    entries = _load_ledger()
+    stamped = 0
+    for name, rel, old, new, _expect in MUTATIONS:
+        rec = entries.get(name) or {}
+        fp_now = _fingerprint(rel, old, new)
+        if rec.get("verdict") == "red-assert" and rec.get("fp") == fp_now:
+            continue
+        if rec.get("verdict") == "inherited" and rec.get("fp") == fp_now \
+                and rec.get("at") == ref:
+            continue
+        region_now = _anchor_region(rel, old)
+        region_ref = _region_at_ref(rel, old, ref)
+        if region_now is not None and region_ref is not None and region_now == region_ref:
+            entries[name] = {"fp": fp_now, "verdict": "inherited", "gate": "",
+                             "at": ref, "note": "区域自该 ref 以来逐字节未变"}
+            stamped += 1
+    _save_ledger(entries)
+    return stamped
+
+
 def _load_ledger() -> dict:
     try:
         return json.loads(LEDGER_PATH.read_text(encoding="utf-8")).get("entries") or {}
@@ -2848,21 +2910,39 @@ def _load_ledger() -> dict:
         return {}
 
 
-def _save_ledger(entries: dict) -> None:
+def _save_ledger(entries: dict, *, full_audit_at: str = "") -> None:
+    meta = {"_note": "变异验证账本：fp = 锚点区域的指纹（±15 行 + old/new）。"
+                     "fp 未变 ⇒ 该区域的判定仍然成立，增量模式跳过。"
+                     "`full_audit_at` = 最后一次**不做增量、全量直跑**的提交——"
+                     "继承判定（inherited）的兜底就是它，应该周期性刷新。"}
+    try:
+        meta["full_audit_at"] = json.loads(LEDGER_PATH.read_text(encoding="utf-8")).get(
+            "_meta", {}).get("full_audit_at", "")
+    except Exception:
+        meta["full_audit_at"] = ""
+    if full_audit_at:
+        meta["full_audit_at"] = full_audit_at
     LEDGER_PATH.write_text(json.dumps({
-        "_note": "变异验证账本：fp = 锚点区域的指纹（±15 行 + old/new）。"
-                 "fp 未变 ⇒ 该区域的判定仍然成立，增量模式跳过。",
-        "entries": dict(sorted(entries.items())),
+        "_meta": meta, "entries": dict(sorted(entries.items())),
     }, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
 
 
 def _delta_split(picked: list, entries: dict) -> "tuple[list, list]":
-    """把选中变异分成 (需要重跑, 已验可跳过)。只把 **red-assert** 记成已验。"""
+    """把选中变异分成 (需要重跑, 已验可跳过)。只把 **red-assert** 记成已验。
+
+    ⚠️ `expect == ""` 的条目是**对照**（写在 MUTATIONS 表里、但没有目标门禁）：
+    它们按定义不会变红，也永远不该出现在「待跑」里 —— 否则 `--ledger-status` 永远报非零。
+    """
     todo, skipped = [], []
     for m in picked:
         name, rel, old, new, _expect = m
+        if not _expect:
+            skipped.append(name)
+            continue
         rec = entries.get(name) or {}
-        if rec.get("verdict") == "red-assert" and rec.get("fp") == _fingerprint(rel, old, new):
+        # red-assert = 本轮真跑过；inherited = 区域自上次发布以来逐字节未变（可审计的继承）
+        if (rec.get("verdict") in ("red-assert", "inherited")
+                and rec.get("fp") == _fingerprint(rel, old, new)):
             skipped.append(name)
         else:
             todo.append(m)
@@ -3040,6 +3120,9 @@ def main() -> int:
                          "全量矩阵只在 --full-audit 或大版本时跑")
     ap.add_argument("--update-ledger", action="store_true", dest="update_ledger",
                     help="把本轮判为 red-assert 的变异写进 tests/mutation-verdicts.json")
+    ap.add_argument("--seed-inherited", default="", dest="seed_inherited",
+                    help="把「锚点区域自该 git ref（如 v0.7.1）以来逐字节未变」的变异标成 "
+                         "inherited(ref)（可审计的继承，不等于本轮跑过），随后 --delta 只跑真正的增量")
     ap.add_argument("--ledger-status", action="store_true", dest="ledger_status",
                     help="只看账本覆盖情况（多少条已验、多少条待跑），不跑门禁")
     ap.add_argument("--target-only", action="store_true", dest="target_only",
@@ -3058,11 +3141,23 @@ def main() -> int:
     picked = [m for m in MUTATIONS if args.k in m[0]]
     controls = [m for m in CONTROLS if args.k in m[0]]
 
+    if args.seed_inherited:
+        n = _seed_inherited(args.seed_inherited)
+        entries = _load_ledger()
+        print(f"已标记 inherited({args.seed_inherited})：+{n} 条 ⇒ 账本共 {len(entries)} 条")
+        todo, skipped = _delta_split(MUTATIONS, entries)
+        print(f"真正的增量：{len(todo)} 条待跑 / {len(skipped)} 条可跳过")
+        return 0
+
     if args.ledger_status:
         entries = _load_ledger()
         todo, skipped = _delta_split(MUTATIONS, entries)
-        print(f"账本覆盖：{len(MUTATIONS) - len(todo)}/{len(MUTATIONS)} 条已验且指纹未变；"
-              f"待跑 {len(todo)} 条")
+        n_assert = sum(1 for m in MUTATIONS
+                       if (entries.get(m[0]) or {}).get("verdict") == "red-assert")
+        n_inh = sum(1 for m in MUTATIONS
+                    if (entries.get(m[0]) or {}).get("verdict") == "inherited")
+        print(f"账本覆盖：{len(MUTATIONS) - len(todo)}/{len(MUTATIONS)} 条可跳过"
+              f"（本轮真跑过 {n_assert} + 继承 {n_inh}）；待跑 {len(todo)} 条")
         if skipped[:3]:
             print(f"  例（可跳过）：{skipped[:3]}")
         if todo[:5]:
@@ -3238,11 +3333,13 @@ def main() -> int:
                     "at": _head_short(),
                 }
     finally:
-        if args.update_ledger and verified:
+        _full = not args.delta and not args.k and not bad
+        if (args.update_ledger and verified) or _full:
             entries = _load_ledger()
             entries.update(verified)
-            _save_ledger(entries)
-            print(f"账本已更新：+{len(verified)} 条 red-assert ⇒ 共 {len(entries)} 条")
+            _save_ledger(entries, full_audit_at=_head_short() if _full else "")
+            print(f"账本已更新：+{len(verified)} 条 red-assert ⇒ 共 {len(entries)} 条"
+                  + (f"；full_audit_at={_head_short()}" if _full else ""))
         if args.keep:
             print(f"临时目录保留在 {tmp_root}")
         else:
