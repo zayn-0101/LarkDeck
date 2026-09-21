@@ -39,6 +39,11 @@
   发出纯文本「⏳ Working — 」。已改 `markdown`（变异 `V4-33` 实红）。
 - 预加载提示删除失败会静默「以为删掉了」⇒ 现在保持标志重试、且**换号**（同 uuid 重发会撞 `200770`）。
 
+### 修复（打包 / 安装）
+- `install.sh` 的 FILES 清单漏了 `core/cardview.py`（v0.7.1 新增的运行模块）⇒ `--copy` / NAS
+  安装会装出 import 就失败的插件；对账门禁还把 `tools/` 与 `.deploy/` 当运行文件 ⇒ 只要部署目录存在脚本必拒跑。
+  已补齐并用 `HERMES_HOME=/tmp/ldinstall bash install.sh --copy` 真跑验证。
+
 ### 门禁与流程（非用户可见）
 - `test_units.py --only <子串>`；变异判定改「目标门禁先跑 ⇒ 绿则继续到第一支红」+ 120s 硬超时；
   `check_clarify_e2e` 去掉 6 处固定睡眠（4.2s → 1.98s）；`test_cardkit_transport_*` 的批次断言
