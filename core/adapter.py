@@ -801,6 +801,11 @@ _CONFIG: Dict[str, Any] = dict(_DEFAULTS)
 #: V0 已登记、V1–V4 才生效的视觉键；`/larkdeck config` 要给它们标“未生效”注记。
 _VISUAL_TRANSITION_KEYS = frozenset({"visual_engine", "card_status_header", "show_reasoning"})
 
+#: V2 Working 心跳：每回合至多一个任务，key 与 stream state 相同。
+_LD_HEARTBEATS: Dict[str, "asyncio.Task[Any]"] = {}
+_LD_HEARTBEAT_INTERVAL = 3.0
+
+
 
 #: 启动自检结论，供日志 / doctor 查看。
 SELFCHECK: Dict[str, Any] = {"ok": None, "detail": "not run"}
@@ -3289,6 +3294,59 @@ class LarkDeckMixin:
                 tools[:8], text[:200])
         return display
 
+    def _ld_heartbeat_cancel(self, key: str) -> None:
+        task = _LD_HEARTBEATS.pop(str(key), None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _ld_heartbeat_cancel_chat(self, chat: str) -> None:
+        prefix = f"{str(chat)}:"
+        for key in list(_LD_HEARTBEATS):
+            if key == str(chat) or key.startswith(prefix):
+                self._ld_heartbeat_cancel(key)
+
+    def _ld_heartbeat_start(self, chat: str, key: str, turn_id: str) -> None:
+        self._ld_heartbeat_cancel(key)
+        try:
+            task = asyncio.get_running_loop().create_task(
+                self._ld_heartbeat_loop(chat, key, turn_id))
+        except RuntimeError:
+            return
+        _LD_HEARTBEATS[key] = task
+
+    async def _ld_heartbeat_loop(self, chat: str, key: str, turn_id: str) -> None:
+        """Working 心跳：只更新面板 header 的耗时，终态必须 cancel（V2）。"""
+        try:
+            while True:
+                await asyncio.sleep(_LD_HEARTBEAT_INTERVAL)
+                state = self._ld_stream_get(key)
+                if not state or state.get("engine") != "structured":
+                    return
+                if state.get("engine_stamp") == "degraded" or not state.get("card_id"):
+                    return
+                view = self._ld_cardview(
+                    chat, str(state.get("last_rendered_body") or ""), status="processing")
+                elapsed = max(0.0, time.monotonic() - float(state.get("t0") or time.monotonic()))
+                view.panel.title = (f"💭 思考 {elapsed:.1f}s · 🛠️ 工具执行 · "
+                                    f"{len(view.panel.tools)} 步")
+                partial = _cardview.panel_partial(view.panel)
+                signature = json.dumps(partial, sort_keys=True, ensure_ascii=False)
+                if signature == state.get("ck_panel_sig"):
+                    continue
+                seq = _ck_seq(state) + 1
+                res = await self._ld_ck_partial(
+                    str(state["card_id"]), "panel", partial, seq)
+                if res.ok:
+                    updated = dict(state)
+                    updated["ck_panel_sig"] = signature
+                    updated["ck_seq"] = seq
+                    self._ld_stream_put(key, updated)
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.debug("[larkdeck] heartbeat 异常退出", exc_info=True)
+
+
     @staticmethod
     def _ld_icon_token(name: str) -> str:
         lowered = str(name or "").lower()
@@ -3393,6 +3451,7 @@ class LarkDeckMixin:
                 "session_id": _panel.bound_session_id(chat) or "",
                 "turn_id": str(turn_id or ""),
             })
+            self._ld_heartbeat_start(chat, key, turn_id)
             _context.note_frame_ok()
             return True
         if self._ld_body_source() == "own" and self._ld_seed_failure_active(chat):
@@ -3470,6 +3529,7 @@ class LarkDeckMixin:
                 live["ck_seq"] = seq
                 self._ld_stream_put(key, live)
                 return self._ld_stream_fail("structured 收尾整卡 patch 失败")
+            self._ld_heartbeat_cancel(key)
             self._ld_stream_pop(key)
             self._ld_forget(str(state.get("message_id") or ""))
             _context.note_frame_ok()
@@ -4172,6 +4232,7 @@ class LarkDeckMixin:
         _ld_visual_engine()
         _ld_card_status_header_enabled()
         _ld_show_reasoning()
+        self._ld_heartbeat_cancel_chat(chat)
         try:
             # 面板是状态色**唯一**的载体，所以这里**强制**给一个 stopped 面板：
             # 只靠 `_ld_panel` 会踩到一个实测过的坑 —— 该回合还没有任何过程数据时

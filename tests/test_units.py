@@ -11384,6 +11384,10 @@ def test_v1_structured_seed_and_panel_update():
         assert any(card.get("header", {}).get("template") == "green" for card in patched), patched
         assert any(not card.get("config", {}).get("streaming_mode", True) for card in patched), patched
         assert raw._ld_stream_get("oc_v1:t1") is None
+        assert "oc_v1:t1" not in adapter._LD_HEARTBEATS
+        adapter.configure(card_status_header=False)
+        assert raw._ld_cardview("oc_v1", "x").header_enabled is False
+        adapter.configure(card_status_header=True)
     finally:
         if old_reqs is None:
             delattr(target_cls, "_ld_ck_requests")
@@ -11421,6 +11425,7 @@ def test_v1_structured_degrade_patches_same_card():
         assert calls["create"] == 1, calls["create"]
         assert calls["patch"] >= 1, calls["patch"]
     finally:
+        raw._ld_heartbeat_cancel_chat("oc_v1d")
         if old_reqs is None:
             delattr(target_cls, "_ld_ck_requests")
         else:

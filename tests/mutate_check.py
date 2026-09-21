@@ -2309,8 +2309,10 @@ MUTATIONS = [
      'PANEL_SPACING = "0px"',
      "check_cardview"),
     ("V1-6-结构化帧 sequence 重置（复用/回退）", "core/adapter.py",
-     '        seq = _ck_seq(state)',
-     '        seq = 0  # V1-6 mutated',
+     '        seq = _ck_seq(state)\n'
+     '        live = dict(state)',
+     '        seq = 0  # V1-6 mutated\n'
+     '        live = dict(state)',
      "test_units"),
     ("V1-7-entity_skeleton 把 panel 排到 answer 前（提交点顺序）", "core/cardview.py",
      '    elements.append(panel_shell(view.panel))',
@@ -2331,6 +2333,16 @@ MUTATIONS = [
      '                        chat, str(state.get("message_id") or ""), fallback)',
      '                    updated = None  # V1-10 mutated',
      "test_units"),
+    ("V2-1-finalize 不 cancel 心跳（终态后仍可能写卡）", "core/adapter.py",
+     '            self._ld_heartbeat_cancel(key)\n'
+     '            self._ld_stream_pop(key)',
+     '            self._ld_stream_pop(key)',
+     "test_units"),
+    ("V2-2-card_status_header=false 被忽略（状态条恒显）", "core/adapter.py",
+     '            header_enabled=_ld_card_status_header_enabled(),',
+     '            header_enabled=True,  # V2-2 mutated',
+     "test_units"),
+
 
 
 
