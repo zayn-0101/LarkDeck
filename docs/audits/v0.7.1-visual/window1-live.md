@@ -1,5 +1,10 @@
 # 窗口 1 live 状态（V1+V2 structured canary）
 
+> ⚠️ **历史文档（v0.7.1 时期）**：其中「页脚带 🔖 短码」的口径已被 **v0.7.2 推翻**
+> （用户 2026-09-21：「我从来没有提过这个要求」）。现在的页脚是 `状态 · ⏱ 时长 · 模型 · ctx`，
+> 短码只进日志自检行。**不要**按本文的旧口径改动代码。
+
+
 - 时间：2026-09-21 10:18（Mac 本机）
 - 软链：`~/.hermes/plugins/larkdeck -> /Users/Zayn/Code/larkdeck/.deploy`
   - `.deploy` HEAD = `0e0d1f9`（v0.7.1-visual，含 V0–V3）

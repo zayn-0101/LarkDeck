@@ -12806,6 +12806,65 @@ def test_p5_outbound_log_records_every_egress_shape():
         adapter._CONFIG.update(defaults)
 
 
+def test_v4_33_long_turn_card_never_puts_text_nodes_inside_collapsible_panels():
+    """P5 验收的**离线版**（长回合真机复验前的自动判据）：tools>20 跑完一整回合，
+    任何发出去的载荷里都不许把**文本节点**当成 `collapsible_panel` 的直接子元素。
+
+    `plain_text` / `lark_md` 是**文本节点**（只能出现在 `div.text` / `markdown.content` 这类
+    **字段**里），不是组件 —— 真机把它们当 `elements` 的直接子元素会 `300313` 拒收整帧，
+    随后收尾整卡 `200621`、核心回落 `send()` ⇒ 用户看到「卡片 + ⏳ Working 纯文本」并存
+    （2026-09-21 14:44 的真根因，见 `docs/audits/v0.7.2/`）。
+    这里不再只看**一个元素**的类型（那是 `test_v4_structured_panel_budget_trims_old_steps` 的事），
+    而是对**建卡实体 + 每一次元素 batch + 收尾整卡**做**递归**扫描。
+    """
+    chat, key, turn = "oc_v433", "oc_v433:t1", "t1"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        panel.bind_chat_session(chat, "s_v433")
+        panel.record_reasoning("s_v433", turn, "先想一下。")
+        for i in range(25):
+            tcid = f"tc{i}"
+            panel.record_tool_started("s_v433", turn, "read_file",
+                                      {"path": f"/tmp/{i}.txt"}, tool_call_id=tcid)
+            panel.record_tool_finished("s_v433", turn, "read_file", status="ok",
+                                       duration_ms=5, tool_call_id=tcid)
+        for text in ("正文一", "正文一，正文二", "正文一，正文二，正文三"):
+            assert _run(raw.send_stream_frame(text, chat_id=chat, turn_id=turn)), text
+        assert _run(raw.send_stream_frame("正文一，正文二，正文三", finalize=True,
+                                          chat_id=chat, turn_id=turn))
+        payloads = [("entity", calls["entity"][0])]
+        payloads += [("batch", item[0]) for item in calls["batch"]]
+        payloads += [("final", c) for c in (calls.get("patch_cards") or [])]
+        # 前提：折叠提示必须真的出现，否则这条验的不是长回合
+        assert any("已折叠" in json.dumps(p, ensure_ascii=False) for _, p in payloads), \
+            "前提：25 个工具步必须触发折叠提示"
+        for name, payload in payloads:
+            bad = _text_nodes_directly_inside_panels(payload)
+            assert not bad, \
+                f"{name} 载荷里 collapsible_panel 把文本节点当直接子元素（真机 300313）：{bad}"
+        assert int((context.status_snapshot() or {}).get("fallback_count") or 0) == 0, \
+            f"这一回合不该掉回纯文本：{context.status_snapshot()}"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def _text_nodes_directly_inside_panels(node) -> list:
+    """递归找出 `collapsible_panel.elements` 里的**文本节点**（真机 300313 的形状）。"""
+    bad: list = []
+    if isinstance(node, dict):
+        if node.get("tag") == "collapsible_panel":
+            for child in node.get("elements") or []:
+                if isinstance(child, dict) and child.get("tag") in ("plain_text", "lark_md"):
+                    bad.append({k: v for k, v in child.items() if k != "i18n_content"})
+        for value in node.values():
+            bad += _text_nodes_directly_inside_panels(value)
+    elif isinstance(node, list):
+        for item in node:
+            bad += _text_nodes_directly_inside_panels(item)
+    return bad
+
+
 def main() -> int:
     # `--only <子串>`：只跑名字里含该子串的用例。**专供变异判读**（审计 A：单条变异 idle 28s、
     # 重载 89s，秒级判读只能靠「preflight + 只跑受影响的那几条用例」）。不是发布门禁 ——

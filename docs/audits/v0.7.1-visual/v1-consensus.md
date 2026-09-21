@@ -1,5 +1,10 @@
 # LarkDeck v0.7.1 V1 统一结论（结构化 canary）
 
+> ⚠️ **历史文档（v0.7.1 时期）**：其中「页脚带 🔖 短码」的口径已被 **v0.7.2 推翻**
+> （用户 2026-09-21：「我从来没有提过这个要求」）。现在的页脚是 `状态 · ⏱ 时长 · 模型 · ctx`，
+> 短码只进日志自检行。**不要**按本文的旧口径改动代码。
+
+
 - 计划 §9（plan v2.2 SHA `cee0715…`）；V0 已提交 `aaeb6c1`。
 - V1 audit tree：`91b104cc1e3c420b524716e22da1c029dac13137`
   （当前 staged index 减 `freeze-V1.json`；含 `core/cardview.py`、`_ld_stream_frame_structured`、

@@ -788,7 +788,7 @@ _DEFAULTS: Dict[str, Any] = {
     "card_status_header": False,
     # 是否展示推理正文；V3 实现前两种取值观感相同并留 WARNING（摘要行始终保留）。
     "show_reasoning": False,
-    "footer": True,           # 页脚：状态 → 耗时 → 模型 → 上下文用量（+ 本卡短码）
+    "footer": True,           # 页脚：状态 → 耗时 → 模型 → 上下文用量（v0.7.2 起**无短码**）
     "show_model": True,       # 页脚里显示模型名（面板标题只放思考/工具摘要）
     "context_style": "text",  # 上下文用量样式：text（默认）| bar | both
     # P1b：CardKit 设备字号档位。off（不缩放）| mobile_friendly（PC 小、手机大，正文随设备）
@@ -2143,14 +2143,13 @@ class LarkDeckMixin:
 
     @classmethod
     def _ld_frame_footer(self, state: Dict[str, Any]) -> Optional[str]:
-        """**帧路径**的页脚：在原有页脚之后接上本卡短码（R11-C2）。
+        """**帧路径**的页脚 = 基数页脚（v0.7.2 起不再接短码）。
 
         两条纪律：
-        ① **没有基数页脚就不加短码** —— 短码绝不能把「页脚=无」这个诊断信号抹掉
-           （自检行里的 `页脚=无` 是排查「钩子没喂数据」的入口，见 R9 审计）；
-        ② 短码取自**这一帧的卡**（`message_id` / `card_id`），不是进程级快照 ——
-           多会话并发时不会串台（页脚指标那种串台是**已知取舍**，但短码是**定位**用的，
-           串了就等于没有）。
+        ① **没有基数页脚就返回 `None`** —— 「页脚=无」是排查「钩子没喂数据」的诊断信号
+           （自检行里也有它），不许被任何附加内容抹掉；
+        ② 短码（`message_id`/`card_id` 后 6 位）**只进日志自检行**（`卡片=xxxxxx`），
+           用户可见处一律不出现（用户 2026-09-21 口径；`test_v4_17b` 扫整卡与出站载荷）。
         """
         # V4.17：短码不上用户可见页脚（见 `_ld_cardview` 同段说明），只留基数页脚
         return self._ld_footer(chat_id=str(state.get("chat_id") or ""),
@@ -2160,12 +2159,12 @@ class LarkDeckMixin:
     @classmethod
     def _ld_footer(cls, chat_id: str = "", started: Optional[float] = None,
                    status: Optional[str] = None) -> Optional[str]:
-        """页脚一行：``状态 · ⏱ 时长 · 🤖 模型 · ctx 用量 · 短码``。
+        """页脚一行：``状态 · ⏱ 时长 · 🤖 模型 · ctx 用量``（v0.7.2 起**没有短码**）。
 
         用户 2026-09-17 明确指定（对齐 aiduPOP 的页脚观感）：
           * 状态放**最前面**（``✅ 已完成`` / ``❌ 执行出错`` / ``⛔ 已中止``）；
           * 模型名从面板标题搬到页脚；
-          * 上下文用量与卡短码继续留在页脚。
+          * 上下文用量留在页脚；**卡短码不在这里**（用户 2026-09-21 口径：页脚不要它）。
         面板标题因此只保留 ``轮数 · 工具数``。
 
         **R7 扩展**（配置 ``footer_metrics``，默认 ``off``）：
@@ -2437,7 +2436,7 @@ class LarkDeckMixin:
         为什么必须有这一层（V4.4，真机截图发现）：`structured` 只覆盖了 native 流式卡与
         收尾整卡，`send()`/`edit_message()` 这两条**回落车道**还在走旧 markdown 面板 ——
         用户 2026-09-21 的 `/stop` 回复截图就是证据：工具名是旧的（`Load skill`/`Search`/
-        `Run command`）、没有 22px 细节缩进、页脚没有时长与短码，而且**推理正文照样上卡**
+        `Run command`）、没有 22px 细节缩进、页脚没有时长，而且**推理正文照样上卡**
         （`show_reasoning=false` 被绕过 —— 违反 §9.3「show_reasoning 全车道」）。
 
         规则：
@@ -2461,7 +2460,7 @@ class LarkDeckMixin:
                 if not (_snap.get("tools") or _snap.get("rounds") or _snap.get("reasoning")):
                     view.panel_enabled = False
                 if footer:
-                    # 调用方已经算好的页脚优先（它可能带短码）；空则保留视图自己那份
+                    # 调用方已经算好的页脚优先（它是**当下**的值）；空则保留视图自己那份
                     view.footer = footer
                 status = _ld_view_status(chat_id, default=status)
                 card = _cardview.entity_skeleton(view)
@@ -2677,8 +2676,8 @@ class LarkDeckMixin:
                     content = own
             if finalize:
                 content = _sanitize_for_send(content)
-            # ⚠️ 用 `_ld_frame_footer`（审计 C1）：这一帧**手上就有 message_id**，
-            #    用基数页脚会把短码漏掉 —— 而「截图 ↔ 日志」对齐正是短码存在的唯一理由。
+            # ⚠️ 用 `_ld_frame_footer`（审计 C1）：这一帧**手上就有** message_id/chat/t0，
+            #    页脚的值必须是**当下**的这一份（退回进程级快照会让页脚串台）。
             card = self._ld_render_card(
                 chat_id, content, streaming=not finalize,
                 status="completed" if finalize else "processing",
@@ -2894,7 +2893,8 @@ class LarkDeckMixin:
                                              # 返回 `None`（页脚指标来自官方钩子），而
                                              # `cardkit_entity_card` 的纪律是 `None ⇒ 元素不进卡`，
                                              # 元素表在建实体时定死 ⇒ 那一回合**永远没有页脚、也永远
-                                             # 没有短码**（短码就写在页脚里）。变异 `G2-9` 钉这一行。
+                                             # 没有短码**（v0.7.2 起页脚本来就没有短码）。
+                                             # 变异 `G2-9` 钉这一行（建实体时页脚元素必须建出来）。
                                              footer_text=("" if _cfg("footer") else None))
         # P1b：设备字号档位（建实体时定死 text_size；之后只写内容，不做结构性 patch）。
         card = _cards.apply_text_profile(card, _cfg_raw("text_profile"))
@@ -3617,12 +3617,14 @@ class LarkDeckMixin:
                      message_id: Optional[str] = None) -> "_cardview.CardView":
         """从面板快照构造结构化视图（V1 canary）。
 
-        ``started`` / ``message_id`` 只喂**页脚**：用户 2026-09-17 指定的页脚阅读顺序是
-        「状态 → 时长 → 模型 → ctx → 短码」，而结构化路径以前两处都漏了
-        （时长没有 `t0`、短码只走 legacy 的 `_ld_frame_footer`）—— 2026-09-21 真机截图
-        一眼看出来（`✅ 已完成 · 🧠 deepseek-flash · ctx …`，中间少了 `⏱ 12.3s`、末尾少了
-        `🔖 xxxxxx`）。这里把两条规则都收在同一处：**有基数页脚才挂短码**（短码不能把
-        「页脚=无」这个诊断信号抹掉，见 `_ld_frame_footer` 的纪律①）。
+        ``started`` 喂**页脚**：用户 2026-09-17 指定的页脚阅读顺序是「状态 → 时长 → 模型 →
+        ctx」（**v0.7.2 起没有短码** —— 用户 2026-09-21：「我从来没有提过这个要求」；
+        短码只进日志自检行）。结构化路径曾经漏了时长（`started` 没传），真机截图一眼看出来
+        （`✅ 已完成 · 🧠 deepseek-flash · ctx …` 中间少了 `⏱ 12.3s`）。
+
+        ⚠️ ``message_id`` **形参保留**（v0.7.2 起页脚不再用它）：它是「有 message_id 也
+        不许把短码挂上去」这条反向守卫的入口（`test_v4_17b` 按状态 × 有无 mid 全枚举扫整卡），
+        删掉它等于把那条守卫的**输入**一并删掉。
         """
         snap = _panel.snapshot(chat) or {}
         rounds: List["_cardview.ReasoningRoundView"] = []
@@ -4741,8 +4743,9 @@ class LarkDeckMixin:
             # 「状态改了、卡片没变、还不报错」。这正是本项目最怕的形态。
             panel = self._ld_panel(chat, report_empty=True) or _cards.unified_panel(
                 status=_panel.STATUS_STOPPED)
-            # ⚠️ 同上（审计 C1）：`/stop` 重绘是**用户最可能截图的那一帧**，而且它以前会把
-            #    卡片上**已有的** 🔖 抹掉（用基数页脚重画 ⇒ 短码没了）。这里手上就有 message_id。
+            # `/stop` 重绘是**用户最可能截图的那一帧**（v0.7.2 起页脚本来就没有短码；
+            # 这里仍把真实 message_id/chat/t0/status 传下去 —— 页脚字段的值要**当下**的，
+            # 不许退回「进程级快照」那套）。
             stopped_footer = self._ld_frame_footer(
                 {"message_id": message_id, "chat_id": chat,
                  "t0": started, "status": _panel.STATUS_STOPPED})
