@@ -48,8 +48,38 @@
 * 每条「没问题」必须带证伪尝试 ⇒ 本轮新增变异 7 条（`V4-40..45` + `V4-17B`），
   加上重指向的 `G2-10`/`Y20` 与 P5 三条，共 12 条新/改变异全部实红。
 
-## 四、尚未收口（如实登记）
+## 四、审计 B（用户可见效果）与 C2（反假绿第二轮）
 
-* **用户可见效果（审计 B）** 与 **反假绿第二轮（C2）** 正在 `3064f81` 上重跑 ⇒ 结论待补。
+两轮都在 `3064f81` 上独立复现（B 用 `git archive` 解包只读副本；C2 用 `/tmp` 冻结拷贝）。
+结论都是**需修改**，以下是发现 → 收口（收口落在 `69f37bd`）。
+
+### 审计 B
+
+| 发现 | 证据 | 收口 |
+| --- | --- | --- |
+| **阻断**：`_ld_fit_structured_card` 的 tier 无条件写 `panel_enabled/footer_enabled=True` ⇒ V4.15「无过程数据不出空面板」与 `unified_panel=false`/`footer=false` 被静默违反 | `snap_p4_empty_panel.py`：空快照 + 两开关 false，`send()` 捕获仍是 `["markdown","collapsible_panel","markdown"]` | tier 改「上限」语义（`bool(x and requested)`）；`test_v4_15_static_and_fit_lanes_never_reopen_disabled_panel_or_footer` + 变异 `V4-48` 实红 |
+| `/stop` 重绘的结构化终态卡 `config.streaming_mode=true` | `snap_p1_stopdegrade.py` | 重绘分支置 false；`test_v4_50_...` + 变异 `V4-49` 实红 |
+| **P3 真实工具名 29/42 落兜底**（含 `delegate_task`/`execute_code`/`memory`/`session_search` 等已启用 toolset） | `snap_p3_icons.py`：`REAL_TOOL_NAMES_COUNT 42 / FALLBACK_COUNT 29` | 本地扩展表扩到 33 条（每条带理由）⇒ 60 个真实名 **0 落兜底**；`test_v4_48b`（冻结清单）+ 变异 `V4-52` 实红 |
+| **P5 出站留痕不覆盖** native 帧 / 澄清卡 / `/stop` / DEGRADE | 动态驱动 `_ld_send_card`/`_ld_update_card` → `outbound_logs=[]` | ⚠️ **部分收口**：本轮先补了 `send()` 卡片成功 / `edit_message` 成功 / 回落（+ 限流常量与同会话限流断言）；**低层原语（`_ld_ck_create`/`_ld_send_card`/`_ld_update_card`）的统一留痕仍待做**（登记为残余项） |
+| P4 三态/TTL/retry/表单容器未实现 | 生产 2.0 卡 `has_form:false` | 与计划 §3 的残余登记一致；**不再**声称 P4 已完成 |
+| `show_reasoning=true` 时嵌套 `collapsible_panel` 客户端渲染未验证 | 复现 20 个嵌套推理面板；仓库自己的 `plan-consensus.md:111` 也把它列为未验证 | 登记为残余项（默认 `show_reasoning=false` 规避），需真机长回合开启推理复验 |
+
+### 审计 C2（绿变异）
+
+| 绿变异 | 为什么五门禁全绿 | 收口 |
+| --- | --- | --- |
+| **G1** `exec → robot_outlined`（生产表 + 我们的冻结 JSON 同时改） | 两边自比；`check_cls_alignment.py` 当时**不在五门禁**、`run_fast` 也不含它，且 CLS 缺席即 SKIP | ① `check_cardview` 增**独立字面量**（exec/bash/command/run/read/... + 本地扩展真实名 + spinner 三字段）；② `check_cls_alignment` **纳入正式门禁**（`GATE_ORDER` 第六支，`_PASS/_FAIL` 标记补齐）；③ 加 `--require`：CLS 缺席即 FAIL（`run_fast` 走 `--require`） |
+| **G2** `SPINNER_IMG_KEY → img_v3_FAKE` + 同步重生成 golden 夹具 | `test_v4_14b` 的「字面量」是 `startswith("img_v")` + 与生产常量自比 | 同 ①，spinner key 与 loading 元素三字段写成**独立字面量** |
+| **G3** `_log_outbound` 限流 `30s → 3600s` | p5 用例只用 4 个**不同** chat，从不触发同会话限流 | 抽 `_OUTBOUND_LOG_INTERVAL_S = 30.0` + 常量字面量断言 + 同会话限流/窗口过后恢复断言；变异 `V4-51` 实红 |
+
+C2 另有两条「判定力是假的」观察，如实记下：
+* `seq += 1` 的「换号重试」专用断言**无判别力**（中间面板写把 seq 推高了）——
+  真正抓住 `seq += 0` 的是黄金夹具；夹具若同步重生成，这条就无覆盖（残余风险）。
+* `test_v4_14c` 的 `assert warned` 是**单点**（删它 + 删生产 warning ⇒ 该用例仍绿）。
+
+## 五、尚未收口（如实登记）
+
+* **低层出站原语**（`_ld_ck_create` / `_ld_send_card` / `_ld_update_card`）的统一留痕未做
+  （B 的残余）：这些路径发出去的东西目前只能靠上层 `send/edit` 的痕迹间接判断。
 * 「图标偏上」探针已发待用户选版；长回合真机复验待用户（离线版判据已就绪）。
 * 表单**容器**形态、澄清卡 `submitted`/retry/`confirmed`/TTL 未实现（计划 §3 残余项）。
