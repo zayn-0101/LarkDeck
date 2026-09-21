@@ -2466,6 +2466,11 @@ MUTATIONS = [
      '    "visual_engine": "structured",',
      '    "visual_engine": "legacy",  # V4-23 mutated',
      "test_units"),
+    # 审计 C 的 E1：心跳只做 `locked()` 预检、不真的持锁 ⇒ 反向交错会撞出同 (seq, uuid)
+    ("V4-24-心跳只预检不持锁（反向交错撞号）", "core/adapter.py",
+     '        async with lock:\n            state = self._ld_stream_get(key)',
+     '        if True:  # V4-24 mutated\n            state = self._ld_stream_get(key)',
+     "test_units"),
 
 
 

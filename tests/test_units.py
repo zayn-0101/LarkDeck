@@ -12180,6 +12180,59 @@ _LEGACY_LANE_TESTS = frozenset({
 })
 
 
+def test_v4_1_heartbeat_inflight_blocks_frame_and_keeps_seq_unique():
+    """V4.6+：**反方向交错** —— 心跳先把 panel 写发出去（写还在飞），帧路径随后启动。
+
+    审计 C 的 E1/E4 变异（心跳只做 `locked()` 预检、不真的持锁；或把 `state` 读挪到锁外）
+    曾**五门禁全绿**，而 demo 能确定性复现同卡同 `(seq, uuid)` 双写 —— 真机就是
+    200770 / 300317。旧用例只覆盖了「帧先持锁 → 心跳后到」，这个方向没人钉。
+    """
+    chat, key, turn = "oc_v41hb2", "oc_v41hb2:t1", "t1"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    started, release = asyncio.Event(), asyncio.Event()
+    try:
+        assert _run(raw.send_stream_frame("hello", chat_id=chat, turn_id=turn))
+        orig = raw._ld_ck_partial
+        seen = {"n": 0}
+
+        async def _gated(card_id, element_id, partial, seq):
+            seen["n"] += 1
+            if seen["n"] == 1:            # 只卡住第一笔（心跳那一笔）
+                started.set()
+                await release.wait()
+            return await orig(card_id, element_id, partial, seq)
+
+        raw._ld_ck_partial = _gated      # type: ignore[assignment]
+
+        async def _flow():
+            snap = raw._ld_stream_get(key) or {}
+            snap["ck_panel_sig"] = ""     # 逼心跳这一拍真的去写
+            raw._ld_stream_put(key, snap)
+            tick = asyncio.ensure_future(raw._ld_heartbeat_tick(chat, key))
+            await started.wait()          # 心跳的写已经发出、锁在它手里
+            frame = asyncio.ensure_future(
+                raw.send_stream_frame("hello world", chat_id=chat, turn_id=turn))
+            for _ in range(20):           # 让帧跑到它的第一个 await（拿锁）
+                await asyncio.sleep(0)
+                if frame.done():
+                    break
+            blocked = not frame.done()
+            release.set()
+            return await tick, await frame, blocked
+
+        result, frame_ok, blocked = _run(_flow())
+        assert result == "wrote", result
+        assert frame_ok
+        assert blocked, "心跳的写还在飞时，帧路径必须等锁，不能并发算号"
+        seqs = [item[1] for item in calls["batch"]] + [c[2] for c in calls["content"]]
+        uuids = [item[2] for item in calls["batch"]] + [c[3] for c in calls["content"]]
+        assert len(set(uuids)) == len(uuids), f"uuid 撞车（真机 200770）: {uuids}"
+        assert len(set(seqs)) == len(seqs), f"序号复用（真机 300317）: {seqs}"
+    finally:
+        release.set()
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]
