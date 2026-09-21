@@ -1712,9 +1712,42 @@ def probe_font_size(client, chat: str, cards) -> int:
     return 0
 
 
-def main(argv: list) -> int:
-    clean_only = "--clean-only" in argv
-    do_clean = "--no-clean" not in argv
+def probe_structured_canary(client, chat: str, cards) -> int:
+    """V1–V3 structured canary：不重启网关，走生产 structured 路径发一张真卡。"""
+    import asyncio
+    import importlib
+    _, adapter, _ = _load_adapter_for_probe(chat)
+    if adapter is None:
+        return 1
+    panel = sys.modules.get("hermes_plugins.larkdeck.core.panel")
+    if panel is None:
+        panel = importlib.import_module("hermes_plugins.larkdeck.core.panel")
+    _set_probe_config(adapter, visual_engine="structured", card_status_header=True,
+                      show_reasoning=True, native_transport="cardkit")
+    sess = f"structured-canary-{int(time.time())}"
+    panel.reset()
+    panel.bind_chat_session(chat, sess)
+    panel.record_reasoning(sess, sess, "先读取配置，再确认磁盘占用；这里演示推理 A 形态。")
+    panel.record_tool_started(sess, sess, "terminal", {"command": "df -h"},
+                              tool_call_id="tc-df")
+    panel.record_tool_finished(sess, sess, "terminal", status="ok", duration_ms=1860,
+                               tool_call_id="tc-df",
+                               result="Filesystem Size Used Avail\n/dev/disk 460G 300G 160G")
+    tid = f"structured-{int(time.time())}"
+
+    async def _run() -> tuple:
+        return (await adapter.send_stream_frame("正在整理磁盘报告", chat_id=chat, turn_id=tid),
+                await adapter.send_stream_frame("正在整理磁盘报告：占用前三为 A、B、C",
+                                                chat_id=chat, turn_id=tid),
+                await adapter.send_stream_frame("磁盘报告完成：占用前三为 A、B、C。",
+                                                chat_id=chat, turn_id=tid, finalize=True))
+
+    seed, update, finalize = asyncio.run(_run())
+    print(f"structured canary: seed={seed} update={update} finalize={finalize} "
+          f"（chat={chat}，卡在最新一条消息）")
+    print("请肉眼确认：工具行图标/22px、推理 A 形态、状态条、页脚短码。")
+    return 0 if (seed and update and finalize) else 1
+
 
 def main(argv: list) -> int:
     clean_only = "--clean-only" in argv
@@ -1744,6 +1777,8 @@ def main(argv: list) -> int:
         return probe_element_limit(client, chat, cards)
     if "--font-size" in argv:
         return probe_font_size(client, chat, cards)
+    if "--structured-canary" in argv:
+        return probe_structured_canary(client, chat, cards)
     if "--rate-limit" in argv:
         return probe_rate_limit(client, chat, cards)
     if "--stop-redraw" in argv:
