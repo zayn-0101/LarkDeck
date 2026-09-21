@@ -2481,6 +2481,10 @@ MUTATIONS = [
      '    for label, block in (("Error", step.error_block), ("Result", step.result_block)):\n'
      '        if block:\n            elements.append(_tool_output_div(block, label))  # V4-26 mutated',
      "test_units"),
+    ("V4-28-结构化卡不做分级降载（长正文直接撞字节墙）", "core/adapter.py",
+     '        tiers = (("ok", True, True), ("no-panel", False, True), ("bare", False, False))',
+     '        tiers = (("ok", True, True),)  # V4-28 mutated',
+     "test_units"),
     ("V4-27-工具图标表退回旧 fallback token（观感与对标插件不同）", "core/cardview.py",
      '    "fallback": "tool_02",          # CLS 的兜底 token（`step.get("icon", "tool_02")`）',
      '    "fallback": "setting-inter_outlined",  # V4-27 mutated',

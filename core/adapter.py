@@ -2364,6 +2364,28 @@ class LarkDeckMixin:
             return None
 
     # ---------------------------------------------------------------- 卡片构造
+    def _ld_fit_structured_card(self, view: "_cardview.CardView") -> Dict[str, Any]:
+        """结构化卡的**分级降载**（V4.11）：超飞书硬上限就按 legacy 同序丢装饰 ——
+        面板 → 页脚 → 裸卡（**正文永不截断**：截断会让用户以为模型就说了这么多）。
+
+        为什么必须有：legacy 车道有 `fit_reply_card` 的三级阶梯，而结构化卡一次成型
+        （`entity_skeleton`）⇒ 长正文那一侧没有任何退路（真机会整卡被拒/白丢正文）。
+        判据用 `cards.card_bytes`（与服务端同口径）与递归元素数。
+        """
+        tiers = (("ok", True, True), ("no-panel", False, True), ("bare", False, False))
+        card: Dict[str, Any] = {}
+        for name, panel_on, footer_on in tiers:
+            view.panel_enabled = panel_on
+            view.footer_enabled = footer_on
+            card = _cards.apply_text_profile(_cardview.entity_skeleton(view),
+                                             _cfg_raw("text_profile"))
+            if (_cards.card_bytes(card) <= _cards.FEISHU_CARD_BYTE_LIMIT
+                    and _cards.count_elements(card) <= _cards.FEISHU_ELEMENT_LIMIT):
+                if name != "ok":
+                    _log_degrade_once(name, _cards.count_elements(card), _cards.card_bytes(card))
+                return card
+        return card          # 裸卡都超限：交给调用方判失败（宁可整条回落纯文本）
+
     def _ld_render_card(self, chat_id: str, content: str, *, streaming: bool,
                         status: str, panel: Optional[Dict[str, Any]],
                         footer: Optional[str], started: Optional[float] = None,
@@ -2398,7 +2420,8 @@ class LarkDeckMixin:
                 card["config"]["streaming_mode"] = bool(streaming)
                 # 与 legacy 车道同一层保护（审计 B 中-2）：设备字号档位必须也作用在
                 # 结构化整卡上，否则 text_profile=mobile_friendly/large 时收尾会掉字号。
-                card = _cards.apply_text_profile(card, _cfg_raw("text_profile"))
+                card = self._ld_fit_structured_card(view)
+                card["config"]["streaming_mode"] = bool(streaming)
                 if _ck_create_wall(card) is None:
                     return card
                 _log_degrade_once("static-wall", _cards.count_elements(card),
@@ -4585,8 +4608,7 @@ class LarkDeckMixin:
                 stopped_view = self._ld_cardview(
                     chat, _sanitize_for_send(text) or " ", status="stopped")
                 stopped_view.footer = stopped_footer
-                card = _cards.apply_text_profile(_cardview.entity_skeleton(stopped_view),
-                                                 _cfg_raw("text_profile"))
+                card = self._ld_fit_structured_card(stopped_view)
             else:
                 panel = self._ld_panel(chat, report_empty=True) or _cards.unified_panel(
                     status=_panel.STATUS_STOPPED)

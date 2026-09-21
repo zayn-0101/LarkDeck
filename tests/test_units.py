@@ -12239,6 +12239,37 @@ def test_v4_1_heartbeat_inflight_blocks_frame_and_keeps_seq_unique():
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
 
+def test_v4_11_structured_card_degrades_instead_of_exceeding_the_byte_wall():
+    """V4.11：结构化卡超字节墙时必须**分级丢装饰**（面板→页脚→裸卡），正文永不截断。
+
+    legacy 车道有 `fit_reply_card` 的三级阶梯，而结构化卡过去一次成型 —— 长正文那一侧
+    没有任何退路（真机会整卡被拒 / 白丢正文）。
+    """
+    raw = _make()
+    defaults = dict(adapter._CONFIG)
+    panel.reset()
+    try:
+        adapter.configure(visual_engine="structured")
+        panel.bind_chat_session("oc_v411", "s_v411")
+        panel.record_tool_started("s_v411", "s_v411", "terminal", {"command": "df -h"},
+                                  tool_call_id="tc411")
+        body = "汉" * 42000
+        view = raw._ld_cardview("oc_v411", body, status="stopped",
+                                started=time.monotonic() - 3.0, message_id="om_v411")
+        card = raw._ld_fit_structured_card(view)
+        assert adapter._cards.card_bytes(card) <= adapter._cards.FEISHU_CARD_BYTE_LIMIT, \
+            adapter._cards.card_bytes(card)
+        answers = [e for e in card["body"]["elements"] if e.get("element_id") == "answer"]
+        assert answers and len(str(answers[0].get("content") or "")) == len(body), \
+            "正文一个字都不许截断"
+        # 装饰可以被丢掉，但**停止色必须还在**（结构化卡的色落在卡级 header）
+        assert card.get("header", {}).get("template") == "yellow", card.get("header")
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        panel.reset()
+
+
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]
