@@ -40,3 +40,17 @@
   已收口的部分：processing 帧短码、`200770` 之外的 msg、心跳 skip/failed/dead 三档语义。
 * `mutate_check` 的基线在**高负载**下会被既有的性能/时间派生用例（`test_code_spans_*`、
   `test_cardkit_transport_*`）闪红，可能把 flake 误记成「变异实红」——运行变异门禁前先看负载。
+
+## V4.8 待办（用户 2026-09-21 13:0x 真机三点反馈，发布前必修）
+
+1. **占位符**：`⏳ 正在生成…`（沙漏 emoji）在正文首字到达前停留太久，用户明确觉得丑；
+   对标插件不这么做。⇒ structured 卡片**不再渲染占位符**（正文元素留空，等首个 delta 直接长出来）；
+   并检查 own 累积的刷新节流，别让第一批字「一次性涌出一大段」。
+2. **工具行图标**：与对标插件不是同一套；且图标比文字**偏上**。
+   CLS 源码（`hermes-lark-streaming/cardkit/builder.py:157-174`）用的是**统一的 `tool_02` 家族 token**
+   （`step.get("icon", "tool_02")`），我们的 per-tool token（`setting_outlined`/`search_outlined`…）
+   字形高度不一 ⇒ 既不像也不同高。⇒ 改用 CLS 的 token 映射；若观感仍偏，就试「把 emoji 内联进
+   文本、不用 div.icon」两版，做 A/B 探针卡让用户挑。
+3. **Result 块**：现在**每一步**都挂一个大号 fenced 代码块，用户觉得「丑陋、和别的插件不一样」。
+   ⇒ 对齐 CLS：默认只留一行灰色细节；`Result`/`Error` 块只在**失败**（或展开时）出现，且字号收敛。
+   ⚠️ 这会覆盖 plan 里「每步都渲染 Result/Error 块」那条，属于**用户口径优先**，要在 consensus 文档里记一笔。
