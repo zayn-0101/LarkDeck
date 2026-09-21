@@ -295,10 +295,7 @@ MUTATIONS = [
     # 对照项：在**用例覆盖的尺寸区间**内，legacy 近似壳与「降载后真卡」给出同样结论
     # （两侧的差异只在装饰体积那几百字节的窗口里）⇒ 撤掉这条接线门禁抓不住，是**等价**而非盲区。
     # 真正钉住 structured 判据的是 V4-30（超限也说能画）。
-    ("C-对照：structured 判据不传真卡（区间内等价）", "core/adapter.py",
-     '                structured_card=structured_card):',
-     '                structured_card=None):  # control',
-     ""),
+
     ("V4-32-预加载提示首字后不删（正文上方留一行多余的字）", "core/adapter.py",
      '        elif live.get("ck_loading", False) and visible:',
      '        elif False:  # V4-32 mutated',
@@ -2368,13 +2365,16 @@ MUTATIONS = [
      '        updated = await self._ld_update_card(chat, str(state.get("message_id") or ""), fallback)',
      '        updated = None  # V1-10 mutated',
      "test_units"),
+    # ⚠️ 锚点必须是**带上下文的完整语句**（2026-09-21 两次漂移的教训）：单用
+    #    `self._ld_heartbeat_cancel(key)` 在文件里有 4 处；只用 `final_card = ...` 两行，
+    #    替换成「插一句 pass」其实**没有删掉 cancel** ⇒ 变异变成等价、判 🟢（假绿）。
+    #    这里连 `if finalize:` 与那句 V2 注释一起锚，替换后 cancel 真的消失。
     ("V2-1-finalize 不 cancel 心跳（终态后仍可能写卡）", "core/adapter.py",
-     '            self._ld_heartbeat_cancel(key)\n'
-     '            final_card = _cards.apply_text_profile(_cardview.entity_skeleton(view),\n'
-     '                                                   _cfg_raw("text_profile"))',
-     '            pass  # V2-1 mutated\n'
-     '            final_card = _cards.apply_text_profile(_cardview.entity_skeleton(view),\n'
-     '                                                   _cfg_raw("text_profile"))',
+     '        if finalize:\n'
+     '            # V2 修复：先 cancel 心跳，再发终态 patch，避免 tick 在 patch 后落回 processing 面板。\n'
+     '            self._ld_heartbeat_cancel(key)',
+     '        if finalize:\n'
+     '            pass  # V2-1 mutated（不 cancel 心跳）',
      "test_units"),
     ("V2-2-card_status_header=false 被忽略（状态条恒显）", "core/adapter.py",
      '            header_enabled=_ld_card_status_header_enabled(),',
@@ -2626,11 +2626,29 @@ MUTATIONS = [
      '       core/__init__.py core/adapter.py core/cards.py core/cardview.py core/i18n.py',
      '       core/__init__.py core/adapter.py core/cards.py core/i18n.py',
      'test_units'),
+    ('V4-53-面板展开状态写死收起（panel_expanded 配置被静默吞掉）', 'core/cardview.py',
+     '        "expanded": bool(_expanded),',
+     '        "expanded": False,  # V4-53 mutated',
+     'test_units'),
+    ('V4-54-页脚开关被面板绑死（panel=false + footer=true 时连页脚一起丢）', 'core/adapter.py',
+     '            view.footer_enabled = bool(footer_on and requested_footer)',
+     '            view.footer_enabled = bool(footer_on and requested_panel)  # V4-54 mutated',
+     'test_units'),
+    ('V0-7b-降级安全网只对非收尾帧生效（收尾帧又回结构化元素通道）', 'core/adapter.py',
+     '        if engine == "structured" and not (state and state.get("engine_stamp") == "degraded"):',
+     '        if engine == "structured" and not (state and state.get("engine_stamp") == "degraded" and not finalize):  # V0-7b',
+     'test_units'),
 ]
 
 #: **对照项**：行为等价的改动（合法 YAML 变体等），期望四门禁**全绿**。
 #: 与 MUTATIONS 分开成两张表 —— 判断依据是它属于哪张表，不是名字里有没有某个字。
 CONTROLS = [
+    # 从 MUTATIONS 搬来（它没有目标门禁 ⇒ 全绿是预期；留在 MUTATIONS 里会让
+    # `--upgrade-inherited` / full 模式把它当失败，`full_audit_at` 永远刷不上）。
+    ("C-对照：structured 判据不传真卡（区间内等价）", "core/adapter.py",
+     '                structured_card=structured_card):',
+     '                structured_card=None):  # control',
+     ""),
     # 实测等价（2026-09-21 增量跑）：`ToolStepView.result_block` 在结构化渲染里**从未被读**
     # （`grep -n result_block core/cardview.py` 只有 dataclass 字段声明那一行）⇒ 传空串不改行为。
     ("C-对照：工具块不传 result_block（结构化渲染里这个字段是死的）", "core/adapter.py",
@@ -2793,6 +2811,9 @@ def _classify(script: str, proc: "subprocess.CompletedProcess") -> str:
     return "red-assert"
 
 
+#: 单支门禁的硬超时（秒）。⚠️ 汇总串里的数字必须用它算，别写死（终审 A 实测曾写死 120）。
+_GATE_TIMEOUT_S = 45.0
+
 GATE_ORDER = ["test_units.py", "check_override.py", "check_hooks.py",
               "check_clarify_e2e.py", "check_cardview.py", "check_cls_alignment.py"]
 
@@ -2803,11 +2824,11 @@ def _run_one_gate(repo: Path, script: str) -> "tuple[int, str]":
         proc = subprocess.run([sys.executable, str(repo / "tests" / script)],
                               capture_output=True, text=True, cwd=str(repo.parent),
                               env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
-                              # 45s：超时是**中止**、不是判定（💥 不记账，留给 `--only` 定向复核）。
-                              # 120s 时实测有变异把整轮拖到小时级（用户明确要求提速）。
-                              timeout=45)
+                              # 超时是**中止**、不是判定（💥 不记账，留给 `--only` 定向复核）。
+                              # 120s 时实测有变异把整轮拖到小时级（用户明确要求提速）⇒ 45s。
+                              timeout=_GATE_TIMEOUT_S)
     except subprocess.TimeoutExpired:
-        return ("red-crash", f"超时 >120s：{script}")
+        return ("red-crash", f"超时 >{_GATE_TIMEOUT_S:.0f}s：{script}")
     tail = (proc.stdout or proc.stderr).strip().splitlines()
     return (_classify(script, proc), tail[-1] if tail else "")
 
@@ -2824,19 +2845,26 @@ _FP_WINDOW = 15
 
 
 def _anchor_region(rel: str, old: str) -> "str | None":
-    """锚点所在代码区域（±_FP_WINDOW 行 + 锚点自身）。锚点找不到 ⇒ None（preflight 会报）。"""
+    """锚点所在代码区域（±_FP_WINDOW 行 + 锚点自身）。锚点找不到 ⇒ None（preflight 会报）。
+
+    ⚠️ **必须按完整 `old` 定位**（终审 C 实测 22/470 条记录取错位置）：早先只看 `old` 的
+    **第一行**，于是像 `        try:` 这种首行在文件里多处出现的锚点会命中**别处**的代码 ——
+    指纹算的是那一处的区域，真正被打入变异的那一段怎么改都不会被发现（`--delta` 照报「已验」，
+    而门禁其实是红的）。现在改成：在整份文件文本里找 `old` 的偏移，再换算成行号取窗口。
+    """
     try:
-        lines = (REPO / rel).read_text(encoding="utf-8").splitlines()
+        text = (REPO / rel).read_text(encoding="utf-8")
     except OSError:
         return None
-    first = old.splitlines()[0] if old.splitlines() else old
+    idx = text.find(old)
+    if idx < 0:
+        return None
+    lines = text.splitlines()
     span = max(1, len(old.splitlines()))
-    for i, line in enumerate(lines):
-        if first in line:
-            lo = max(0, i - _FP_WINDOW)
-            hi = min(len(lines), i + span + _FP_WINDOW)
-            return "\n".join(lines[lo:hi])
-    return None
+    start_line = text.count("\n", 0, idx)          # 0-based 行号
+    lo = max(0, start_line - _FP_WINDOW)
+    hi = min(len(lines), start_line + span + _FP_WINDOW)
+    return "\n".join(lines[lo:hi])
 
 
 def _fingerprint(rel: str, old: str, new: str) -> str:
@@ -2888,11 +2916,29 @@ def _region_at_ref(rel: str, old: str, ref: str) -> "str | None":
     return None
 
 
+def _mutation_names_at_ref(ref: str) -> "set[str]":
+    """`git show <ref>:tests/mutate_check.py` 里当时存在的变异名（用于继承资格校验）。"""
+    try:
+        blob = subprocess.run(["git", "show", f"{ref}:tests/mutate_check.py"], cwd=str(REPO),
+                              capture_output=True, text=True, timeout=30).stdout
+    except Exception:
+        return set()
+    return set(re.findall(r'^\s*\(["\']([^"\']+)["\']', blob, re.M))
+
+
 def _seed_inherited(ref: str) -> int:
-    """把「区域自 `ref` 以来没变」的变异标成 `inherited(ref)`（不覆盖已 red-assert 的条目）。"""
+    """把「区域自 `ref` 以来没变」的变异标成 `inherited(ref)`（不覆盖已 red-assert 的条目）。
+
+    ⚠️ 资格校验（终审 C 的蛰伏路径）：**该 ref 的清单里必须已经有这条变异** —— 否则
+    「新加的变异 + 它的区域恰好没变」会被直接标成已验，之后 `--delta` 永远跳过它
+    （而我们从来没在那一版跑过它）。
+    """
     entries = _load_ledger()
+    at_ref = _mutation_names_at_ref(ref)
     stamped = 0
     for name, rel, old, new, _expect in MUTATIONS:
+        if at_ref and name not in at_ref:
+            continue
         rec = entries.get(name) or {}
         fp_now = _fingerprint(rel, old, new)
         if rec.get("verdict") == "red-assert" and rec.get("fp") == fp_now:
@@ -2950,6 +2996,30 @@ def _gate_fp(gate: str) -> str:
         return ""
 
 
+#: 门禁真正依赖的**测试侧 helper / fixture**（终审 A 的反例：只把 `write_golden_trace.py` 的
+#: `--check` 改成直接 return 0，就能让一条真·该红的变异变绿，而账本仍按「门禁文件指纹」跳过它）。
+#: 这些文件变了 ⇒ 所有依赖它们的判定一律作废重跑（它们本来就只在「行为有意变更」时才会动）。
+_HELPER_FILES = (
+    "tests/write_golden_trace.py",
+    "tests/golden_cardkit_trace.json",
+    "docs/audits/v0.7.2/tool-icons.json",
+    "docs/audits/v0.7.2/footer-contract.json",
+)
+
+
+def _helper_fp() -> str:
+    """helper / fixture 内容的指纹（缺文件记 `missing`，不静默当相等）。"""
+    h = hashlib.sha256()
+    for rel in _HELPER_FILES:
+        path = REPO / rel
+        try:
+            h.update(path.read_bytes())
+        except OSError:
+            h.update(b"missing")
+        h.update(b"\x00")
+    return h.hexdigest()[:16]
+
+
 def _load_ledger() -> dict:
     try:
         return json.loads(LEDGER_PATH.read_text(encoding="utf-8")).get("entries") or {}
@@ -2985,6 +3055,9 @@ def _delta_split(picked: list, entries: dict) -> "tuple[list, list]":
         name, rel, old, new, _expect = m
         if not _expect:
             skipped.append(name)
+            continue        # `expect == ""` 是**对照**（形状校验已禁止它出现在 MUTATIONS）
+        if _anchor_problem(rel, old):
+            todo.append(m)   # 锚点脱节/歧义 ⇒ 一律重跑（绝不能拿它当「已验」）
             continue
         rec = entries.get(name) or {}
         # red-assert = 本轮真跑过（**代码区域 + 门禁文件**双指纹）；inherited = 只按代码区域
@@ -2997,7 +3070,7 @@ def _delta_split(picked: list, entries: dict) -> "tuple[list, list]":
                 ok_gate = set(want[6:].split(",")) <= set(have[6:].split(","))
             else:
                 ok_gate = want == have
-            ok = fp_ok and ok_gate
+            ok = fp_ok and ok_gate and rec.get("helper_fp") == _helper_fp()
         else:
             ok = rec.get("verdict") == "inherited" and fp_ok
         if ok:
@@ -3105,7 +3178,21 @@ def _noop_reason(rel: str, old: str, new: str) -> Optional[str]:
     return None
 
 
-def _shape_error(entry) -> Optional[str]:
+def _shape_error(entry, kind: str = "变异") -> "str | None":
+    """条目形状校验（`--preflight` 与主循环共用）。
+
+    ⚠️ 2026-09-21 终审 C：`expect == ""` 的条目**不许**出现在 `MUTATIONS` 里 —— 它会
+    ①永远不跑、②被 `_delta_split` 无条件算成「已跳过」、③让 `--ledger-status` 虚报覆盖、
+    ④让 `--upgrade-inherited`/full 模式把它当失败（`bad` 非空 ⇒ `full_audit_at` 永远刷不上）。
+    对照（等价变异）本来就该写进 `CONTROLS` 表。
+    """
+    if kind == "变异" and len(entry) >= 5 and entry[4] == "":
+        return (f"MUTATIONS 里的条目不许留空 expect（那是**对照**，请写进 CONTROLS）："
+                f"{entry[0]!r}")
+    return _shape_error_impl(entry)
+
+
+def _shape_error_impl(entry) -> Optional[str]:
     """清单条目的**形状**校验（审计 D1）。
 
     预检用 `... , *_rest`（容忍任意元数），而全量跑用**恰好 5 元的解包** ⇒ 有人给条目多加一个
@@ -3132,7 +3219,7 @@ def preflight() -> int:
     picked = [(m, "变异") for m in MUTATIONS] + [(m, "对照") for m in CONTROLS]
     bad = []
     for entry, kind in picked:
-        shape = _shape_error(entry)
+        shape = _shape_error(entry, kind)
         if shape:
             print(f"❓ [{kind}] {shape}")
             bad.append(f"[{kind}] 第 {picked.index((entry, kind)) + 1} 条 —— {shape}")
@@ -3232,8 +3319,11 @@ def main() -> int:
 
     if args.upgrade_inherited:
         entries = _load_ledger()
+        # `expect == ""` 的条目是**对照**（写在 MUTATIONS 表里但没有目标门禁）：
+        # 全绿是它的**预期结果**，所以既不能当待跑（否则 `bad` 非空 ⇒ exit 1），
+        # 也不能用来刷 `full_audit_at`（终审 A 的伪造反例）。
         picked = [m for m in picked
-                  if (entries.get(m[0]) or {}).get("verdict") != "red-assert"]
+                  if m[4] and (entries.get(m[0]) or {}).get("verdict") != "red-assert"]
         print(f"升级模式：把 {len(picked)} 条 inherited / 缺失条目当待跑"
               f"（补门禁侧指纹；fresh 的 red-assert 不动）")
 
@@ -3307,7 +3397,7 @@ def main() -> int:
     #    「全部 0 条变异都被门禁抓住 ✅」+ `exit 0` —— 一个**拼错的 `-k`**（`-k ZZZ`）与
     #    「真的全绿」长得一模一样。这是本项目最恨的「绿而无判别力」，所以直接算失败。
     for _entry in picked + controls:
-        _shape = _shape_error(_entry)
+        _shape = _shape_error(_entry, "变异" if _entry in picked else "对照")
         if _shape:
             print(f"❌ {_shape}")
             print("   （预检 `--preflight` 也会报同一个问题：两处共用 `_shape_error`）")
@@ -3403,11 +3493,13 @@ def main() -> int:
                     "fp": _fingerprint(rel, old, new),
                     "verdict": "red-assert",
                     "gate": evidence[0],
-                    "gate_fp": _gate_fp(evidence[0]),
+                    "gate_fp": _gate_cases(evidence[0]),
+                    "helper_fp": _helper_fp(),
                     "at": _head_short(),
                 }
     finally:
-        _full = not args.delta and not args.k and not bad
+        _full = (not args.delta and not args.k and not args.upgrade_inherited
+                 and not bad and len(picked) == len([m for m in MUTATIONS if m[4]]))
         if (args.update_ledger and verified) or _full:
             entries = _load_ledger()
             entries.update(verified)

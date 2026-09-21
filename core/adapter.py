@@ -1838,6 +1838,25 @@ def _log_theme_once(raw: Any, fallback: str) -> None:
                    "ap_bubble）", shown, fallback)
 
 
+def _panel_has_data(chat_id: str) -> bool:
+    """这条消息**此刻有没有过程数据**（工具 / 推理轮 / 推理正文）。
+
+    **只服务静态回退车道**（`send()` / `edit_message()`，见 `_ld_render_card`）：系统提示、
+    命令回复这类「不是某一回合的卡片」带一个「点开什么都没有」的 `执行详情` 面板是冗余
+    （用户 2026-09-21 反馈 #4）。
+
+    ⚠️ **回合卡（native 帧 / 终态 patch / 切卡封旧卡 / `/stop` 重绘）不许用它摘面板** ——
+    那些卡的面板是**状态色的唯一载体**（`card_status_header` 默认关）：没有过程数据时也要留住，
+    否则「状态改了、卡片没变、还不报错」（`test_stop_redraw_paints_an_empty_turn_yellow`
+    就是这条用户口径）。2026-09-21 终审 A 建议把这条判据也用到那三处终态写上；**未采纳**，
+    分歧与理由记在 `docs/audits/v0.7.2/audit-round1.md` 第七节。
+
+    ⚠️ **中间帧更不能用它**：卡片结构在建实体那一刻定死，中途摘面板 = 之后的工具行没有落脚处。
+    """
+    snap = _panel.snapshot(chat_id) or {}
+    return bool(snap.get("tools") or snap.get("rounds") or snap.get("reasoning"))
+
+
 def _log_outbound(kind: str, chat_id: str, text: str, message_id: str = "") -> None:
     """**出站留痕**（P5 可观测性）：记录「这一条到底以什么形态发出去的」。
 
@@ -2471,8 +2490,7 @@ class LarkDeckMixin:
                 # V4.15：非流式车道（`send()`/`edit_message()`）本条消息**没有任何过程数据**时
                 # 不出面板 —— 系统提示类（"Gateway online…" / 命令回复）过去会带一个
                 # 「执行详情」空面板，点开什么都没有（用户明确说冗余，要旧形态）。
-                _snap = _panel.snapshot(chat_id) or {}
-                if not (_snap.get("tools") or _snap.get("rounds") or _snap.get("reasoning")):
+                if not _panel_has_data(chat_id):
                     view.panel_enabled = False
                 if footer:
                     # 调用方已经算好的页脚优先（它是**当下**的值）；空则保留视图自己那份
@@ -3210,6 +3228,7 @@ class LarkDeckMixin:
             sealed_view = self._ld_cardview(
                 chat, sealed + "\n\n" + _i18n.t("stream.continued"), status="completed",
                 started=state.get("t0"), message_id=old_message_id)
+            # ⚠️ 同上：封旧卡也保留面板（它带着这一张卡的中止/完成色）。
             card = _cards.apply_text_profile(_cardview.entity_skeleton(sealed_view),
                                              _cfg_raw("text_profile"))
         else:
@@ -4007,6 +4026,9 @@ class LarkDeckMixin:
         if finalize:
             # V2 修复：先 cancel 心跳，再发终态 patch，避免 tick 在 patch 后落回 processing 面板。
             self._ld_heartbeat_cancel(key)
+            # ⚠️ **不摘面板**（与终审 A 的建议相反，理由记在 `_panel_has_data` 的 docstring 与
+            # `docs/audits/v0.7.2/audit-round1.md` 第七节）：回合卡的面板是**状态色的唯一载体**
+            # （`card_status_header` 默认关）⇒ 没有过程数据时也要留住它，否则「状态改了、卡片没变」。
             final_card = _cards.apply_text_profile(_cardview.entity_skeleton(view),
                                                    _cfg_raw("text_profile"))
             final_card["config"]["streaming_mode"] = False
@@ -4762,6 +4784,8 @@ class LarkDeckMixin:
                 stopped_view = self._ld_cardview(
                     chat, _sanitize_for_send(text) or " ", status="stopped")
                 stopped_view.footer = stopped_footer
+                # ⚠️ 中止重绘**必须留住面板**：它是黄边的唯一载体（空回合也要画黄 ——
+                # `test_stop_redraw_paints_an_empty_turn_yellow` 就是这条用户口径）。
                 card = self._ld_fit_structured_card(stopped_view)
                 # 中止重绘是**终态**：必须关掉流式态（legacy 分支的 `streaming=False` 一直在做，
                 # 结构化分支漏了 —— 审计 B 实测 `config.streaming_mode=true`）。

@@ -368,7 +368,15 @@ def panel_elements(view: PanelView) -> List[Dict[str, Any]]:
     return elements
 
 
-def panel_shell(view: PanelView, *, expanded: bool = False) -> Dict[str, Any]:
+def panel_shell(view: PanelView, *, expanded: Optional[bool] = None) -> Dict[str, Any]:
+    """外层面板的 collapsible_panel 结构。
+
+    ⚠️ `expanded` 默认 `None` = **取 `view.expanded`**（终审 B 实测的配置缺陷）：早先它的
+    形参默认写死 `False`，而两个调用方（`entity_skeleton` / `panel_partial`）都不传这个参数
+    ⇒ 用户把 `panel_expanded: true` 打开后，**结构化车道仍然是收起的**（配置被静默吞掉，
+    只有 legacy 渲染器正常）。显式传值仍然优先（推理轮/降载路径可以覆盖）。
+    """
+    _expanded = view.expanded if expanded is None else bool(expanded)
     return {
         "tag": "collapsible_panel",
         "element_id": "panel",
@@ -381,7 +389,7 @@ def panel_shell(view: PanelView, *, expanded: bool = False) -> Dict[str, Any]:
             "icon_position": "right",
             "icon_expanded_angle": -180,
         },
-        "expanded": expanded,
+        "expanded": bool(_expanded),
         "vertical_spacing": PANEL_SPACING,
         "padding": PANEL_PADDING,
         "border": {"color": view.border, "corner_radius": PANEL_RADIUS},

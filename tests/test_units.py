@@ -12985,6 +12985,14 @@ def test_v4_15_static_and_fit_lanes_never_reopen_disabled_panel_or_footer():
         card_on = raw._ld_fit_structured_card(v_on)
         assert [e.get("element_id") for e in card_on["body"]["elements"]] == \
             ["answer", "panel", "footer"], card_on
+        # ⚠️ **混合档**（终审 C 的绿变异 G1）：`panel=false` + `footer=true`（页脚是默认开的）
+        # 必须只剩正文 + 页脚 —— 把「页脚开关」写成 `and requested_panel` 时，六门禁全绿、
+        # 而用户把面板关掉就**连页脚一起丢**（状态/模型/ctx/时长全没了）。
+        v_f = adapter._cardview.CardView(answer="x")
+        v_f.panel_enabled, v_f.footer_enabled = False, True
+        card_f = raw._ld_fit_structured_card(v_f)
+        assert [e.get("element_id") for e in card_f["body"]["elements"]] == \
+            ["answer", "footer"], card_f
     finally:
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)
@@ -13078,10 +13086,16 @@ def test_v0_7_degraded_turn_never_reenters_the_structured_frame_path():
 
         type(raw)._ld_stream_frame_structured = _boom
         try:
+            # ⚠️ **finalize 两种取值都要跑**（终审 C 的绿变异 G2：把判据写成
+            # `== "degraded" and not finalize` 时六门禁全绿 —— 降级的**收尾帧**又回到
+            # 结构化 CardKit 写路径，对已关会话每帧失败/重试，最终帧还有 fail-open 风险）。
             _run(raw.send_stream_frame("降级后的帧", chat_id=chat, turn_id=turn))
+            _run(raw.send_stream_frame("降级后的收尾", finalize=True,
+                                       chat_id=chat, turn_id=turn))
         finally:
             type(raw)._ld_stream_frame_structured = orig
-        assert not called, "degraded 回合又进了结构化元素通道（降级安全网失效）"
+        assert len(called) == 0, \
+            f"degraded 回合（含 finalize）又进了结构化元素通道（降级安全网失效）：{called}"
     finally:
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
@@ -13136,6 +13150,90 @@ def test_install_sh_files_list_matches_the_runtime_modules():
         f"install.sh 的 FILES 与实际运行文件不一致（--copy 模式会装出残缺插件）："
         f"缺={sorted(set(actual) - set(declared))} 多={sorted(set(declared) - set(actual))}")
     assert "core/cardview.py" in declared, "cardview 是运行模块，必须在 FILES 里"
+
+
+def test_v4_15b_terminal_writes_keep_the_status_panel_even_without_process_data():
+    """回合卡的**终态写**必须留住面板 —— 它是状态色的唯一载体。
+
+    ⚠️ 2026-09-21 终审 A 建议把 V4.15「没有过程数据就不出面板」也用到 native 终态 patch /
+    切卡封旧卡 / `/stop` 重绘三处。**未采纳**（分歧与理由见
+    `docs/audits/v0.7.2/audit-round1.md` 第七节）：`card_status_header` 默认关 ⇒ 面板边框是
+    **唯一**的状态色载体，摘掉它 = 用户看不到完成绿/出错红/中止黄 ——
+    `test_stop_redraw_paints_an_empty_turn_yellow` 记的就是这条用户口径（「状态改了、
+    卡片没变、还不报错」是最怕的失败形态）。
+
+    V4.15 的适用范围是**静态回退车道**（系统提示 / 命令回复这类「不属于某一回合」的卡），
+    那条由 `test_v4_15_static_and_fit_lanes_never_reopen_disabled_panel_or_footer` 钉住。
+    """
+    # ① native 收尾整卡：没有过程数据，但 panel 必须在（带着状态色）
+    chat, turn = "oc_v415b", "t1"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        assert _run(raw.send_stream_frame("正文", chat_id=chat, turn_id=turn))
+        # 收尾前挂一个**调用记录器**：`_ld_heartbeat_cancel` 必须被真的调到（只看
+        # `_LD_HEARTBEATS` 空不空是**空真** —— 这条路径根本没起过心跳时它永远为空）。
+        cancelled = []
+        _orig_cancel = raw._ld_heartbeat_cancel
+        raw._ld_heartbeat_cancel = lambda key: (cancelled.append(key), _orig_cancel(key))
+        assert _run(raw.send_stream_frame("正文完", finalize=True, chat_id=chat, turn_id=turn))
+        assert f"{chat}:{turn}" in cancelled, \
+            f"收尾整卡发出前必须先 cancel 掉这个回合的心跳（变异 V2-1 的形态）：{cancelled}"
+        finals = [c for c in (calls.get("patch_cards") or [])
+                  if not c.get("config", {}).get("streaming_mode", True)]
+        assert finals, "前提：必须走收尾整卡 patch（否则这一格什么都没验）"
+        cards_by_id = {e.get("element_id"): e for e in finals[-1]["body"]["elements"]}
+        assert "panel" in cards_by_id, \
+            f"终态卡丢了面板 = 丢了状态色（用户看不出完成/出错）：{list(cards_by_id)}"
+        assert cards_by_id["panel"]["border"]["color"] == "green", cards_by_id["panel"]["border"]
+        # 终态必须**先 cancel 心跳**：否则心跳在整卡 patch 之后还会再写一次 processing 面板
+        # （变异 `V2-1` 实测：结构化终态这条路径原先**没有断言**，target-only 下判 🟢）。
+        assert f"{chat}:{turn}" not in adapter._LD_HEARTBEATS, \
+            "收尾整卡发出前必须先 cancel 掉这个回合的心跳" 
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+    # ② `/stop` 重绘：空回合也必须画上黄边（黄边只能在面板上）
+    chat2, turn2 = "oc_v415c", "t2"
+    raw2, calls2, target_cls2, old_reqs2, saved2, old_interval2 = _v41_setup(chat2)
+    try:
+        ups = _wire_patch(raw2)
+        assert _run(raw2.send_stream_frame("", chat_id=chat2, turn_id=turn2))
+        assert _run(raw2.send_stream_frame("正文", chat_id=chat2, turn_id=turn2))
+        n_before = len(ups)
+        _run(raw2.interrupt_session_activity("sk-v415c", chat2))
+        assert len(ups) == n_before + 1, "前提：中止必须真的重绘一次"
+        body = json.loads(ups[-1]["content"])
+        panel = [e for e in body["body"]["elements"] if e.get("element_id") == "panel"]
+        assert panel, "空回合的中止重绘也必须留下面板（否则黄边无处安放）"
+        assert panel[0]["border"]["color"] == "yellow", panel[0]["border"]
+    finally:
+        _v41_teardown(raw2, target_cls2, old_reqs2, saved2, old_interval2, chat2)
+
+
+def test_v4_51_panel_expanded_config_reaches_the_structured_card():
+    """`panel_expanded: true` 必须在**结构化**车道生效（终审 B 实测：被静默吞掉）。
+
+    病：`cardview.panel_shell(view, *, expanded=False)` 把形参默认写死 `False`，而两个调用方
+    （`entity_skeleton` / `panel_partial`）都不传这个参数 ⇒ 用户打开 `panel_expanded` 后，
+    **结构化卡片仍然是收起的**（只有 legacy 渲染器正常）。96 个配置组合里唯一的不一致项。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    try:
+        for flag in (True, False):
+            adapter.configure(panel_expanded=flag)
+            view = _make()._ld_cardview("oc_v451", "答案")
+            card = adapter._cardview.entity_skeleton(view)
+            panel = [e for e in card["body"]["elements"]
+                     if e.get("element_id") == "panel"][0]
+            assert panel["expanded"] is flag, \
+                f"entity 里 panel_expanded={flag} 没生效：{panel['expanded']}"
+            partial = adapter._cardview.panel_partial(view.panel)
+            assert partial["expanded"] is flag, \
+                f"panel_partial 里 panel_expanded={flag} 没生效：{partial['expanded']}"
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
 
 
 def main() -> int:

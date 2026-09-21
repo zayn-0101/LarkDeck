@@ -107,3 +107,44 @@ C2 另有两条「判定力是假的」观察，如实记下：
 * 目标门禁直跑判**红**有效、判**绿**不记账（绿的留给完整模式复核）⇒ 不牺牲「至少一门红」契约；
 * **继承只对生产代码区域做指纹、不对测试套件做** —— 残余风险由**周期性全量直跑**兜底
   （`full_audit_at` 为空/过期即补跑，不阻塞发布；本轮已在低负载后台启动一次）。
+
+## 七、发布前终审（A/B/C，2026-09-21 深夜）
+
+三路终审都在 `95af186` 的**冻结副本**上独立复现（原仓库当时被并发写入者推进，审计纪律正确）。
+结论：**各自都找到真问题**，逐条收口如下。
+
+### 审计 B（用户可见效果）→ 1 条配置缺陷
+
+| 发现 | 证据 | 收口 |
+| --- | --- | --- |
+| `panel_expanded=true` 在 **structured** 引擎被静默吞掉（96 个配置组合里唯一的不一致） | `p5b.py`：`view.panel.expanded=True / panel_shell.expanded=False / panel_partial.expanded=False`，而 legacy 正常 | `panel_shell(view, *, expanded=None)` 改为默认取 `view.expanded`；新增 `test_v4_51` + 变异 `V4-53` 实红 |
+| 五件事本体（页脚/加载/图标/长回合/澄清）+ 96 组合矩阵其余项 | 逐条命令与输出见其报告 | 通过（记录在 `release-evidence.md`） |
+| 嵌套面板真机渲染 | 结构证据 + 真机探针已发 | 待用户回话（不得写成已验证） |
+
+### 审计 A（代码正确性）→ 3 条（1 条未采纳，理由见下）
+
+| 发现 | 证据 | 收口 |
+| --- | --- | --- |
+| 账本「测试侧指纹」不含 helper/fixture ⇒ 只改 `tests/write_golden_trace.py` 就能让 `CK25` 变绿而 `--delta` 仍跳过 | 反例四元组完整 | 新增 `_helper_fp()`（`write_golden_trace.py` + golden 夹具 + 两份契约 JSON），记账与跳过都要求它一致 |
+| `--upgrade-inherited` / full 模式被 `MUTATIONS` 里一条 `expect==""` 的条目挡住（`full_audit_at` 永远刷不上；且构造出「只有 inherited 也刷戳」的伪造路径） | `-k 'C-对照：structured'` exit 1；stub 反例 | 该条目移入 `CONTROLS`；`_shape_error` **禁止** `MUTATIONS` 出现空 expect；`_full` 要求「跑满所有有 expect 的变异」 |
+| 45s 超时提示写死「>120s」 | grep | 抽 `_GATE_TIMEOUT_S`，文案用它 |
+| **建议把 V4.15「无数据不出面板」也用到 native 终态 / 切卡 / `/stop`** | probe：空回合 finalize 仍带 `collapsible_panel` | ⚠️ **未采纳**（分歧记录）：回合卡的面板是**状态色的唯一载体**（`card_status_header` 默认关）⇒ 摘掉它 = 用户看不到完成绿/出错红/中止黄，正是 `test_stop_redraw_paints_an_empty_turn_yellow` 记录的用户口径「状态改了、卡片没变、还不报错」。V4.15 的适用范围明确为**静态回退车道**（系统提示/命令回复这类「不属于某一回合」的卡）。**修改**：`_panel_has_data()` 抽成公共判据并注明适用范围；新增 `test_v4_15b` 把「终态留住面板（带状态色）」钉成显式断言（native 收尾绿边 + `/stop` 黄边）。 |
+
+### 审计 C（反假绿）→ 2 条绿变异 + 3 条协议逃逸
+
+| 发现 | 证据 | 收口 |
+| --- | --- | --- |
+| **绿变异 G1**：`view.footer_enabled = bool(footer_on and requested_panel)` ⇒ `panel=false + footer=true`（页脚默认开）时连页脚一起丢，六门禁全绿 | 行为探针：baseline `['answer','footer']` vs mutant `['answer']` | `test_v4_15` 增**混合档**断言（③b）；变异 `V4-54` 实红 |
+| **绿变异 G2**：degraded 安全网写成 `... and not finalize` ⇒ 降级回合的**收尾帧**又回结构化元素通道，六门禁全绿 | `degraded + finalize=True`：baseline `structured_called=False` vs mutant `True` | `test_v0_7` 对 `finalize in (False, True)` 各跑一遍；变异 `V0-7b` 实红 |
+| **协议逃逸 H1**：`_anchor_region` 只看 old 的**第一行** ⇒ 22/470 条记录的指纹取到别处（`R7-16` 实证：`--delta` 报「已验」而门禁实际红） | 完整四元组 | `_anchor_region` 改为按**完整 old** 定位；`_delta_split` 跳过前先跑 `_anchor_problem`（脱节/歧义一律重跑）⇒ 那 22 条已全部重跑并实红 |
+| **协议逃逸 H2**：`MUTATIONS` 里 `expect==""` 的条目永远不跑却被计入「已跳过」 | `--delta -k 'C-对照'` exit 0；ledger 只有 470 条而 status 报 471 | 同审计 A 的一条：移入 `CONTROLS` + `_shape_error` 禁止 + `_full` 覆盖校验 |
+| **协议逃逸 H3**：`--seed-inherited` 可以给「ref 清单里根本还没有的变异」盖章（蛰伏路径） | 构造 | `_seed_inherited` 增加资格校验：该 ref 的 `mutate_check.py` 里必须已有同名条目 |
+
+### 三条终审一致确认的「假绿」新形态（值得写进 `lessons`）
+
+1. **「配置开关被另一个开关绑死」**（G1）：混合档（A=false + B=true）没人测 ⇒ 一个 `and` 写错就静默丢字段。
+   ⇒ 断言必须覆盖**每个开关的独立生效**，而不只是「全开/全关」。
+2. **「安全网只覆盖一半路径」**（G2）：`degraded` 只在非 finalize 生效 ⇒ 收尾帧漏网。
+   ⇒ 判据要在**所有分支**上验证，不能只测最常走的那条。
+3. **「指纹锚点取错位置」**（H1）：跳过判据依赖的锚点定位若只按首行匹配，就会在**另一个同形代码块**上算指纹 ⇒ 跳过永远成立。
+   ⇒ 凡「用位置算指纹」的地方，必须用**完整原文**定位，并在跳过前复核锚点唯一。
