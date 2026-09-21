@@ -2362,6 +2362,31 @@ MUTATIONS = [
      '        max_steps = 20',
      '        max_steps = 10 ** 9  # V4-1 mutated',
      "test_units"),
+    # ------------------------------------------------------------- V4.1 并发收口（面板 200770）
+    # 真机证据（2026-09-21 10:40:01 · 日志里只剩一个 `code=200770`）：探针
+    # `tests/probe_concurrent.py` 复现出 msg = `this UUID has been recently consumed`，
+    # 并给出对照「同 seq 不同 uuid / 纯并发 ⇒ 300317」（300317 是卡级死法 ⇒ 会整卡降级）。
+    # 五条分别对应：帧路径不拿锁 / 心跳不跳过 / 心跳序号算错 / 心跳不回写账本 / 丢 msg。
+    ("V4-2-帧路径不拿回合写锁（心跳与帧同时算号）", "core/adapter.py",
+     '        async with self._ld_card_lock(key):',
+     '        if True:  # V4-2 mutated',
+     "test_units"),
+    ("V4-3-心跳不跳过持锁拍（排队写同号）", "core/adapter.py",
+     '        if lock.locked():\n            return "skip"',
+     '        if False:  # V4-3 mutated\n            return "skip"',
+     "test_units"),
+    ("V4-4-心跳序号不加一（原地重写旧号）", "core/adapter.py",
+     '            seq = _ck_seq(state) + 1',
+     '            seq = _ck_seq(state)  # V4-4 mutated',
+     "test_units"),
+    ("V4-5-心跳不回写账本（下一拍复用同一号）", "core/adapter.py",
+     '            updated["ck_seq"] = seq',
+     '            updated["ck_seq"] = state.get("ck_seq")  # V4-5 mutated',
+     "test_units"),
+    ("V4-6-装饰失败日志不带 msg（真机只剩一个码）", "core/adapter.py",
+     '[_CkOp("panel", "", _CK_ROLE_PANEL)], res.code, msg=res.msg)',
+     '[_CkOp("panel", "", _CK_ROLE_PANEL)], res.code, msg="")  # V4-6 mutated',
+     "test_units"),
 
 
 

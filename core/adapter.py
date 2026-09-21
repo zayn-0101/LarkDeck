@@ -353,6 +353,16 @@ _CARD_DEATH_CODES = frozenset({300309, 300313, 300317})
 #:     id、照样写得进去 ⇒ 只标死被点名的那个，**不降级**（保住打字机）。
 _CARD_DEATH_DECOR_CODES = frozenset({300309, 300317})
 
+#: ⚠️ **``200770`` 不属于上面任何一档**（2026-09-21 真机实测 + 探针复现，V4.1）：
+#: ``code=200770 · msg='ErrMsg: this UUID has been recently consumed; '`` —— 含义是
+#: **同一张卡上出现了两份 (seq, uuid) 相同、内容不同的写**。uuid 由 ``(card_id, seq)``
+#: 推出（``ld-{card_id}-s{seq}``），所以这个码只可能来自**我们自己的并发算号**
+#: （帧路径 + 工作心跳同时从一份 state 算 ``seq = _ck_seq + 1``）。
+#: ⇒ 处置：**不降级**（卡是好的、正文通道不受影响）、按普通装饰失败留痕（带 msg）。
+#: ⇒ 成因与收口见 `_ld_stream_frame_structured` 的 docstring（回合级写锁）。
+#: 相关：两份写「同时在路上、序号先后到达」拿到的是 ``300317``（``sequence number
+#: compare failed``），那个码**在** `_CARD_DEATH_DECOR_CODES` 里 ⇒ 同一把锁也是它的解药。
+
 #: **写接口可以安全重试**的错误码：只有「服务端明确拒绝、什么都没执行」的频率限制类。
 #: 为什么必须与 `_TRANSIENT_CODES` 分开：`300309`（流式会话已关闭）与 `300317`（序号不匹配）
 #: 是**结构性状态**，把同一个请求原样重发**不可能成功** —— 重试只会白等 ~1 秒再 fail-open，
@@ -1403,12 +1413,16 @@ def _log_ck_panel_write_failed_once() -> None:
 
 
 def _log_ck_decor_write_failed_once(ops: Sequence["_CkOp"], code: int = 0,
-                                    blamed: Optional[str] = None) -> None:
+                                    blamed: Optional[str] = None, msg: str = "") -> None:
     """装饰元素（面板/页脚）写失败的限流告警（60 秒一条）。
 
     为什么单列一条而不是并进面板那条：装饰失败**不 fail-open**（见 `_ld_ck_apply`），
     所以卡片会继续逐字长大、只是那一段装饰冻结 —— 这种「看起来正常但其实坏了」的形态
     必须留痕，否则真机上完全无迹可寻。
+
+    ⚠️ **必须带上服务端的 ``msg``**（V4.1）：真机 2026-09-21 那次只留了 ``code=200770``，
+    而这个码不在任何已知码表里 —— 真正的原因（``this UUID has been recently consumed``）
+    只在 ``msg`` 里。码是分类、msg 才是事实，排查时少一个就得多跑一次真机。
     """
     now = time.monotonic()
     if now - getattr(_log_ck_decor_write_failed_once, "_at", 0.0) < 60.0:
@@ -1417,9 +1431,11 @@ def _log_ck_decor_write_failed_once(ops: Sequence["_CkOp"], code: int = 0,
     ids = "、".join(op.element_id for op in ops)
     scope = (f"服务端点名的坏元素是 {blamed} ⇒ 只标死它" if blamed
              else "返回码没点名坏元素 ⇒ 整批标死（解析不出来不等于没坏）")
-    logger.warning("[larkdeck] CardKit 装饰写入失败 code=%s（%s）—— 本帧继续、正文不受影响；"
-                   "标死：%s；%s；这些元素本回合内不再尝试，收尾帧的整卡 patch 会补齐",
-                   code, ids, scope, "卡片会停在「正文在长、装饰冻结」的状态")
+    logger.warning("[larkdeck] CardKit 装饰写入失败 code=%s（%s）msg=%r —— 本帧继续、"
+                   "正文不受影响；标死：%s；%s；这些元素本回合内不再尝试，"
+                   "收尾帧的整卡 patch 会补齐",
+                   code, ids, str(msg or ""), scope,
+                   "卡片会停在「正文在长、装饰冻结」的状态")
 
 
 def _ck_create_wall(card: Mapping[str, Any]) -> Optional[str]:
@@ -3321,33 +3337,19 @@ class LarkDeckMixin:
         _LD_HEARTBEATS[key] = task
 
     async def _ld_heartbeat_loop(self, chat: str, key: str, turn_id: str) -> None:
-        """Working 心跳：只更新面板 header 的耗时，终态必须 cancel（V2）。"""
+        """Working 心跳：只更新面板 header 的耗时，终态必须 cancel（V2）。
+
+        ⚠️ **心跳是第二个 CardKit 写者**（另一个是帧路径）。两者写的是同一个 ``panel`` 元素，
+        而序号/uuid 都从 ``state`` 里现算 ⇒ 撞车会拿到 ``200770``（uuid 重复消费）或
+        ``300317``（序号乱序，会被判成卡级死法）。收口全在 `_ld_heartbeat_tick`：
+        撞上锁就跳过这一拍、拿到锁后重读 state。见 `_ld_stream_frame_structured` 的
+        docstring（V4.1 真机实测）。
+        """
         try:
             while True:
                 await asyncio.sleep(_LD_HEARTBEAT_INTERVAL)
-                state = self._ld_stream_get(key)
-                if not state or state.get("engine") != "structured":
+                if await self._ld_heartbeat_tick(chat, key) == "stop":
                     return
-                if state.get("engine_stamp") == "degraded" or not state.get("card_id"):
-                    return
-                view = self._ld_cardview(
-                    chat, str(state.get("last_rendered_body") or ""), status="processing")
-                elapsed = max(0.0, time.monotonic() - float(state.get("t0") or time.monotonic()))
-                view.panel.title = (f"💭 思考 {elapsed:.1f}s · 🛠️ 工具执行 · "
-                                    f"{len(view.panel.tools)} 步")
-                partial = _cardview.panel_partial(view.panel)
-                signature = json.dumps(partial, sort_keys=True, ensure_ascii=False)
-                if signature == state.get("ck_panel_sig"):
-                    continue
-                seq = _ck_seq(state) + 1
-                res = await self._ld_ck_partial(
-                    str(state["card_id"]), "panel", partial, seq)
-                if res.ok:
-                    updated = dict(state)
-                    updated["ck_panel_sig"] = signature
-                    updated["ck_seq"] = seq
-                    _ck_window_note(updated, time.monotonic())
-                    self._ld_stream_put(key, updated)
         except asyncio.CancelledError:
             return
         except Exception:
@@ -3355,6 +3357,46 @@ class LarkDeckMixin:
         finally:
             if _LD_HEARTBEATS.get(key) is asyncio.current_task():
                 _LD_HEARTBEATS.pop(key, None)
+
+    async def _ld_heartbeat_tick(self, chat: str, key: str) -> str:
+        """一拍心跳（返回值的四种取值就是这一拍的全部可能结局，测试直接钉这四档）:
+
+        * ``"skip"``      —— 帧路径正持着回合写锁（**不排队**：心跳只是补「模型不出字时
+          耗时跳秒」，晚一拍无害；排队反而会把写窗口拖长）。
+        * ``"stop"``      —— 回合状态没了 / 不是结构化 / 已降级 ⇒ 心跳该收工。
+        * ``"unchanged"`` —— 面板签名与已写成功的那份一致 ⇒ 这一拍没有值得发的写。
+        * ``"wrote"``     —— 真的写了一次 panel（序号从**锁内重读**的 state 里取）。
+        """
+        lock = self._ld_card_lock(key)
+        if lock.locked():
+            return "skip"
+        async with lock:
+            state = self._ld_stream_get(key)      # ⚠️ 锁内重读：锁外那份可能已被帧路径推进
+            if not state or state.get("engine") != "structured":
+                return "stop"
+            if state.get("engine_stamp") == "degraded" or not state.get("card_id"):
+                return "stop"
+            view = self._ld_cardview(
+                chat, str(state.get("last_rendered_body") or ""), status="processing")
+            elapsed = max(0.0,
+                          time.monotonic() - float(state.get("t0") or time.monotonic()))
+            view.panel.title = (f"💭 思考 {elapsed:.1f}s · 🛠️ 工具执行 · "
+                                f"{len(view.panel.tools)} 步")
+            partial = _cardview.panel_partial(view.panel)
+            signature = json.dumps(partial, sort_keys=True, ensure_ascii=False)
+            if signature == state.get("ck_panel_sig"):
+                return "unchanged"
+            seq = _ck_seq(state) + 1
+            res = await self._ld_ck_partial(
+                str(state["card_id"]), "panel", partial, seq)
+            if not res.ok:
+                return "stop" if res.code in _CARD_DEATH_DECOR_CODES else "unchanged"
+            updated = dict(state)
+            updated["ck_panel_sig"] = signature
+            updated["ck_seq"] = seq
+            _ck_window_note(updated, time.monotonic())
+            self._ld_stream_put(key, updated)
+            return "wrote"
 
 
     @staticmethod
@@ -3436,12 +3478,61 @@ class LarkDeckMixin:
         return _CkResult(_ld_response_code(resp) == 0, _ld_response_code(resp),
                          str(getattr(resp, "msg", "") or ""))
 
+    def _ld_card_lock(self, key: str) -> "asyncio.Lock":
+        """取**回合级** CardKit 写锁（同一回合的写串行；见 `_ld_stream_frame_structured`）。
+
+        为什么锁键是回合 key 而不是 card_id：``_ld_ck_split`` 会在回合中途换卡，而
+        「同一回合的写串行」才是保证（新卡的 seq 从 0 重来，撞上旧卡的写也不会串行化）。
+
+        ⚠️ 用 ``getattr`` 懒建而不是在 ``_ld_setup`` 里预置：本文件有好几条「构造期异常
+        被上层吞掉」的路径（见 `_ld_known` 的说明），锁表缺了只该退化成「没有锁」这一种
+        可解释状态，不该在帧路径上抛 ``AttributeError``。
+        """
+        locks = getattr(self, "_ld_card_locks", None)
+        if locks is None:
+            locks = {}
+            self._ld_card_locks = locks
+        lock = locks.get(key)
+        if lock is None:
+            lock = locks[key] = asyncio.Lock()
+        return lock
+
     async def _ld_stream_frame_structured(self, text: str, *, finalize: bool,
                                           chat_id: Optional[str], reply_to: Optional[str],
                                           turn_id: str) -> bool:
-        """V1 结构化流式帧（canary）：seed 建结构化实体卡，后续帧替换面板 + 写正文。"""
+        """V1 结构化流式帧（canary）的**串行化外壳**：整个帧体在一把按回合的异步锁里。
+
+        为什么锁是**必须**的（2026-09-21 真机实测收口 · V4.1）：``elem_id=panel`` 是唯一
+        会被**两条路径**写的元素 —— 帧路径（本方法）与工作心跳（``_ld_heartbeat_loop``）。
+        两条路径都从同一份 ``state`` 里算 ``seq = _ck_seq(state) + 1``，而两次写入之间隔着
+        ``await`` ⇒ 同一毫秒可能发出**两份 (seq, uuid) 一样、内容不同**的写。飞书对重复
+        uuid 的应答是 ``code=200770 · ErrMsg: this UUID has been recently consumed``
+        （``tests/probe_concurrent.py`` 实测复现）；而「两份写同时在路上、序号先后到达」
+        拿到的是 ``300317``（``sequence number compare failed``）—— 那个码在
+        `_CARD_DEATH_DECOR_CODES` 里，**会被判成卡级死法、把整卡降级**。
+        一把锁同时关掉这两个洞：写窗口（算 seq → 发写 → 记账）永远只有一个持有者。
+
+        ⚠️ 锁键是**回合 key**（``chat:turn_id``，与 ``_ld_streams`` 同一把尺子），不是
+        card_id —— 切卡（``_ld_ck_split``）之后 card_id 会变，而「同一回合的写」仍必须串行。
+        ⚠️ 心跳不排队：它撞上锁时**跳过这一拍**（见 `_ld_heartbeat_loop` 的 ``locked()`` 分支）。
+        """
         chat = str(chat_id or "").strip()
         key = f"{chat}:{turn_id}" if turn_id else chat
+        async with self._ld_card_lock(key):
+            return await self._ld_stream_frame_structured_locked(
+                text, finalize=finalize, chat=chat, key=key, reply_to=reply_to,
+                turn_id=turn_id)
+
+    async def _ld_stream_frame_structured_locked(self, text: str, *, finalize: bool,
+                                                 chat: str, key: str,
+                                                 reply_to: Optional[str],
+                                                 turn_id: str) -> bool:
+        """V1 结构化流式帧（canary）：seed 建结构化实体卡，后续帧替换面板 + 写正文。
+
+        ⚠️ 本方法**必须在 `_ld_card_lock(key)` 内被调用**（唯一调用方是上面那个外壳）：
+        它从 ``state`` 里算序号并发出 CardKit 写，而「序号/uuid 不撞车」这件事靠的正是
+        「同一回合的写串行」—— 把这里挪到锁外，``200770`` 与 ``300317`` 会立刻回来。
+        """
         state = self._ld_stream_get(key)
         now = time.monotonic()
         if state is None:
@@ -3518,7 +3609,7 @@ class LarkDeckMixin:
                         _context.note_frame_ok()
                         return True
                 _log_ck_decor_write_failed_once(
-                    [_CkOp("panel", "", _CK_ROLE_PANEL)], res.code)
+                    [_CkOp("panel", "", _CK_ROLE_PANEL)], res.code, msg=res.msg)
             else:
                 live["ck_panel_sig"] = signature
         footer_text = self._ld_frame_footer(state) or " "
@@ -4017,6 +4108,7 @@ class LarkDeckMixin:
                 ]
                 for other in stale[: max(1, _MAX_STREAMS // 4)]:
                     self._ld_streams.pop(other, None)
+                    self._ld_card_lock_drop(other)
                 if len(self._ld_streams) >= _MAX_STREAMS:
                     # 一个都没到泄漏阈值 = 真的并发了很多活跃回合。软超限：照常插入、
                     # 只告警（宁可多留状态，也不能踢活跃流造重复卡）；硬上限兜底内存。
@@ -4027,6 +4119,7 @@ class LarkDeckMixin:
                                                                            kv[1].get("t0", 0.0))))
                         for other, _ in oldest[: max(1, _MAX_STREAMS // 4)]:
                             self._ld_streams.pop(other, None)
+                            self._ld_card_lock_drop(other)
                         logger.error("[larkdeck] 并发流已达硬上限 %d，被迫淘汰最旧的回合"
                                      "（可能有回合的卡片停在流式态）",
                                      _MAX_STREAMS * _STREAM_HARD_CAP_FACTOR)
@@ -4038,9 +4131,18 @@ class LarkDeckMixin:
             state["alive_at"] = time.monotonic()
             self._ld_streams[key] = state
 
+    def _ld_card_lock_drop(self, key: str) -> None:
+        """丢掉某个回合的写锁（回合结束/被淘汰时调用；锁正被持有也安全，见 `_ld_stream_pop`）。"""
+        locks = getattr(self, "_ld_card_locks", None)
+        if isinstance(locks, dict):
+            locks.pop(str(key), None)
+
     def _ld_stream_pop(self, key: str) -> None:
         with self._ld_lock:
             self._ld_streams.pop(key, None)
+        # 回合结束 ⇒ 丢掉这一回合的写锁（锁对象若正被持有，`async with` 仍会正常释放它，
+        # 只是从锁表里摘掉：下一回合重建一把新的，绝不与旧回合共用）。
+        self._ld_card_lock_drop(key)
 
     # ------------------------------------------------- 显示 chrome（工具行是否进正文）
     def format_tool_event(self, event: Any, *, mode: str = "all",

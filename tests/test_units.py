@@ -1277,8 +1277,11 @@ def _mk_cardkit_fake(*, fail_write_after=10 ** 9, create_ok=True, fail_answer_on
     class _CardRes:
         def batch_update(self, request):
             calls["writes"] += 1
+            # ⚠️ 第 3 项是 **uuid**（V4.1 加的）：200770 那条竞态的断言全靠它 ——
+            # 「同回合两条写撞车」的真机形状就是两份 (seq, uuid) 相同的写。
             calls["batch"].append((json.loads(request.request_body.actions),
-                                   request.request_body.sequence))
+                                   request.request_body.sequence,
+                                   request.request_body.uuid))
             if fail_batch:
                 # 码可配：`300309`（结构性死法）与 `99991400`（限流类 ⇒ 会退避重试）
                 # 在 R2 之后的处置**不一样**，用例要能分别构造；msg 也可配（R5 的
@@ -1328,7 +1331,8 @@ def _mk_cardkit_fake(*, fail_write_after=10 ** 9, create_ok=True, fail_answer_on
         def content(self, request):
             calls["writes"] += 1
             calls["content"].append((request.element_id, request.request_body.content,
-                                     request.request_body.sequence))
+                                     request.request_body.sequence,
+                                     request.request_body.uuid))
             # ⚠️ 计数必须**跨 batch 与 content 合计**：两者共用同一个序号账本
             # （R2 起每帧 = 一次 batch + 一次 content），只看 content 的话
             # 「第 3 次写入」永远不会发生（R2 落地时这条前提当场红了）。
@@ -11489,6 +11493,202 @@ def test_v4_structured_panel_budget_trims_old_steps():
         assert adapter._cards.count_elements(card) <= 180, adapter._cards.count_elements(card)
     finally:
         panel.reset()
+
+
+def _v41_setup(chat: str, *, fail_batch: bool = False, fail_batch_code: int = 0,
+               fail_batch_msg: Any = None):
+    """V4.1 三个用例共用的脚手架：结构化 canary + 假 CardKit + 干净的配置/面板。"""
+    panel.reset()
+    context.reset()
+    saved_config = dict(adapter._CONFIG)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    raw = _make()
+    calls, client = _mk_cardkit_fake(fail_batch=fail_batch,
+                                     fail_batch_code=fail_batch_code,
+                                     fail_batch_msg=fail_batch_msg)
+    raw._client = client
+    target_cls = type(raw)
+    old_reqs = target_cls.__dict__.get("_ld_ck_requests")
+    adapter.configure(visual_engine="structured", native_transport="cardkit")
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    target_cls._ld_ck_requests = staticmethod(_fake_ck_requests)
+    return raw, calls, target_cls, old_reqs, saved_config, old_interval
+
+
+def _v41_teardown(raw, target_cls, old_reqs, saved_config, old_interval, chat: str) -> None:
+    if isinstance(getattr(raw, "_ld_card_locks", None), dict):
+        raw._ld_card_locks.clear()
+    raw._ld_heartbeat_cancel_chat(chat)
+    if old_reqs is None:
+        delattr(target_cls, "_ld_ck_requests")
+    else:
+        target_cls._ld_ck_requests = old_reqs
+    adapter._STREAM_MIN_INTERVAL = old_interval
+    adapter._CONFIG.clear()
+    adapter._CONFIG.update(saved_config)
+    panel.reset()
+    context.reset()
+
+
+def test_v4_1_inflight_frame_write_is_not_raced_by_heartbeat():
+    """V4.1：帧路径的 panel 写**在飞**时，心跳不许拿同一份 state 再算一次序号。
+
+    真机证据（2026-09-21 10:40:01，日志里只剩一个码）：``code=200770``
+    ``ErrMsg: this UUID has been recently consumed`` —— 同回合两条写者（帧路径 + 工作心跳）
+    从**同一份 state** 里算 ``seq = _ck_seq + 1``，于是发出两份 (seq, uuid) 一样、内容不同的写。
+    探针 ``tests/probe_concurrent.py`` 把三种冲突各打了一轮，码表是实测的：
+    「同 seq 同 uuid」⇒ 200770；「同 seq 不同 uuid / 纯并发」⇒ 300317，而 300317 在
+    `_CARD_DEATH_DECOR_CODES` 里 ⇒ 会被判成**卡级死法、整卡降级**（比 200770 更糟）。
+
+    复现手法**确定性地**卡在那一刻：把 ``_ld_ck_partial`` 换成「发出去了、还没回来」的形状
+    （``started`` / ``release`` 两个事件），此时帧路径正持着回合写锁 —— 心跳必须 ``skip``，
+    不许再发第二笔同号写。
+    """
+    chat, key, turn = "oc_v41race", "oc_v41race:t1", "t1"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    try:
+        assert _run(raw.send_stream_frame("hello", chat_id=chat, turn_id=turn))
+        panel.bind_chat_session(chat, "sess_race")
+        panel.record_tool_started("sess_race", "turn_race", "terminal",
+                                  {"command": "df -h"}, tool_call_id="tc-race")
+        orig_partial = raw._ld_ck_partial
+
+        async def _gated(card_id, element_id, partial, seq):
+            started.set()
+            await release.wait()          # 写已经发出、还没回来：也就是真机上的那扇窗
+            return await orig_partial(card_id, element_id, partial, seq)
+
+        raw._ld_ck_partial = _gated          # type: ignore[assignment]
+
+        async def _flow():
+            frame = asyncio.ensure_future(
+                raw.send_stream_frame("hello world", chat_id=chat, turn_id=turn))
+            await started.wait()             # 帧路径此刻正持锁、写还没回来
+            try:
+                raced = await asyncio.wait_for(
+                    raw._ld_heartbeat_tick(chat, key), timeout=1.0)
+            except asyncio.TimeoutError:
+                release.set()
+                raise AssertionError("帧写进行中心跳排队/重复写了（应当 skip 这一拍）")
+            release.set()
+            return raced, await frame
+
+        raced, frame_ok = _run(_flow())
+        assert raced == "skip", f"帧写进行中心跳必须跳过，实际 {raced!r}"
+        assert frame_ok
+        seqs = [item[1] for item in calls["batch"]] + [c[2] for c in calls["content"]]
+        uuids = [item[2] for item in calls["batch"]] + [c[3] for c in calls["content"]]
+        assert len(set(uuids)) == len(uuids), f"uuid 撞车（真机就是 200770）: {uuids}"
+        assert len(set(seqs)) == len(seqs), f"序号复用（真机是 300317）: {seqs}"
+        assert sorted(seqs) == list(range(1, len(seqs) + 1)), f"序号不连续: {seqs}"
+        assert key in getattr(raw, "_ld_card_locks", {}), "写锁表键必须就是 `chat:turn_id`"
+    finally:
+        release.set()
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v4_1_heartbeat_tick_skips_while_frame_write_in_flight():
+    """V4.1：帧路径持锁时心跳**跳过这一拍**（不排队），拿到锁后从**新鲜 state** 取序号。
+
+    三档语义各断言一次：``skip`` → ``wrote``（seq 必须接着账本走）→ 再 ``wrote``（seq 继续 +1）。
+    第二拍之前手工把 ``ck_seq`` 改成 7，模拟「帧路径刚刚推进过账本」：
+    心跳若读锁外那份 stale state，就会去写已经被用掉的序号 ⇒ 真机上的 ``300317``。
+    """
+    chat, key, turn = "oc_v41hb", "oc_v41hb:t1", "t1"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    try:
+        assert _run(raw.send_stream_frame("hello", chat_id=chat, turn_id=turn))
+
+        async def _flow() -> tuple:
+            lock = raw._ld_card_lock(key)
+            release = asyncio.Event()
+
+            async def _holder():
+                async with lock:
+                    await release.wait()
+
+            holder = asyncio.ensure_future(_holder())
+            await asyncio.sleep(0)                    # 让 holder 先拿到锁（一次调度即可）
+            try:
+                skipped = await asyncio.wait_for(
+                    raw._ld_heartbeat_tick(chat, key), timeout=1.0)
+            except asyncio.TimeoutError:            # pragma: no cover - 变异用例专用
+                raise AssertionError("帧路径持锁时心跳**排队**了（应当跳过这一拍）")
+            finally:
+                release.set()
+                await holder
+            # 手动把账本推到 7：心跳必须从**锁内重读**的 state 取号 ⇒ 下一笔是 8
+            state = raw._ld_stream_get(key)
+            state["ck_seq"] = 7
+            state["ck_panel_sig"] = ""                # 逼它这一拍真的写
+            raw._ld_stream_put(key, state)
+            wrote = await raw._ld_heartbeat_tick(chat, key)
+            # 第二拍：把起点往前推 5 秒 ⇒ 标题里的耗时必然变（否则 0.0s 对 0.0s 会
+            # 走「签名没变 ⇒ 不写」那一档，测不到账本推进）
+            state = raw._ld_stream_get(key)
+            state["t0"] = time.monotonic() - 5.0
+            raw._ld_stream_put(key, state)
+            second = await raw._ld_heartbeat_tick(chat, key)
+            return skipped, wrote, second
+
+        skipped, wrote, second = _run(_flow())
+        assert skipped == "skip", f"持锁时心跳必须跳过，实际 {skipped!r}"
+        assert wrote == "wrote", f"锁释放后心跳应当写出去，实际 {wrote!r}"
+        hb_seqs = [item[1] for item in calls["batch"]][-2:]
+        assert hb_seqs == [8, 9], f"心跳序号必须接着账本走（8、9），实际 {hb_seqs}"
+        assert second == "wrote", second
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v4_1_duplicate_uuid_failure_is_not_card_death():
+    """V4.1：``200770``（uuid 重复消费）**不是卡级死法** —— 不许降级、正文必须照写。
+
+    它是**我们自己**的并发问题（已由回合级写锁收口），卡本身是好的：判成死法会把整条
+    元素通道降级回 patch 车道（打字机没了），代价远大于收益。
+    """
+    chat, key, turn = "oc_v41dup", "oc_v41dup:t1", "t1"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(
+        chat, fail_batch=True, fail_batch_code=200770,
+        fail_batch_msg="ErrMsg: this UUID has been recently consumed; ")
+    assert 200770 not in adapter._CARD_DEATH_DECOR_CODES, "200770 不该进卡级死法码表"
+    assert 200770 not in adapter._CARD_DEATH_CODES, "200770 不该进整卡死法码表"
+    adapter._log_ck_decor_write_failed_once._at = 0.0     # 解开 60s 限流，保证这次真的留痕
+    logged: list = []
+
+    class _RecLogger:
+        def warning(self, fmt, *args):
+            logged.append(fmt % args)
+
+        def info(self, *args, **kwargs):
+            return None
+
+        def debug(self, *args, **kwargs):
+            return None
+
+        def error(self, fmt, *args):
+            logged.append(fmt % args)
+
+    old_logger = adapter.logger
+    adapter.logger = _RecLogger()                        # type: ignore[assignment]
+    try:
+        assert _run(raw.send_stream_frame("hello", chat_id=chat, turn_id=turn))
+        panel.bind_chat_session(chat, "sess_dup")
+        panel.record_tool_started("sess_dup", "turn_dup", "terminal",
+                                  {"command": "df -h"}, tool_call_id="tc-dup")
+        assert _run(raw.send_stream_frame("hello world", chat_id=chat, turn_id=turn))
+        state = raw._ld_stream_get(key) or {}
+        assert not state.get("ck_degrade"), f"200770 不该降级: {state}"
+        assert state.get("engine_stamp") != "degraded", state
+        assert calls["patch"] == 0, f"降级才会同卡 patch 回退: {calls['patch']}"
+        answer_writes = [c for c in calls["content"] if c[0] == cards.CARDKIT_ANSWER_ID]
+        assert answer_writes and answer_writes[-1][1] == "hello world", answer_writes
+        assert any("200770" in line and "recently consumed" in line for line in logged), logged
+    finally:
+        adapter.logger = old_logger                       # type: ignore[assignment]
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
 
 def main() -> int:
