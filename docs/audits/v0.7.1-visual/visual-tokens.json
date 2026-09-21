@@ -26,7 +26,9 @@
     "header_vertical_align": "center",
     "icon_color": "grey",
     "expanded_default": false,
-    "footer_hr": true
+    "footer_hr": true,
+    "body_text_size": "normal",
+    "body_text_size_decision": "2026-09-21 真机截图：normal 与 normal_v2 客户端肉眼无差异；保持 compact/normal，避免 legacy output 漂移。"
   },
   "status": {
     "processing": {
