@@ -3144,6 +3144,13 @@ def _anchor_problem(rel: str, old: str, text: Optional[str] = None) -> Optional[
         return "锚点没找到（源码变了？）"
     if hits != 1:
         return f"锚点在 {rel} 里出现 {hits} 次（歧义：会改到别处）"
+        # ⚠️ **指纹侧守卫**（2026-09-21 终审 C 的 H1）：算区域指纹用的锚点必须**包含完整 old**。
+    # 早先 `_anchor_region` 只看 old 的第一行 ⇒ 22/470 条记录的指纹算在**另一个同形代码块**上，
+    # 于是「变异真的打进去、门禁真的红」而 `--delta` 照报「已验跳过」。这条守卫让同类改法立刻红。
+    region = _anchor_region(rel, old)
+    if region is None or old not in region:
+        return ("指纹锚点对不上：`_anchor_region` 取到的区域不含完整 old"
+                "（会算出别处代码的指纹 ⇒ `--delta` 误判「已验」）")
     return None
 
 
