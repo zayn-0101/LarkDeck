@@ -2387,6 +2387,21 @@ MUTATIONS = [
      '[_CkOp("panel", "", _CK_ROLE_PANEL)], res.code, msg=res.msg)',
      '[_CkOp("panel", "", _CK_ROLE_PANEL)], res.code, msg="")  # V4-6 mutated',
      "test_units"),
+    # ---------------------------------------------------------- V4.2 页脚（时长 / 短码 / 状态词汇）
+    # 真机截图（2026-09-21 10:2x）：`✅ 已完成 · 🧠 deepseek-flash · ctx 20.5k/1m · 2%` ——
+    # 用户指定的顺序是「状态 → 时长 → 模型 → ctx → 短码」，中间少 `⏱`、末尾少 `🔖`。
+    ("V4-7-结构化页脚不传 started（时长那一段消失）", "core/adapter.py",
+     '        base_footer = self._ld_footer(chat_id=chat, started=started, status=status) or ""',
+     '        base_footer = self._ld_footer(chat_id=chat, status=status) or ""  # V4-7 mutated',
+     "test_units"),
+    ("V4-8-结构化页脚不挂短码（截图与日志对不上号）", "core/adapter.py",
+     '            footer=f"{base_footer} · \\U0001f516 {trace}" if trace else base_footer,',
+     '            footer=base_footer,  # V4-8 mutated',
+     "test_units"),
+    ("V4-9-页脚状态词表不认 completed（状态段静默消失）", "core/adapter.py",
+     '        "completed": "panel.status_ok",',
+     '        # "completed": "panel.status_ok",  # V4-9 mutated',
+     "test_units"),
 
 
 

@@ -1810,11 +1810,20 @@ def _log_theme_once(raw: Any, fallback: str) -> None:
 
 
 def _ld_status_text(status: Any) -> str:
-    """面板结局 → 页脚最前面的状态文案（``✅ 已完成`` / ``❌ 执行出错`` / ``⛔ 已中止``）。"""
+    """面板结局 → 页脚最前面的状态文案（``✅ 已完成`` / ``❌ 执行出错`` / ``⛔ 已中止``）。
+
+    ⚠️ 这里同时收**两套词汇**（V4.2 实测的静默失败）：面板快照用
+    ``ok / error / stopped``，而结构化视图（`_cardview.CardView.header_status`）用
+    ``completed / stopped / error``。只认前一套时，`_ld_footer(status="completed")` 会
+    **静默少一段** —— 因为传入值非空，连「回落到面板快照」那条路都不会走。
+    两套都在这里收口，就是这个映射表唯一的职责。
+    """
     key = {
         _panel.STATUS_OK: "panel.status_ok",
         _panel.STATUS_ERROR: "panel.status_error",
         _panel.STATUS_STOPPED: "panel.status_stopped",
+        #: 结构化视图的卡级状态词汇（``CardView.header_status``）
+        "completed": "panel.status_ok",
     }.get(str(status or ""))
     return _i18n.t(key) if key else ""
 
@@ -3019,7 +3028,8 @@ class LarkDeckMixin:
         sealed = text[offset:cut]
         if _ld_visual_engine() == "structured":
             sealed_view = self._ld_cardview(
-                chat, sealed + "\n\n" + _i18n.t("stream.continued"), status="completed")
+                chat, sealed + "\n\n" + _i18n.t("stream.continued"), status="completed",
+                started=state.get("t0"), message_id=old_message_id)
             card = _cardview.entity_skeleton(sealed_view)
         else:
             card = self._ld_build_card(sealed + "\n\n" + _i18n.t("stream.continued"),
@@ -3377,7 +3387,8 @@ class LarkDeckMixin:
             if state.get("engine_stamp") == "degraded" or not state.get("card_id"):
                 return "stop"
             view = self._ld_cardview(
-                chat, str(state.get("last_rendered_body") or ""), status="processing")
+                chat, str(state.get("last_rendered_body") or ""), status="processing",
+                started=state.get("t0"), message_id=state.get("message_id"))
             elapsed = max(0.0,
                           time.monotonic() - float(state.get("t0") or time.monotonic()))
             view.panel.title = (f"💭 思考 {elapsed:.1f}s · 🛠️ 工具执行 · "
@@ -3408,8 +3419,17 @@ class LarkDeckMixin:
         return _cardview.ICON_TOKENS["fallback"]
 
     def _ld_cardview(self, chat: str, answer: str, *, status: str = "processing",
-                     finalize: bool = False) -> "_cardview.CardView":
-        """从面板快照构造结构化视图（V1 canary）。"""
+                     finalize: bool = False, started: Optional[float] = None,
+                     message_id: Optional[str] = None) -> "_cardview.CardView":
+        """从面板快照构造结构化视图（V1 canary）。
+
+        ``started`` / ``message_id`` 只喂**页脚**：用户 2026-09-17 指定的页脚阅读顺序是
+        「状态 → 时长 → 模型 → ctx → 短码」，而结构化路径以前两处都漏了
+        （时长没有 `t0`、短码只走 legacy 的 `_ld_frame_footer`）—— 2026-09-21 真机截图
+        一眼看出来（`✅ 已完成 · 🧠 deepseek-flash · ctx …`，中间少了 `⏱ 12.3s`、末尾少了
+        `🔖 xxxxxx`）。这里把两条规则都收在同一处：**有基数页脚才挂短码**（短码不能把
+        「页脚=无」这个诊断信号抹掉，见 `_ld_frame_footer` 的纪律①）。
+        """
         snap = _panel.snapshot(chat) or {}
         rounds: List["_cardview.ReasoningRoundView"] = []
         for index, item in enumerate(snap.get("rounds") or []):
@@ -3455,8 +3475,11 @@ class LarkDeckMixin:
             border={"processing": "grey", "completed": "green",
                     "stopped": "yellow", "error": "red"}.get(status, "grey"),
         )
+        base_footer = self._ld_footer(chat_id=chat, started=started, status=status) or ""
+        trace = _ld_trace_id(message_id) if base_footer else ""
         return _cardview.CardView(
-            answer=answer, footer=self._ld_footer(chat_id=chat) or "",
+            answer=answer,
+            footer=f"{base_footer} · \U0001f516 {trace}" if trace else base_footer,
             footer_enabled=bool(_cfg("footer")), panel=panel,
             header_enabled=_ld_card_status_header_enabled(),
             header_status=status,
@@ -3539,7 +3562,7 @@ class LarkDeckMixin:
             if finalize:
                 return False
             display = self._ld_body_text(text, chat, finalize=False, stream_state=None)
-            view = self._ld_cardview(chat, display)
+            view = self._ld_cardview(chat, display, started=now)
             made = await self._ld_ck_create(chat, answer=display, panel_text="",
                                             panel_tools_text="", reply_to=reply_to,
                                             structured_view=view)
@@ -3578,7 +3601,9 @@ class LarkDeckMixin:
             offset = int(state.get("ck_offset") or 0)
             visible = display[offset:]
         status = "completed" if finalize else "processing"
-        view = self._ld_cardview(chat, visible, status=status, finalize=finalize)
+        view = self._ld_cardview(chat, visible, status=status, finalize=finalize,
+                                 started=state.get("t0"),
+                                 message_id=state.get("message_id"))
         card_id = str(state.get("card_id") or "")
         if not card_id:
             return self._ld_stream_fail("structured 状态缺 card_id")

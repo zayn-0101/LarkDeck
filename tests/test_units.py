@@ -11691,6 +11691,63 @@ def test_v4_1_duplicate_uuid_failure_is_not_card_death():
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
 
+def test_v4_2_structured_footer_carries_elapsed_and_short_code():
+    """V4.2：结构化页脚必须给全「状态 → 时长 → 模型 → ctx → 短码」（真机截图发现的缺口）。
+
+    缺口来自两处：结构化视图调 `_ld_footer(chat_id=…)` 时**没传 `started`**（时长缺失），
+    而短码只挂在 legacy 的 `_ld_frame_footer` 上（结构化从不经过它）。真机形态就是
+    `✅ 已完成 · 🧠 deepseek-flash · ctx 20.5k/1m · 2%` —— 中间少 `⏱ 12.3s`、末尾少 `🔖 xxxxxx`。
+    """
+    raw = _make()
+    saved_config = dict(adapter._CONFIG)
+    adapter.configure(visual_engine="structured")
+    try:
+        view = raw._ld_cardview("oc_v42", "answer", status="completed",
+                                started=time.monotonic() - 3.0,
+                                message_id="om_abcdef123456")
+        footer = view.footer
+        assert "✅ 已完成" in footer, footer
+        assert "\u23f1 3.0s" in footer, f"页脚必须有耗时那一段: {footer}"
+        assert footer.endswith("\U0001f516 123456"), f"短码 = id 后 6 位且在末尾: {footer}"
+        assert (footer.index("✅ 已完成") < footer.index("3.0s")
+                < footer.index("\U0001f516")), f"顺序必须是 状态→时长→短码: {footer}"
+        # 没有基数页脚时**不许**凭空挂短码（短码不能把「页脚=无」这个诊断信号抹掉）
+        adapter.configure(footer=False)
+        bare = raw._ld_cardview("oc_v42", "answer", status="completed",
+                                started=time.monotonic() - 3.0,
+                                message_id="om_abcdef123456")
+        assert bare.footer == "", bare.footer
+        assert bare.footer_enabled is False
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_config)
+
+
+def test_v4_2_finalize_card_contains_duration_and_trace_element():
+    """V4.2 端到端：收尾那张整卡 patch 里，页脚元素必须真的带出耗时与短码。"""
+    chat, key, turn = "oc_v42f", "oc_v42f:t1", "t1"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    try:
+        assert _run(raw.send_stream_frame("hello", chat_id=chat, turn_id=turn))
+        state = raw._ld_stream_get(key) or {}
+        state["t0"] = time.monotonic() - 4.0          # ≥0.1s 才会渲染时长那一段
+        raw._ld_stream_put(key, state)
+        assert _run(raw.send_stream_frame("hello world", finalize=True,
+                                          chat_id=chat, turn_id=turn))
+        finals = [card for card in (calls.get("patch_cards") or [])
+                  if not card.get("config", {}).get("streaming_mode", True)]
+        assert finals, "收尾必须是一次关掉流式态的整卡 patch"
+        elements = finals[-1]["body"]["elements"]
+        footers = [e for e in elements if e.get("element_id") == cards.CARDKIT_FOOTER_ID]
+        assert footers, elements
+        content = str(footers[-1].get("content") or "")
+        assert "\u23f1 4.0s" in content, f"收尾页脚缺时长: {content}"
+        assert "\U0001f516 " in content, f"收尾页脚缺短码: {content}"
+        assert "🔖 " + "om_ck_1"[-6:] in content, content
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
 def main() -> int:
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]
