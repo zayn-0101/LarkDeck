@@ -834,13 +834,33 @@ def record_tool_started(session_id: str, turn_id: str, tool_name: str,
 
 def record_tool_finished(session_id: str, turn_id: str, tool_name: str = "",
                          status: str = "ok", duration_ms: Any = None,
-                         tool_call_id: str = "") -> None:
+                         tool_call_id: str = "", result: Any = None,
+                         error_type: str = "", error_message: str = "") -> None:
     """``post_tool_call`` 钩子回调。
 
     先按 ``tool_call_id`` 找开着的步骤（精确配对）；找不到就兜底补一条完成态
     —— 宁可多一行，也不让这次调用凭空消失（pre 丢包 / 顺序颠倒时仍可见）。
+
+    V3：result/error 在**进入状态前**截断 + 脱敏（600 字上限，与 legacy 卡同源），
+    避免把任意大的工具输出或密钥带进卡片/内存。
     """
     now = _now()
+    try:
+        if result is None:
+            result_block = ""
+        else:
+            raw = result if isinstance(result, str) else json.dumps(
+                result, ensure_ascii=False, default=str)
+            result_block = redact_inline_secrets(str(raw or ""))[:600]
+        if not error_type and not error_message:
+            error_block = ""
+        else:
+            error_block = redact_inline_secrets(
+                " · ".join(part for part in (str(error_type or ""), str(error_message or ""))
+                           if part.strip()))[:600]
+    except Exception:
+        result_block = ""
+        error_block = ""
     with _LOCK:
         state = _touch_locked(str(session_id or ""), str(turn_id or ""), now)
         if state is None:
@@ -870,6 +890,10 @@ def record_tool_finished(session_id: str, turn_id: str, tool_name: str = "",
         elif target.get("duration_ms") is None:
             # 钩子没给耗时就自己算：墙钟差足够给用户一个量级感。
             target["duration_ms"] = max(0, int((now - target.get("t0", now)) * 1000))
+        if result_block:
+            target["result_block"] = result_block
+        if error_block:
+            target["error_block"] = error_block
         _purge_locked(now)
 
 

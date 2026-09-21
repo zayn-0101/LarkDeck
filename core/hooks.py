@@ -226,7 +226,10 @@ def _on_post_tool_call(**payload: Any) -> None:
                                     payload.get("tool_name", ""),
                                     status=str(payload.get("status") or "ok"),
                                     duration_ms=payload.get("duration_ms"),
-                                    tool_call_id=payload.get("tool_call_id", ""))
+                                    tool_call_id=payload.get("tool_call_id", ""),
+                                    result=payload.get("result"),
+                                    error_type=str(payload.get("error_type") or ""),
+                                    error_message=str(payload.get("error_message") or ""))
     except Exception:  # pragma: no cover - 防御性：钩子绝不能抛
         logger.debug("[larkdeck] post_tool_call 采集忽略了一次异常", exc_info=True)
 

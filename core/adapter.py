@@ -964,7 +964,8 @@ def _ld_card_status_header_enabled() -> bool:
     enabled = _cfg("card_status_header")
     if not enabled:
         _warn_visual_once("card_status_header",
-                          "card_status_header=false 已记录；状态条 V2 才落地，当前观感不变")
+                          "card_status_header=false 已记录；structured canary 下已隐藏状态条，"
+                          "legacy 默认仍无 header")
     return enabled
 
 
@@ -3305,6 +3306,10 @@ class LarkDeckMixin:
             if key == str(chat) or key.startswith(prefix):
                 self._ld_heartbeat_cancel(key)
 
+    def _ld_heartbeat_cancel_all(self) -> None:
+        for key in list(_LD_HEARTBEATS):
+            self._ld_heartbeat_cancel(key)
+
     def _ld_heartbeat_start(self, chat: str, key: str, turn_id: str) -> None:
         self._ld_heartbeat_cancel(key)
         try:
@@ -3340,11 +3345,15 @@ class LarkDeckMixin:
                     updated = dict(state)
                     updated["ck_panel_sig"] = signature
                     updated["ck_seq"] = seq
+                    _ck_window_note(updated, time.monotonic())
                     self._ld_stream_put(key, updated)
         except asyncio.CancelledError:
             return
         except Exception:
             logger.debug("[larkdeck] heartbeat 异常退出", exc_info=True)
+        finally:
+            if _LD_HEARTBEATS.get(key) is asyncio.current_task():
+                _LD_HEARTBEATS.pop(key, None)
 
 
     @staticmethod
@@ -3379,6 +3388,8 @@ class LarkDeckMixin:
             tools.append(_cardview.ToolStepView(
                 name=name, title=name, status=str(item.get("status") or "running"),
                 duration_ms=item.get("duration_ms"), detail=detail,
+                result_block=str(item.get("result_block") or ""),
+                error_block=str(item.get("error_block") or ""),
                 icon_token=self._ld_icon_token(name)))
         total_ms = sum(int(r.elapsed_ms or 0) for r in rounds)
         collapsed_hint = ""
@@ -3518,7 +3529,8 @@ class LarkDeckMixin:
             self._ld_stream_put(key, live)
             return self._ld_stream_fail("structured 正文写入失败")
         if finalize:
-            # V1：收尾必须重绘卡级 header + 关闭 streaming_mode；同卡 patch，不另建卡。
+            # V2 修复：先 cancel 心跳，再发终态 patch，避免 tick 在 patch 后落回 processing 面板。
+            self._ld_heartbeat_cancel(key)
             final_card = _cardview.entity_skeleton(view)
             final_card["config"]["streaming_mode"] = False
             updated = await self._ld_update_card(
@@ -3529,7 +3541,6 @@ class LarkDeckMixin:
                 live["ck_seq"] = seq
                 self._ld_stream_put(key, live)
                 return self._ld_stream_fail("structured 收尾整卡 patch 失败")
-            self._ld_heartbeat_cancel(key)
             self._ld_stream_pop(key)
             self._ld_forget(str(state.get("message_id") or ""))
             _context.note_frame_ok()
@@ -3958,6 +3969,8 @@ class LarkDeckMixin:
             LarkDeckMixin._ld_stream_fail._at = now  # type: ignore[attr-defined]
             logger.warning("[larkdeck] native 流式帧失败（%s）—— 本回合 native 将被内核停用，"
                            "后续输出回落 send/edit（可能变成多条纯文本）", reason)
+        # V2 修复：失败退出必须停掉本回合心跳，否则终态后仍会每 3s 写卡。
+        self._ld_heartbeat_cancel_all()
         return False
 
     def _ld_stream_get(self, key: str) -> Optional[Dict[str, Any]]:

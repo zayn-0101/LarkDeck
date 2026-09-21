@@ -11378,8 +11378,12 @@ def test_v1_structured_seed_and_panel_update():
         all_seqs = [item[1] for item in calls["batch"]] + [c[2] for c in calls["content"]]
         assert len(set(all_seqs)) == len(all_seqs), all_seqs
         assert sorted(all_seqs) == list(range(1, max(all_seqs) + 1)), all_seqs
+        cancelled = []
+        orig_cancel = raw._ld_heartbeat_cancel
+        raw._ld_heartbeat_cancel = lambda key: (cancelled.append(key), orig_cancel(key))
         assert _run(raw.send_stream_frame("hello world!", finalize=True,
                                           chat_id="oc_v1", turn_id="t1"))
+        assert "oc_v1:t1" in cancelled, cancelled
         patched = calls.get("patch_cards") or []
         assert any(card.get("header", {}).get("template") == "green" for card in patched), patched
         assert any(not card.get("config", {}).get("streaming_mode", True) for card in patched), patched
@@ -11435,6 +11439,35 @@ def test_v1_structured_degrade_patches_same_card():
         adapter._CONFIG.update(saved_config)
         panel.reset()
         context.reset()
+
+
+def test_v3_result_error_collected_truncated_and_redacted():
+    """V3：工具 result/error 必须截断 + 脱敏，并进入结构化工具块。"""
+    panel.reset()
+    try:
+        panel.bind_chat_session("oc_v3", "sess_v3")
+        panel.record_tool_started("sess_v3", "turn_v3", "read_file",
+                                  {"path": "/tmp/a.txt"}, tool_call_id="tc1")
+        adapter._hooks._on_post_tool_call(
+            session_id="sess_v3", turn_id="turn_v3", tool_name="read_file",
+            status="error", duration_ms=12, tool_call_id="tc1",
+            result="api_key=sk-verysecret " + "x" * 1000,
+            error_type="ToolError", error_message="boom")
+        snap = panel.snapshot("oc_v3") or {}
+        tool = (snap.get("tools") or [])[0]
+        assert tool.get("result_block"), tool
+        assert "sk-verysecret" not in str(tool.get("result_block")), tool
+        assert len(str(tool.get("result_block") or "")) <= 600, tool
+        assert "ToolError" in str(tool.get("error_block")), tool
+        view = _make()._ld_cardview("oc_v3", "answer")
+        step = view.panel.tools[0]
+        assert "sk-verysecret" not in step.result_block, step
+        assert "ToolError" in step.error_block, step
+        rendered = adapter._cardview.tool_step_elements(step)
+        assert any("**Result**" in json.dumps(e, ensure_ascii=False) for e in rendered), rendered
+        assert any("**Error**" in json.dumps(e, ensure_ascii=False) for e in rendered), rendered
+    finally:
+        panel.reset()
 
 
 def main() -> int:

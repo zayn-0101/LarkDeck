@@ -2335,13 +2335,30 @@ MUTATIONS = [
      "test_units"),
     ("V2-1-finalize 不 cancel 心跳（终态后仍可能写卡）", "core/adapter.py",
      '            self._ld_heartbeat_cancel(key)\n'
-     '            self._ld_stream_pop(key)',
-     '            self._ld_stream_pop(key)',
+     '            final_card = _cardview.entity_skeleton(view)',
+     '            pass  # V2-1 mutated\n'
+     '            final_card = _cardview.entity_skeleton(view)',
      "test_units"),
     ("V2-2-card_status_header=false 被忽略（状态条恒显）", "core/adapter.py",
      '            header_enabled=_ld_card_status_header_enabled(),',
      '            header_enabled=True,  # V2-2 mutated',
      "test_units"),
+    ("V3-1-post_tool_call 不采集 result（Result 块永远空）", "core/hooks.py",
+     '                                    result=payload.get("result"),\n'
+     '                                    error_type=str(payload.get("error_type") or ""),\n'
+     '                                    error_message=str(payload.get("error_message") or ""))',
+     '                                    error_type=str(payload.get("error_type") or ""),\n'
+     '                                    error_message=str(payload.get("error_message") or ""))',
+     "test_units"),
+    ("V3-2-result 入库前不脱敏（密钥上卡）", "core/panel.py",
+     '            result_block = redact_inline_secrets(str(raw or ""))[:600]',
+     '            result_block = str(raw or "")[:600]',
+     "test_units"),
+    ("V3-3-cardview 不把 result_block 传进工具块", "core/adapter.py",
+     '                result_block=str(item.get("result_block") or ""),',
+     '                result_block="",  # V3-3 mutated',
+     "test_units"),
+
 
 
 
