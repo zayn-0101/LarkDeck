@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -2909,6 +2910,27 @@ def _seed_inherited(ref: str) -> int:
     return stamped
 
 
+def _gate_cases(gate: str) -> str:
+    """门禁文件里**用例名集合**（`def test_xxx`）的指纹 —— 继承判定的测试侧那一半。
+
+    为什么不用整文件指纹（2026-09-21 实测的教训）：整文件指纹太脆 —— **加一个新用例**就会
+    让 406 条 `test_units` 变异全部作废重跑，而**加用例只可能增强抓取力、不可能把红变绿**。
+    真正会让旧判定失效的只有「当年抓住它的用例被**删除/改名/削弱**」。
+    ⇒ 判据改成：**当年那批用例名今天还在吗**。删/改名 ⇒ 重跑；只加新用例 ⇒ 继续跳过
+    （削弱同名用例的函数体是**已披露的残余**，由周期性全量直跑兜底）。
+    `check_*` 脚本没有 `def test_`，退回整文件指纹（它们很少改）。
+    """
+    path = REPO / "tests" / (gate if gate.endswith(".py") else gate + ".py")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return "missing"
+    names = re.findall(r"^def (test_\w+)", text, re.M)
+    if not names:
+        return "sha:" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    return "cases:" + ",".join(sorted(names))
+
+
 def _gate_fp(gate: str) -> str:
     """门禁文件自身的指纹 —— 继承判定的**测试侧**那一半。
 
@@ -2969,7 +2991,13 @@ def _delta_split(picked: list, entries: dict) -> "tuple[list, list]":
         # 继承（历史条目没记门禁指纹 —— 已披露的残余，靠周期性全量直跑兜底）
         fp_ok = rec.get("fp") == _fingerprint(rel, old, new)
         if rec.get("verdict") == "red-assert":
-            ok = fp_ok and rec.get("gate_fp") == _gate_fp(rec.get("gate") or "")
+            # 测试侧：**当年那批用例名今天还在吗**（只加新用例不算失效——加用例只增强抓取力）
+            want, have = rec.get("gate_fp") or "", _gate_cases(rec.get("gate") or "")
+            if want.startswith("cases:") and have.startswith("cases:"):
+                ok_gate = set(want[6:].split(",")) <= set(have[6:].split(","))
+            else:
+                ok_gate = want == have
+            ok = fp_ok and ok_gate
         else:
             ok = rec.get("verdict") == "inherited" and fp_ok
         if ok:
