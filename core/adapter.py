@@ -974,7 +974,8 @@ def _ld_show_reasoning() -> bool:
     enabled = _cfg("show_reasoning")
     if enabled:
         _warn_visual_once("show_reasoning",
-                          "show_reasoning=true 已记录；推理显隐 V3 才落地，当前观感不变")
+                          "show_reasoning=true 已记录；structured canary 下已控制推理正文，"
+                          "legacy 默认仍按旧行为")
     return enabled
 
 
