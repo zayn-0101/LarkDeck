@@ -1745,7 +1745,8 @@ def probe_structured_canary(client, chat: str, cards) -> int:
     seed, update, finalize = asyncio.run(_run())
     print(f"structured canary: seed={seed} update={update} finalize={finalize} "
           f"（chat={chat}，卡在最新一条消息）")
-    print("请肉眼确认：工具行图标/22px、推理 A 形态、状态条、页脚短码。")
+    print("请肉眼确认：工具行图标/22px、推理 A 形态、加载指示（会动、无文字）、页脚字段"
+          "（状态·耗时·模型·ctx，**没有 🔖 短码**）。")
     return 0 if (seed and update and finalize) else 1
 
 

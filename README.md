@@ -106,7 +106,7 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 | **回合状态色**：完成绿边 / 报错红边 / 中止黄边 | ✅ 数据来自官方 `on_session_end`（每回合一次）；颜色画在面板边框上 |
 | **推理按轮分段**（`第 N 轮 · 6.2s`；一轮 = 一段连续推理，被正文或工具打断） | ✅ |
 | 过程面板（CLS 观感）：`💭 思考 1.6s · 🛠️ 工具执行 · 3 步`；工具行 = 图标 + 加粗**英文动作名**（`Read file` / `Run command` / `Load skill` …）+ 耗时 + 绿色 `Succeeded` / 青绿 `Running` / 红色 `Failed`·`Blocked`·`Timed out` / 灰色 `Cancelled`·`Skipped`，命令或 skill 名另起一行灰色小字 | ✅ 数据来自官方钩子；工具行动作词/状态词为**语言固定边界**（markdown 不承载 `i18n_content`）。✅ v0.6.2 默认 `panel_color_tags: true`（官方 Card 2.0 markdown 文档确认 `<font color>` 与色板）+ `text_profile: compact`（面板/页脚 12px notation、正文 normal）。⚠️ 真机视觉仍需用户截图确认；客户端不认时可显式设回 false 无色降级 |
-| 页脚：状态 → 耗时 → 模型 → 上下文用量 + **本卡短码**（`✅ 已完成 · ⏱ 10.4s · 🤖 … · ctx … · 🔖 xxxxxx`，截图可与日志对齐） | ⚠️ 数据来自官方钩子；**状态在最前**这一组合待本轮真机截图确认（旧版页脚真机已确认） |
+| 页脚：状态 → 耗时 → 模型 → 上下文用量（`✅ 已完成 · ⏱ 10.4s · 🤖 … · ctx …`） | ✅ 数据来自官方钩子。**v0.7.2 起不再有 🔖 短码**（用户 2026-09-21 口径：那从来不是要求；同类插件页脚也都没有）——短码只保留在**日志自检行**（`卡片=<6 位>`），用户可见处一律不出现（`test_v4_17b` 整卡 + 出站载荷全量扫描） |
 | 上下文用量三样式（纯文字 / 图形条 / 数字+条） | ✅ 真机渲染已确认 |
 | 推理文本 / 工具结果上限 + 元素溢出保护 | ✅ |
 | **工具参数预览会脱敏** | ✅ 面板里的工具步骤行显示的是**参数预览**（截到 80 字符），其中明显是凭据的片段会被涂成 `***`：JSON 键值对（键名以 `token` / `secret` / `password` / `api_key` / `cookie` … **结尾**）、头部形态（`Cookie:` / `Authorization:` / `X-Api-Key:`）、裸 `Bearer <token>`、shell 风格 `KEY=value`；家目录折叠成 `~/…`。判据是**键名**而**不是猜值** —— 猜值会把 `max_tokens` / `token_count` 这类正常内容涂掉，那比不脱敏更难查。卡片会出现在群里，所以这是**安全**项、不是观感项。 |
@@ -214,7 +214,7 @@ plugins:
         progress_lines_in_body: false  # 核心的工具行不进正文（仅 body_source: legacy 生效；own 模式结构上不读帧）
         body_source: "own"      # 默认 own：正文只认插件 on_stream_delta 累积；legacy 仅过渡回退（P2b 后删除）
         visual_engine: "structured" # v0.7.1 视觉引擎：structured（**默认**，结构化元素树）。`legacy` 配置键自 v0.7.1 起**已退役**（设了只留一条退休 WARNING，行为仍是 structured）；旧渲染器仍作为 DEGRADE 车道的降级渲染器保留。真正回退请 revert 到 v0.7.0
-        card_status_header: true # v0.7.1 V2：卡片顶部状态条显隐；当前两种取值观感相同，非默认值告警
+        card_status_header: false # v0.7.2：顶部状态条**默认关**（用户口径「顶栏默认不显示」）；置 true 可开回来（非默认值告警）
         show_reasoning: false   # v0.7.1 V3：是否显示推理正文；默认 false（对齐 CLS/aiduPOP），摘要行始终保留；已登记未生效，V3 前两种取值观感相同（README no-op 说明）
         footer: true             # 页脚：状态 → 耗时 → 模型 → 上下文用量（+ 本卡短码）
         show_model: true         # 页脚里显示模型名（面板标题只放「💭 思考 / 🛠️ 工具执行」摘要）

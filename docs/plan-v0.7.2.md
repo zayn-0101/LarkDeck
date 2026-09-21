@@ -9,36 +9,87 @@
    页脚字段对齐同类插件（CLS/aiduPOP）：**状态 · ⏱ 时长 · 🤖 模型 · ctx 用量**。
    短码只保留在**日志自检行**（截图↔日志对齐仍可用，但用户可见处不出现）。
 2. **加载指示对齐 aiduPOP `_loading_element`**：`div` + `custom_icon(img_key)` + `text: " "`
-   —— **会动、无文字**。我们缺的是「一张上传到本应用的 spinner 资产」⇒ 用官方
-   `im.v1.image.create` 上传一次并缓存 `image_key`（参考实现都是这么做的）。
+   —— **会动、无文字**。
+   ⚠️ **2026-09-21 修订（原前提被证伪）**：计划原写「参考实现都是自己上传的」——审计 A/C 逐仓核对
+   **不成立**：aiduPOP `cardkit/elements.py:103`、CLS `builder.py:23`、FC `builder.py:24`
+   **硬编码同一个 key**，三家都没有 spinner 上传代码（它们的 `upload_image` 只服务正文远程图）。
+   实机结果：**用户目视 ① 共享 key = 会动**（探针卡 `om_x100b643abd6394b0dfa26a200d65018`，
+   记录见 `docs/audits/v0.7.2/loading-asset.md`）⇒ **不做上传**，直接用共享 key；
+   只留一行可切的注入点 `cardview.set_spinner_img_key()`，key 为空时回落静态 `standard_icon`
+   （宁可「不动」也不能让无效 asset 撞 300313 把整条装饰链打掉）。
+   （跨应用复用本来没有官方支持——`im.v1.image.get` 234008「当前应用不是资源所有者」；
+   本机能用是因为三家插件同属本机这一个 Hermes 应用。）
 3. **步数折叠**：提示语已按用户口径（`…已折叠 N 条早期思考/工具记录`）；
    N 仍取 `min(配置, 20)`（元素预算推导），**CLS/FC 的 `max_steps=128` 是采集端跟踪上限，不是显示上限**（文档已记）。
 4. **系统提示不出面板**（已做）；**流式 seed 不写正文**（已做，修「先显示上一条回复」）。
 5. **图标**：与 CLS `streaming/tooluse.py` 别名表**逐条**对齐（含 `execute_code`/`code` 这类），
-   并解决「图标比文字偏上」——做法：**A/B 探针卡**（甲 `div.icon`；乙 emoji 内联进文本），用户挑一版。
+   并解决「图标比文字偏上」。
+   * ⚠️ **2026-09-21 实测修订**：CLS 的 `Run command` 描述符只收 `exec/bash/command/run`，
+     `_resolve_tool_descriptor("terminal")` **落兜底**；而 Hermes 的 shell 工具**就叫 `terminal`**
+     （`tools/terminal_tool.py:1258`）。⇒ `ICON_ALIASES` 保持**逐条等于 CLS**（28 条，含顺序），
+     `terminal` 单列 `ICON_ALIASES_LOCAL_EXTRA`，**登记为唯一有意偏差**
+     （`docs/audits/v0.7.2/tool-icons.json::local_extra`）；`tests/check_cls_alignment.py`
+     直接解析 CLS 源码比对（CLS 侧改动会红）。
+   * 「偏上」的可验证假说（审计 A）：两侧 icon 对象**字段完全相同**（都无 size/margin、text_size
+     都是 notation），所以不是字段差；最可能是**我们的行更长**（原始工具名 + 原始 ms）在手机宽度
+     换行时图标顶对齐。⇒ 探针必须**同一段文本、只变 icon**（旧计划「甲 icon / 乙 emoji」
+     没有隔离换行这个变量，作废重做）。
 6. **澄清卡**：按 aiduPOP 三态（pending/submitted/confirmed）实现**可提交**的多选/单选/输入。
+   ⚠️ **2026-09-21 官方契约修订（审计 A 查证）**：`option/options/input_value` **只在组件未嵌入
+   form 容器时**返回；一旦放进 form，答案只在 `action.form_value[组件 name]`（官方
+   `card-callback-communication.md:41-49`；submit 按钮的 `action.value` 是**空**的）。
+   ⇒ 现状：组件级 `behaviors`（无 form 容器）路径真机已通；**表单容器形态不在支持范围内**，
+   要上 submit 按钮必须同时加 form 容器 + `form_action_type:"submit"` + 组件 `name` + 解析
+   `form_value[name]`。这一条**登记为残余项**（见 §4），不假装已覆盖。
+   aiduPOP 的 submitted 卡在 2.0 里塞了 1.0 的 `action` 行（会被飞书拒收）**不能照抄**，
+   要照抄的是它的状态机（pending→submitted→confirmed + retry + 30min TTL + 去重锁）。
 
 ## 1. 分阶段执行（Goal 模式，每阶段一次对抗性审计）
 
-| 阶段 | 内容 | 验收（硬指标） |
-| --- | --- | --- |
-| **P1 页脚** | 去掉两处页脚短码（`_ld_cardview` / `_ld_frame_footer`）；重写 7 条钉短码的用例 + 重跑 cardkit 黄金夹具；短码保留在自检日志 | `test_units` 全绿；`check_hooks`/`check_cardview` 绿；变异「页脚又挂短码」实红；用户真机截图页脚无 🔖 |
-| **P2 加载指示** | 上传 spinner 资产拿 `img_key`（缓存到插件数据目录）；`loading_hint_element()` 换成 `custom_icon` + `text:" "`（无文字、会动）；首字即删逻辑不变 | 探针卡目视「会动、无文字」；元素仍首字即删（V4-32 变异保持红） |
-| **P3 图标** | 逐条对齐 CLS 别名表；A/B 探针卡两版发真机；用户挑版后落地 | 对照表逐条 ✅；用户回话选定版本；变异「图标掉回旧 fallback」红 |
-| **P4 澄清卡** | 三态可提交（多选/单选/输入 + 提交按钮/确认回执）；沿用官方 `card.action` 回调 | `check_clarify_e2e` 扩展覆盖「选中 → 提交 → 回执」；真机点一次成功 |
-| **P5 灰气泡** | 定位 14:40→14:44 那条 `⏳ Working — …` 纯文本的出口（日志实录），必要时拦掉 | 日志证明该消息不再单独发送；用户真机复看无重复 |
-| **P6 收尾** | `/neat-freak` 洁癖收尾；README/AGENTS/release notes 更新；`v0.7.2` tag + release；Mac 本机插件同步生效 | 全量门禁绿；用户终验；tag 已推；`.deploy` = tag 提交且网关已重启 |
+> **执行状态（2026-09-21，提交 `fe8f288`）**：P0 ✅ / P1 ✅ / P2 ✅（用户已目视「会动」）/
+> P3 代码侧 ✅（偏上探针待发）/ P4 部分（表单契约已钉、三态未做）/ P5 根因已修 + 留痕补齐。
+
+| 阶段 | 内容 | 验收（硬指标） | 状态 |
+| --- | --- | --- | --- |
+| **P0 折叠提示元素类型**（计划外·已修） | `c625562:core/cardview.py:235` 把折叠提示写成 `collapsible_panel` 的 `plain_text` 直接子元素 ⇒ tools>20 时 `300313` ⇒ 收尾 `200621` ⇒ 核心回落 `send()`（**14:44 灰气泡的真根因**）。已改成 `markdown` | 变异 `V4-33`（改回 `plain_text`）实红；真机长回合复验 | ✅ 已修 + 变异红 |
+| **P1 页脚** | 去掉两处页脚短码；重写钉短码的用例 + 重跑黄金夹具；短码保留在自检日志 | 全五门禁绿；变异「又挂回短码」实红（`G2-10`/`Y20`/`V4-17B`）；`test_v4_17b` 扫**整卡 + 出站载荷** | ✅ |
+| **P2 加载指示** | `loading_hint_element()` = aiduPOP `_loading_element`（`custom_icon(共享 key)` + `text:" "`，会动无文字）；首字即删；删除失败**换号重试**、`300313` 只按 msg 判定、上限 3 次 | 探针目视「会动、无文字」✅；变异 `V4-32/40/41/42/43` 实红 | ✅ |
+| **P3 图标** | 主表 28 条逐条等于 CLS（含顺序）+ `terminal` 登记偏差；`tests/check_cls_alignment.py` 直连 CLS 源码；A/B 探针（**同一文本、只变 icon**）确认「偏上」 | 对照表逐条 ✅ + CLS 对齐门禁 OK；变异 `V4-44` 实红；用户回话选定探针版本 | 代码 ✅ / 探针待发 |
+| **P4 澄清卡** | 三态可提交（pending/submitted/confirmed）；组件级 `behaviors` 路径已通；表单容器（`form_value[name]`）**未实现**——登记为残余项 | `check_clarify_e2e` 覆盖「选中/多选/输入/**表单提交** → 回执 → 重复点击 toast」✅；真机点一次成功（已达成）；retry/TTL 待做 | 部分 |
+| **P5 灰气泡** | 真根因是 P0（不是内核 `Working` 文本）；出站留痕覆盖 `send()` 卡片成功 / 卡失败回落 / `edit_message` 成功 / 回落 | 长回合（tools>20）重放：卡 JSON 无 `plain_text` 子元素、日志无 `300313`/`200621`、`/larkdeck status` 掉回纯文本计数不增；留痕三处有测试 + P5×3 变异实红 | 根因 ✅ / 长回合复验待做 |
+| **P6 收尾** | `/neat-freak` 洁癖收尾；README/AGENTS/CHANGELOG/handoff/plan 口径同步；`v0.7.2` tag + release；Mac 本机插件同步生效 | 「全量门禁」范围见 §2 末；用户终验；tag 已推；`.deploy` = tag 提交且网关已重启 | 进行中 |
 
 ## 2. 流程纪律（用户重申，必须遵守）
 
 * **不用 `sleep` 轮询**：等待用「有界等待器」（`job_output(wait=true)` / python 条件等待，命中即返回）。
-* **变异测试提速**：默认只跑**本阶段受影响的变异**（`-k`）；全量用 `--shard i/n` 分片后台并行；
-  记录单条变异的实测耗时并写进 `docs/audits/`，目标把单阶段审计从「分钟级」压到「秒级判读」。
+  ✅ 已落地：`check_clarify_e2e` 的 6 处 `await asyncio.sleep(0.3)` 已删（handler 是同步的）
+  ⇒ 该门禁 4.2s → **1.98s**；`mutate_check._run_one_gate` 加 **120s 硬超时**。
+* **变异测试提速**（实测数字 + 方法，2026-09-21）：
+  * 单条变异 idle 28s / 重载 89s；6 条串行 130.7s；**2 分片 72.4s（1.8x，是上限）**；
+    4 分片无收益且会让基线 flaky（时钟敏感断言已修 + 新增确定性用例）；
+  * `--preflight` 0.2–0.8s；`test_units.py --only <子串>` 供单条判读；
+  * **判定策略（本轮落地）**：先跑声明的目标门禁 ⇒ **绿了再按其余门禁继续跑，遇第一支红即停**。
+    既保住「至少一门红」的契约（旧 `only` 模式会把「只有非目标门禁抓得住」的变异误报绿，审计 A），
+    又不必为秒级判红的那类变异跑满五支；**阶段/发布收尾必须无 `-k` 全量**（并集 = 五门禁）。
 * **每阶段**：执行 → 3 个子代理对抗审计（代码正确性 / 用户可见效果 / 反假绿）→ 分歧必须讨论到统一 →
-  本地 commit（消息里写清行为变更与证据）。
+  本地 commit（消息里写清行为变更与证据）。⚠️ 每阶段的两类产物缺一不可：
+  ≥1 条「五门禁全绿但行为坏」的**绿变异**（盲区证据）+ ≥1 条「补断言后该变异变红」的对照。
 * **发布**：`v0.7.2` tag + push + release 在用户终验后执行；随后把 `.deploy` 重指到 tag 提交并重启网关。
+* **P6「全量门禁」的范围与预算**（审计 A：全矩阵在负载机器上约 6.5h，必须写清口径）：
+  1. 五门禁全量（无 `-k`）各跑一次，全绿；2. `mutate_check` **全量**（或按 ≤2 分片，
+  记录实际耗时与实红数）；3. ≥1 条真机探针记录（本轮：加载指示「会动」+ 澄清点击 + 长回合无灰气泡）。
+  `--preflight`、`-k` 局部子集、单独 `check_cardview` **都不能**当最终绿。
 
-## 3. 风险与已知坑（沿用 v0.7.1 教训）
+## 3. 残余项（**登记在案**，不许在阶段绿报告里抹掉）
+
+| 残余项 | 责任人 | 需要的证据 | 截止 |
+| --- | --- | --- | --- |
+| 表单容器形态（`form` + `form_action_type:"submit"` + 组件 `name` + `form_value[name]` 解析）未实现 | 本仓 | 真机点一次 submit 按钮 + `check_clarify_e2e` 覆盖 | v0.7.3 |
+| submitted/retry/30min TTL 三态未做（现为 pending → 原地换成已答复卡） | 本仓 | 真机 + e2e | v0.7.3 |
+| 「图标偏上」探针未发/未选版 | 用户目视 | 同一文本、只变 icon 的三臂探针 | 本轮 P6 前 |
+| 长回合（tools>20）真机复验未做 | 真机 | 日志无 `300313`/`200621` + 卡片有折叠提示 | 本轮 P6 前 |
+
+## 4. 风险与已知坑（沿用 v0.7.1 教训）
 
 * 钉短码的 7 条用例是「行为变更声明」的一部分，**必须同提交改**，不许先改代码后补测试。
 * 结构化卡结构在建卡时定死 ⇒ 加载指示只能「建卡插入 + 中途删元素」，不能事后加。
