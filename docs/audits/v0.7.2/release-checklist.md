@@ -36,20 +36,21 @@ for g in test_units check_override check_hooks check_clarify_e2e check_cardview 
 
 判据：六支全绿（`check_cls_alignment.py` **必须**在位运行，缺席即 FAIL）。
 
-## 3. 全量/分片变异矩阵
+## 3. 变异验证（**增量优先**；协议见 `docs/verify-log.md`「09-21 协议变更」）
 
 ```bash
-$PY tests/mutate_check.py --preflight            # 0.2–0.8s，先对锚点
-$PY -u tests/mutate_check.py --shard 1/2 > /tmp/mut-s1.log 2>&1 &
-$PY -u tests/mutate_check.py --shard 2/2 > /tmp/mut-s2.log 2>&1 &
-# 完成后：
-grep -cE '^🔴' /tmp/mut-s1.log /tmp/mut-s2.log   # 实红数
-grep -nE '^🟢|^⚪|^💥|^❓' /tmp/mut-s1.log /tmp/mut-s2.log   # 必须为空
-tail -3 /tmp/mut-s1.log /tmp/mut-s2.log          # 各自「全部 N 条变异都被门禁抓住 ✅」
+$PY tests/mutate_check.py --preflight              # 0.2–0.8s，先对锚点
+$PY tests/mutate_check.py --ledger-status          # 看覆盖率（目标：待跑 0 条）
+$PY tests/mutate_check.py --delta --update-ledger  # 只跑「区域变过 / 新增」的（秒~分钟级）
+# 若基线里没有可继承的全绿记录（`_meta.full_audit_at` 为空/过期），后台补一次全量直跑：
+$PY -u tests/mutate_check.py --shard 1/2 --target-only --update-ledger > /tmp/f1.log 2>&1 &
+$PY -u tests/mutate_check.py --shard 2/2 --target-only --update-ledger > /tmp/f2.log 2>&1 &
+# 两片跑完后合并账本，并把两片里的 🟢（target-only 判绿不算证据）用完整模式复核：
+$PY tests/mutate_check.py --delta --update-ledger   # 绿的仍未被记账 ⇒ 会被这条自动挑出来
 ```
 
-判定：两个分片都必须以「全部被抓住 ✅」收尾（`🟢` = 断言没判别力，`⚪` = 变异没生效，
-`💥` = 只有崩溃；三种都不算证据）。分片上限 2（审计 A 实测 4 分片无收益且会引入负载假红）。
+判定：`🟢` = 断言没判别力；`⚪` = 变异没生效；`💥` = 只有崩溃、不算证据；`❓` = 锚点脱节。
+四种都必须清零（对照项除外）才算这一版验完。分片上限 2（4 分片无收益且会引入负载假红）。
 
 ## 4. 打 tag / push / release
 
