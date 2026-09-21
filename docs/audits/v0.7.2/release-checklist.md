@@ -8,11 +8,12 @@
 
 | 项 | 状态 | 证据 |
 | --- | --- | --- |
-| 代码冻结在候选提交 | ✅ | `git rev-parse --short HEAD`（`6797cb8`，代码与 `a3cf1ef` 同源；其后仅文档） |
+| 代码冻结在候选提交 | ✅ | 生产代码 = `7e7a62d`（`.deploy` 同源）；其后的收口提交（`a6b73ae`）**只改测试/文档** ⇒ 生产代码零改动、无需重新部署 |
 | 六支门禁 | ✅（本轮多次） | `run_fast.py --full`：全 OK，合计 ~10.4s |
-| 阶段审计（A/B/C/C2） | ✅ | `docs/audits/v0.7.2/audit-round1.md`（含绿变异与收口对照） |
-| 真机探针 | 部分 | 加载指示「① 会动」（用户目视）；图标定版卡 `om_x100b64256c1470acdfadc4d33133fca` |
-| 候选部署 | ✅ | `.deploy` = `a3cf1ef`，网关已重启，`启动自检通过`（2026-09-21 19:43:28） |
+| 阶段审计（A/B/C/C2 + 收口复核） | ✅ | `docs/audits/v0.7.2/audit-round1.md`（含绿变异、收口对照、第八节收口第二轮） |
+| 真机探针 | 部分 | 加载指示「① 会动」（用户目视）；图标定版卡 `om_x100b64256c1470acdfadc4d33133fca`；嵌套面板探针 `om_x100b6427ec67d4a4de74424945f4ca0` |
+| 变异账本 | ✅ | `--ledger-status` = **475/475 可跳过（真跑 475 + 继承 0）、待跑 0**、`full_audit_at=7e7a62d`；日志 `~/.larkdeck-scratch/v0.7.2-full-20260921/` |
+| 候选部署 | ✅ | `.deploy` = `7e7a62d`，网关已重启，`启动自检通过`（2026-09-21 22:54:38） |
 
 ## 1. 用户终验（唯一待办）
 
@@ -39,18 +40,29 @@ for g in test_units check_override check_hooks check_clarify_e2e check_cardview 
 ## 3. 变异验证（**增量优先**；协议见 `docs/verify-log.md`「09-21 协议变更」）
 
 ```bash
-$PY tests/mutate_check.py --preflight              # 0.2–0.8s，先对锚点
-$PY tests/mutate_check.py --ledger-status          # 看覆盖率（目标：待跑 0 条）
+$PY tests/mutate_check.py --preflight              # 0.2–0.8s，先对锚点（目标 487/487）
+$PY tests/mutate_check.py --ledger-status          # 看覆盖率（目标：475/475、待跑 0）
+$PY tests/mutate_check.py --delta --list           # 预期「待跑 0 / 跳过 475」；有新增才真跑
 $PY tests/mutate_check.py --delta --update-ledger  # 只跑「区域变过 / 新增」的（秒~分钟级）
-# 若基线里没有可继承的全绿记录（`_meta.full_audit_at` 为空/过期），后台补一次全量直跑：
-$PY -u tests/mutate_check.py --shard 1/2 --target-only --update-ledger > /tmp/f1.log 2>&1 &
-$PY -u tests/mutate_check.py --shard 2/2 --target-only --update-ledger > /tmp/f2.log 2>&1 &
-# 两片跑完后合并账本，并把两片里的 🟢（target-only 判绿不算证据）用完整模式复核：
-$PY tests/mutate_check.py --delta --update-ledger   # 绿的仍未被记账 ⇒ 会被这条自动挑出来
+```
+
+⚠️ **只有 `_meta.full_audit_at` 为空 / 过期时才需要全量直跑**（v0.7.2 已在 `7e7a62d` 上做过：
+475/475、`full_audit_at=7e7a62d`）。真要补一次时的口径（2026-09-21 实测 ≈18 分钟）：
+
+```bash
+# 分片并行（2 片；用**普通模式**，不要 --target-only —— 它判绿不记账、要再补一趟）：
+$PY -u tests/mutate_check.py --shard 1/2 --update-ledger > ~/.larkdeck-scratch/f1.log 2>&1 &
+$PY -u tests/mutate_check.py --shard 2/2 --update-ledger > ~/.larkdeck-scratch/f2.log 2>&1 &
+# ⚠️ `--shard` 不会自己盖 `full_audit_at`（`_full` 恒 False）⇒ 必须按**当日证据**合并：
+#    「日志里 🔴 名字并集覆盖全部条目 + 对照 ≥6 全绿且 0 假红 + 三重指纹一致」才可盖章；
+#    异常退出（💥 成片）时把缺口从种子账本删掉再 `--delta` 补跑。
+#    参考实现：~/.larkdeck-scratch/v0.7.2-full-20260921/merge_ledger3.py
+# 最后复核：$PY tests/mutate_check.py --ledger-status   # 必须 475/475、待跑 0
 ```
 
 判定：`🟢` = 断言没判别力；`⚪` = 变异没生效；`💥` = 只有崩溃、不算证据；`❓` = 锚点脱节。
-四种都必须清零（对照项除外）才算这一版验完。分片上限 2（4 分片无收益且会引入负载假红）。
+四种都必须清零（对照项除外）才算这一版验完。**分片上限 2**（4 分片无收益，且会引入负载假红：
+2026-09-21 实测 2 片同时跑时，曾出现一次瞬时环境故障让 120 条被记 💥 —— 同一批快照重跑全正常）。
 
 ## 4. 打 tag / push / release
 
@@ -83,8 +95,17 @@ grep -n "feishu connected\|已连接\|ws.*connected" ~/.hermes/logs/agent.log | 
 
 ## 7. 收尾（neat-freak 第二阶段）
 
-* 清场对象（**待用户确认**，未确认前一个都不动）：
-  * 8 个 `/tmp` 下的审计 worktree（`git worktree prune` + 删目录；其中若干仍存审计证据日志）；
-  * `docs/audits/cls-ui/phase-*/**.log`（已被 `*.log` 忽略，本地留档）；
-  * 本地 probe 状态文件 `.probe_*.json`（`gitignore` 已覆盖，可留）。
+* 清场对象（**待用户确认**，未确认前一个都不动；2026-09-21 清理预览已核对）：
+  * **8 棵审计 worktree**（全部 clean）：`/private/tmp/audits/cls-ui{,-phase3,-phase3b}/larkdeck`、
+    `/private/tmp/phase2{,b,c}/larkdeck`、`/private/tmp/ldbase/larkdeck`、`/private/tmp/larkdeck-phase1`；
+    它们的 commit 由 `refs/audit/cls-ui/*`（15 条本地 ref）保住 ⇒ 删树不丢 commit；
+    审计证据日志（`docs/audits/cls-ui/**` 共 59 份）已在 `main` 里 ⇒ 无唯一未集成内容。
+  * `$TMPDIR` 影子树残影：2026-09-21 实测 **22 个 / ≈1.5 GB**（正常路径每条判完即删，只有被杀/崩溃会留）。
+  * `/tmp` 旧审计导出：`/tmp/larkdeck` 是指向 `/tmp/audit-v062-B` 的**软链地雷**（它让
+    「父目录在 /tmp 的仓库」跑门禁时 `import larkdeck` 解析到别人的树 —— 2026-09-21 实测踩到）；
+    另有 `/tmp/audit-v1-*`、`/tmp/audit-v0-*`（`docs/audits/v0.7.1-visual/*.md` 引用的导出路径）。
+  * 冗余本地分支 `v0.7.1-visual`（0 个 main 之外的提交，已完全并入 main）。
+  * 仓库根忽略残留：`__pycache__/`、`.pytest_cache/`；`.probe_*.json`（探针状态，**保留**）。
+  * 本项目**自己的**会话残留（2026-09-21：`/tmp/candb2`、`/tmp/v12probe`、`/tmp/*.log` 副本等）
+    已随本轮收尾清理；证据副本在 `~/.larkdeck-scratch/v0.7.2-full-20260921/`。
 * 记忆：本项目规则未授权写记忆 ⇒ 标 `generated-read-only / not-applicable`。

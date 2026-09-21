@@ -669,13 +669,14 @@ ls -la ~/.hermes/logs/agent.log*
 
 | 项 | 值 |
 |---|---|
-| HEAD | **以 `git log -1 --format='%h %s'` 为准** —— ⚠️ 本表**写在提交里**，所以哈希天然落后一格（写这几行时是 `b82f71f`，`== origin/main`，已推送；表里原先印的 `bdde6f1` 就是这么过期的） |
-| 工作树 | 主工作树在 Phase 3 收尾提交前为 dirty（8 个文档/ignore 修改 + 未跟踪 phase-3 目录）；`git worktree list` 共 9 行（主 + 8 linked，含 phase3b 审计树），只有 `main` 一个分支；清场需用户确认 |
+| HEAD | **以 `git log -1 --format='%h %s'` 为准** —— ⚠️ 本表**写在提交里**，所以哈希天然落后一格（写这几行时是 `a6b73ae`：**本地领先 `origin/main`（`4875114`）**，v0.7.2 待用户真机终验后才 push+tag） |
+| 工作树 | 主工作树**干净**；`git worktree list` 共 **10 行**（主 + `.deploy` + 8 个 2026-09-17 的 cls-ui 审计树，全部 clean），另有 `v0.7.1-visual` 分支与 `refs/audit/cls-ui/*` 审计 tag；**清场（8 棵审计树 + `/tmp` 影子树）待用户确认** |
+| 发布状态 | **pre-release**（代码/门禁/账本已收口）⇒ 待用户真机终验（4 项）+ P4 三态是否本轮做的决定 ⇒ 然后 push + tag `v0.7.2` + `gh release` ⇒ `.deploy` 指到 tag + `hermes gateway restart` |
 | 现役版本 | **v0.7.2**（`plugin.yaml` = 0.7.2）；本轮收敛用户 9 条真机反馈的剩余 5 条 —— 见 `docs/plan-v0.7.2.md` 与 `docs/releases/v0.7.2.md` |
-| 变异验证 | **协议已改**：不再每版跑 60–90 分钟全量，改「增量 + 周期性全量」—— 账本 `tests/mutation-verdicts.json`（472 条，`--ledger-status` 看覆盖），命令 `tests/mutate_check.py --delta`；协议与实测数字见 `docs/verify-log.md`「09-21 协议变更」。最近一次全量直跑：2026-09-21（470 red-assert + 补充 278 条升级，见 verify-log 09-21 各行） |
+| 变异验证 | **协议已改**：不再每版跑 60–90 分钟全量，改「增量 + 周期性全量」—— 账本 `tests/mutation-verdicts.json`（**475 条**，`--ledger-status` 看覆盖），命令 `tests/mutate_check.py --delta`；协议与实测数字见 `docs/verify-log.md`「09-21 协议变更」。**最近一次全量直跑 = 2026-09-21 深夜**（分 2 片并行 ≈18 分钟 + 缺口补跑 ≈7 分钟）：475/475 red-assert、待跑 0、`full_audit_at=7e7a62d`（逐段证据在账本 `_meta`，日志在 `~/.larkdeck-scratch/v0.7.2-full-20260921/`） |
+| ⚠️ 部署 | Mac 现役：`~/.hermes/plugins/larkdeck` → 本仓 `.deploy`（worktree @ `7e7a62d`，与本版生产代码逐字节相同；本轮收口只改测试/文档 ⇒ **无需重启**）；网关进程自 2026-09-21 22:54:37 起跑。⚠️ `.deploy/` 内含整份源码副本 ⇒ 写文件遍历/拷贝/清单对账都要排除它（`install.sh` 已修，见 `docs/releases/v0.7.2.md`） |
 | 发布证据 | `docs/audits/v0.7.2/release-evidence.md`（六支门禁 / 账本 / 真机探针 / `--copy` 安装 / 审计轮次） |
-| 遗留进程 | 无（只剩该跑的 Hermes 网关）；`$TMPDIR` 下的影子树**用完即清**（2026-09-21 实测：旧快照目录会累积到 GB 级，`mutate_check` 每条判完即删） |
-| ⚠️ 部署目录 | 仓库里的 `.deploy/` 是**部署 worktree**（内含整份源码副本）⇒ 写文件遍历/拷贝/清单对账都要排除它（`install.sh` 已修，见 `docs/releases/v0.7.2.md`） |
+| 遗留进程 | 无（只剩该跑的 Hermes 网关）；⚠️ `$TMPDIR` 下的影子树**异常退出会留残影**（2026-09-21 实测 22 个、约 1.5 GB；正常路径每条判完即删）—— 待确认后清理 |
 
 ### 13.2 路线问题已收口，**不要再重新论证一遍**
 
