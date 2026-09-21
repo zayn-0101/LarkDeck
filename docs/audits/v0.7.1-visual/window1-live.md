@@ -92,3 +92,56 @@ hermes gateway restart
 * 装饰失败日志**带上服务端 `msg`**（真机上「码是分类、msg 才是事实」）。
 * 单测 3 条（`test_v4_1_*`，其中并发揉进「写出去了还没回来」的确定性窗口）；
   变异 `V4-2..V4-6` 五条 **5/5 全部变红**（`mutate_check.py -k V4-`）。
+
+---
+
+## 部署与 V4.2 真机复核（2026-09-21 11:39–11:45）
+
+用户同意后执行（顺序即纪律：先换代码、再重启、最后才看结果）：
+
+```
+git -C .deploy checkout --detach ccde909     # .deploy 是 detached worktree，软链不动
+hermes gateway restart                        # 11:39 / 11:40 两次启动，最终单实例
+```
+
+**启动证据（`agent.log`）**
+
+```
+11:40:07  INFO larkdeck: [larkdeck] 启动自检通过：Hermes 0.21.1 · feishu 平台已由 larkdeck 接管 ·
+          native 传输 cardkit · 钩子 post_api_request/on_stream_start/on_stream_delta/on_stream_end/
+          pre_tool_call/post_tool_call/pre_gateway_dispatch/on_session_end · /larkdeck 命令已注册
+11:40:07  INFO hermes_plugins.feishu_platform.adapter: [Feishu] Connected in websocket mode (feishu)
+11:40:07  INFO gateway.run: ✓ feishu connected
+```
+
+* 单实例：`pgrep -f "hermes_cli.main gateway run"` ⇒ 1 个真进程（+1 个 stderr 包装器）；
+* 载入版本：`.deploy` 的 `git rev-parse --short HEAD` = `ccde909`（V4.1 + V4.2 都在里面，
+  `grep -c "_ld_card_lock\b|_ld_heartbeat_tick|footer=f\"{base_footer}"` 三处都在）；
+* 唯一的报错是重启瞬间的 websocket `ConnectionClosedOK`（旧连接正常关闭），不是插件问题。
+
+**真机探针**（`tests/probe_render.py --structured-canary`，走部署树、发真卡）：
+
+```
+structured canary: seed=True update=True finalize=True
+```
+
+这一次的配置是 `visual_engine=structured` + `show_reasoning=true` ⇒ 卡片里应能同时看到
+**嵌套推理 A 形态**与**新页脚**，是「窗口 2」的现成样本。
+
+**离线转储工具**（新增 `tests/dump_structured_card.py`，零网络/零副作用）：把「最终那张卡」
+的 JSON 直接打出来，省掉一次真机往返。实测输出：
+
+| 模式 | 页脚 | 元素数 | 字节数 |
+| --- | --- | --- | --- |
+| `show_reasoning=true` | `✅ 已完成 · ⏱ 12.0s · 🔖 m_ck_1` | 31 | 3372 |
+| `show_reasoning=false`（默认） | 同上 | 27 | 2676 |
+
+JSON 逐项核对：面板标题 `💭 思考 0.0s · 🛠️ 工具执行 · 3 步`（**无模型名**）、工具行
+`div(icon=standard_icon: app-default_outlined / setting_outlined / file-link-text_outlined,
+text=lark_md: **terminal** (347 ms) · <font color='green'>Succeeded</font>)`、细节行与
+Result/Error 行都是**独立 div + margin 22px**、推理轮是嵌套 `collapsible_panel`
+（`reasoning_0_panel` / `reasoning_0_text`）、面板 `border.color=green` + `5px` 圆角、
+`streaming_mode=false`。⇒ 与冻结计划里的元素树蓝图逐条一致。
+
+**仍未完成（挡住发布）**：用户窗口 1 的**中途截图**与 **`/stop` 黄边截图**；V4 阶段三方
+对抗审计收敛；翻默认 `visual_engine=structured`；终验截图；push/tag/release。
