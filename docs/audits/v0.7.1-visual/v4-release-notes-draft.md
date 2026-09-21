@@ -54,3 +54,19 @@
 3. **Result 块**：现在**每一步**都挂一个大号 fenced 代码块，用户觉得「丑陋、和别的插件不一样」。
    ⇒ 对齐 CLS：默认只留一行灰色细节；`Result`/`Error` 块只在**失败**（或展开时）出现，且字号收敛。
    ⚠️ 这会覆盖 plan 里「每步都渲染 Result/Error 块」那条，属于**用户口径优先**，要在 consensus 文档里记一笔。
+
+## v0.7.2 待办（用户 2026-09-21 选择「先发 v0.7.1」，以下三项留给下一版）
+
+1. **`/stop` 字节判据没有建模结构化重绘卡（真 bug，不只影响 i18n）**：
+   `adapter._stop_redraw_would_paint()` 在 `visual_engine=structured` 下仍按 legacy
+   `status_shell + unified_panel` 估壳体积，而 `/stop` 真正重绘的是**元素树卡**、
+   面板来自该会话真实快照（可能 7+ 个工具步）⇒ 判据偏乐观，边界上会「判据说画得上色、
+   实际丢正文」（测试 `test_tracked_body_always_fits_the_status_shell_end_to_end` 的
+   `A1-a` 断言能抓住）。**修法**：把真实面板/视图从调用点（`_ld_note_text` / `/stop` 重绘）
+   传进判据，而不是让它自己猜。
+2. **i18n**：结构化标题（卡级状态头 / 面板摘要 / 推理轮 / 折叠提示）目前是中文硬编码。
+   改法：接 `_i18n.i18n_text()`（双语节点）—— 已确认参考实现 aiduPOP 也是这个形态；
+   依赖第 1 项先修（双语节点会撑大壳体积，判据必须准）。
+3. **aiduPOP 式 loading hint**：`div` + `standard_icon: time_outlined`(16px 灰) + 双语文案，
+   建卡时插入、**首个 token 到达即删除**（`aiduPOP/cardkit/elements.py:180`、
+   `cards.py:185-187`）。需要给结构化帧路径加 `delete_elements` 动作。
