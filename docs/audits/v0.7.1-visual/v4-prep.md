@@ -26,9 +26,40 @@
    ⑥ ≥20 步长回合 ⑦ 最终发布确认 + `/larkdeck status`。
 5. 每窗口前置：定向变异红 + 改动面分片绿；失败同窗口修复重看；看完恢复默认配置。
 
+## 用户闸门后的执行命令清单
+```bash
+PY=/Users/Zayn/.hermes/hermes-agent/venv/bin/python3
+cd /Users/Zayn/Code/larkdeck
+
+# 0) 部署 worktree + 软链（需目录写权限；默认只演练）
+tools/setup_deploy_worktree.sh --check
+tools/setup_deploy_worktree.sh --create
+tools/setup_deploy_worktree.sh --apply     # 之后才允许重启网关
+
+# 1) 窗口 0：字号探针（不重启）
+$PY tests/probe_render.py --font-size
+# 你确认后：把 visual-tokens.json 的 body_text_size_pending_probe 写回选定值
+
+# 2) 窗口 1：V1+V2（一次重启 + structured/header 开）
+#    配置 visual_engine=structured；重启网关；跑工具回合并截图：
+#    ① 流式工具行 ② 同卡收尾 ③ /stop 黄边
+# 3) 窗口 2：V3（一次重启 + show_reasoning=true）
+#    ④ 展开嵌套轮 + Result/Error ⑤ false 同回合只留摘要
+# 4) 窗口 3：V4 最终（默认切 structured + 删 legacy 后一次重启）
+#    ⑥ ≥20 步长回合 ⑦ 最终桌面截图 + /larkdeck status
+#    注意：默认切换代码尚未执行，需用户最终截图确认后由父代理改默认并 commit
+
+# 5) 发布里程碑（仅在发布三审 + 用户最终截图 + 全量门禁后）
+# git checkout main && git merge --ff-only v0.7.1-visual
+# git push origin main
+# git tag -a v0.7.1 -m "tree <sha> expected-kill <log sha>"
+# git push origin v0.7.1
+```
+
 ## 必须由用户决定/执行
-- 独立部署 worktree + `~/.hermes/plugins/larkdeck` 软链重指（沙箱不允许自动创建目录）；
+- 部署 worktree 创建与软链重指（沙箱不允许父代理自动创建目录）；
 - 窗口 0 探针卡与 `normal_v2` token 选择；
 - 网关重启/回滚时机（当前 detached PID 95960）；
 - 默认 `visual_engine=legacy → structured` 的最终切换；
-- 发布里程碑 push / annotated tag / release（按计划仅在发布三审 + 用户截图后执行）。
+- 发布里程碑 push / annotated tag / release（仅在用户最终截图后）。
+
