@@ -207,13 +207,43 @@ def _title_node(title: Any, **extra: Any) -> Dict[str, Any]:
     return node
 
 
+#: `standard_icon` token → **内联 emoji**。为什么要有这张表（用户 2026-09-21 真机选版）：
+#: 飞书把 `div.icon` 里的图标**顶部对齐**渲染，而我们的行文本长/字号不一，用户逐版比对后判定
+#: 「**乙（emoji 内联进文本）图标与文字对得最齐**」（探针 `tests/probe_icons.py`，
+#: `om_x100b6424d23e24a8c3368dfbdaad661`；同一次探针还证伪了「长文本换行导致偏上」的假说 ——
+#: 用户明确回「丙 那行没有换行」）。所以工具行改为**内联 emoji**：token 表仍是 CLS 逐条对齐的
+#: 唯一真相，emoji 只负责渲染。
+ICON_EMOJI: Dict[str, str] = {
+    "app-default_outlined": "🧩",
+    "file-link-text_outlined": "📄",
+    "edit_outlined": "✏️",
+    "search_outlined": "🔍",
+    "language_outlined": "🌐",
+    "doc-search_outlined": "🔎",
+    "folder_outlined": "📁",
+    "setting_outlined": "🛠️",
+    "browser-mac_outlined": "🖥️",
+    "robot_outlined": "🤖",
+    "list-check_outlined": "✅",
+    "report_outlined": "📊",
+    "chat_outlined": "💬",
+    "setting-inter_outlined": "🔧",
+}
+
+
+def icon_emoji(token: str) -> str:
+    """token → 内联 emoji（未知 token 用兜底 emoji，绝不返回空串 —— 空串会让行首多一个空格）。"""
+    return ICON_EMOJI.get(str(token or ""), ICON_EMOJI[ICON_FALLBACK])
+
+
 def _tool_title_div(step: ToolStepView) -> Dict[str, Any]:
     status_text, color = step.status_style
     duration = f" ({step.duration_ms} ms)" if step.duration_ms else ""
-    content = f"**{step.title}**{duration} · <font color='{color}'>{status_text}</font>"
+    # ⚠️ emoji **内联在文本里**，不用 `div.icon` —— 用户选版见 `ICON_EMOJI` 的说明。
+    content = (f"{icon_emoji(step.icon_token)} **{step.title}**{duration} · "
+               f"<font color='{color}'>{status_text}</font>")
     return {
         "tag": "div",
-        "icon": {"tag": "standard_icon", "token": step.icon_token, "color": ICON_COLOR},
         "text": {"tag": "lark_md", "content": content, "text_size": PANEL_TEXT_SIZE},
     }
 

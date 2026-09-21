@@ -1,6 +1,6 @@
 {
  "entity_card": [
-  "{\"schema\": \"2.0\", \"config\": {\"streaming_mode\": true, \"streaming_config\": {\"print_frequency_ms\": {\"default\": 15}, \"print_step\": {\"default\": 1}, \"print_strategy\": \"fast\"}, \"style\": {\"text_size\": {\"ld_body\": {\"default\": \"normal\", \"pc\": \"normal\", \"mobile\": \"normal\"}, \"ld_panel\": {\"default\": \"notation\", \"pc\": \"notation\", \"mobile\": \"notation\"}, \"ld_notice\": {\"default\": \"notation\", \"pc\": \"notation\", \"mobile\": \"notation\"}}}}, \"body\": {\"elements\": [{\"tag\": \"markdown\", \"element_id\": \"answer\", \"content\": \" \", \"margin\": \"0px 0px 0px 0px\", \"text_size\": \"ld_body\"}, {\"tag\": \"div\", \"element_id\": \"loading_hint\", \"icon\": {\"tag\": \"custom_icon\", \"img_key\": \"img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg\", \"size\": \"16px 16px\"}, \"text\": {\"tag\": \"plain_text\", \"content\": \" \"}}, {\"tag\": \"collapsible_panel\", \"element_id\": \"panel\", \"header\": {\"title\": {\"tag\": \"plain_text\", \"content\": \"💭 思考 0.0s · 🛠️ 工具执行 · 1 步\", \"i18n_content\": {\"zh_cn\": \"💭 思考 0.0s · 🛠️ 工具执行 · 1 步\", \"en_us\": \"💭 Thought 0.0s · 🛠️ Tools · 1 step\"}, \"text_size\": \"notation\", \"text_color\": \"grey\"}, \"vertical_align\": \"center\", \"icon\": {\"tag\": \"standard_icon\", \"token\": \"down-small-ccm_outlined\", \"size\": \"16px 16px\", \"color\": \"grey\"}, \"icon_position\": \"right\", \"icon_expanded_angle\": -180}, \"expanded\": false, \"vertical_spacing\": \"4px\", \"padding\": \"8px 8px 8px 8px\", \"border\": {\"color\": \"grey\", \"corner_radius\": \"5px\"}, \"elements\": [{\"tag\": \"div\", \"icon\": {\"tag\": \"standard_icon\", \"token\": \"setting_outlined\", \"color\": \"grey\"}, \"text\": {\"tag\": \"lark_md\", \"content\": \"**terminal** · <font color='turquoise'>Running</font>\", \"text_size\": \"notation\"}}, {\"tag\": \"div\", \"margin\": \"0px 0px 0px 22px\", \"text\": {\"tag\": \"plain_text\", \"content\": \"↳ {\\\"command\\\": \\\"ls\\\"}\", \"text_color\": \"grey\", \"text_size\": \"notation\"}}]}, {\"tag\": \"markdown\", \"element_id\": \"footer\", \"content\": \" \", \"text_size\": \"ld_notice\", \"margin\": \"0px 0px 0px 0px\"}]}}"
+  "{\"schema\": \"2.0\", \"config\": {\"streaming_mode\": true, \"streaming_config\": {\"print_frequency_ms\": {\"default\": 15}, \"print_step\": {\"default\": 1}, \"print_strategy\": \"fast\"}, \"style\": {\"text_size\": {\"ld_body\": {\"default\": \"normal\", \"pc\": \"normal\", \"mobile\": \"normal\"}, \"ld_panel\": {\"default\": \"notation\", \"pc\": \"notation\", \"mobile\": \"notation\"}, \"ld_notice\": {\"default\": \"notation\", \"pc\": \"notation\", \"mobile\": \"notation\"}}}}, \"body\": {\"elements\": [{\"tag\": \"markdown\", \"element_id\": \"answer\", \"content\": \" \", \"margin\": \"0px 0px 0px 0px\", \"text_size\": \"ld_body\"}, {\"tag\": \"div\", \"element_id\": \"loading_hint\", \"icon\": {\"tag\": \"custom_icon\", \"img_key\": \"img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg\", \"size\": \"16px 16px\"}, \"text\": {\"tag\": \"plain_text\", \"content\": \" \"}}, {\"tag\": \"collapsible_panel\", \"element_id\": \"panel\", \"header\": {\"title\": {\"tag\": \"plain_text\", \"content\": \"💭 思考 0.0s · 🛠️ 工具执行 · 1 步\", \"i18n_content\": {\"zh_cn\": \"💭 思考 0.0s · 🛠️ 工具执行 · 1 步\", \"en_us\": \"💭 Thought 0.0s · 🛠️ Tools · 1 step\"}, \"text_size\": \"notation\", \"text_color\": \"grey\"}, \"vertical_align\": \"center\", \"icon\": {\"tag\": \"standard_icon\", \"token\": \"down-small-ccm_outlined\", \"size\": \"16px 16px\", \"color\": \"grey\"}, \"icon_position\": \"right\", \"icon_expanded_angle\": -180}, \"expanded\": false, \"vertical_spacing\": \"4px\", \"padding\": \"8px 8px 8px 8px\", \"border\": {\"color\": \"grey\", \"corner_radius\": \"5px\"}, \"elements\": [{\"tag\": \"div\", \"text\": {\"tag\": \"lark_md\", \"content\": \"🛠️ **terminal** · <font color='turquoise'>Running</font>\", \"text_size\": \"notation\"}}, {\"tag\": \"div\", \"margin\": \"0px 0px 0px 22px\", \"text\": {\"tag\": \"plain_text\", \"content\": \"↳ {\\\"command\\\": \\\"ls\\\"}\", \"text_color\": \"grey\", \"text_size\": \"notation\"}}]}, {\"tag\": \"markdown\", \"element_id\": \"footer\", \"content\": \" \", \"text_size\": \"ld_notice\", \"margin\": \"0px 0px 0px 0px\"}]}}"
  ],
  "element_writes": [
   [
@@ -73,14 +73,9 @@
        "elements": [
         {
          "tag": "div",
-         "icon": {
-          "tag": "standard_icon",
-          "token": "setting_outlined",
-          "color": "grey"
-         },
          "text": {
           "tag": "lark_md",
-          "content": "**terminal** · <font color='turquoise'>Running</font>",
+          "content": "🛠️ **terminal** · <font color='turquoise'>Running</font>",
           "text_size": "notation"
          }
         },
@@ -96,14 +91,9 @@
         },
         {
          "tag": "div",
-         "icon": {
-          "tag": "standard_icon",
-          "token": "file-link-text_outlined",
-          "color": "grey"
-         },
          "text": {
           "tag": "lark_md",
-          "content": "**read_file** · <font color='turquoise'>Running</font>",
+          "content": "📄 **read_file** · <font color='turquoise'>Running</font>",
           "text_size": "notation"
          }
         },
@@ -175,14 +165,9 @@
        "elements": [
         {
          "tag": "div",
-         "icon": {
-          "tag": "standard_icon",
-          "token": "setting_outlined",
-          "color": "grey"
-         },
          "text": {
           "tag": "lark_md",
-          "content": "**terminal** · <font color='turquoise'>Running</font>",
+          "content": "🛠️ **terminal** · <font color='turquoise'>Running</font>",
           "text_size": "notation"
          }
         },
@@ -198,14 +183,9 @@
         },
         {
          "tag": "div",
-         "icon": {
-          "tag": "standard_icon",
-          "token": "file-link-text_outlined",
-          "color": "grey"
-         },
          "text": {
           "tag": "lark_md",
-          "content": "**read_file** (2300 ms) · <font color='green'>Succeeded</font>",
+          "content": "📄 **read_file** (2300 ms) · <font color='green'>Succeeded</font>",
           "text_size": "notation"
          }
         },
@@ -263,14 +243,9 @@
        "elements": [
         {
          "tag": "div",
-         "icon": {
-          "tag": "standard_icon",
-          "token": "setting_outlined",
-          "color": "grey"
-         },
          "text": {
           "tag": "lark_md",
-          "content": "**terminal** · <font color='turquoise'>Running</font>",
+          "content": "🛠️ **terminal** · <font color='turquoise'>Running</font>",
           "text_size": "notation"
          }
         },
@@ -286,14 +261,9 @@
         },
         {
          "tag": "div",
-         "icon": {
-          "tag": "standard_icon",
-          "token": "file-link-text_outlined",
-          "color": "grey"
-         },
          "text": {
           "tag": "lark_md",
-          "content": "**read_file** (2300 ms) · <font color='green'>Succeeded</font>",
+          "content": "📄 **read_file** (2300 ms) · <font color='green'>Succeeded</font>",
           "text_size": "notation"
          }
         },
@@ -331,7 +301,7 @@
  ],
  "summary_writes": [],
  "final_patch": [
-  "{\"schema\": \"2.0\", \"config\": {\"streaming_mode\": false, \"style\": {\"text_size\": {\"ld_body\": {\"default\": \"normal\", \"pc\": \"normal\", \"mobile\": \"normal\"}, \"ld_panel\": {\"default\": \"notation\", \"pc\": \"notation\", \"mobile\": \"notation\"}, \"ld_notice\": {\"default\": \"notation\", \"pc\": \"notation\", \"mobile\": \"notation\"}}}}, \"body\": {\"elements\": [{\"tag\": \"markdown\", \"element_id\": \"answer\", \"content\": \"第一段，第二段。\", \"margin\": \"0px 0px 0px 0px\", \"text_size\": \"ld_body\"}, {\"tag\": \"collapsible_panel\", \"element_id\": \"panel\", \"header\": {\"title\": {\"tag\": \"plain_text\", \"content\": \"💭 思考 0.0s · 🛠️ 工具执行 · 2 步\", \"i18n_content\": {\"zh_cn\": \"💭 思考 0.0s · 🛠️ 工具执行 · 2 步\", \"en_us\": \"💭 Thought 0.0s · 🛠️ Tools · 2 steps\"}, \"text_size\": \"notation\", \"text_color\": \"grey\"}, \"vertical_align\": \"center\", \"icon\": {\"tag\": \"standard_icon\", \"token\": \"down-small-ccm_outlined\", \"size\": \"16px 16px\", \"color\": \"grey\"}, \"icon_position\": \"right\", \"icon_expanded_angle\": -180}, \"expanded\": false, \"vertical_spacing\": \"4px\", \"padding\": \"8px 8px 8px 8px\", \"border\": {\"color\": \"green\", \"corner_radius\": \"5px\"}, \"elements\": [{\"tag\": \"div\", \"icon\": {\"tag\": \"standard_icon\", \"token\": \"setting_outlined\", \"color\": \"grey\"}, \"text\": {\"tag\": \"lark_md\", \"content\": \"**terminal** · <font color='turquoise'>Running</font>\", \"text_size\": \"notation\"}}, {\"tag\": \"div\", \"margin\": \"0px 0px 0px 22px\", \"text\": {\"tag\": \"plain_text\", \"content\": \"↳ {\\\"command\\\": \\\"ls\\\"}\", \"text_color\": \"grey\", \"text_size\": \"notation\"}}, {\"tag\": \"div\", \"icon\": {\"tag\": \"standard_icon\", \"token\": \"file-link-text_outlined\", \"color\": \"grey\"}, \"text\": {\"tag\": \"lark_md\", \"content\": \"**read_file** (2300 ms) · <font color='green'>Succeeded</font>\", \"text_size\": \"notation\"}}, {\"tag\": \"div\", \"margin\": \"0px 0px 0px 22px\", \"text\": {\"tag\": \"plain_text\", \"content\": \"↳ {\\\"path\\\": \\\"/tmp/golden.txt\\\"}\", \"text_color\": \"grey\", \"text_size\": \"notation\"}}]}, {\"tag\": \"markdown\", \"element_id\": \"footer\", \"content\": \"✅ 已完成 · 🤖 test-model\", \"text_size\": \"ld_notice\", \"margin\": \"0px 0px 0px 0px\"}]}}"
+  "{\"schema\": \"2.0\", \"config\": {\"streaming_mode\": false, \"style\": {\"text_size\": {\"ld_body\": {\"default\": \"normal\", \"pc\": \"normal\", \"mobile\": \"normal\"}, \"ld_panel\": {\"default\": \"notation\", \"pc\": \"notation\", \"mobile\": \"notation\"}, \"ld_notice\": {\"default\": \"notation\", \"pc\": \"notation\", \"mobile\": \"notation\"}}}}, \"body\": {\"elements\": [{\"tag\": \"markdown\", \"element_id\": \"answer\", \"content\": \"第一段，第二段。\", \"margin\": \"0px 0px 0px 0px\", \"text_size\": \"ld_body\"}, {\"tag\": \"collapsible_panel\", \"element_id\": \"panel\", \"header\": {\"title\": {\"tag\": \"plain_text\", \"content\": \"💭 思考 0.0s · 🛠️ 工具执行 · 2 步\", \"i18n_content\": {\"zh_cn\": \"💭 思考 0.0s · 🛠️ 工具执行 · 2 步\", \"en_us\": \"💭 Thought 0.0s · 🛠️ Tools · 2 steps\"}, \"text_size\": \"notation\", \"text_color\": \"grey\"}, \"vertical_align\": \"center\", \"icon\": {\"tag\": \"standard_icon\", \"token\": \"down-small-ccm_outlined\", \"size\": \"16px 16px\", \"color\": \"grey\"}, \"icon_position\": \"right\", \"icon_expanded_angle\": -180}, \"expanded\": false, \"vertical_spacing\": \"4px\", \"padding\": \"8px 8px 8px 8px\", \"border\": {\"color\": \"green\", \"corner_radius\": \"5px\"}, \"elements\": [{\"tag\": \"div\", \"text\": {\"tag\": \"lark_md\", \"content\": \"🛠️ **terminal** · <font color='turquoise'>Running</font>\", \"text_size\": \"notation\"}}, {\"tag\": \"div\", \"margin\": \"0px 0px 0px 22px\", \"text\": {\"tag\": \"plain_text\", \"content\": \"↳ {\\\"command\\\": \\\"ls\\\"}\", \"text_color\": \"grey\", \"text_size\": \"notation\"}}, {\"tag\": \"div\", \"text\": {\"tag\": \"lark_md\", \"content\": \"📄 **read_file** (2300 ms) · <font color='green'>Succeeded</font>\", \"text_size\": \"notation\"}}, {\"tag\": \"div\", \"margin\": \"0px 0px 0px 22px\", \"text\": {\"tag\": \"plain_text\", \"content\": \"↳ {\\\"path\\\": \\\"/tmp/golden.txt\\\"}\", \"text_color\": \"grey\", \"text_size\": \"notation\"}}]}, {\"tag\": \"markdown\", \"element_id\": \"footer\", \"content\": \"✅ 已完成 · 🤖 test-model\", \"text_size\": \"ld_notice\", \"margin\": \"0px 0px 0px 0px\"}]}}"
  ],
  "returns": [
   true,

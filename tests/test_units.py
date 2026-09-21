@@ -11464,7 +11464,12 @@ def test_v1_structured_seed_and_panel_update():
     raw._client = client
     target_cls = type(raw)
     old_reqs = target_cls.__dict__.get("_ld_ck_requests")
-    adapter.configure(visual_engine="structured", native_transport="cardkit")
+    # ⚠️ `card_status_header=True` **必须显式配**：末段断言收尾整卡的 header 是绿色，
+    #   而 v0.7.2 起默认是 **false**（用户口径「顶栏默认不显示」）。不写的话这条断言
+    #   会去蹭**别的用例残留的配置**（实测：单跑本用例红、全量跑绿 —— 环境耦合，
+    #   审计 A 的教训「基线必须与被测快照同一状态」的同型问题）。
+    adapter.configure(visual_engine="structured", native_transport="cardkit",
+                      card_status_header=True)
     adapter._STREAM_MIN_INTERVAL = 0.0
     target_cls._ld_ck_requests = staticmethod(_fake_ck_requests)
     try:
@@ -12863,6 +12868,42 @@ def _text_nodes_directly_inside_panels(node) -> list:
         for item in node:
             bad += _text_nodes_directly_inside_panels(item)
     return bad
+
+
+def test_v4_46_tool_rows_use_inline_emoji_not_div_icon():
+    """V4.46：工具行用**内联 emoji**，不用 `div.icon` —— 用户 2026-09-21 真机选版。
+
+    探针 `tests/probe_icons.py`（`om_x100b6424d23e24a8c3368dfbdaad661`）三臂对照：
+    甲 = `div.icon` + 短文本、乙 = emoji 内联 + **同一段**短文本、丙 = `div.icon` + 长文本。
+    用户回：「**乙是图标与文字对得最齐的**，丙 那行**没有换行**」——
+    后一句同时**证伪**了审计 A 的假说（「行太长 ⇒ 换行 ⇒ 图标顶对齐」），
+    所以修法是换**渲染方式**（内联 emoji），不是缩短文本。
+
+    这条用例钉两件事：① 工具 → CLS token → emoji 三者的对应；
+    ② 工具行的 `div` **没有** `icon` 字段（退回 `div.icon` 必须实红）。
+    """
+    for name, token, emoji in (("read_file", "file-link-text_outlined", "📄"),
+                               ("terminal", "setting_outlined", "🛠️"),
+                               ("web_search", "search_outlined", "🔍"),
+                               ("完全没听过", "setting-inter_outlined", "🔧")):
+        assert adapter.LarkDeckMixin._ld_icon_token(name) == token, name
+        assert adapter._cardview.icon_emoji(token) == emoji, (name, token, emoji)
+    panel.reset()
+    try:
+        panel.bind_chat_session("oc_v446", "s_v446")
+        panel.record_tool_started("s_v446", "t", "terminal", {"command": "df -h"},
+                                  tool_call_id="tc-v446")
+        raw = _make()
+        view = raw._ld_cardview("oc_v446", "答案")
+        rows = [e for e in adapter._cardview.panel_shell(view.panel)["elements"]
+                if e.get("tag") == "div"
+                and "terminal" in str(e.get("text", {}).get("content") or "")]
+        assert rows, "前提：工具行必须在面板里"
+        row = rows[0]
+        assert "icon" not in row, f"工具行不许再用 div.icon（用户选的是内联 emoji）：{row}"
+        assert row["text"]["content"].startswith("🛠️ "), row["text"]["content"]
+    finally:
+        panel.reset()
 
 
 def main() -> int:

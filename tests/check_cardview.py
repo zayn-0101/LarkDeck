@@ -158,8 +158,11 @@ def _assert_structured_builder() -> None:
     assert reasoning["elements"][0]["content"] == "原始推理", reasoning
     title_div, detail = panel["elements"][1], panel["elements"][2]
     assert title_div["tag"] == "div", title_div
-    assert title_div["icon"] == {"tag": "standard_icon", "token": "file-link-text_outlined",
-                                 "color": "grey"}, title_div["icon"]
+    # 用户 2026-09-21 真机选版：工具行**不用 `div.icon`**（客户端顶部对齐 ⇒ 图标比文字偏上），
+    # 改成把 emoji **内联进文本**（探针 tests/probe_icons.py，乙 那一臂）。
+    assert "icon" not in title_div, f"工具行不许再用 div.icon（用户选的是内联 emoji）：{title_div}"
+    assert title_div["text"]["content"].startswith(cardview.icon_emoji(
+        cardview.ICON_TOKENS["read"])), title_div["text"]["content"]
     assert "**读取文件**" in title_div["text"]["content"], title_div
     assert "Succeeded" in title_div["text"]["content"], title_div
     assert detail["tag"] == "div" and detail["margin"] == "0px 0px 0px 22px", detail

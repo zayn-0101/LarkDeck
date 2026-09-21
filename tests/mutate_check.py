@@ -2593,6 +2593,17 @@ MUTATIONS = [
     ('P5-出站限流的 key 不含 chat（多会话并发时证据被吃掉）', 'core/adapter.py',
      '    key = f"outbound-{kind}-{chat_id}"',
      '    key = f"outbound-{kind}"', 'test_units'),
+    ('V4-46-工具行退回 div.icon（用户 2026-09-21 明确否掉的渲染方式）', 'core/cardview.py',
+     '    return {\n        "tag": "div",\n'
+     '        "text": {"tag": "lark_md", "content": content, "text_size": PANEL_TEXT_SIZE},\n    }',
+     '    return {\n        "tag": "div",\n'
+     '        "icon": {"tag": "standard_icon", "token": step.icon_token, "color": ICON_COLOR},\n'
+     '        "text": {"tag": "lark_md", "content": content, "text_size": PANEL_TEXT_SIZE},\n    }',
+     'test_units'),
+    ('V4-47-工具图标退化成同一个兜底 emoji（per-tool 对应关系丢失）', 'core/cardview.py',
+     '    return ICON_EMOJI.get(str(token or ""), ICON_EMOJI[ICON_FALLBACK])',
+     '    return ICON_EMOJI[ICON_FALLBACK]  # V4-47 mutated',
+     'test_units'),
 ]
 
 #: **对照项**：行为等价的改动（合法 YAML 变体等），期望四门禁**全绿**。
