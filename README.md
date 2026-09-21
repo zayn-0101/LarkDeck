@@ -213,7 +213,7 @@ plugins:
         footer_metrics: "off"    # 页脚附加指标：off（默认）/ basic（缓存命中率 ⚡ + API 次数 🔁）/ full（再 + 首字节延迟 🐢）
         progress_lines_in_body: false  # 核心的工具行不进正文（仅 body_source: legacy 生效；own 模式结构上不读帧）
         body_source: "own"      # 默认 own：正文只认插件 on_stream_delta 累积；legacy 仅过渡回退（P2b 后删除）
-        visual_engine: "legacy" # v0.7.1 视觉引擎：legacy（默认）/ structured（结构化元素树，V1 起落地；未实现前按 legacy 并告警）
+        visual_engine: "structured" # v0.7.1 视觉引擎：structured（**默认**，结构化元素树）。`legacy` 配置键自 v0.7.1 起**已退役**（设了只留一条退休 WARNING，行为仍是 structured）；旧渲染器仍作为 DEGRADE 车道的降级渲染器保留。真正回退请 revert 到 v0.7.0
         card_status_header: true # v0.7.1 V2：卡片顶部状态条显隐；当前两种取值观感相同，非默认值告警
         show_reasoning: false   # v0.7.1 V3：是否显示推理正文；默认 false（对齐 CLS/aiduPOP），摘要行始终保留；已登记未生效，V3 前两种取值观感相同（README no-op 说明）
         footer: true             # 页脚：状态 → 耗时 → 模型 → 上下文用量（+ 本卡短码）
