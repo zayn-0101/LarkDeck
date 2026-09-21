@@ -10469,7 +10469,7 @@ def test_ck_capacity_on_a_body_write_is_fatal_not_degrade():
     """
     assert 300315 not in adapter._CARD_DEATH_CODES and 300305 not in adapter._CARD_DEATH_CODES, \
         f"容量码不是卡级死法：{adapter._CARD_DEATH_CODES}"
-    calls, client = _mk_cardkit_fake(fail_at=2, fail_at_code=300315)      # 第 2 次写 = 正文
+    calls, client = _mk_cardkit_fake(fail_at=3, fail_at_code=300315)      # 第 2 次写 = 正文
     raw = _make()
     raw._client = client
     adapter.configure(native_transport="cardkit", unified_panel=True)
@@ -12372,6 +12372,38 @@ def test_v4_13_structured_titles_are_bilingual():
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)
         panel.reset()
+
+
+def test_v4_14_loading_hint_is_inserted_then_deleted_on_first_token():
+    """V4.14：预加载提示按 aiduPOP 形态 —— 建卡插入（小图标 + 双语文案）、**首字即删**。"""
+    chat, key, turn = "oc_v414", "oc_v414:t1", "t1"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        entity = calls["entity"][0]
+        if not isinstance(entity, dict):
+            entity = json.loads(entity)
+        hint = _find_element(entity, "loading_hint")
+        assert hint is not None, entity
+        assert hint["icon"]["token"] == "time_outlined", hint["icon"]
+        assert hint["text"].get("i18n_content"), hint["text"]
+
+        assert _run(raw.send_stream_frame("第一段", chat_id=chat, turn_id=turn))
+        deletes = [a for item in calls["batch"] for a in item[0]
+                   if a.get("action") == "delete_elements"]
+        assert deletes and deletes[-1]["params"]["element_ids"] == ["loading_hint"], deletes
+        state = raw._ld_stream_get(key) or {}
+        assert state.get("ck_loading") is False, state
+
+        # 收尾整卡 patch 里不许再有提示
+        assert _run(raw.send_stream_frame("第一段完", finalize=True,
+                                          chat_id=chat, turn_id=turn))
+        finals = [c for c in (calls.get("patch_cards") or [])
+                  if not c.get("config", {}).get("streaming_mode", True)]
+        assert finals, "必须走收尾整卡 patch"
+        assert _find_element(finals[-1], "loading_hint") is None, finals[-1]
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
 
 def main() -> int:

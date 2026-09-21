@@ -3669,6 +3669,24 @@ class LarkDeckMixin:
                  "stopped": "panel.status_stopped", "error": "panel.status_error"}.get(
                      status, "card.status_processing")))
 
+    async def _ld_ck_delete(self, card_id: str, element_ids: List[str],
+                           seq: int) -> "_CkResult":
+        """删元素（`batch_update` 的 `delete_elements` 动作）。
+
+        用途：**预加载提示**（aiduPOP 形态）在首个正文 token 到达时被摘掉 ——
+        它在建卡时插入，绝不能留到正文开始长之后（那会变成正文上方一行多余的字）。
+        """
+        reqs = self._ld_ck_requests()
+        if reqs is None:
+            return _CkResult(False, 0, "没有 CardKit SDK")
+        actions = [{"action": "delete_elements",
+                    "params": {"element_ids": list(element_ids)}}]
+        resp = await self._ld_write_with_retry(
+            lambda: reqs.batch_update(card_id, actions, int(seq), f"ld-{card_id}-d{seq}"),
+            self._client.cardkit.v1.card.batch_update, "删除元素")
+        return _CkResult(_ld_response_code(resp) == 0, _ld_response_code(resp),
+                         str(getattr(resp, "msg", "") or ""))
+
     async def _ld_ck_partial(self, card_id: str, element_id: str,
                              partial: Dict[str, Any], seq: int) -> "_CkResult":
         """结构化面板整段替换（partial_update_element，顶层不带 tag）。"""
@@ -3771,6 +3789,7 @@ class LarkDeckMixin:
                 return False
             display = self._ld_body_text(text, chat, finalize=False, stream_state=None)
             view = self._ld_cardview(chat, display, started=now)
+            view.loading_hint = True      # 建卡即插入「正在准备上下文…」（首字到达后删）
             made = await self._ld_ck_create(chat, answer=display, panel_text="",
                                             panel_tools_text="", reply_to=reply_to,
                                             structured_view=view)
@@ -3786,6 +3805,10 @@ class LarkDeckMixin:
                 "last_at": now, "frames": 0, "skipped": 0, "strips": 0,
                 "card_id": card_id, "ck_seq": 0, "engine": "structured",
                 "ck_elems": _ck_elems_from_card(card_json),
+                # ⚠️ 提示元素**不在** `ck_elems` 白名单里（那张表只收流式三件套），
+                # 「有没有提示」必须靠这个显式标志判断 —— 2026-09-21 实测：
+                # 建卡 JSON 里明明有 loading_hint，成员判断却是 False。
+                "ck_loading": True,
                 "ck_panel_sig": json.dumps(_cardview.panel_partial(view.panel),
                                            sort_keys=True, ensure_ascii=False),
                 "last_rendered_body": display, "last_failed_frame": "",
@@ -3831,6 +3854,18 @@ class LarkDeckMixin:
             return self._ld_stream_fail("structured 状态缺 card_id")
         seq = _ck_seq(state)
         live = dict(state)
+        # 预加载提示（aiduPOP 形态）：建卡时插入，**首个正文 token 到达即删**。
+        # 删不掉就下一帧再试（不占号、不改状态）；收尾帧一律置 False（整卡 patch 不带它）。
+        if finalize:
+            live["ck_loading"] = False
+        elif live.get("ck_loading", False) and visible:
+            seq += 1
+            _hint_res = await self._ld_ck_delete(card_id, [_cardview.LOADING_HINT_ID], seq)
+            if _hint_res.ok:
+                live["ck_loading"] = False
+            else:
+                seq -= 1
+        view.loading_hint = bool(live.get("ck_loading", True) and not visible)
         partial = _cardview.panel_partial(view.panel)
         signature = json.dumps(partial, sort_keys=True, ensure_ascii=False)
         if view.panel_enabled and signature != state.get("ck_panel_sig"):

@@ -293,6 +293,10 @@ MUTATIONS = [
      '                structured_card=structured_card):',
      '                structured_card=None):  # control',
      ""),
+    ("V4-32-预加载提示首字后不删（正文上方留一行多余的字）", "core/adapter.py",
+     '        elif live.get("ck_loading", False) and visible:',
+     '        elif False:  # V4-32 mutated',
+     "test_units"),
     ("V4-31-结构化标题退回硬编码中文（英文客户端看中文）", "core/adapter.py",
      '            title = _i18n.i18n_text(\n'
      '                "panel.summary_both_one" if total_tools == 1 else "panel.summary_both",',

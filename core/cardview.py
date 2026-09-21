@@ -118,10 +118,30 @@ class CardView:
     header_status: str = "processing"
     header_title: str = "🫧 处理中…"
     panel: PanelView = field(default_factory=PanelView)
+    #: 是否插入「正在准备上下文…」预加载提示（首字到达后由帧路径删元素 + 置 False）
+    loading_hint: bool = False
     footer: str = ""
     footer_enabled: bool = True
     engine: str = "structured"
     engine_stamp: str = "structured"
+
+
+#: 预加载提示元素 id（建卡时插入、首个正文 token 到达即删 —— aiduPOP 的 `_LOADING_HINT_ELEMENT_ID`）
+LOADING_HINT_ID = "loading_hint"
+
+
+def loading_hint_element() -> Dict[str, Any]:
+    """「正在准备上下文…」占位元素（aiduPOP 形态：`standard_icon: time_outlined` + 一行灰字，
+    **双语**；不是把 ⏳ 塞进正文位置那种写法）。"""
+    text = _i18n.i18n_text("stream.loading_context")
+    return {
+        "tag": "div",
+        "element_id": LOADING_HINT_ID,
+        "icon": {"tag": "standard_icon", "token": "time_outlined",
+                 "size": "16px 16px", "color": "grey"},
+        "text": {"tag": "lark_md", **text, "text_color": "grey",
+                 "text_size": PANEL_TEXT_SIZE},
+    }
 
 
 def _title_node(title: Any, **extra: Any) -> Dict[str, Any]:
@@ -255,6 +275,8 @@ def entity_skeleton(view: CardView) -> Dict[str, Any]:
         "tag": "markdown", "element_id": "answer", "content": view.answer or " ",
         "margin": MARKDOWN_MARGIN,
     }]
+    if view.loading_hint:
+        elements.append(loading_hint_element())
     if view.panel_enabled:
         elements.append(panel_shell(view.panel))
     if view.footer_enabled:

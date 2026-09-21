@@ -48,6 +48,7 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "panel.rounds_trimmed": {ZH: "…更早的 {n} 轮已折叠", EN: "…{n} earlier rounds folded"},
     # 回合结局的文字兜底（面板没有别的正文时显示；边框色是主要载体）
     "stream.pending":     {ZH: "⏳ 正在生成…", EN: "⏳ Generating…"},
+    "stream.loading_context": {ZH: "正在准备上下文…", EN: "Preparing context…"},
     "card.status_processing": {ZH: "🫧 处理中…", EN: "🫧 Working…"},
     "panel.reasoning_round": {ZH: "💭 思考 · {n}", EN: "💭 Thought · {n}"},
     "panel.status_ok":    {ZH: "✅ 已完成", EN: "✅ Completed"},
