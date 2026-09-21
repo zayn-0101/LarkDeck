@@ -272,17 +272,30 @@ MUTATIONS = [
     # ---- 第十路审计：真判据 / 崩溃分类 / 口径 / 调用点 / 码表 ------------------ #
     ("A1a-判据退回「只看近似阈值」", "core/adapter.py",
      "        if size > _HOPELESS_BYTES or not _stop_redraw_would_paint(\n"
-     "                body, panel=panel, footer=footer):",
+     "                body, panel=panel, footer=footer,\n"
+     "                structured_card=structured_card):",
      "        if size > _MAX_TRACKED_TEXT:",
      "test_units"),
     ("A1b-真判据恒真（不丢正文）", "core/adapter.py",
      "        if size > _HOPELESS_BYTES or not _stop_redraw_would_paint(\n"
-     "                body, panel=panel, footer=footer):",
+     "                body, panel=panel, footer=footer,\n"
+     "                structured_card=structured_card):",
      "        if size > _HOPELESS_BYTES:",
      "test_units"),
     ("A1c-真判据不再检查有没有颜色", "core/adapter.py",
      '        return \'"collapsible_panel"\' in json.dumps(node, ensure_ascii=False)',
      "        return True",
+     "test_units"),
+    # 对照项：在**用例覆盖的尺寸区间**内，legacy 近似壳与「降载后真卡」给出同样结论
+    # （两侧的差异只在装饰体积那几百字节的窗口里）⇒ 撤掉这条接线门禁抓不住，是**等价**而非盲区。
+    # 真正钉住 structured 判据的是 V4-30（超限也说能画）。
+    ("C-对照：structured 判据不传真卡（区间内等价）", "core/adapter.py",
+     '                structured_card=structured_card):',
+     '                structured_card=None):  # control',
+     ""),
+    ("V4-30-structured 判据无视字节墙（超限也说能画）", "core/adapter.py",
+     '            return _cards.card_bytes(structured_card) <= _cards.FEISHU_CARD_BYTE_LIMIT',
+     '            return True  # V4-30 mutated',
      "test_units"),
 
     # ⚠️ 2026-09-18：原先是「对照项」（当时 `fit_reply_card` 的裸卡回落似乎覆盖了这句）。

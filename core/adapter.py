@@ -1132,7 +1132,8 @@ def _log_sanitize_reverted_once(size: int) -> None:
 
 
 def _stop_redraw_would_paint(body: str, *, panel: Any = None,
-                             footer: Any = None) -> bool:
+                             footer: Any = None,
+                             structured_card: Optional[Dict[str, Any]] = None) -> bool:
     """**真正的判据**：留下这段正文之后，`/stop` 那张卡能不能既发得出去、又带上中止色。
 
     为什么不能只看「正文 JSON 字节 ≤ 阈值」（第十路审计实测出来的两条缝）：
@@ -1152,6 +1153,13 @@ def _stop_redraw_would_paint(body: str, *, panel: Any = None,
     判不出来时（异常）返回 ``True``：**丢正文的代价比多留一份大**（丢 = 中止时不变色）。
     """
     try:
+        if structured_card is not None:
+            # V4.12：structured 车道**只用一条单调判据** —— 降载后那张真卡的字节数。
+            # 不要求「面板必须在」：结构化卡的停止色落在**卡级 header**（黄），而面板正是
+            # 超预算时第一个被丢的（V4.11 阶梯）。加颜色条件会让判据随装饰体积抖动，
+            # 关于尺寸**非单调**（实测 126608 判 False、126726 判 True），而调用方的
+            # 边界推断假定单调 ⇒ 会出现「判据说画得上色、实际白丢正文」。
+            return _cards.card_bytes(structured_card) <= _cards.FEISHU_CARD_BYTE_LIMIT
         # 优先用**真实卡的面板**（`_ld_redraw_one_stopped` 会带 `_ld_panel(chat)`）：
         # `fit_reply_card` 先受 40000 软预算约束，长正文 + 大面板会被降成 no-panel ⇒
         # 只按 status_shell 判会得出「留正文」而真实 `/stop` 卡没有面板/没有颜色
@@ -1939,8 +1947,20 @@ class LarkDeckMixin:
             except Exception:                 # pragma: no cover - 判据是装饰，绝不因此丢正文
                 panel = None
                 footer = None
+        structured_card: Optional[Dict[str, Any]] = None
+        if _ld_visual_engine() == "structured":
+            try:
+                _view = self._ld_cardview(chat, body, status="stopped",
+                                          started=(entry or {}).get("t0"),
+                                          message_id=message_id)
+                if footer:
+                    _view.footer = footer
+                structured_card = self._ld_fit_structured_card(_view)
+            except Exception:                 # pragma: no cover - 判据是装饰，绝不因此丢正文
+                structured_card = None
         if size > _HOPELESS_BYTES or not _stop_redraw_would_paint(
-                body, panel=panel, footer=footer):
+                body, panel=panel, footer=footer,
+                structured_card=structured_card):
             _log_note_text_skipped(size, len(body.encode("utf-8", "ignore")))
             body = ""
         with self._ld_lock:

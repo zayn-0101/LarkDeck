@@ -12183,6 +12183,9 @@ _LEGACY_LANE_TESTS = frozenset({
     "test_send_first_frame_after_turn_switch_has_no_stale_panel",
     "test_stop_redraw_and_edit_message_keep_the_trace_id",
     "test_stop_redraw_paints_an_empty_turn_yellow",
+    # `/stop` 字节墙那条用例的断言（「判据说画不上色就必须丢」）是**legacy 车道**的语义：
+    # structured 车道的对应物是 V4.11 的分级降载用例（新写、单调判据）。
+    "test_tracked_body_always_fits_the_status_shell_end_to_end",
 })
 
 
@@ -12315,6 +12318,15 @@ def test_v4_11_structured_card_degrades_instead_of_exceeding_the_byte_wall():
         assert len(_answer_text(card3)) == n_bare, "正文一字不截"
         assert not any(e.get("element_id") in ("panel", "footer")
                        for e in card3["body"]["elements"]), card3["body"]["elements"]
+
+        # 判据 oracle（V4.12）：structured 车道的判据只认「降载后真卡的字节」——
+        # 装得下的必须判 True、超限的必须判 False（撤掉这条接线就没人钉了）
+        assert adapter._stop_redraw_would_paint("x", structured_card=card3) is True
+        _over = dict(card3)
+        _over["body"] = {"elements": [{"tag": "markdown", "element_id": "answer",
+                                       "content": "汉" * 43000}]}
+        _over["header"] = card3.get("header")
+        assert adapter._stop_redraw_would_paint("x", structured_card=_over) is False
     finally:
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)
