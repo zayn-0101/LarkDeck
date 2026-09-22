@@ -630,6 +630,10 @@ CardKit **seed 建卡**不受影响（结构建卡定死、之后还要写元素
   10914/10918` 显式 `turn_card`/status；`check_hooks.py:772`；`probe_render.py:228/994`（P1 一起改）；
   markdown 卫生三处「精确相等」断言改为「正文在 / 原文不在」（footer 元素现在可能带状态词，
   legacy 路径不保证 `element_id`）。
+* **新断言必须 crash-safe**（第四轮实测）：新用例最初用 `line[1]["text_size"]` 直取；`V4-46`
+  变异把工具行改成元素级 `div.icon` 后结构变化 ⇒ KeyError，门禁记 `💥 只有崩溃` 而非 red-assert。
+  已改为「长度断言 + `.get()` 取值」（test_units 与 check_cardview 两处），复跑 `-k V4-46` 为
+  red-assert；后续新断言一律遵守。
 * 夹具：item1 = **8 个顶层 JSON 叶变化**（= 9 处 detail 元素；实体/终稿字符串内各含 1/2 处），
   footer 叶 `✅ 已完成 · Test Model` 两侧都在（item2 = 0）；不扩 Error 场景（单测 + check_cardview
   双覆盖）；helper_fp 变 ⇒ 全量必须。
