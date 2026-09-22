@@ -216,8 +216,9 @@ tests/        见「验证」
     做**文本前缀**（`markdown.icon` + `color:"grey"`；放法是用户 2026-09-22 真机三臂对照选的：
     元素级 `div.icon` 实测图标高 3px、`column_set` 横向空 179px，前缀图标 0px）+
     加粗**英文动作名**（Read file / Run command / Load skill …）+ 耗时（`25 ms` / `1.2 s`）+
-    **带颜色的状态词**（`Succeeded` 绿 / `Running` 青绿 / `Failed`、`Blocked` 红 /
-    `Cancelled`·`Skipped` 灰），命令或 skill 名另起一行（灰色 + `tool-indent_outlined` 前缀图标）。
+    **带颜色的状态词**（成功 `✓` 绿 / 运行中 `Running` 蓝 / `Failed`、`Blocked`·`Timed out` 红 /
+    `Cancelled`·`Skipped` 灰；2026-09-22 C1 + 默认②），命令或 skill 名另起一行（灰色 +
+    `tool-indent_outlined` 前缀图标）。
     ⚠️ **图标四条纪律**：① 默认**线性 `_outlined` + 统一灰**（彩色 `_colorful` 只有 13 个、
     颜色写死，不用）；② token 必须**逐个对飞书官方枚举页查证存在**（`enumerations-for-icons`，
     写错客户端不渲染且不报错）—— 白名单冻结在 `test_units.py::_VERIFIED_LINEAR_TOKENS`；

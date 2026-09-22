@@ -452,23 +452,30 @@ def footer_line(*, duration: Optional[float] = None, model: str = "",
                 context: str = "", cache: Optional[float] = None,
                 api: Optional[int] = None, ttfb: Optional[float] = None,
                 status: str = "", theme: Any = THEME_NEUTRAL) -> Optional[str]:
-    """「符号 + 数字 + 英文缩写」拼成的信息行 —— 天然无需翻译（不依赖 i18n）。
+    """「值 + 英文缩写」拼成的信息行 —— 天然无需翻译（不依赖 i18n）。
 
-    两个调用点：**面板标题行**（``rounds + tools``）与**页脚**
-    （``status + duration + model + context + R7 指标``，用户 2026-09-17 指定：
-    状态在最前、模型名放页脚，参考 aiduPOP 的 ``已完成 · 1m 4s · ✳ model``）。
+    调用点：**页脚**（``status + duration + model + context + R7 指标``，用户 2026-09-17 指定：
+    状态在最前、模型名放页脚，参考 aiduPOP 的 ``已完成 · 1m 4s · ✳ model``）；
+    ``rounds`` / ``tools`` 两段是历史遗留（面板标题行现在由 i18n 文案自己拼 ``💭``/``🛠️``）。
+
+    ⚠️ **B1（用户 2026-09-22 拍板）：页脚去段前缀 emoji** ——
+    ``⏱``/``🤖``/``⚡``/``🔁``/``🐢`` 全部改成纯文本（``12.3s`` / ``Sonnet`` / ``cache 75%`` /
+    ``api 7`` / ``ttfb 0.4s``）。**只去「段前缀」**：状态词里的 ``✅``/``❌``/``⛔`` 是
+    i18n 状态词的一部分（用户确认过的逐字表里有），不在这次口径内。
+    ``🧠``/``🔧``（rounds/tools）也不动 —— 它们属于上面那条历史用法，且 ``_THEME_SYMBOLS``
+    还要当 ``theme_name()`` 的白名单和 ``tool_step`` 的图标表用。
 
     各段之间用 ``·`` 分隔；一段都没有时返回 ``None``，调用方就不渲染。
 
     R7 新增的三段（**都由调用方按配置决定要不要传**，这里只负责渲染）：
-      * ``cache`` —— 缓存命中率（百分比，来自 ``cache_read_tokens / prompt_tokens``）⇒ ``⚡ 75%``；
-      * ``api``   —— 本回合 API 请求次数 ⇒ ``🔁 7``；
-      * ``ttfb``  —— 首个流式分块的首字节延迟（**秒**）⇒ ``🐢 0.4s``。
+      * ``cache`` —— 缓存命中率（百分比，来自 ``cache_read_tokens / prompt_tokens``）⇒ ``cache 75%``；
+      * ``api``   —— 本回合 API 请求次数 ⇒ ``api 7``；
+      * ``ttfb``  —— 首个流式分块的首字节延迟（**秒**）⇒ ``ttfb 0.4s``。
 
     ⚠️ **缺数据就少一段，绝不编 0**（`docs/lessons.md` 的口径病）。判据逐段不同，
     **不是**一条规则（R7 审计低-2 更正 —— 本 docstring 以前写成「三段都按 `is None` 判」，
     与实现不符）：
-      * ``cache`` 按 **`is None`** 判：`0.0` 是「真的 0% 命中」⇒ 要显示 `⚡ 0%`；
+      * ``cache`` 按 **`is None`** 判：`0.0` 是「真的 0% 命中」⇒ 要显示 `cache 0%`；
       * ``api`` / ``ttfb`` 按 **正数** 判：`0` 是「无意义的读数」⇒ 不显示。理由：本函数只在
         渲染卡片时调用，那时**至少发生过一次 API 请求**（`api_call_count ≥ 1`），而 TTFB
         要 < 0.5ms 才会四舍五入成 `0.0s` —— 两者出现 0 都只可能是脏数据。
@@ -479,9 +486,9 @@ def footer_line(*, duration: Optional[float] = None, model: str = "",
     if status:
         parts.append(str(status))
     if isinstance(duration, (int, float)) and duration >= 0.1:
-        parts.append(f"{syms['duration']} {format_elapsed(float(duration))}")
+        parts.append(format_elapsed(float(duration)))
     if model:
-        parts.append(f"{syms['model']} {model}")
+        parts.append(f"{model}")   # 非 str 的坏值也不抛（f-string 自己 str()）
     # 注意排除 bool：Python 里 isinstance(True, int) 为真，不排会拼出「🧠 True」。
     if isinstance(rounds, int) and not isinstance(rounds, bool) and rounds > 0:
         parts.append(f"{syms['rounds']} {rounds}")
@@ -495,11 +502,11 @@ def footer_line(*, duration: Optional[float] = None, model: str = "",
         except (TypeError, ValueError):
             pct = None
         if pct is not None:
-            parts.append(f"{syms['cache']} {pct:.0f}%")
+            parts.append(f"cache {pct:.0f}%")
     if isinstance(api, int) and not isinstance(api, bool) and api > 0:
-        parts.append(f"{syms['api']} {api}")
+        parts.append(f"api {api}")
     if isinstance(ttfb, (int, float)) and not isinstance(ttfb, bool) and ttfb > 0:
-        parts.append(f"{syms['ttfb']} {format_elapsed(float(ttfb))}")
+        parts.append(f"ttfb {format_elapsed(float(ttfb))}")
     return " · ".join(parts) or None
 
 
@@ -633,14 +640,19 @@ def _tool_label(name: str, theme: Any) -> str:
     return " ".join(raw.split()) or "Tool"
 
 
-#: 工具状态 → （英文状态词, 飞书 ``<font color>`` 颜色）。
+#: 工具状态 → （状态文本, 飞书 ``<font color>`` 颜色）。
 #: 用户 2026-09-17 点单的 CLS 观感：状态不再只是一个 emoji，而是**带颜色的词**
-#: （``Succeeded`` / ``Running`` / ``Failed``），这样色盲用户也能读懂，且与工具面板
-#: 里的标题同一行就能扫完。英文状态词对所有客户端一致（CLS 也是这么做的）。
+#: （``Running`` / ``Failed``），这样色盲用户也能读懂，且与工具面板里的标题同一行就能扫完。
+#: 英文状态词对所有客户端一致（CLS 也是这么做的）。
+#:
+#: ⚠️ **必须与 ``cardview.ToolStepView.status_style`` 同表**（结构化车道用后者）——
+#: ``tests/test_units.py`` 有逐键相等用例。C1 / 默认②（用户 2026-09-22 拍板）之后：
+#: 运行中 = 蓝色 ``Running``（turquoise 在浅色主题下与绿色成功撞色）；**只有成功**换绿色 ``✓``；
+#: 失败 / 超时 / 中止 / 跳过**保留词**（词能说清是哪一种，符号不能）。
 _TOOL_STATUS_STYLES: Dict[str, Tuple[str, str]] = {
-    "running": ("Running", "turquoise"),
-    "ok": ("Succeeded", "green"),
-    "success": ("Succeeded", "green"),
+    "running": ("Running", "blue"),
+    "ok": ("✓", "green"),
+    "success": ("✓", "green"),
     "error": ("Failed", "red"),
     "blocked": ("Blocked", "red"),
     # Hermes 的中断 / 跳过工具用的是这些状态；不映射就会掉进 fallback

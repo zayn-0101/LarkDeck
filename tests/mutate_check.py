@@ -203,8 +203,8 @@ MUTATIONS = [
      "                duration=duration,", "                duration=None,",
      "check_hooks"),
     ("T4-footer_line 不再渲染耗时", "core/cards.py",
-     "    if isinstance(duration, (int, float)) and duration >= 0.1:\n        parts.append(f\"{syms['duration']} {format_elapsed(float(duration))}\")",
-     "    if False:\n        parts.append(f\"{syms['duration']} {format_elapsed(float(duration or 0))}\")",
+     "    if isinstance(duration, (int, float)) and duration >= 0.1:\n        parts.append(format_elapsed(float(duration)))",
+     "    if False:\n        parts.append(format_elapsed(float(duration or 0)))",
      "check_hooks"),
     ("T5-每轮耗时标题不再渲染", "core/cards.py",
      "        return f\"{base} · {format_elapsed(max(0.1, min(elapsed_ms, 86_400_000) / 1000.0))}\"",
@@ -2102,7 +2102,7 @@ MUTATIONS = [
      "test_units"),
     ("CLS-31-success 状态词被改成 Success/grey",
      "core/cards.py",
-     '    "success": ("Succeeded", "green"),',
+     '    "success": ("✓", "green"),',
      '    "success": ("Success", "grey"),',
      "test_units"),
     ("CLS-32-timeout 状态词被改成 Timeout/grey",
@@ -2288,12 +2288,12 @@ MUTATIONS = [
      "test_units"),
     ("V0-11-生产 tool 状态色 green 被改 blue（check_cardview 必须红）",
      "core/cards.py",
-     '    "ok": ("Succeeded", "green"),',
-     '    "ok": ("Succeeded", "blue"),',
+     '    "ok": ("✓", "green"),',
+     '    "ok": ("✓", "blue"),',
      "check_cardview"),
     ("V0-12-生产 tool 状态映射 ok 键被删（check_cardview 必须断言红）",
      "core/cards.py",
-     '    "ok": ("Succeeded", "green"),\n',
+     '    "ok": ("✓", "green"),\n',
      '',
      "check_cardview"),
     ("V0-13-token 表 element_anchors.answer 键被删（check_cardview 必须断言红）",
@@ -2568,8 +2568,12 @@ MUTATIONS = [
      '            if _hint_res.ok or _hint_res.code == 300313:  # V4-35 mutated',
      'test_units'),
     ('V4-42-加载指示退回静态图标（用户口径：会动、无文字）', 'core/cardview.py',
-     '    key = spinner_img_key()',
-     '    key = ""  # V4-36 mutated（退回 standard_icon，不动）',
+     # ⚠️ 锚点必须带上**下一行**：`key = spinner_img_key()` 自 D1′ 起出现两次
+     # （加载指示 + 工具行「运行中」），只写一行会被判「歧义」。
+     '    key = spinner_img_key()\n'
+     '    icon: Dict[str, Any] = ({"tag": "custom_icon", "img_key": key, "size": "16px 16px"}',
+     '    key = ""  # V4-36 mutated（退回 standard_icon，不动）\n'
+     '    icon: Dict[str, Any] = ({"tag": "custom_icon", "img_key": key, "size": "16px 16px"}',
      'test_units'),
     ('V4-43-加载指示退回文案（用户口径：无文字）', 'core/cardview.py',
      '        "text": {"tag": "plain_text", "content": " "},',
@@ -2713,6 +2717,90 @@ MUTATIONS = [
      '    return icon_emoji(token)  # V4-55 mutated',
      'test_units'),
 
+    # ---- v0.7.2「面板 UX 定版」：A1 / B1 / C1 / D1′ + 审计 B 的盖章漏洞守卫 ----------
+    ('V4-64-工具行运行中不再用自制动图（D1′ 退回静态线性图标）', 'core/cardview.py',
+     '    if str(step.status or "").strip().lower() == "running":\n'
+     '        key = spinner_img_key()\n'
+     '        if key:',
+     '    if False:  # V4-64 mutated（运行中退回静态图标）\n'
+     '        key = spinner_img_key()\n'
+     '        if key:',
+     'test_units'),
+    ('V4-65-中间帧的 panel partial 带上 expanded（A1：每帧重放 ⇒ 手动收起被顶开）', 'core/cardview.py',
+     '    return {key: shell[key] for key in\n'
+     '            ("header", "vertical_spacing", "border", "elements")}',
+     '    return {key: shell[key] for key in\n'
+     '            ("header", "expanded", "vertical_spacing", "border", "elements")}',
+     'test_units'),
+    ('V4-66-运行中**建卡 seed** 不按 streaming_panel_expanded（A1 第一处）', 'core/adapter.py',
+     '            view.panel.expanded = bool(_cfg("streaming_panel_expanded"))\n'
+     '            view.loading_hint = True',
+     '            view.loading_hint = True',
+     'test_units'),
+    ('V4-67-收尾整卡改用运行态配置（A1：收尾不再折叠）', 'core/adapter.py',
+     '            # `streaming_panel_expanded`（A1，见 seed 建卡与封卡切新卡两处）——\n'
+     '            # 别在这里改默认值，那会让收尾也跟着展开。\n'
+     '            expanded=bool(_cfg("panel_expanded")),',
+     '            expanded=bool(_cfg("streaming_panel_expanded")),',
+     'test_units'),
+    ('V4-68-嵌套推理轮一律展开（A1：已结束轮也要折叠）', 'core/cardview.py',
+     '        elements.append(reasoning_panel(round_view, expanded=not round_view.finalized))',
+     '        elements.append(reasoning_panel(round_view, expanded=True))  # V4-68 mutated',
+     'test_units'),
+    ('V4-69-snapshot 不透出 finalized（数据缺失回归：嵌套轮再也折不起来）', 'core/panel.py',
+     '        rounds.append({"text": text, "elapsed_ms": elapsed,\n'
+     '                       "finalized": bool(item.get("finalized"))})',
+     '        rounds.append({"text": text, "elapsed_ms": elapsed,\n'
+     '                       "finalized": False})  # V4-69 mutated',
+     'test_units'),
+    ('V4-70-页脚耗时段 emoji 前缀回来（B1 反面：段前缀 ⏱）', 'core/cards.py',
+     '        parts.append(format_elapsed(float(duration)))',
+     '        parts.append(f"⏱ {format_elapsed(float(duration))}")  # V4-70 mutated',
+     'test_units'),
+    ('V4-71-R7 指标段 emoji 前缀回来（B1 反面：段前缀 ⚡/🔁/🐢）', 'core/cards.py',
+     '            parts.append(f"cache {pct:.0f}%")',
+     '            parts.append(f"⚡ {pct:.0f}%")  # V4-71 mutated',
+     'test_units'),
+    ('V4-72-_is_full_run 漏掉 target_only（审计 B 的盖章漏洞回归守卫）', 'tests/mutate_check.py',
+     '    return bool(not args.delta and not args.k and not args.upgrade_inherited\n'
+     '                and not args.target_only and not bad',
+     '    return bool(not args.delta and not args.k and not args.upgrade_inherited\n'
+     '                and not bad',
+     'test_units'),
+    ('V4-73-cardview 侧运行中退回 turquoise（两表对等守卫）', 'core/cardview.py',
+     '            "running": ("Running", "blue"),',
+     '            "running": ("Running", "turquoise"),  # V4-73 mutated',
+     'check_cardview'),
+    ('V4-74-cardview 侧成功退回 Succeeded（两表对等守卫）', 'core/cardview.py',
+     '            "ok": ("✓", "green"),',
+     '            "ok": ("Succeeded", "green"),  # V4-74 mutated',
+     'check_cardview'),
+
+    ('V4-75-封旧卡后开的新卡不按 streaming_panel_expanded（A1 第二处 seed）', 'core/adapter.py',
+     '            # A1：封旧卡之后开的新卡同样是**运行中** ⇒ 与 seed 建卡同一条配置（旧卡在上一行\n'
+     '            # 按 `status="completed"` 建，保持终态语义 = 折叠，两者不能混用）。\n'
+     '            new_view.panel.expanded = bool(_cfg("streaming_panel_expanded"))\n',
+     '',
+     'test_units'),
+    ('V4-76-幂等闸门之前就切轮（重复 tool_call_id 会把在写的推理轮提前定稿）', 'core/panel.py',
+     '        tools: List[Dict[str, Any]] = state["tools"]\n'
+     '        # ⚠️ **同一 `tool_call_id` 只记一次**（2026-09-14 真机根因的另一面）：同一进程里插件会被\n',
+     '        tools: List[Dict[str, Any]] = state["tools"]\n'
+     '        _finalize_round_locked(state, now)   # V4-76 mutated：闸门之前切轮\n'
+     '        # ⚠️ **同一 `tool_call_id` 只记一次**（2026-09-14 真机根因的另一面）：同一进程里插件会被\n',
+     'test_units'),
+    ('V4-77-回合结束不定稿当前推理轮（终态/中止卡里嵌套轮仍展开、耗时继续涨）', 'core/panel.py',
+     '        _finalize_round_locked(state, now)\n'
+     '        _LAST_ACTIVE_BOX[0] = sid',
+     '        _LAST_ACTIVE_BOX[0] = sid',
+     'test_units'),
+    ('V4-78-`/stop` 不定稿当前推理轮（中止卡里嵌套轮仍展开）', 'core/panel.py',
+     '        # `/stop` 同样是一个「回合结束」（而且它**永远没有收尾帧**：stream consumer 直接\n'
+     '        # abandon）⇒ 当前推理轮必须在这里定稿，否则中止卡的嵌套轮仍是展开态 + 耗时继续涨。\n'
+     '        _finalize_round_locked(state, now)\n',
+     '',
+     'test_units'),
+
 ]
 
 #: **对照项**：行为等价的改动（合法 YAML 变体等），期望四门禁**全绿**。
@@ -2794,6 +2882,22 @@ def _prepare(dest_parent: Path) -> Path:
     dest = dest_parent / "larkdeck"
     # ⚠️ `.deploy` 必须排除（2026-09-21 实测量出来的）：它是部署 worktree，里面有**整份源码**
     #    ⇒ 每份拷贝白多 ~5.5MB（占 ~40%），全量跑下来光 /tmp 就能堆到 3GB+，还把磁盘拖慢。
+    # ⚡ 2026-09-22（审计 B 建议②）：macOS 上用 `cp -c`（APFS clonefile）—— 拷贝是**写时复制**，
+    #    实测比 `copytree` 快一个量级（每份 0.08–0.22s ⇒ ~0.01s），500 份省下 1 分钟以上。
+    #    非 macOS / clonefile 不可用时自动回落到 `copytree`（语义完全一样，只是慢）。
+    if sys.platform == "darwin":
+        proc = subprocess.run(
+            ["cp", "-c", "-R",
+             *[f"--exclude={pat}" for pat in ()],   # macOS cp 没有 --exclude；用 find 过滤
+             str(REPO) + "/.", str(dest)],
+            capture_output=True, text=True)
+        if proc.returncode == 0 and (dest / "tests").is_dir():
+            for junk in dest.rglob("__pycache__"):
+                shutil.rmtree(junk, ignore_errors=True)
+            shutil.rmtree(dest / ".git", ignore_errors=True)
+            shutil.rmtree(dest / ".deploy", ignore_errors=True)
+            return dest
+        shutil.rmtree(dest, ignore_errors=True)
     shutil.copytree(REPO, dest, ignore=shutil.ignore_patterns(
         ".git", ".deploy", "__pycache__", "*.pyc", ".pytest_cache", "docs/deliveries"))
     return dest
@@ -2969,6 +3073,21 @@ def _head_short() -> str:
                               capture_output=True, text=True).stdout.strip()
     except Exception:
         return ""
+
+
+def _is_full_run(args: "argparse.Namespace", picked: list, bad: list) -> bool:
+    """这一轮算不算「全量重验」—— **只有全量且零缺陷**才允许盖 ``full_audit_at`` 章。
+
+    ⚠️ 判据里必须有 ``not args.target_only``（第八路审计 B 的**高**发现）：
+    ``--target-only`` **只跑变异自己声明的目标门禁**，别的门禁一支都不跑 ⇒ 它抓不到
+    「目标门禁放过、其它门禁抓住」的变异。旧判据（写在 ``finally`` 里那一行）漏了它 ——
+    于是 `分片 × --target-only` 在收工时会心安理得地盖上全量章，账本显示 N/N，
+    实际上每条只验了一支门禁。**这正是整个账本最该防的那种假绿**（盖章 ≠ 跑过）。
+    抽成函数还有一个好处：它现在能被单测直接钉住（见 `tests/test_units.py`）。
+    """
+    return bool(not args.delta and not args.k and not args.upgrade_inherited
+                and not args.target_only and not bad
+                and len(picked) == len([m for m in MUTATIONS if m[4]]))
 
 
 def _region_at_ref(rel: str, old: str, ref: str) -> "str | None":
@@ -3597,14 +3716,19 @@ def main() -> int:
                     "at": _head_short(),
                 }
     finally:
-        _full = (not args.delta and not args.k and not args.upgrade_inherited
-                 and not bad and len(picked) == len([m for m in MUTATIONS if m[4]]))
-        if (args.update_ledger and verified) or _full:
+        # ⚠️ **这里绝不盖章**（审计 B 的 F1，高）：旧写法在 `finally` 里算 `_full`，而
+        # `bad` 此时还是空的、`picked` 又是全量 ⇒ 一条 `Ctrl-C`（或 OSError / 磁盘满 /
+        # 未捕获异常）也会把 `full_audit_at` 盖成当前 HEAD，而条目可能一条都没有 ——
+        # 账本看起来「已全量审计」，实际什么都没跑。实测：SIGINT 0.5s 后
+        # `full_audit_at="a3e3cb6"` + `entries=0`。
+        # 现在这里只落**逐条验证过的增量**（每条都真的跑完了一次门禁）；全量章在
+        # 变异循环 + 对照循环都跑完且 `bad` 为空之后才盖（见本函数末尾那段）。
+        if args.update_ledger and verified:
             entries = _load_ledger()
             entries.update(verified)
-            _save_ledger(entries, full_audit_at=_head_short() if _full else "")
+            _save_ledger(entries, full_audit_at="")
             print(f"账本已更新：+{len(verified)} 条 red-assert ⇒ 共 {len(entries)} 条"
-                  + (f"；full_audit_at={_head_short()}" if _full else ""))
+                  "（增量写入，未盖章）")
         if args.keep:
             print(f"临时目录保留在 {tmp_root}")
         else:
@@ -3639,6 +3763,17 @@ def main() -> int:
             print(" -", line)
         return 1
     print(f"\n全部 {len(picked)} 条变异都被门禁抓住 ✅")
+    # ⚠️ 全量章的**唯一**入口（见 `finally` 上面那段注释）：`_is_full_run` 已经排除了
+    # `--target-only` / `--delta` / `-k` / 分片 / 有缺陷 / 只跑一部分 —— 再加上「能走到
+    # 这一行」= 变异循环与对照循环都完整跑完（异常会让函数在这里之前就退出）。
+    if _is_full_run(args, picked, bad):
+        entries = _load_ledger()
+        entries.update(verified)
+        _save_ledger(entries, full_audit_at=_head_short())
+        print(f"全量章：full_audit_at={_head_short()}（{len(picked)} 条变异 + "
+              f"{len(controls)} 条对照全绿；账本共 {len(entries)} 条）")
+    elif args.update_ledger:
+        print("（分片/增量/子集运行：**不盖** full_audit_at —— 合并器只认全量章）")
     return 0
 
 

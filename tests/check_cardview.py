@@ -83,6 +83,9 @@ def _assert_token_file() -> None:
         "error": {"header_template": "red", "border": "red", "title_zh": "❌ 执行出错"},
     }
     assert data["status"] == expected_status, data["status"]
+    # ⚠️ 这一段断言的是 **v0.7.1 的冻结记录**（当时确实是「青绿 Running / 绿色 Succeeded」）。
+    # 2026-09-22 的 C1 + 默认② 把生产改成了「蓝色 Running / 绿色 ✓」——历史文件不改写，
+    # 现行口径由 `_assert_tool_status_literals()` 与 `test_units.py::test_v072_*` 断言。
     assert data["tool_status"] == {
         "running": {"label": "Running", "color": "turquoise"},
         "success": {"label": "Succeeded", "color": "green"},
@@ -134,9 +137,17 @@ def _assert_structured_builder() -> None:
             title="💭 思考 1.2s · 🛠️ 工具执行 · 1 步",
             tools=[cardview.ToolStepView(
                 name="read_file", title="读取文件", status="ok", duration_ms=120,
-                detail="/tmp/a.txt", icon_token=cardview.ICON_TOKENS["read"])],
+                detail="/tmp/a.txt", icon_token=cardview.ICON_TOKENS["read"]),
+                # ⚠️ 必须**同时**有运行中那一行：running 分支（自制动图 + 不带 size）与
+                # 已结束分支（静态线性图标）是两条不同的返回，少一条就有半条路不过白名单
+                # （2026-09-22 审计发现夹具只有 ok/error，running 分支从来没被这条门禁走到）。
+                cardview.ToolStepView(
+                    name="terminal", title="terminal", status="running",
+                    icon_token=cardview.ICON_TOKENS["terminal"])],
             reasoning_rounds=[cardview.ReasoningRoundView(
-                index=0, text="原始推理", elapsed_ms=1200)],
+                index=0, text="原始推理", elapsed_ms=1200, finalized=True),
+                cardview.ReasoningRoundView(
+                    index=1, text="还在想", finalized=False)],
         ),
     )
     card = cardview.entity_skeleton(view)
@@ -152,19 +163,33 @@ def _assert_structured_builder() -> None:
     assert panel["header"]["title"]["content"] == "💭 思考 1.2s · 🛠️ 工具执行 · 1 步"
     reasoning = panel["elements"][0]
     assert reasoning["tag"] == "collapsible_panel", reasoning
+    # A1（2026-09-22 拍板）：**已结束轮折叠**（finalized=True 的那一轮）
     assert reasoning["expanded"] is False, reasoning
     assert reasoning["vertical_spacing"] == "8px", reasoning
     assert reasoning["padding"] == "8px 8px 8px 8px", reasoning
     assert reasoning["elements"][0]["content"] == "原始推理", reasoning
-    title_md, detail = panel["elements"][1], panel["elements"][2]
+    # A1：**当前轮展开**（finalized=False）
+    cur = panel["elements"][1]
+    assert cur["tag"] == "collapsible_panel" and cur["expanded"] is True, cur
+    assert cur["elements"][0]["content"] == "还在想", cur
+    title_md, detail = panel["elements"][2], panel["elements"][3]
     # 用户 2026-09-22 真机三臂选版：`markdown.icon`（官方叫「前缀图标」）0px 垂直偏差；
     # 元素级 `div.icon` 实测图标高 3px（2026-09-21 用户嫌「偏上」的就是它）⇒ 默认走前缀图标。
     assert title_md["tag"] == "markdown", title_md
     assert title_md["icon"] == {"tag": "standard_icon", "token": "file-link-text_outlined",
                                 "color": "grey"}, title_md
     assert title_md["content"].startswith("**读取文件**"), title_md["content"]
-    assert "Succeeded" in title_md["content"], title_md["content"]
+    # 默认②（2026-09-22）：**只有成功**换成绿色 `✓`（其余状态保留词）
+    assert "<font color='green'>✓</font>" in title_md["content"], title_md["content"]
     assert "icon" not in title_md.get("text", {}), title_md
+    # D1′：运行中那一行 = 动图（`markdown.icon` + `custom_icon`，**不带 size**；
+    # 生效 key 走 `spinner_img_key()` —— P2 完成前它是借来的共享 key，过渡态）
+    run_md = panel["elements"][4]
+    assert run_md["tag"] == "markdown", run_md
+    assert run_md["icon"] == {"tag": "custom_icon",
+                              "img_key": cardview.spinner_img_key()}, run_md["icon"]
+    assert "size" not in run_md["icon"], run_md["icon"]
+    assert "<font color='blue'>Running</font>" in run_md["content"], run_md["content"]
     assert detail["tag"] == "markdown" and detail["margin"] == "0px 0px 0px 22px", detail
     assert detail["icon"] == {"tag": "standard_icon", "token": "tool-indent_outlined",
                               "color": "grey"}, detail
@@ -174,6 +199,10 @@ def _assert_structured_builder() -> None:
     panel_op = {"partial_element": cardview.panel_partial(view.panel)}
     assert "tag" not in panel_op["partial_element"], panel_op
     assert "text_size" not in panel_op["partial_element"], panel_op
+    # A1（2026-09-22 拍板）：**中间帧固定不带 `expanded`** —— 带了就是每帧重放建卡时的
+    # 展开态，用户手动收起的面板会被下一个 token 顶回展开（真机实测）。
+    assert "expanded" not in panel_op["partial_element"], panel_op
+    assert panel_op["partial_element"]["elements"], panel_op
     assert [e.get("element_id") for e in body] == ["answer", "panel", "footer"], body
 
 
@@ -198,12 +227,27 @@ _ALLOWED_HEADER_FIELDS = {"title", "vertical_align", "icon", "icon_position",
                           "icon_expanded_angle", "background_color", "width", "padding"}
 
 
-def _check_icon(node: dict, where: str) -> None:
+def _check_icon(node: dict, where: str, *, host: str = "") -> None:
+    """图标字段白名单 + 宿主分档（2026-09-22 真机 200621 的产物）。
+
+    ⚠️ ``size`` **按宿主分档**（官方 2.0 字段表逐页核对）：
+      * ``div`` 的组件级 ``icon`` **有** ``size``（加载指示就靠它定 16px）；
+      * ``markdown`` 的 ``icon`` 是「**前缀图标**」（单图标槽）⇒ **没有** ``size`` 字段，
+        带上它就是 ``200621`` **整卡被拒**（不是忽略）—— 工具行正是这个宿主。
+    ``custom_icon`` 必须给 ``img_key``：空 key 在真机是 ``300313``（元素写失败），
+    会把整条结构化装饰链带走（静默回落到纯文本）。
+    """
     assert node.get("tag") in ("standard_icon", "custom_icon"), f"{where}: 图标 tag 非法：{node}"
     unknown = sorted(set(node) - _ALLOWED_ICON_FIELDS)
     assert not unknown, f"{where}: 图标字段不在官方白名单里：{unknown}"
     if node.get("tag") == "standard_icon":
         assert node.get("token"), f"{where}: standard_icon 必须给 token"
+    else:
+        assert str(node.get("img_key") or "").strip(), \
+            f"{where}: custom_icon 必须给 img_key（空 key 真机 300313）"
+    if host == "markdown":
+        assert "size" not in node, \
+            f"{where}: markdown 的前缀图标槽没有 size 字段（真机 200621 整卡被拒）：{node}"
 
 
 def _check_text(node: dict, where: str, *, allow_i18n: bool = False) -> None:
@@ -228,7 +272,7 @@ def _check_element(node: dict, where: str) -> None:
     if "text" in node:
         _check_text(node["text"], f"{where}.text")
     if "icon" in node:
-        _check_icon(node["icon"], f"{where}.icon")
+        _check_icon(node["icon"], f"{where}.icon", host=str(tag or ""))
     if tag == "collapsible_panel":
         header = node.get("header") or {}
         unknown = sorted(set(header) - _ALLOWED_HEADER_FIELDS)
@@ -337,10 +381,24 @@ def _assert_v072_contracts() -> None:
         assert token.endswith("_outlined") and not any(ord(ch) > 0x2000 for ch in token), \
             f"{alias}: 图标必须是 standard_icon 字符串 token，不能是 emoji：{token!r}"
 
+    # ⚠️ **P2 的强制守卫**：`assets/spinner-tool.gif` 一旦入库，生效 key 就必须是自研那条
+    # （`SPINNER_TOOL_IMG_KEY != SPINNER_IMG_KEY`）——D1′ 的验收条件之一就是「不是复用旧 key」。
+    # 资产还没入库时这条不成立（过渡态：`SPINNER_TOOL_IMG_KEY` 只是共享 key 的别名，见
+    # `docs/audits/v0.7.2/loading-asset-v2.md`）。
+    if (_REPO / "assets" / "spinner-tool.gif").exists():
+        assert cardview.SPINNER_TOOL_IMG_KEY not in ("", cardview.SPINNER_IMG_KEY), (
+            "自研动图入库后 SPINNER_TOOL_IMG_KEY 仍然是旧 key（等于没换）："
+            f"{cardview.SPINNER_TOOL_IMG_KEY!r}")
+        assert cardview.spinner_img_key() == cardview.SPINNER_TOOL_IMG_KEY, (
+            f"生效 key 必须优先取自研资产：{cardview.spinner_img_key()!r}")
+
     foot = json.loads(
         (_REPO / "docs" / "audits" / "v0.7.2" / "footer-contract.json").read_text(encoding="utf-8"))
     assert foot["footer_order"] == ["status", "elapsed", "model", "context"], foot
     assert foot["short_code_visible"] is False, foot
+    # B1（2026-09-22）：页脚**段前缀** emoji 去掉（状态词里的 ✅/❌/⛔ 保留）。契约文件与门禁
+    # 同时钉 —— 只改契约没人看，只改门禁则「契约文件」会与实现漂移。
+    assert foot["segment_prefix_emoji"] is False, foot
     # 元素 id 的生产常量（v0.7.1 夹具里那个 `loading_icon` 是 aiduPOP 的命名，不是我们的）
     assert cardview.LOADING_HINT_ID == "loading_hint", cardview.LOADING_HINT_ID
 
@@ -380,22 +438,31 @@ def _assert_tool_status_literals() -> None:
     # token 表必须与生产状态映射同源核对，不能只锁 JSON 自己；键存在必须先显式断言。
     for key in ("running", "ok", "success", "error"):
         assert key in cards._TOOL_STATUS_STYLES, f"生产缺状态映射键：{key}"
-    assert cards._TOOL_STATUS_STYLES["running"] == ("Running", "turquoise")
-    assert cards._TOOL_STATUS_STYLES["ok"] == ("Succeeded", "green")
-    assert cards._TOOL_STATUS_STYLES["success"] == ("Succeeded", "green")
+    assert cards._TOOL_STATUS_STYLES["running"] == ("Running", "blue")
+    assert cards._TOOL_STATUS_STYLES["ok"] == ("✓", "green")
+    assert cards._TOOL_STATUS_STYLES["success"] == ("✓", "green")
     assert cards._TOOL_STATUS_STYLES["error"] == ("Failed", "red")
+    # 两张表**逐键直接对等**（结构化侧 = `cardview.ToolStepView.status_style`）：
+    # 只靠夹具比对时，两表一起漂移会在同一次提交里同时改掉夹具 ⇒ 抓不住（审计 C2 的绿变异）。
+    for status in ("running", "ok", "success", "error", "blocked", "cancelled", "canceled",
+                   "skipped", "timeout"):
+        assert cardview.ToolStepView(name="x", title="x", status=status).status_style == \
+            cards._TOOL_STATUS_STYLES[status], status
+    # 未知状态：兜底成「首字母大写 + 灰」，不许抛（Hermes 会 emit 没登记的状态）
+    assert cardview.ToolStepView(name="x", title="x", status="weird").status_style == \
+        ("Weird", "grey")
     cards.set_color_tags_enabled(True)
     try:
         step = cards.tool_step("read_file", status="ok", duration_ms=120,
                                preview='{"path": "/tmp/a.txt"}', theme="ap_lite")
-        assert "<font color='green'>Succeeded</font>" in step, step
+        assert "<font color='green'>✓</font>" in step, step
         assert "↳ /tmp/a.txt" in step, step
         err = cards.tool_step("read_file", status="error", duration_ms=120,
                               preview='{"path": "/tmp/a.txt"}', theme="ap_lite")
         assert "<font color='red'>Failed</font>" in err, err
         run = cards.tool_step("read_file", status="running", duration_ms=120,
                               preview='{"path": "/tmp/a.txt"}', theme="ap_lite")
-        assert "<font color='turquoise'>Running</font>" in run, run
+        assert "<font color='blue'>Running</font>" in run, run
     finally:
         cards.set_color_tags_enabled(False)
 

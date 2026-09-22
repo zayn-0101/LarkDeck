@@ -178,3 +178,39 @@ wc -c < ~/.larkdeck-scratch/fullrun.log
 
 ⚠️ **日志是块缓冲的**：跑完之前 `grep` 可能读到 0 行，**别把「日志为空」当成「没在跑」** ——
 看**快照目录数**（它每条变异都会新建一个）才是可靠的心跳。
+
+
+## 2026-09-22 · v0.7.2「面板 UX 定版」批次（A1/B1/C1/D1′，P3–P4 流水）
+
+**计划**：`docs/plan-v0.7.2-panel-ux.md`（执行契约）· **P1 三路计划审计**：`2dbf247f`/`19ee94be`/`344b1e37`。
+
+**P3 三路对抗审计（生产代码）**：A `6228d4d8` · B `9b0b5a01` · C `f1723fab` ⇒ 逐条处置见计划 §7
+「P3」表。两条**高**项当场修掉：
+
+* B-F1：`mutate_check.py` 的 `finally` 里盖章 ⇒ 一条 `Ctrl-C` 也能写出
+  `full_audit_at=HEAD` + `entries=0`。修法＝`finally` 只写增量、全量章挪到两个循环都跑完之后。
+  复验：`sigint_probe.py`（在「基线自校验」后 0.5s 发 SIGINT）⇒ 账本**没有** `full_audit_at` ✓。
+* B-F2 / A-⑥：`_ld_ck_split` 的第二个 seed 点（封旧卡→开新卡）删掉后六支门禁全绿。修法＝
+  新增 structured 车道专用用例 `test_v072_a1_seal_split_new_card_is_expanded` + 变异 `V4-75`。
+
+**同一轮修掉的其它确认项**：回合结束/中止不定稿（A-①，`record_turn_end`/`mark_stopped` 补
+`_finalize_round_locked`，V4-77/V4-78）；幂等闸门之后才切轮（A-②，V4-76）；`running` 行不拼耗时段
+（C-13）；`check_hooks` 空页脚缩进（C-15）；README/plugin.yaml 的 D1′ 假声明（C-1/2）等。
+
+**门禁（本工作树，`run_fast --full`）**：8 步全绿 —— `test_units 290/290`、
+`CARDVIEW OK`、`HOOKS OK`、`OVERRIDE OK`、`CLS ALIGN OK`、`OWN BODY GATE OK`、
+`mutate_preflight 511/511 锚点可用`（499 条变异 + 12 条对照）。
+
+**新变异（完整模式实红，逐条贴输出）**：`V4-64…V4-78`（D1′ 自制动图 / 中间帧不带 expanded /
+两处 seed 的 streaming 展开 / 收尾仍走 panel_expanded / 嵌套轮折叠 / `finalized` 数据 /
+页脚两条 B1 反面 / `_is_full_run` 漏 target_only / 两表对等 ×2 / 切卡第二处 / 幂等切轮 /
+回合结束与 `/stop` 定稿），另重对齐 `V0-11`/`V0-12`/`V4-42`/`T4`/`CLS-31`。
+
+**黄金夹具**：`write_golden_trace.py --check` 一致；重生成后的 diff＝28 处叶子差异，逐条对应
+A1（3 处 partial 少 `expanded`、entity `expanded` false→true）、C1（`turquoise`→`blue`）、
+默认②（`Succeeded`→`✓`）、D1′（`standard_icon`→`custom_icon` + `img_key`）、B1（页脚去 `🤖`），
+无未解释差异。
+
+**真机协议前提（P6 前移做）**：`tests/probe_manual_collapse.py` —— 建卡（`expanded=true`）→
+请用户手动收起 → 发一帧生产形态 partial（内容变、**不带** `expanded`）→ 看是否保持收起。
+卡 `om_x100b6412c77ddca8c3b79b34234a6ec`（2026-09-22 发）。

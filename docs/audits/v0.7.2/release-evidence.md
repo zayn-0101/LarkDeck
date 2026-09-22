@@ -95,7 +95,7 @@
 
 1. 定版确认卡 `om_x100b64256c1470acdfadc4d33133fca` 的观感；
 2. 长回合真机复验（不掉纯文本、无 `⏳ Working —` 灰气泡、折叠提示在）；
-3. 页脚无 🔖（`状态 · ⏱ 时长 · 🤖 模型 · ctx`）；
+3. 页脚无 🔖、无段前缀 emoji（`状态 · 时长 · 模型 · ctx`；B1，2026-09-22 起）；
 4. 建卡瞬间加载指示「会动、无文字」。
 
 四项确认后执行：`git push origin main --follow-tags` → `tag v0.7.2` → `gh release create` →

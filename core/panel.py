@@ -358,7 +358,11 @@ def _open_round_locked(state: Dict[str, Any], now: float) -> Dict[str, Any]:
     """取（或开一个）当前正在进行的推理轮。"""
     current = state.get("current_round")
     if not isinstance(current, dict):
-        current = {"parts": [], "started": now, "elapsed_ms": None}
+        # ``finalized`` = 「这一轮还在生成吗」。卡片侧据此决定**嵌套轮**的展开/折叠
+        # （A1：当前轮展开、已结束轮折叠）。卡片代码早就在读它（`adapter.py` 的
+        # `ReasoningRoundView(finalized=item.get("finalized"))`）—— 这里一直没写过 ⇒ 恒 False，
+        # 属于**数据缺失**（不是新字段），所以只加这个键、不动既有键。
+        current = {"parts": [], "started": now, "elapsed_ms": None, "finalized": False}
         state["current_round"] = current
         _rounds_locked(state).append(current)
     return current
@@ -397,6 +401,9 @@ def _finalize_round_locked(state: Dict[str, Any], now: float) -> None:
             logger.debug("larkdeck: 待丢弃的空轮不在 rounds 中（不变量可能已破）")
         return
     current["elapsed_ms"] = max(0, int((now - float(current.get("started") or now)) * 1000))
+    # 与上面的 `elapsed_ms` 同一时刻落账：这一轮的**耗时定稿**与**已结束**是同一件事，
+    # 不能只写一个 —— 折叠了却还在跳秒的轮会让用户以为它还在生成。
+    current["finalized"] = True
     # 只保留最近的若干轮
     while len(rounds) > _MAX_ROUNDS:
         dropped = rounds.pop(0)
@@ -684,6 +691,12 @@ def record_turn_end(session_id: str, turn_id: str, *, completed: bool = False,
             state = _new_state_locked(sid, now)
             state["turn_id"] = tid
             state["status"] = status
+        # ⚠️ **回合结束也要把当前轮定稿**（2026-09-22 审计 A 实测的洞）：`_finalize_round_locked`
+        # 只被「正文增量」与「工具开始」调用 ⇒ 一个**纯推理**回合（或 `/stop` 中止）结束时，
+        # 最后一轮仍是 `finalized=False`：卡片侧按 A1 把它渲染成**展开**（像还在生成），
+        # 而且它与嵌套轮的耗时都还会继续涨（snapshot 对未定稿轮按「到现在为止」算）。
+        # 定稿是幂等的（没有当前轮时直接返回），所以放在两个分支合流处。
+        _finalize_round_locked(state, now)
         _LAST_ACTIVE_BOX[0] = sid
         _purge_locked(now)
 
@@ -718,6 +731,9 @@ def mark_stopped(chat_id: str = "") -> str:
             return ""
         state["status"] = STATUS_STOPPED
         state["updated"] = now
+        # `/stop` 同样是一个「回合结束」（而且它**永远没有收尾帧**：stream consumer 直接
+        # abandon）⇒ 当前推理轮必须在这里定稿，否则中止卡的嵌套轮仍是展开态 + 耗时继续涨。
+        _finalize_round_locked(state, now)
         # 唯一的写入口里也要顺手淘汰：`mark_stopped` 会为「绑定但还没建桶」的会话建桶，
         # 不淘汰的话这些刚建的空桶会挤掉真实会话的槽位（审计实测：`_MAX_SESSIONS`
         # 按 `updated` 淘汰，刚建的空桶更新、掉的是有内容的老会话）。
@@ -804,8 +820,6 @@ def record_tool_started(session_id: str, turn_id: str, tool_name: str,
         state = _touch_locked(str(session_id or ""), str(turn_id or ""), now)
         if state is None:
             return
-        # 工具调用也是推理轮的**结束信号**（轮次定义 = 被正文或工具打断）
-        _finalize_round_locked(state, now)
         # R11-A7：打开「工具窗口」—— 核心从这一刻起**可能**把工具进度行叠进流式帧的尾部，
         # 而它只会在下一个正文增量到达时清掉那些行（公开语义推导，不读私有变量）。
         # 放在幂等闸门**之前**：窗口问的是「核心有没有可能叠了进度行」，重复投递答的也是「有」。
@@ -817,8 +831,16 @@ def record_tool_started(session_id: str, turn_id: str, tool_name: str,
         # 已经在跑的同名步骤直接跳过 —— 幂等，而不是「猜哪个是重复的」。
         _tcid = str(tool_call_id or "")
         if _tcid and any(str(item.get("id") or "") == _tcid for item in tools):
+            # ⚠️ **幂等命中必须先 return，不能先切轮**（2026-09-22 审计 A 实测）：
+            # 同一进程里插件被发现两次 ⇒ 钩子被订阅两遍 ⇒ 同一个 `pre_tool_call` 回调两次。
+            # 旧写法在闸门**之前**就 `_finalize_round_locked` ⇒ 迟到的重复事件会把**仍在生成
+            # 的推理轮**提前定稿（`finalized=True` + `current=None`）：那半轮在卡片里被折叠、
+            # 耗时冻结，下一段推理被开成**新的一轮**（用户看到轮次凭空多一段）。
             _purge_locked(now)
             return
+        # 工具调用是推理轮的**结束信号**（轮次定义 = 被正文或工具打断）—— 只有**真的新增**
+        # 一个工具步时才算「新工具开始」。
+        _finalize_round_locked(state, now)
         tools.append({
             "id": _tcid,
             "name": str(tool_name or "tool"),
@@ -938,9 +960,10 @@ def bound_session_id(chat_id: str) -> str:
 def snapshot(chat_id: str = "") -> Optional[Dict[str, Any]]:
     """最近活跃会话的面板数据；没有内容返回 ``None``（调用方据此不渲染）。
 
-    返回 ``{"session_id", "turn_id", "reasoning", "tools", "age"}``：
-    ``reasoning`` 是拼接好的整段推理，``tools`` 每项含
-    ``name / status / duration_ms / preview``。
+    返回 ``{"session_id", "turn_id", "reasoning", "rounds", "tools", "status", "age"}``：
+    ``reasoning`` 是拼接好的整段推理，``rounds`` 每项含
+    ``text / elapsed_ms / finalized``（``finalized=False`` = 这一轮还在生成），
+    ``tools`` 每项含 ``name / status / duration_ms / preview``。
 
     ⚠️ **不要试图用 ``turn_id`` 把卡片和会话对上 —— 两侧的 ``turn_id`` 不是同一个东西。**
     2026-09-12 踩过：钩子载荷里的 ``turn_id`` 是 ``agent._current_turn_id``
@@ -984,7 +1007,9 @@ def snapshot(chat_id: str = "") -> Optional[Dict[str, Any]]:
         if elapsed is None:
             # 还在进行中的轮：按「到现在为止」算，让用户看到实时耗时
             elapsed = max(0, int((now - float(item.get("started") or now)) * 1000))
-        rounds.append({"text": text, "elapsed_ms": elapsed})
+        # ``finalized`` 必须透给卡片侧：`ReasoningRoundView` 靠它决定嵌套轮展开/折叠（A1）。
+        rounds.append({"text": text, "elapsed_ms": elapsed,
+                       "finalized": bool(item.get("finalized"))})
     reasoning = "".join(item["text"] for item in rounds)
     # 有结局（哪怕没有任何过程数据）也要出一份快照：状态色的**唯一载体**是面板，
     # 没有面板就没有颜色 —— 一个「无推理无工具但结束了」的回合也该是绿的。

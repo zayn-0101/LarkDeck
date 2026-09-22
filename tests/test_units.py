@@ -906,8 +906,15 @@ def test_declared_defaults_are_an_explicit_decision():
     # 默认翻成 **true**（配套变异 CLS-33 防止被静默改回无色）；真机若仍不认，
     # 用户可显式 `panel_color_tags: false` 走纯文本降级。
     assert declared["panel_color_tags"] is True, (
-        "默认必须有颜色（Succeeded 绿 / Running 青绿 / Failed 红 / 细节灰）；"
+        "默认必须有颜色（成功 ✓ 绿 / 运行中 Running 蓝 / Failed 红 / 细节灰；2026-09-22 C1）；"
         "改回 false 必须是一次显式决定")
+    # A1（2026-09-22 拍板）：**运行中**面板默认展开。这一条必须显式钉住 —— 否则
+    # `_DEFAULTS` / `plugin.yaml` / README 三处同时改成 false（并重生成黄金夹具）时
+    # 四门禁全绿，而「默认展开」只是文档里的一句话（审计 C 的反事实）。
+    assert declared["streaming_panel_expanded"] is True, (
+        "运行中面板默认展开（A1）；改它必须是一次显式决定 + 重跑全量变异")
+    assert declared["panel_expanded"] is False, (
+        "**收尾**时面板默认折叠（A1 的另一半）；它与 streaming_panel_expanded 各管一头")
     assert declared["text_profile"] == "compact", (
         "默认字号档位 compact：面板/脚注 12px notation、正文 normal；改它必须显式")
     manifest_text = (_pathlib.Path(_REPO_PARENT) / "larkdeck" / "plugin.yaml").read_text(
@@ -1585,8 +1592,19 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         #    —— R2 审计实测：删掉它 132/132 照样全绿，它只会给人一种「页脚去重被多条断言守住」的错觉。
         # 帧路径写出去的页脚 = 基数页脚 + **本卡短码**（R11-C2）。期望值在这里**显式拼**
         # 出来，不再调 `_ld_frame_footer` —— 那样等于「函数等于它自己」，零判别力。
-        assert footer_after in [value for sub in footer_written for value in sub], \
-            (f"页脚变化后必须真的写出**当前**页脚内容（含耗时/模型/上下文）：{footer_written}"
+        # ⚠️ 比之前**先剥掉纯时长段**（`0.1s`/`12.3s`/`1m04s`）：那段是墙钟派生的 ——
+        #    `footer_after` 不传 `started` 所以永远没有它，而帧页脚带 `started=state["t0"]`，
+        #    只要那一帧墙钟超过 0.05s 就会多出 `0.1s` ⇒ 负载一高就假红（2026-09-21 与
+        #    2026-09-22 两次踩到同一类；「去时钟依赖」这条纪律在同一个用例里漏了一处）。
+        #    剥掉它不影响判别力：模型/上下文/状态这些**内容**仍然逐字比。
+        def _strip_duration(text: str) -> str:
+            return " · ".join(
+                seg for seg in str(text or "").split(" · ")
+                if not re.fullmatch(r"\d+(?:\.\d+)?s|\d+m\d+s", seg.strip()))
+
+        assert _strip_duration(footer_after) in [
+            _strip_duration(value) for sub in footer_written for value in sub], \
+            (f"页脚变化后必须真的写出**当前**页脚内容（模型/上下文；时长段已剥离）：{footer_written}"
              f" / 期望至少一次 {footer_after!r}")
         # 序号：从 1 起**连续**（既不跳号也不撞号）—— 但**次数**允许随时钟漂移（页脚里带耗时），
         # 所以这里验「连续」而不是写死的 7 个数字（审计 A 的负载假红就出在写死上）。
@@ -1988,6 +2006,10 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             adapter._STREAM_MIN_INTERVAL = 0.0
             assert _run(raw2r.send_stream_frame("", chat_id="oc_ck2r", turn_id="t-2r"))
             assert calls["create"] == 1, "seed 建第一张卡"
+            # ⚠️ A1 的「运行中展开」**不适用于这条用例**：它跑在 legacy 车道上
+            # （`_LEGACY_LANE_TESTS`），legacy 卡的面板 id 是 `panel_body`/`panel_tools`、
+            # 展开态只看 `panel_expanded`。第二处 seed（封旧卡→开新卡）的 A1 断言在
+            # `test_v072_a1_seal_split_new_card_is_expanded`（structured 车道）。
             head = "前段标记" + "甲" * 950
             assert _run(raw2r.send_stream_frame(head, chat_id="oc_ck2r", turn_id="t-2r"))
             assert calls["create"] == 1, "没超过阈值就不该切卡"
@@ -3702,11 +3724,13 @@ def test_format_elapsed_and_footer_line() -> None:
     line = cards.footer_line(status="✅ 已完成", model="Sonnet 4.6",
                              context="ctx 45.2k/200k · 23%", duration=12.3)
     # 用户 2026-09-17 指定的页脚阅读顺序：状态 → 时长 → 模型 → 其余指标。
-    assert line == "✅ 已完成 · ⏱ 12.3s · 🤖 Sonnet 4.6 · ctx 45.2k/200k · 23%"
+    # B1（2026-09-22）：段前缀 emoji（⏱/🤖）去掉；状态词里的 ✅ 保留。逐字：
+    assert line == "✅ 已完成 · 12.3s · Sonnet 4.6 · ctx 45.2k/200k · 23%"
+    assert "⏱" not in line and "🤖" not in line, line   # 反面守卫：段前缀不许溜回来
     assert cards.footer_line() is None
-    assert cards.footer_line(model="m") == "🤖 m"
-    assert cards.footer_line(model="m", duration=1.2) == "⏱ 1.2s · 🤖 m",         "模型前必须有耗时；顺序不能倒（对齐 AP 的 `已完成 · 1m 4s · ✳ model`）"
-    assert cards.footer_line(status="S", duration=1.2, model="m") == "S · ⏱ 1.2s · 🤖 m"
+    assert cards.footer_line(model="m") == "m"
+    assert cards.footer_line(model="m", duration=1.2) == "1.2s · m",         "模型前必须有耗时；顺序不能倒（对齐 AP 的 `已完成 · 1m 4s · ✳ model`）"
+    assert cards.footer_line(status="S", duration=1.2, model="m") == "S · 1.2s · m"
     assert cards.footer_line(duration=0.0) is None, "0 秒不算耗时（首帧就是这个情况）"
     assert cards.footer_line(duration=0.05) is None, "不足 0.1s 不显示（native seed 帧）"
     assert cards.footer_line(tools=3) == "🔧 3"
@@ -3757,7 +3781,7 @@ def test_tool_step_unknown_and_cancelled_statuses_never_crash():
         "cancelled": ("Cancelled", "grey"),
         "canceled": ("Cancelled", "grey"),
         "skipped": ("Skipped", "grey"),
-        "success": ("Succeeded", "green"),
+        "success": ("✓", "green"),
         "": ("Unknown", "grey"),
         "weird": ("Weird", "grey"),
         "timeout": ("Timed out", "red"),
@@ -3801,7 +3825,7 @@ def test_tool_duration_and_section_heading_helpers_are_dirty_data_safe():
             raise AssertionError(f"neutral 坏耗时崩溃：{exc}") from exc
         assert neutral == "✅ x", neutral
         assert cards.tool_step("x", status="ok", duration_ms=bad, theme="ap_lite") == \
-            "🧰 **x** · <font color='green'>Succeeded</font>"
+            "🧰 **x** · <font color='green'>✓</font>"
     try:
         round_title = cards._round_title(1, 10 ** 400)
     except Exception as exc:
@@ -3861,12 +3885,12 @@ def test_color_tag_fallback_covers_status_heading_and_detail():
         adapter.configure(panel_color_tags=True)
         assert cards.color_tags_enabled() is True, "默认配置必须把彩色推给 cards"
         colored = cards.tool_step("read_file", status="ok", theme="ap_lite")
-        assert "<font color='green'>Succeeded</font>" in colored, colored
+        assert "<font color='green'>✓</font>" in colored, colored
         adapter.configure(panel_color_tags=False)
         assert cards.color_tags_enabled() is False, "配置没有把降级开关推给 cards"
         read = cards.tool_step("read_file", status="ok", duration_ms=100,
                                preview='{"path": "/tmp/a.txt"}', theme="ap_lite")
-        assert "<font" not in read and "Succeeded" in read and "↳ /tmp/a.txt" in read, read
+        assert "<font" not in read and "✓" in read and "↳ /tmp/a.txt" in read, read
         body = cards.panel_rounds_markdown(
             rounds=[{"text": "想一下", "elapsed_ms": 1000}])
         assert "<font" not in body and "💭 思考" in body, body
@@ -3897,28 +3921,28 @@ def test_theme_symbols_and_tool_icons_are_pinned():
     # 缺省 = neutral：既有调用点（探针、单测、任何未传 theme 的直接调用）零变化；
     # 页脚顺序本身对两档主题一致：状态 → 时长 → 模型 → 轮次 → 工具。
     assert cards.footer_line(model="m", rounds=3, tools=2, duration=1.2) == \
-        "⏱ 1.2s · 🤖 m · 🧠 3 · 🔧 2"
+        "1.2s · m · 🧠 3 · 🔧 2"
     assert cards.tool_step("read_file", status="running") == "⏳ read_file"
     # ap_lite：只动模型/轮次/工具数/耗时这几格
     assert cards.footer_line(model="m", rounds=3, tools=2, duration=1.2,
-                             theme="ap_lite") == "⏱ 1.2s · 🤖 m · 🌊 3 · 🧰 2"
+                             theme="ap_lite") == "1.2s · m · 🌊 3 · 🧰 2"
     assert cards.footer_line(rounds=1, tools=1, cache=75.0, api=7, ttfb=0.4,
-                             theme="ap_lite") == "🌊 1 · 🧰 1 · ⚡ 75% · 🔁 7 · 🐢 0.4s"
+                             theme="ap_lite") == "🌊 1 · 🧰 1 · cache 75% · api 7 · ttfb 0.4s"
     # ap_bubble：可选档，人物 emoji 只在显式选择时出现
     assert cards.footer_line(model="m", rounds=1, tools=1, duration=1.2,
-                             theme="ap_bubble") == "✨ 1.2s · 👸🏻 m · 🌊 1 · 🫧 1"
+                             theme="ap_bubble") == "1.2s · m · 🌊 1 · 🫧 1"
     assert cards.tool_step("read_file", status="running",
                            theme="ap_bubble") == \
-        "👩🏻‍🏫 **Read file** · <font color='turquoise'>Running</font>"
+        "👩🏻‍🏫 **Read file** · <font color='blue'>Running</font>"
     # CLS 风格契约：图标 + 加粗动作名 + 耗时 + **带颜色的状态词**，细节灰色小字另起一行；
     # 不再用 ✅/⏳ 前缀（状态词本身就是可读的状态），也不把 JSON 原文倒回卡上。
     read = cards.tool_step("read_file", status="ok", duration_ms=100,
                            preview='{"path": "/tmp/a.txt"}', theme="ap_lite")
-    assert read == ("📖 **Read file** (100 ms) · <font color='green'>Succeeded</font>\n"
+    assert read == ("📖 **Read file** (100 ms) · <font color='green'>\u2713</font>\n"
                     "<font color='grey'>↳ /tmp/a.txt</font>"), read
     cmd = cards.tool_step("run_command", status="ok",
                           preview='{"command": "ls -la && pwd"}', theme="ap_lite")
-    assert cmd == ("⌨️ **Run command** · <font color='green'>Succeeded</font>\n"
+    assert cmd == ("⌨️ **Run command** · <font color='green'>\u2713</font>\n"
                    "<font color='grey'>↳ ls -la 等 2 条</font>"), cmd
     assert "{" not in cmd and '"' not in cmd, f"细节行不许露出 JSON：{cmd!r}"
     # 失败 / 阻塞也必须有一眼可读的状态词（颜色 + 文字，不靠 emoji 单独承载）
@@ -3931,7 +3955,7 @@ def test_theme_symbols_and_tool_icons_are_pinned():
                                 preview='{"command": "sed -n \'1,200p\' /very/long/path/to/file',
                                 theme="ap_lite")
     assert truncated == (
-        "⌨️ **Run command** (1.2 s) · <font color='green'>Succeeded</font>\n"
+        "⌨️ **Run command** (1.2 s) · <font color='green'>\u2713</font>\n"
         "<font color='grey'>↳ sed -n '1,200p' /very/long/path/to/file</font>"), truncated
     # 细节里的 `<` 必须被中和，否则参数里的 `</font>` 会把灰色小字变成正文
     safe = cards.tool_step("run_command", status="ok",
@@ -3952,15 +3976,15 @@ def test_theme_symbols_and_tool_icons_are_pinned():
         got = cards.tool_step(name, status="ok", duration_ms=100,
                               theme="ap_lite")
         assert got.startswith(
-            f"{icon} **{label}** (100 ms) · <font color='green'>Succeeded</font>"), \
+            f"{icon} **{label}** (100 ms) · <font color='green'>\u2713</font>"), \
             f"{name}: {got!r}"
     # token 精确匹配：短键不许在更长单词里误命中；未知工具退回默认工具图标
     for name in ("false", "catalog", "results", "tool"):
         got = cards.tool_step(name, status="ok", theme="ap_lite")
-        assert got == f"🧰 **{name}** · <font color='green'>Succeeded</font>", \
+        assert got == f"🧰 **{name}** · <font color='green'>\u2713</font>", \
             f"{name} 被误分类：{got!r}"
     assert cards.tool_step("ls", status="ok", theme="ap_lite") == \
-        "📖 **Read file** · <font color='green'>Succeeded</font>"
+        "📖 **Read file** · <font color='green'>\u2713</font>"
     # 认不出的主题退回 neutral（不猜、不放大）
     assert cards.theme_name("nonsense") == "neutral"
     assert cards.theme_name(None) == "neutral"
@@ -5122,14 +5146,15 @@ def test_footer_metrics_are_opt_in_and_never_fake_zero() -> None:
         context.set_context_override(20000)
         _off = adapter.LarkDeckMixin._ld_footer()
         assert "ctx" in (_off or ""), f"上下文用量照旧必须在：{_off!r}"
-        for symbol in ("⚡", "🔁", "🐢"):
+        # B1（2026-09-22）：三段改成纯文本段（cache / api / ttfb）
+        for symbol in ("cache ", "api ", "ttfb "):
             assert symbol not in (_off or ""), f"默认必须一个字都不加：{_off!r}"
 
         adapter.configure(footer_metrics="basic")
         _basic = adapter.LarkDeckMixin._ld_footer() or ""
-        assert "⚡ 75%" in _basic, f"缓存命中率 = 3000/4000：{_basic!r}"
-        assert "🔁 7" in _basic, f"API 次数：{_basic!r}"
-        assert "🐢" not in _basic, f"basic 不含 TTFB：{_basic!r}"
+        assert "cache 75%" in _basic, f"缓存命中率 = 3000/4000：{_basic!r}"
+        assert "api 7" in _basic, f"API 次数：{_basic!r}"
+        assert "ttfb" not in _basic, f"basic 不含 TTFB：{_basic!r}"
 
         adapter.configure(footer_metrics="full")
         context.record_api_call(model="m", api_call_count=8, api_duration=1.5,
@@ -5137,7 +5162,7 @@ def test_footer_metrics_are_opt_in_and_never_fake_zero() -> None:
                                 usage={"input_tokens": 1000, "output_tokens": 5,
                                        "prompt_tokens": 4000, "cache_read_tokens": 3000})
         _full = adapter.LarkDeckMixin._ld_footer() or ""
-        assert "🐢 0.4s" in _full, f"TTFB = 0.42s ⇒ 0.4s：{_full!r}"
+        assert "ttfb 0.4s" in _full, f"TTFB = 0.42s ⇒ 0.4s：{_full!r}"
 
         # **真的 0% 命中**必须显示出来（`cache_read=0` 是「一次都没命中」，与「不知道」是
         # 两件事）。判别力：变异 `R7-12`（把 0.0 当成缺失）⇒ 红。
@@ -5147,7 +5172,7 @@ def test_footer_metrics_are_opt_in_and_never_fake_zero() -> None:
                                        "prompt_tokens": 4000, "cache_read_tokens": 0})
         context.set_context_override(20000)
         _zero = adapter.LarkDeckMixin._ld_footer() or ""
-        assert "⚡ 0%" in _zero, f"真的 0% 命中必须显示（不许当成「缺数据」）：{_zero!r}"
+        assert "cache 0%" in _zero, f"真的 0% 命中必须显示（不许当成「缺数据」）：{_zero!r}"
 
         # 反向：`api_call_count=0` / `ttfb=0.0` **不显示** —— 这是**有意的不对称**
         # （L-2 的结论）：缓存命中率 0% 是真实读数，而「本回合 0 次 API 调用」和
@@ -5159,16 +5184,16 @@ def test_footer_metrics_are_opt_in_and_never_fake_zero() -> None:
                                       "prompt_tokens": 4000, "cache_read_tokens": 3000})
         context.set_context_override(20000)
         _zeros = adapter.LarkDeckMixin._ld_footer() or ""
-        assert "🔁" not in _zeros and "🐢" not in _zeros, \
+        assert "api " not in _zeros and "ttfb" not in _zeros, \
             f"0 次调用 / 0.0s 首字节视为「无意义」，不许画成读数：{_zeros!r}"
-        assert "⚡ 75%" in _zeros, f"同一帧里真实读数照常显示：{_zeros!r}"
+        assert "cache 75%" in _zeros, f"同一帧里真实读数照常显示：{_zeros!r}"
 
-        # 缺数据：一段都不许编出来（尤其不许出现「⚡ 0%」这种假读数）
+        # 缺数据：一段都不许编出来（尤其不许出现「cache 0%」这种假读数）
         context.reset()
         context.record_api_call(model="m", usage={"input_tokens": 1000, "output_tokens": 5})
         context.set_context_override(20000)
         _bare = adapter.LarkDeckMixin._ld_footer() or ""
-        assert "⚡" not in _bare and "🔁" not in _bare and "🐢" not in _bare, \
+        assert ("cache " not in _bare and "api " not in _bare and "ttfb" not in _bare), \
             f"缺数据必须少一段，绝不编 0：{_bare!r}"
 
         # 认不出的取值按 off（不猜、不放大）。⚠️ 这一格必须**带着完整数据**测：数据缺的时候
@@ -5182,7 +5207,7 @@ def test_footer_metrics_are_opt_in_and_never_fake_zero() -> None:
         context.set_context_override(20000)
         adapter.configure(footer_metrics="???")
         _unknown = adapter.LarkDeckMixin._ld_footer() or ""
-        assert "⚡" not in _unknown and "🔁" not in _unknown and "🐢" not in _unknown, \
+        assert ("cache " not in _unknown and "api " not in _unknown and "ttfb" not in _unknown), \
             f"认不出的取值必须按 off（不猜、不放大）：{_unknown!r}"
     finally:
         context.set_context_override(None)
@@ -5211,21 +5236,24 @@ def test_adapter_footer_wiring() -> None:
         # 直接戳的临时值会被正确覆盖掉。
         adapter.configure(context_max_override=10000)
         assert adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw") == \
-            "🤖 Test Model · ctx 1k/10k · 10%"
+            "Test Model · ctx 1k/10k · 10%"
 
         # 结局一到，状态必须出现在**最前面**，且排在耗时/模型之前（AP 的 `已完成 · 1m 4s · ✳ model`）
         panel.record_turn_end("s-fw", "t-fw", completed=True)
         line = adapter.LarkDeckMixin._ld_footer(
             chat_id="oc_fw", started=time.monotonic() - 12.3)
         assert line is not None
-        assert re.search(r"✅ 已完成 · ⏱ 12\.[0-9]s · 🤖 Test Model · ctx ", line), line
-        assert line.index("✅") < line.index("⏱") < line.index("🤖") < line.index("ctx")
+        assert re.search(r"✅ 已完成 · 12\.[0-9]s · Test Model · ctx ", line), line
+        # B1：emoji 段前缀没了 ⇒ 顺序断言改用段首（状态 → 时长 → 模型 → ctx）
+        assert line.index("✅") < line.index("12.") < line.index("Test Model") < line.index("ctx")
+        assert "⏱" not in line and "🤖" not in line, line
         # 显式传入的 status 也要能覆盖面板快照（`/stop` 重绘没有等待快照那一帧）
         assert adapter.LarkDeckMixin._ld_footer(
             chat_id="oc_fw", status="stopped").startswith("⛔ 已中止 · ")
         # started=0/False 不是合法回合起点（monotonic 不会为 0）：不许算出机器 uptime 级假耗时
-        assert "⏱" not in (adapter.LarkDeckMixin._ld_footer(
-            chat_id="oc_fw", started=0) or ""), "started=0 被当成了合法起点"
+        _no_start = adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw", started=0) or ""
+        assert not re.search(r"(^|· )\d+\.\d+s( ·|$)", _no_start), \
+            f"started=0 被当成了合法起点（不该出现「时长」段）：{_no_start!r}"
         # ❌ 执行出错 三态里必须有独立覆盖（Phase 1 审计 HIGH-1）
         assert adapter.LarkDeckMixin._ld_footer(
             chat_id="oc_fw", status="error").startswith("❌ 执行出错 · ")
@@ -5234,7 +5262,7 @@ def test_adapter_footer_wiring() -> None:
         adapter.configure(context_style="bar")
         assert "[█░░░░░░░]" in adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw")
         adapter.configure(show_model=False)
-        assert "🤖" not in adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw")
+        assert "Test Model" not in (adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw") or "")
         adapter.configure(footer=False)
         assert adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw") is None
     finally:
@@ -5276,11 +5304,13 @@ def test_adapter_panel_wiring() -> None:
         assert "🤖" not in header and "⏱" not in header, header
         assert "💭 思考" in header and "🛠️ 工具执行 · 1 步" in header, header
         footer = adapter.LarkDeckMixin._ld_footer(started=time.monotonic() - 12.3) or ""
-        assert re.search(r"⏱ 12\.[0-9]s", footer), footer
-        assert "🤖 Test Model" in footer, footer
+        assert re.search(r"12\.[0-9]s", footer), footer
+        assert "⏱" not in footer, f"B1：页脚不再有段前缀 emoji：{footer}"
+        assert "Test Model" in footer, footer
         adapter.configure(show_model=False)
         assert "🤖" not in adapter.LarkDeckMixin._ld_panel()["header"]["title"]["content"]
-        assert "🤖" not in (adapter.LarkDeckMixin._ld_footer(started=time.monotonic() - 12.3) or "")
+        assert "Test Model" not in (adapter.LarkDeckMixin._ld_footer(
+            started=time.monotonic() - 12.3) or "")
 
         # 只有推理（没有工具）也给面板：标题只带思考段，不出现空的工具段
         panel.reset()
@@ -12008,7 +12038,8 @@ def test_v4_2_structured_footer_carries_elapsed_and_short_code():
                                 message_id="om_abcdef123456")
         footer = view.footer
         assert "✅ 已完成" in footer, footer
-        assert "\u23f1 3.0s" in footer, f"页脚必须有耗时那一段: {footer}"
+        assert "3.0s" in footer, f"页脚必须有耗时那一段: {footer}"
+        assert "\u23f1" not in footer, f"B1：页脚不再有 ⏱ 段前缀: {footer}"
         assert "\U0001f516" not in footer, f"V4.17：页脚不带短码: {footer}"
         assert footer.index("✅ 已完成") < footer.index("3.0s"), \
             f"顺序必须是 状态 → 时长: {footer}"
@@ -12042,7 +12073,8 @@ def test_v4_2_finalize_card_contains_duration_and_trace_element():
         footers = [e for e in elements if e.get("element_id") == cards.CARDKIT_FOOTER_ID]
         assert footers, elements
         content = str(footers[-1].get("content") or "")
-        assert "\u23f1 4.0s" in content, f"收尾页脚缺时长: {content}"
+        assert "4.0s" in content, f"收尾页脚缺时长: {content}"
+        assert "\u23f1" not in content, f"B1：收尾页脚也不再有 ⏱ 段前缀: {content}"
         assert "\U0001f516 " not in content, f"V4.17 起页脚不带短码: {content}"
     finally:
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
@@ -12099,7 +12131,8 @@ def test_v4_4_static_cards_use_structured_panel():
         assert "header" in payload, "结构化静态卡必须带卡级状态头"
         assert _find_element(payload, "panel") is not None, "必须是结构化 panel 元素"
         assert "standard_icon" in blob and "22px" in blob, blob
-        assert "Succeeded" in blob, blob
+        assert "\u2713" in blob, blob
+        assert "Succeeded" not in blob, f"成功步已改绿色 ✓（默认②）：{blob}"
         assert "Result" not in blob, f"成功步不该挂 Result 大块（V4.8 用户口径）: {blob}"
         assert "这段推理不该上卡" not in blob, f"show_reasoning=false 不许上推理正文：{blob}"
         assert "💭 思考" in blob, f"摘要行必须留着：{blob}"
@@ -12680,19 +12713,26 @@ def test_v4_14b_loading_asset_contract_has_no_text_and_survives_missing_key():
     el = adapter._cardview.loading_hint_element()
     assert el["icon"]["tag"] == "custom_icon", el["icon"]
     assert el["icon"]["img_key"].startswith("img_v"), el["icon"]
-    assert el["icon"]["img_key"] == adapter._cardview.SPINNER_IMG_KEY, el["icon"]
+    assert el["icon"]["img_key"] == adapter._cardview.spinner_img_key(), el["icon"]
+    # D1′：自研 key 是**独立常量**（生效优先级 注入 > SPINNER_TOOL_IMG_KEY > SPINNER_IMG_KEY）。
+    # P2 挑图落定后这里必须换成上传得到的那个 key（`assets/spinner-tool.gif`）。
+    assert adapter._cardview.SPINNER_TOOL_IMG_KEY.startswith("img_v"), \
+        adapter._cardview.SPINNER_TOOL_IMG_KEY
     assert el["text"]["content"].strip() == "", el["text"]
 
     saved_key = adapter._cardview.SPINNER_IMG_KEY
+    saved_tool_key = adapter._cardview.SPINNER_TOOL_IMG_KEY
     try:
         adapter._cardview.set_spinner_img_key("")
         adapter._cardview.SPINNER_IMG_KEY = ""
+        adapter._cardview.SPINNER_TOOL_IMG_KEY = ""
         fallback = adapter._cardview.loading_hint_element()
         assert fallback["icon"] == {"tag": "standard_icon", "token": "time_outlined",
                                     "size": "16px 16px", "color": "grey"}, fallback["icon"]
         assert fallback["text"]["content"].strip() == "", fallback["text"]
     finally:
         adapter._cardview.SPINNER_IMG_KEY = saved_key
+        adapter._cardview.SPINNER_TOOL_IMG_KEY = saved_tool_key
         adapter._cardview.set_spinner_img_key("")
 
 
@@ -13089,13 +13129,54 @@ def test_v4_46_tool_rows_use_official_line_icon_as_text_prefix():
                 if e.get("tag") == "markdown" and "terminal" in str(e.get("content") or "")]
         assert rows, "前提：工具行必须在面板里（markdown + 前缀图标）"
         row = rows[0]
-        # ③ 前缀图标：`markdown.icon`（不是元素级 `div.icon`、也不是 emoji 内联）
-        assert row.get("icon") == {"tag": "standard_icon", "token": "command_outlined",
-                                  "color": "grey"}, row
+        # ③ **运行中**那一行：`markdown.icon` + `custom_icon`（D1′ 自制动图）；
+        #    `markdown` 的前缀图标槽**没有 size 字段**（带上真机 200621 整卡被拒）。
+        assert row.get("icon") == {"tag": "custom_icon",
+                                   "img_key": adapter._cardview.spinner_img_key()}, row
+        assert "size" not in (row.get("icon") or {}), row["icon"]
         content = str(row.get("content") or "")
         assert content.startswith("**terminal**"), content
+        assert "<font color='blue'>Running</font>" in content, content
         assert "🛠️" not in content and "💻" not in content, \
             f"默认形态不再用 emoji（改成前缀图标）：{content}"
+        # §0.1 逐字：运行中那一行**没有耗时段**。生产里 running 步的 duration_ms 恒为 None，
+        # 但渲染层必须自己把这条钉死（脏数据/上游改动也不许拼出偏离逐字表的一行）。
+        dirty = adapter._cardview._tool_title_div(adapter._cardview.ToolStepView(
+            name="terminal", title="terminal", status="running", duration_ms=25))
+        assert dirty["content"] == "**terminal** · <font color='blue'>Running</font>", dirty
+
+        # ④ **已结束**那一行：静态线性图标（V4.46 的正面守卫 —— 变异 V4-46 改的是这条返回）
+        panel.record_tool_finished("s_v446", "t", "terminal", status="ok",
+                                   duration_ms=347, tool_call_id="tc-v446")
+        done = [e for e in adapter._cardview.panel_shell(
+            raw._ld_cardview("oc_v446", "答案").panel)["elements"]
+            if e.get("tag") == "markdown" and "terminal" in str(e.get("content") or "")]
+        assert done, "收尾后工具行仍须在面板里"
+        assert done[0].get("icon") == {"tag": "standard_icon", "token": "command_outlined",
+                                       "color": "grey"}, done[0]
+        assert "<font color='green'>✓</font>" in str(done[0].get("content") or ""), done[0]
+        assert "(347 ms)" in str(done[0].get("content") or ""), done[0]
+
+        # ⑤ 拿不到资产时**回落静态图标**（宁可不动，也不能拿空 key 去撞 300313）
+        saved_img, saved_tool = (adapter._cardview.SPINNER_IMG_KEY,
+                                 adapter._cardview.SPINNER_TOOL_IMG_KEY)
+        try:
+            adapter._cardview.set_spinner_img_key("")
+            adapter._cardview.SPINNER_IMG_KEY = ""
+            adapter._cardview.SPINNER_TOOL_IMG_KEY = ""
+            panel.reset()
+            panel.bind_chat_session("oc_v446", "s_v446")
+            panel.record_tool_started("s_v446", "t", "terminal", {"command": "df -h"},
+                                      tool_call_id="tc-v4462")
+            fallback = [e for e in adapter._cardview.panel_shell(
+                raw._ld_cardview("oc_v446", "答案").panel)["elements"]
+                if e.get("tag") == "markdown" and "terminal" in str(e.get("content") or "")]
+            assert fallback and fallback[0].get("icon") == {
+                "tag": "standard_icon", "token": "command_outlined", "color": "grey"}, fallback
+        finally:
+            adapter._cardview.SPINNER_IMG_KEY = saved_img
+            adapter._cardview.SPINNER_TOOL_IMG_KEY = saved_tool
+            adapter._cardview.set_spinner_img_key("")
     finally:
         panel.reset()
 
@@ -13119,7 +13200,10 @@ def test_v4_56_tool_row_icon_mode_switch_keeps_both_renderings():
         view = raw._ld_cardview(chat, "答案")
         line_rows = [e for e in adapter._cardview.panel_shell(view.panel)["elements"]
                      if e.get("tag") == "markdown" and "terminal" in str(e.get("content") or "")]
-        assert line_rows and (line_rows[0].get("icon") or {}).get("token") == "command_outlined", line_rows
+        # D1′：运行中的工具行现在是动图（`custom_icon`；P2 选定自研资产前 `spinner_img_key()`
+        # 仍返回借来的共享 key —— 过渡态）——emoji 模式那条路不受影响
+        assert line_rows and (line_rows[0].get("icon") or {}) == {
+            "tag": "custom_icon", "img_key": adapter._cardview.spinner_img_key()}, line_rows
         adapter.configure(tool_row_icon="emoji")
         view2 = raw._ld_cardview(chat, "答案")
         emoji_rows = [e for e in adapter._cardview.panel_shell(view2.panel)["elements"]
@@ -13544,6 +13628,10 @@ def test_v4_51_panel_expanded_config_reaches_the_structured_card():
     病：`cardview.panel_shell(view, *, expanded=False)` 把形参默认写死 `False`，而两个调用方
     （`entity_skeleton` / `panel_partial`）都不传这个参数 ⇒ 用户打开 `panel_expanded` 后，
     **结构化卡片仍然是收起的**（只有 legacy 渲染器正常）。96 个配置组合里唯一的不一致项。
+
+    ⚠️ 2026-09-22（A1）之后 `panel_partial` **不再带 `expanded`**（它是中间帧字段集：带它
+    等于每帧重放建卡时的展开态，用户手动收起会被下一个 token 顶开）⇒ 本用例的 partial 那一支
+    改成**反向断言**。运行中 / 收尾的两态语义见 `test_v072_a1_running_seed_expands_and_final_collapses`。
     """
     defaults = dict(adapter._DEFAULTS)
     try:
@@ -13556,11 +13644,282 @@ def test_v4_51_panel_expanded_config_reaches_the_structured_card():
             assert panel["expanded"] is flag, \
                 f"entity 里 panel_expanded={flag} 没生效：{panel['expanded']}"
             partial = adapter._cardview.panel_partial(view.panel)
-            assert partial["expanded"] is flag, \
-                f"panel_partial 里 panel_expanded={flag} 没生效：{partial['expanded']}"
+            assert "expanded" not in partial, (
+                f"panel_partial 是**中间帧**字段集，固定不带 expanded（A1）；"
+                f"实际带了 {partial.get('expanded')!r}")
     finally:
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)
+
+
+def _panel_element_of(card) -> dict:
+    """从卡片 JSON 里取面板元素（取不到直接失败：那说明整块面板丢了）。
+
+    ⚠️ `card.create` 记下来的 `card_json` 是**字符串**（真机请求体就是这么传的），
+    `message.patch` 记的是已解析的 dict ⇒ 两种都要收。
+    """
+    if isinstance(card, str):
+        card = json.loads(card)
+    for elem in (card.get("body") or {}).get("elements") or []:
+        if isinstance(elem, dict) and elem.get("element_id") == "panel":
+            return elem
+    raise AssertionError(f"卡片里没有面板元素：{json.dumps(card, ensure_ascii=False)[:400]}")
+
+
+def test_v072_a1_running_seed_expands_and_final_collapses():
+    """A1（2026-09-22 用户拍板）：**运行中展开 / 收尾折叠 / 中间帧不带 `expanded`**。
+
+    2×2 组合（`streaming_panel_expanded` × `panel_expanded`）全枚举，判据全部取自
+    **真机上真发出去的那份 JSON**（不重算一份视图，避免「算一遍再跟自己对」的自证）：
+      * 运行中建卡实体（`card.create` 的 `card_json`）⇒ `expanded == streaming_panel_expanded`；
+      * 流式中间帧（`card_element.batch_update` 的 `partial_element`）⇒ **没有** `expanded` 键；
+      * 收尾整卡 patch（`message.patch`）⇒ `expanded == panel_expanded`。
+
+    判别力（三条都要能红）：删掉 seed 那两处 `view.panel.expanded = …` ⇒ 第一条红；
+    把 `panel_partial` 的键集加回 `"expanded"` ⇒ 第二条红；`_ld_cardview` 的默认值改成运行态
+    ⇒ 第三条红。
+    """
+    for streaming in (True, False):
+        for final_flag in (True, False):
+            chat, turn = f"oc_a1_{int(streaming)}{int(final_flag)}", "t-a1"
+            sess = f"s_a1_{int(streaming)}{int(final_flag)}"
+            raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+            try:
+                adapter.configure(streaming_panel_expanded=streaming,
+                                  panel_expanded=final_flag)
+                panel.bind_chat_session(chat, sess)
+                assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn)), "seed 帧必须成功"
+                entity = calls["entity"][-1]
+                assert _panel_element_of(entity)["expanded"] is streaming, (
+                    f"运行中建卡实体必须按 streaming_panel_expanded={streaming} 展开，"
+                    f"实际 {_panel_element_of(entity).get('expanded')!r}")
+
+                # 中间帧：先让面板内容真的变了（加一个工具步）⇒ 一定会写一次 panel partial
+                panel.record_tool_started(sess, turn, "terminal", {"command": "ls"}, "tc-a1")
+                assert _run(raw.send_stream_frame("来了", chat_id=chat, turn_id=turn))
+                partials = [act["params"]["partial_element"]
+                            for actions, _seq, _uuid in calls["batch"]
+                            for act in actions
+                            if isinstance(act, dict)
+                            and isinstance(act.get("params"), dict)
+                            # ⚠️ 同一批里还有**正文**元素的 partial（`{'content': ' '}`）——
+                            # 不按 element_id 过滤就会把正文那份当成面板，断言变成假红。
+                            and act["params"].get("element_id") == "panel"
+                            and "partial_element" in act["params"]]
+                assert partials, "中间帧必须至少写过一次面板 partial（否则这条用例没有判别力）"
+                for part in partials:
+                    assert "expanded" not in part, (
+                        "中间帧带 expanded = 每帧重放建卡展开态（用户手动收起会被顶开）："
+                        f"{part.get('expanded')!r}")
+                    assert part.get("elements"), f"面板 partial 的 elements 不许为空：{part}"
+                # R7（审计 A 中-3）：**去重签名与真正发出的那份必须同源**。
+                # 若签名里带了 `expanded` 而线上不带（或反过来），「只改了展开态」会被判成
+                # 「有变化」多写一帧 —— 或者该写的不写（静默丢更新）。两边都逐字段比一次。
+                state_after = raw._ld_stream_get(f"{chat}:{turn}") or {}
+                sig_raw = state_after.get("ck_panel_sig") or ""
+                assert sig_raw, "帧路径必须留下面板去重签名（ck_panel_sig）"
+                sig_obj = json.loads(sig_raw)
+                assert "expanded" not in sig_obj, sig_obj
+                assert sig_obj == partials[-1], (
+                    "ck_panel_sig 与真正发出的 partial 必须同源（审计 A 中-3）："
+                    f"{sorted(sig_obj)} vs {sorted(partials[-1])}")
+
+                assert _run(raw.send_stream_frame("来了，正文。", finalize=True,
+                                                  chat_id=chat, turn_id=turn))
+                final = calls["patch_cards"][-1]
+                assert _panel_element_of(final)["expanded"] is final_flag, (
+                    f"收尾整卡必须按 panel_expanded={final_flag}，"
+                    f"实际 {_panel_element_of(final).get('expanded')!r}")
+            finally:
+                _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v072_a1_seal_split_new_card_is_expanded():
+    """A1 的**第二处** seed（封旧卡 → 开新卡，`_ld_ck_split`）：新卡也是**运行中**建卡实体。
+
+    判据取自**真发出去的 JSON**：`card.create` 的第二张实体 `panel.expanded` 必须等于
+    `streaming_panel_expanded`；而封掉的旧卡是终态（`panel_expanded`，默认折叠）。
+    判别力：删掉 `adapter.py` 里 `new_view.panel.expanded = …` 那一行 ⇒ 本用例红
+    （审计 B 反事实实测：加这条断言之前，删掉那行六支门禁全绿）。
+    """
+    import json as _json
+
+    for streaming in (True, False):
+        chat, turn = f"oc_a1s{int(streaming)}", "t-a1s"
+        raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+        saved_split = adapter._CK_SPLIT_SEAL_AT
+        try:
+            adapter.configure(streaming_panel_expanded=streaming, panel_expanded=False)
+            adapter._CK_SPLIT_SEAL_AT = 3000        # 压小阈值：几千字就能触发切卡
+            assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn)), "seed 帧"
+            assert calls["create"] == 1, "前提：先建第一张卡"
+            assert _run(raw.send_stream_frame("甲" * 4000, chat_id=chat, turn_id=turn)), \
+                "正文涨到阈值必须封旧卡 + 开新卡（不许整帧失败）"
+            assert calls["create"] == 2, f"应当切出第二张卡：create={calls['create']}"
+            new_entity = _json.loads(calls["entity"][-1])
+            new_panel = _panel_element_of(new_entity)
+            assert new_panel["expanded"] is streaming, (
+                f"封旧卡后的**新卡**也是运行中建卡实体 ⇒ panel.expanded 必须按 "
+                f"streaming_panel_expanded={streaming}，实际 {new_panel.get('expanded')!r}")
+            # 旧卡是终态：`panel_expanded=False` ⇒ 折叠（两处语义不能混用）
+            sealed = calls.get("patch_cards") or []
+            assert sealed, "封旧卡必须是一次整卡 patch（那一刻流式已经结束）"
+            assert _panel_element_of(sealed[-1])["expanded"] is False, \
+                f"封掉的旧卡是终态（panel_expanded=False）：{sealed[-1].get('elements')}"
+        finally:
+            adapter._CK_SPLIT_SEAL_AT = saved_split
+            _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v072_nested_rounds_expand_current_and_collapse_finished():
+    """A1 嵌套轮：**当前轮展开、已结束轮折叠**（数据侧 = `panel.snapshot()` 的 `finalized`）。
+
+    这条同时钉住两件事：
+      * `panel.snapshot()` 真的透出 `finalized`（`adapter` 早就在读它，只是以前永远 False
+        —— 那是**数据缺失**，不是新需求）；
+      * 渲染层按 `not finalized` 决定嵌套轮的 `expanded`。
+    """
+    panel.reset()
+    try:
+        panel.bind_chat_session("oc_a1r", "s_a1r")
+        panel.record_reasoning("s_a1r", "t-a1r", "第一轮推理")
+        first = panel.snapshot("oc_a1r") or {}
+        assert [r["finalized"] for r in first["rounds"]] == [False], first["rounds"]
+
+        # 工具开始 ⇒ 结束当前轮（`_finalize_round_locked`）；下一段推理会开**新的一轮**
+        panel.record_tool_started("s_a1r", "t-a1r", "terminal", {"command": "ls"}, "tc-a1r")
+        second = panel.snapshot("oc_a1r") or {}
+        assert [r["finalized"] for r in second["rounds"]] == [True], second["rounds"]
+
+        panel.record_reasoning("s_a1r", "t-a1r", "第二轮推理")
+        third = panel.snapshot("oc_a1r") or {}
+        assert [r["finalized"] for r in third["rounds"]] == [True, False], third["rounds"]
+
+        views = [adapter._cardview.ReasoningRoundView(
+            index=i, text=str(r.get("text") or ""), elapsed_ms=r.get("elapsed_ms"),
+            finalized=bool(r.get("finalized"))) for i, r in enumerate(third["rounds"])]
+        rendered = adapter._cardview.panel_elements(
+            adapter._cardview.PanelView(reasoning_rounds=views))
+        assert rendered[0]["expanded"] is False, rendered[0]
+        assert rendered[1]["expanded"] is True, rendered[1]
+    finally:
+        panel.reset()
+
+
+def test_v072_turn_end_finalizes_open_round_and_freezes_elapsed():
+    """A1：**回合结束**（完成 / 报错 / `/stop` 中止）也要把当前推理轮定稿。
+
+    病（2026-09-22 审计 A 实测）：`_finalize_round_locked` 只在「正文增量 / 工具开始」被调用，
+    `record_turn_end` / `mark_stopped` 不调用 ⇒ 一个**纯推理**回合（或 `/stop` 中止）结束时，
+    最后一轮仍是 `finalized=False`：卡片侧按 A1 把它渲染成**展开**（像还在生成），
+    而且嵌套轮的耗时还会继续涨（snapshot 对未定稿轮按「到现在为止」算）。
+
+    判别力：把 `record_turn_end` / `mark_stopped` 里那两行 `_finalize_round_locked` 删掉 ⇒ 本用例红。
+    """
+    panel.reset()
+    try:
+        # ① 正常结束（completed）—— 纯推理、没有任何工具/正文
+        panel.bind_chat_session("oc_a1t", "s_a1t")
+        panel.record_reasoning("s_a1t", "t-a1t", "只有一个推理轮")
+        first = panel.snapshot("oc_a1t") or {}
+        assert [r["finalized"] for r in first["rounds"]] == [False], first["rounds"]
+        panel.record_turn_end("s_a1t", "t-a1t", completed=True)
+        done = panel.snapshot("oc_a1t") or {}
+        assert [r["finalized"] for r in done["rounds"]] == [True], (
+            f"回合结束后当前轮必须定稿（否则终态卡里它还是展开的）：{done['rounds']}")
+        assert done["rounds"][0]["elapsed_ms"] is not None, done["rounds"]
+        assert done["status"] == panel.STATUS_OK, done
+
+        # ② `/stop`：另一条「回合结束」路径，而且它**永远没有收尾帧**
+        panel.reset()
+        panel.bind_chat_session("oc_a1u", "s_a1u")
+        panel.record_reasoning("s_a1u", "t-a1u", "中止前的那一轮")
+        assert panel.mark_stopped("oc_a1u") == "s_a1u"
+        stopped = panel.snapshot("oc_a1u") or {}
+        assert [r["finalized"] for r in stopped["rounds"]] == [True], (
+            f"`/stop` 也要定稿（否则中止卡的嵌套轮仍展开、耗时还在涨）：{stopped['rounds']}")
+        assert stopped["status"] == panel.STATUS_STOPPED, stopped
+    finally:
+        panel.reset()
+
+
+def test_v072_duplicate_tool_event_keeps_live_round_open():
+    """重复投递的同一个 `tool_call_id` **不许**把仍在生成的推理轮提前定稿。
+
+    病（2026-09-22 审计 A 实测）：`record_tool_started` 在幂等闸门**之前**就
+    `_finalize_round_locked`。同一进程里插件被订阅两次时，迟到的重复事件会把「B 前半」那半轮
+    标成已结束：卡片里它被折叠、耗时冻结，而下一段推理被开成**新的一轮**（用户看到轮次多一段）。
+
+    判别力：把 `_finalize_round_locked(state, now)` 挪回幂等闸门之前 ⇒ 本用例红。
+    """
+    panel.reset()
+    try:
+        panel.bind_chat_session("oc_a1d", "s_a1d")
+        panel.record_reasoning("s_a1d", "t-a1d", "第一轮")
+        panel.record_tool_started("s_a1d", "t-a1d", "terminal", {"command": "ls"}, "tc-dup")
+        panel.record_reasoning("s_a1d", "t-a1d", "B-前半")
+        # 迟到的重复事件：同一个 tool_call_id
+        panel.record_tool_started("s_a1d", "t-a1d", "terminal", {"command": "ls"}, "tc-dup")
+        snap = panel.snapshot("oc_a1d") or {}
+        assert [r["finalized"] for r in snap["rounds"]] == [True, False], (
+            f"重复事件不许切轮（当前轮必须仍未定稿）：{snap['rounds']}")
+        assert len(snap["tools"]) == 1, f"工具行也不许重复：{snap['tools']}"
+        panel.record_reasoning("s_a1d", "t-a1d", "B-后半")
+        snap2 = panel.snapshot("oc_a1d") or {}
+        assert [r["finalized"] for r in snap2["rounds"]] == [True, False], snap2["rounds"]
+        assert snap2["rounds"][-1]["text"] == "B-前半B-后半", (
+            f"后半必须还在同一轮里（否则轮次会凭空多一段）：{snap2['rounds']}")
+    finally:
+        panel.reset()
+
+
+def test_v072_footer_lines_are_exact():
+    """B1 逐字表（计划 §0.1）：三段页脚形态**逐字**冻结，emoji 段前缀一个都不许回来。
+
+    只去**段前缀**（⏱/🤖/⚡/🔁/🐢）—— 状态词里的 ✅ 是 i18n 状态词的一部分，保留。
+    """
+    base = cards.footer_line(status="✅ 已完成", duration=12.3, model="DeepSeek V4.1 Flash",
+                             context="ctx 55.6k/1m · 5%")
+    assert base == "✅ 已完成 · 12.3s · DeepSeek V4.1 Flash · ctx 55.6k/1m · 5%", base
+    basic = cards.footer_line(status="✅ 已完成", duration=12.3, model="DeepSeek V4.1 Flash",
+                              context="ctx 55.6k/1m · 5%", cache=75.0, api=7)
+    assert basic == ("✅ 已完成 · 12.3s · DeepSeek V4.1 Flash · ctx 55.6k/1m · 5%"
+                     " · cache 75% · api 7"), basic
+    full = cards.footer_line(status="✅ 已完成", duration=12.3, model="DeepSeek V4.1 Flash",
+                             context="ctx 55.6k/1m · 5%", cache=75.0, api=7, ttfb=0.4)
+    assert full == ("✅ 已完成 · 12.3s · DeepSeek V4.1 Flash · ctx 55.6k/1m · 5%"
+                    " · cache 75% · api 7 · ttfb 0.4s"), full
+    for line in (base, basic, full):
+        assert line is not None
+        for sym in ("⏱", "🤖", "⚡", "🔁", "🐢", "🔖"):
+            assert sym not in line, f"B1 后页脚不许再出现 {sym!r}：{line}"
+
+
+def test_v072_is_full_run_only_stamps_a_whole_clean_matrix():
+    """审计 B 的**高**发现：`--target-only` 曾经也能盖 `full_audit_at` 章（账本假绿）。
+
+    `_is_full_run` 的每个否条件都要能红：`--target-only` 只跑**声明的目标门禁**，别的门禁
+    一支都不跑 ⇒ 抓不到「目标门禁放过、别的门禁抓住」的变异。让它盖章 = 账本显示 N/N、
+    实际每条只验了一支门禁 —— 这正是账本最该防的假绿。
+    """
+    sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parent))
+    import mutate_check
+
+    def args(**kw):
+        base = dict(delta=False, k="", upgrade_inherited=False, target_only=False)
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    every = list(mutate_check.MUTATIONS)
+    assert every and all(m[4] for m in every), "变异清单里不该有 expect 为空的条目"
+    assert mutate_check._is_full_run(args(), every, []) is True, "全量 + 零缺陷 ⇒ 可以盖章"
+    assert mutate_check._is_full_run(args(target_only=True), every, []) is False, \
+        "--target-only 只跑目标门禁，绝不允许盖全量章（审计 B 高发现）"
+    assert mutate_check._is_full_run(args(delta=True), every, []) is False
+    assert mutate_check._is_full_run(args(k="P1"), every, []) is False
+    assert mutate_check._is_full_run(args(upgrade_inherited=True), every, []) is False
+    assert mutate_check._is_full_run(args(), every[:-1], []) is False, "只跑了一部分不算全量"
+    assert mutate_check._is_full_run(args(), every, ["V4-1: 没生效"]) is False, "有缺陷不算全量"
 
 
 def main() -> int:

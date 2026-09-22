@@ -772,7 +772,15 @@ _DEFAULTS: Dict[str, Any] = {
     # 平台自己算增量逐字渲染。默认 15（与 aiduPOP、hermes-fry-cards 一致）；写 0 = 不带。
     "streaming_print_ms": _cards.DEFAULT_PRINT_FREQUENCY_MS,
     "unified_panel": True,    # 推理 + 工具合并为底部一个可折叠面板
-    "panel_expanded": False,  # 面板默认收起（展开态很占屏；aiduPOP 同为默认收起）
+    # 面板**收尾**时是否展开（默认收起：展开态很占屏；aiduPOP 同为默认收起）。
+    # 2026-09-22 A1 之后它只管**终态**：运行中的展开态走下面那条。
+    "panel_expanded": False,
+    # A1（用户 2026-09-22 拍板）：**运行中**面板是否展开。true（默认）= 边跑边看过程；
+    # false = 回到「全程折叠」的旧观感（收尾仍由 `panel_expanded` 决定）。
+    # ⚠️ 生效位置只有两处「运行中建卡实体」：seed 建卡、封旧卡后开的新卡。流式中间帧
+    # **永远不带 `expanded`**（`cardview.panel_partial` 固定省略）—— 带了就等于每帧重放
+    # 建卡时的展开态，用户手动收起的面板会被下一个 token 顶回展开。
+    "streaming_panel_expanded": True,
     #: 核心的工具行要不要进**正文**。默认 False = **吃掉**：那些行（`⚙️ mem0_search: "…"`）
     #: 会被并进流式正文，而同一份信息我们已经在「执行详情」面板里结构化地给了一遍
     #: ⇒ 默认不重复、正文只有回答（用户 2026-09-13 明确要求）。想看核心那套就设 true。
@@ -967,6 +975,15 @@ def _warn_visual_once(key: str, message: str) -> None:
 #: 生产不可达：`visual_engine` **配置**路径已在 v0.7.1 退役（plan §9.3），这里只是让
 #: 「降级渲染器 + legacy 帧语义」仍能被门禁**直接**打到。
 _LD_ENGINE_OVERRIDE: Optional[str] = None
+
+#: `LarkDeckMixin._ld_ck_requests()` 的结果缓存。为什么需要（2026-09-22，审计 B 第 10 条）：
+#: 那个静态方法在**每一帧**都会被调用，而函数体里是 `from lark_oapi.api... import ...` ——
+#: `lark_oapi` 的子模块是**惰性加载**的，实测一次调用要走上千次 import 机制
+#: （单个用例 5.5s 里 5.1s 花在 `importlib` 上；全量变异重验里那条用例要跑 ~500 次）。
+#: **只缓存成功结果**：拿不到 SDK 时不缓存（单测里 SDK 会被临时打桩/遮蔽，
+#: 「这一次拿不到」不等于「这个进程永远拿不到」——缓存 None 会让后续帧静默落回 patch 车道）。
+_LD_CK_REQUESTS_UNSET: Any = object()
+_LD_CK_REQUESTS_CACHE: Any = _LD_CK_REQUESTS_UNSET
 
 
 def _ld_visual_engine() -> str:
@@ -2190,7 +2207,8 @@ class LarkDeckMixin:
     @classmethod
     def _ld_footer(cls, chat_id: str = "", started: Optional[float] = None,
                    status: Optional[str] = None) -> Optional[str]:
-        """页脚一行：``状态 · ⏱ 时长 · 🤖 模型 · ctx 用量``（v0.7.2 起**没有短码**）。
+        """页脚一行：``状态 · 时长 · 模型 · ctx 用量``（v0.7.2 起**没有短码**、
+        **也没有段前缀 emoji** —— B1，2026-09-22）。
 
         用户 2026-09-17 明确指定（对齐 aiduPOP 的页脚观感）：
           * 状态放**最前面**（``✅ 已完成`` / ``❌ 执行出错`` / ``⛔ 已中止``）；
@@ -2199,8 +2217,8 @@ class LarkDeckMixin:
         面板标题因此只保留 ``轮数 · 工具数``。
 
         **R7 扩展**（配置 ``footer_metrics``，默认 ``off``）：
-          * ``basic`` —— 加缓存命中率（``⚡ 75%``）与本回合 API 次数（``🔁 7``）；
-          * ``full``  —— 再加首字节延迟（``🐢 0.4s``）。
+          * ``basic`` —— 加缓存命中率（``cache 75%``）与本回合 API 次数（``api 7``）；
+          * ``full``  —— 再加首字节延迟（``ttfb 0.4s``）。
         数据来自官方钩子（见 :mod:`larkdeck.core.context`）：钩子还没触发时该段自然缺失，
         全缺就返回 ``None``（不渲染脚注元素）。**任何情况下不抛异常** —— 页脚是装饰，
         不能因为它把整张卡片搞坏。
@@ -2805,7 +2823,13 @@ class LarkDeckMixin:
 
         **取不到就返回 None** ⇒ 调用方 fail-open 回落（单测环境正是这种情况：`test_units.py`
         是零 Hermes 依赖的，所以这里绝不能把 SDK 变成模块级 import —— 那会让单测直接崩）。
+
+        ⚠️ **结果缓存**（含 `None` 的负面结果）：见 `_LD_CK_REQUESTS_CACHE` 的注释 ——
+        这个方法每帧都被调用，而 `lark_oapi` 的子模块惰性加载让每次调用都上千次 import。
         """
+        global _LD_CK_REQUESTS_CACHE
+        if _LD_CK_REQUESTS_CACHE is not _LD_CK_REQUESTS_UNSET:
+            return _LD_CK_REQUESTS_CACHE
         try:
             from lark_oapi.api.cardkit.v1 import (CreateCardRequest, CreateCardRequestBody,
                                                   ContentCardElementRequest,
@@ -2815,6 +2839,9 @@ class LarkDeckMixin:
             from lark_oapi.api.im.v1 import (CreateMessageRequest, CreateMessageRequestBody,
                                               ReplyMessageRequest, ReplyMessageRequestBody)
         except Exception:
+            # ⚠️ **负面结果不缓存**（2026-09-22 实测踩到）：单测环境里 SDK 可能被临时打桩/遮蔽，
+            # 「这一次拿不到」不等于「这个进程永远拿不到」——缓存 None 会让后续所有帧静默落回
+            # patch 车道（表现：预览/settings 一次都不写，而代码看起来只是「优化」）。
             return None
         # ⚠️ **会话预览的两个模型必须单独 import**（R7 审计的留白第 5 条）：它们与上面那几个
         # 同属 CardKit 命名空间，但**能力等级完全不同** —— 缺了它们只该「关掉预览」，
@@ -2851,7 +2878,7 @@ class LarkDeckMixin:
         # 没有它的话「响应丢了但其实发成功了」会重发一次 ⇒ DM 里多一张实体卡，
         # 而那张卡永远收不到元素写入、也没人收尾（永久停在「⏳ 正在生成…」）。
         # 它的值必须由内容确定（同一次发送重试时不变），所以用 `ld-msg-<card_id>`。
-        return SimpleNamespace(
+        result = SimpleNamespace(
             create_card=lambda card_json: CreateCardRequest.builder().request_body(
                 CreateCardRequestBody.builder().type("card_json").data(card_json).build()
             ).build(),
@@ -2883,6 +2910,9 @@ class LarkDeckMixin:
             .request_body(ContentCardElementRequestBody.builder().content(content)
                           .sequence(sequence).uuid(uuid_value).build()).build(),
         )
+        # 构造一次就够（上面那一大坨 lambda/Request builder 每帧重建没有任何意义）。
+        _LD_CK_REQUESTS_CACHE = result
+        return result
 
     async def _ld_ck_create(self, chat: str, *, answer: str, panel_text: str,
                             panel_tools_text: str,
@@ -3253,6 +3283,9 @@ class LarkDeckMixin:
         structured = _ld_visual_engine() == "structured"
         if structured:
             new_view = self._ld_cardview(chat, text[cut:])
+            # A1：封旧卡之后开的新卡同样是**运行中** ⇒ 与 seed 建卡同一条配置（旧卡在上一行
+            # 按 `status="completed"` 建，保持终态语义 = 折叠，两者不能混用）。
+            new_view.panel.expanded = bool(_cfg("streaming_panel_expanded"))
             made = await self._ld_ck_create(chat, answer=text[cut:],
                                             panel_text=new_body, panel_tools_text=new_tools,
                                             reply_to=reply_to, structured_view=new_view)
@@ -3733,7 +3766,11 @@ class LarkDeckMixin:
             title = _i18n.i18n_text("panel.title")     # 无过程数据：不再显示假摘要
         panel = _cardview.PanelView(
             title=title,
-            expanded=bool(_cfg("panel_expanded")),   # V4.5：与 legacy 同一条配置
+            # ⚠️ 这里是**终态语义**（V4.5：与 legacy 同一条配置）：收尾整卡 / `/stop` 重绘 /
+            # 静态 send 用它。**运行中**的两个建卡实体在建好 view 后显式覆盖成
+            # `streaming_panel_expanded`（A1，见 seed 建卡与封卡切新卡两处）——
+            # 别在这里改默认值，那会让收尾也跟着展开。
+            expanded=bool(_cfg("panel_expanded")),
             tools=tools,
             reasoning_rounds=rounds if _ld_show_reasoning() else [],
             collapsed_hint=collapsed_hint,
@@ -3886,6 +3923,9 @@ class LarkDeckMixin:
             # 空正文 + 预加载提示正是我们要的形态，第一个 delta 到了自然长出来。
             display = ""
             view = self._ld_cardview(chat, display, started=now)
+            # A1：这一份是**运行中**的建卡实体 ⇒ 展开态取 `streaming_panel_expanded`
+            # （`_ld_cardview` 的默认值仍是终态语义 `panel_expanded`，收尾整卡才用它）。
+            view.panel.expanded = bool(_cfg("streaming_panel_expanded"))
             view.loading_hint = True      # 建卡即插入「正在加载上下文...」（首字到达后删）
             made = await self._ld_ck_create(chat, answer=display, panel_text="",
                                             panel_tools_text="", reply_to=reply_to,

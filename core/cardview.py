@@ -129,14 +129,20 @@ class ToolStepView:
 
     @property
     def status_style(self) -> tuple[str, str]:
-        """状态词 + 颜色。**必须与 `cards._TOOL_STATUS_STYLES` 同表**（V4.5，审计 B 中-5）：
+        """状态词 + 颜色。**必须与 `cards._TOOL_STATUS_STYLES` 同表**（V4.5，审计 B 中-5；
+        `tests/test_units.py` 有逐键相等用例，改一边不改另一边必红）：
         结构化只认 4 个键时，`blocked`/`timeout` 会掉进 fallback 变成**灰色**、词也变
         （`Timeout` ≠ legacy 的 `Timed out`）—— 同一件事在两条车道上两种颜色是最难查的漂移。
         """
         return {
-            "running": ("Running", "turquoise"),
-            "ok": ("Succeeded", "green"),
-            "success": ("Succeeded", "green"),
+            # C1（2026-09-22 拍板）：运行中改 **blue** —— turquoise 在浅色主题下和绿色成功
+            # 状态撞色（用户真机反馈「分不清在跑还是跑完了」）。默认①：**保留 `Running` 词**
+            # （配蓝色 + 动图，色盲用户也能读）。
+            "running": ("Running", "blue"),
+            # 默认②（用户 2026-09-22）：**只有成功**换成绿色 `✓`；失败/超时/中止/跳过保留词
+            # （词比符号能说清是哪一种；见 §0.1 逐字表）。
+            "ok": ("✓", "green"),
+            "success": ("✓", "green"),
             "error": ("Failed", "red"),
             "blocked": ("Blocked", "red"),
             "cancelled": ("Cancelled", "grey"),
@@ -186,26 +192,44 @@ class CardView:
 #: 预加载提示元素 id（建卡时插入、首个正文 token 到达即删 —— aiduPOP 的 `_LOADING_ELEMENT_ID`）
 LOADING_HINT_ID = "loading_hint"
 
-#: spinner 资产 key —— aiduPOP / CLS / FC **三家硬编码的是同一个 key**（三家都没有自己上传的代码；
+#: 三家共享的 spinner 资产 key —— aiduPOP / CLS / FC 硬编码的都是它（都是「借」来的资产；
 #: 证据：`tests/probe_loading.py` 的对照卡 + 真机目视结论）。
 #: 用户口径是「**会动、无文字**」（2026-09-21 反馈 #4）：`custom_icon` 引用的动图资产在客户端
-#: 会自己动，而 `standard_icon` 是静态字节图 —— 这是换掉 `time_outlined` 的全部理由。
+#: 会自己动，而 `standard_icon` 是静态字节图。⚠️ D1′（2026-09-22）之后它**不再是默认**：
+#: 默认走 `SPINNER_TOOL_IMG_KEY`（⚠️ **P2 完成前它是本 key 的别名**，见下），这里只作**最后回落**保留（自研 key 拿不到时，
+#: 会动的共享资产仍比「不动」好）。
 SPINNER_IMG_KEY = "img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg"
 
+#: **自研** spinner 资产的 img_key（D1′：工具行「运行中」前缀图标 + 正文前加载指示
+#: **共用同一张图**）。真源 `assets/spinner-tool.gif`（生成脚本 `tools/make_spinner_gif.py`，
+#: 一次性上传脚本 `tools/upload_card_asset.py`，用**我们自己的 app** 上传）。
+#: ⏳ P2 进行中：第一轮候选（条纹/弧线）被用户否掉（「外观不行，仿 aiduPOP 那个」），
+#: 第二轮按 aiduPOP 官方截图里的**三个圆点**重画，挑图卡 `om_x100b6411a860d8b4dd88420cef6dc33`
+#: 等用户回「C」或「D」后上传，把新 key 写在这一行 ——
+#: 形状/字段/回落语义均已定稿，只等这一个字符串；**别在别处再写一份 key**。
+SPINNER_TOOL_IMG_KEY = SPINNER_IMG_KEY
+
 #: 允许被「上传一次并缓存」得到的 key 覆盖（adapter 启动时若拿到自有资产就注入）；
-#: 空串 ⇒ 用三家共享 key。真机探针若判定共享 key **不动**，只需在这里换成上传得到的 key。
+#: 空串 ⇒ 用下面两个常量里的第一个非空值。
 _SPINNER_KEY_OVERRIDE = ""
 
 
 def set_spinner_img_key(img_key: Any) -> None:
-    """注入自有 spinner 资产（上传成功后调用）；空值 ⇒ 回落共享 key。"""
+    """注入自有 spinner 资产（上传成功后调用）；空值 ⇒ 回落常量里的 key。"""
     global _SPINNER_KEY_OVERRIDE
     _SPINNER_KEY_OVERRIDE = str(img_key or "").strip()
 
 
 def spinner_img_key() -> str:
-    """当前生效的 spinner 资产 key（自有优先，其次三家共享）。"""
-    return _SPINNER_KEY_OVERRIDE or SPINNER_IMG_KEY
+    """当前生效的 spinner 资产 key —— 优先级：**运行时注入 > 自研 > 三家共享**。
+
+    ⚠️ **P2 未完成期间** `SPINNER_TOOL_IMG_KEY` 只是 `SPINNER_IMG_KEY` 的别名（**过渡态**）：
+    那段时间生效的仍然是**借来的共享 key**；用户选定并上传自研资产后才换成新 key。
+
+    「拿不到资产」只有一种表达：三者全空 ⇒ 返回空串 ⇒ 调用方回落 `standard_icon`
+    （宁可不动，也不能拿无效 asset 去撞 300313 —— 那会把整条结构化装饰链带走）。
+    """
+    return _SPINNER_KEY_OVERRIDE or SPINNER_TOOL_IMG_KEY or SPINNER_IMG_KEY
 
 
 def loading_hint_element() -> Dict[str, Any]:
@@ -438,7 +462,11 @@ def _grey(text: Any) -> str:
 
 def _tool_title_div(step: ToolStepView, icon_mode: str = "line") -> Dict[str, Any]:
     status_text, color = step.status_style
-    duration = f" ({step.duration_ms} ms)" if step.duration_ms else ""
+    # §0.1 逐字：**运行中那一行没有耗时段**（`**terminal** · <font color='blue'>Running</font>`）。
+    # 生产里 running 步的 `duration_ms` 恒为 None（`panel.record_tool_started`），这里是渲染层
+    # 契约 ⇒ 结构化地只对「已结束」拼时长：脏数据也拼不出偏离逐字表的一行。
+    duration = ("" if str(step.status or "").strip().lower() == "running"
+                else (f" ({step.duration_ms} ms)" if step.duration_ms else ""))
     content = f"**{step.title}**{duration} · <font color='{color}'>{status_text}</font>"
     if str(icon_mode or "line").strip().lower() == "emoji":
         # 旧路径（用户 2026-09-21 选的「乙 = emoji 内联」）：保留为可切换的降级选项 ——
@@ -452,6 +480,21 @@ def _tool_title_div(step: ToolStepView, icon_mode: str = "line") -> Dict[str, An
     # **前缀图标**（用户 2026-09-22 真机三臂对照选版：`markdown` 的 `icon` 字段 ⇒ 0px 垂直偏差，
     # 而元素级 `div.icon` 实测图标高 3px、`column_set` 居中版横向空 179px）。官方 2.0 文档把
     # `markdown.icon` 叫「前缀图标」；图标随文本排版走，所以不存在「比文字靠上」的观感问题。
+    #
+    # D1′：**运行中**那一行的前缀图标换成动图（和正文前的加载指示同一张；资产由 P2 选定，
+    # 未定期间 `spinner_img_key()` 仍返回借来的共享 key）。
+    # `markdown.icon` 是**单图标槽**，只认 `standard_icon` / `custom_icon`；`custom_icon`
+    # 里**不许带 `size`**（2.0 文档：该槽位无此字段 ⇒ 带了就是 `200621` 整卡被拒，
+    # 见 `tests/check_cardview.py` 的宿主分档白名单）。空 key ⇒ 回落下面的静态线性图标。
+    if str(step.status or "").strip().lower() == "running":
+        key = spinner_img_key()
+        if key:
+            return {
+                "tag": "markdown",
+                "icon": {"tag": "custom_icon", "img_key": key},
+                "content": content,
+                "text_size": PANEL_TEXT_SIZE,
+            }
     return {
         "tag": "markdown",
         "icon": _icon_node(tool_icon_token(step.name, step.icon_token)),
@@ -510,8 +553,13 @@ def tool_step_elements(step: ToolStepView, icon_mode: str = "line") -> List[Dict
     return elements
 
 
-def reasoning_panel(round_view: ReasoningRoundView) -> Dict[str, Any]:
-    """推理轮：嵌套 collapsible_panel（FC/CLS 终态形态）。"""
+def reasoning_panel(round_view: ReasoningRoundView,
+                    expanded: bool = False) -> Dict[str, Any]:
+    """推理轮：嵌套 collapsible_panel（FC/CLS 终态形态）。
+
+    ``expanded`` 由调用方按 A1 给：**当前还在生成的那一轮展开、已结束的轮折叠**
+    （见 :func:`panel_elements`）。默认 ``False`` = 折叠，与旧行为逐字节相同。
+    """
     title: Any = _i18n.i18n_text("panel.reasoning_round", n=round_view.index + 1)
     if round_view.elapsed_ms:
         suffix = f" · {round_view.elapsed_ms / 1000:.1f}s"
@@ -530,7 +578,7 @@ def reasoning_panel(round_view: ReasoningRoundView) -> Dict[str, Any]:
             "icon_position": "right",
             "icon_expanded_angle": -180,
         },
-        "expanded": False,
+        "expanded": bool(expanded),
         "vertical_spacing": REASONING_SPACING,
         "padding": PANEL_PADDING,
         "border": {"color": "grey", "corner_radius": PANEL_RADIUS},
@@ -563,7 +611,9 @@ def panel_elements(view: PanelView) -> List[Dict[str, Any]]:
             node["icon"] = _icon_node(ICON_HINT_MORE)
         elements.append(node)
     for round_view in view.reasoning_rounds:
-        elements.append(reasoning_panel(round_view))
+        # A1（2026-09-22 拍板）：**当前轮展开、已结束轮折叠**。`finalized` 由 `panel.snapshot()`
+        # 透出（`_finalize_round_locked` 在给这一轮定稿耗时的那一刻置 True）。
+        elements.append(reasoning_panel(round_view, expanded=not round_view.finalized))
     for step in view.tools:
         elements.extend(tool_step_elements(step, icon_mode))
     return elements
@@ -599,10 +649,22 @@ def panel_shell(view: PanelView) -> Dict[str, Any]:
 
 
 def panel_partial(view: PanelView) -> Dict[str, Any]:
-    """partial_update_element 用的面板字段：**顶层不带 tag**（300312）。"""
+    """partial_update_element 用的面板字段：**顶层不带 tag**（300312）。
+
+    ⚠️ **固定不带 `expanded`**（A1 / 2026-09-22 拍板）—— 不是漏了，是纪律：
+
+    ``partial_update_element`` 是**合并**语义，帧里带 `expanded` 就等于**每一帧重放一次**
+    建卡时的展开态 ⇒ 用户手动收起面板后，下一个 token 立刻把它顶回展开（用户真机试过）。
+    省略之后「展开/收起」只剩两个真值来源：① 建卡实体（seed）那一份 ② 收尾整卡 patch；
+    中间帧只换内容，不碰结构。
+
+    因此这里的键集**是契约**：`ck_panel_sig`（去重签名）与真正发出的 partial 同源 ⇒
+    签名里也不含 `expanded` ⇒ 「换了展开态但内容没变」不会被误判成「有变化要重发」。
+    想改这个元组请先改 `tests/test_units.py` 里的 `"expanded" not in` 用例。
+    """
     shell = panel_shell(view)
     return {key: shell[key] for key in
-            ("header", "expanded", "vertical_spacing", "border", "elements")}
+            ("header", "vertical_spacing", "border", "elements")}
 
 
 def entity_skeleton(view: CardView) -> Dict[str, Any]:

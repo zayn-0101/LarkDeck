@@ -748,9 +748,9 @@ else:
                 inner = " ".join(str(el.get("content", "")) for el in (node.get("elements") or []))
                 if "🛠️ 工具执行 · 1 步" not in inner:
                     problems.append(f"黄金路径：面板里没有工具分区标题：{inner!r}")
-                elif "<font color='green'>Succeeded</font>" not in inner:
+                elif "<font color='green'>✓</font>" not in inner:
                     problems.append(
-                        f"黄金路径：工具步骤行没有绿色的 Succeeded 状态词（CLS 观感的核心）：{inner!r}")
+                        f"黄金路径：工具步骤行没有绿色的 ✓（默认②：只有成功换 ✓）：{inner!r}")
                 elif "↳ ls" not in inner:
                     problems.append(
                         f"黄金路径：工具步骤行的灰色细节没渲染（期望 ↳ ls）：{inner!r}")
@@ -772,25 +772,45 @@ else:
             footer = _adm.LarkDeckMixin._ld_footer(
                 chat_id=_GOLDEN_CHAT, started=time.monotonic() - 12.3)
             print(f"黄金路径页脚：{footer!r}")
-            if not footer:
+            model_seg = ""          # 先初始化：下面整段都在 `else` 里用，别让空页脚把它变成
+            if not footer:          # AttributeError（那会被外层 except 吞成「渲染异常」）
                 problems.append("黄金路径：页脚为空（状态/耗时/模型整块丢了）")
             else:
                 if not footer.startswith("✅ 已完成"):
                     problems.append(f"黄金路径：页脚最前面不是完成状态：{footer!r}")
-                if "⏱" not in footer or "12.3s" not in footer:
-                    problems.append(f"黄金路径：页脚没有耗时段（期望「⏱ 12.3s」）：{footer!r}")
+                # B1（2026-09-22）：段前缀 emoji 去掉 ⇒ 耗时段就是裸的「12.3s」
+                if "12.3s" not in footer or "⏱" in footer:
+                    problems.append(
+                        f"黄金路径：页脚耗时段不对（期望裸「12.3s」且不再有 ⏱）：{footer!r}")
                 # 2026-09-22 用户口径：页脚要**模型名**不要模型 ID。具体名字是**可变输入**
                 # （models.dev 缓存 / 别名文件 / 配置），所以这里只钉**形态**：
-                # 「🤖 后面非空、不是原始 ID、不带 provider 路径」；具体解析优先级由
+                # 「非空、不是原始 ID、不带 provider 路径」；具体解析优先级由
                 # `test_v4_62`（stub 掉数据源，确定性）钉住。
-                model_seg = footer.split("🤖 ", 1)[1].split(" · ", 1)[0].strip() \
-                    if "🤖 " in footer else ""
+                # 段序契约：状态 → 时长 → 模型 → ctx…（B1 后不再靠 emoji 定位，改用**段序**）
+                _segs = [seg.strip() for seg in footer.split(" · ")]
+                model_seg = _segs[2] if len(_segs) > 2 else ""
                 if (not model_seg or model_seg == "deepseek-v4-flash" or "/" in model_seg
                         or "_" in model_seg):
                     problems.append(f"黄金路径：页脚模型段不是「模型名」而是 ID/路径：{footer!r}")
                 if "ctx " not in footer:
                     problems.append(f"黄金路径：页脚没有上下文用量：{footer!r}")
-                if not (footer.index("✅") < footer.index("⏱") < footer.index("🤖")
+                # A1（2026-09-22 拍板）：**中间帧**的 panel partial 固定不带 `expanded`。
+            # 这条黄金序列显式钉在 legacy 车道上（见上文），而 `expanded` 的时机是
+            # **写路径的契约**（不随引擎变）⇒ 这里对 structured 的字段集直接验一次。
+                _cv = getattr(_adm, "_cardview", None)
+                if _cv is not None:
+                    _part = _cv.panel_partial(_cv.PanelView(title="t", expanded=True))
+                    if "expanded" in _part:
+                        problems.append(
+                            f"中间帧的 panel partial 带了 expanded（每帧重放 ⇒ 手动收起会被顶开）："
+                            f"{sorted(_part)}")
+                    _shell = _cv.panel_shell(_cv.PanelView(title="t", expanded=True))
+                    if _shell.get("expanded") is not True:
+                        problems.append(
+                            f"建卡整卡必须保留 expanded（seed 用）：{_shell.get('expanded')!r}")
+                if not (footer.startswith("✅ 已完成 · ") and "12.3s" in footer
+                        and model_seg and "ctx " in footer
+                        and footer.index("12.3s") < footer.index(model_seg)
                         < footer.index("ctx")):
                     problems.append(f"黄金路径：页脚顺序不是 状态→耗时→模型→ctx：{footer!r}")
         except Exception as exc:  # pragma: no cover - 防御性

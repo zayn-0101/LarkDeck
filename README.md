@@ -105,8 +105,8 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 | 即时响应：首帧早于首个 token（native seed 帧）+ 等待期占位 + 可关的「处理中」表情 | ✅ 真机实测 seed 帧建卡 `code=0`；等待期正文区显示「⏳ 正在生成…」（默认中文；markdown 无 `i18n_content`，英文客户端也显示这一份），收尾帧不带，避免空答案停在「正在生成…」；`reactions: false` 可关掉飞书那侧相当于「输入提示」的表情（**默认保持 Hermes 行为 = aiduPOP 的做法**，它的测试明确断言「reaction 拦截保持禁用」，见 `docs/plan-6-effects.md` §9） |
 | **回合状态色**：完成绿边 / 报错红边 / 中止黄边 | ✅ 数据来自官方 `on_session_end`（每回合一次）；颜色画在面板边框上 |
 | **推理按轮分段**（`第 N 轮 · 6.2s`；一轮 = 一段连续推理，被正文或工具打断） | ✅ |
-| 过程面板（CLS 观感）：`💭 思考 1.6s · 🛠️ 工具执行 · 3 步`；工具行 = **飞书官方线性图标做文本前缀**（`markdown.icon`，统一灰 `color:"grey"`；2026-09-22 真机三臂对照选版：`div.icon` 实测图标高 3px、`column_set` 横向空 179px，前缀图标 0px）—— 同一批图标也用在**工具详情行 / 错误块标题 / 长回合折叠提示**；想回到 2026-09-21 的 emoji 内联形态就配 `tool_row_icon: "emoji"`+ 加粗**工具名**（`read_file` / `terminal` / `web_search` …）+ 耗时 + 绿色 `Succeeded` / 青绿 `Running` / 红色 `Failed`·`Blocked`·`Timed out` / 灰色 `Cancelled`·`Skipped`，命令或 skill 名另起一行灰色小字 | ✅ 数据来自官方钩子；工具行动作词/状态词为**语言固定边界**（markdown 不承载 `i18n_content`）。**图标四条纪律**（2026-09-22 定版）：① 默认**线性 `_outlined` + 统一灰**（CLS 观感；彩色 `_colorful` 只有 13 个且颜色写死，不用）；② **token 必须逐个对飞书官方图标枚举页查证存在**（`enumerations-for-icons`；写错客户端不渲染且不报错）—— 白名单冻结在 `test_units.py::_VERIFIED_LINEAR_TOKENS`；③ `ICON_ALIASES`（28 条逐条等于 CLS）仍是**对齐判据的唯一真相**，`tool_icon_token(name, token)` 只是**渲染层精化**（60+ 真实工具名不再挤 14 个 token）；④ **字段表纪律**（同日真机 `200621` 的产物）：服务端对**未知字段**是**整卡被拒**（不是忽略，而且一次只报一个）—— `markdown` 没有 `text_color`（灰色只能写进 content：`<font color='grey'>…</font>`），`div` 的前缀 `icon` 在**组件级**；新增/改元素前先核官方 2.0 字段表并登记进 `check_cardview._assert_panel_element_fields()` 的白名单（未登记 tag 直接红）。✅ v0.6.2 默认 `panel_color_tags: true`（官方 Card 2.0 markdown 文档确认 `<font color>` 与色板）+ `text_profile: compact`（面板/页脚 12px notation、正文 normal）。⚠️ 真机视觉待用户目视确认（探针卡 `om_x100b64159f75b0a0c2f35ecdf3f0d36`）。⚠️ `panel_color_tags: false` 今天**只作用 legacy 文本函数**（`core/cards.py::_colorize`），结构化卡（v0.7.1 起唯一在跑的引擎）**无条件**写 `<font>` ⇒ 关它不会去色、反而可能把字面标签显示出来（v0.7.3 登记项） |
-| 页脚：状态 → 耗时 → 模型 → 上下文用量（`✅ 已完成 · ⏱ 10.4s · 🤖 … · ctx …`） | ✅ 数据来自官方钩子。**v0.7.2 起不再有 🔖 短码**（用户 2026-09-21 口径：那从来不是要求；同类插件页脚也都没有）——短码只保留在**日志自检行**（`卡片=<6 位>`），用户可见处一律不出现（`test_v4_17b` 整卡 + 出站载荷全量扫描） |
+| 过程面板（CLS 观感）：`💭 思考 1.6s · 🛠️ 工具执行 · 3 步`；工具行 = **飞书官方线性图标做文本前缀**（`markdown.icon`，统一灰 `color:"grey"`；2026-09-22 真机三臂对照选版：`div.icon` 实测图标高 3px、`column_set` 横向空 179px，前缀图标 0px）—— 同一批图标也用在**工具详情行 / 错误块标题 / 长回合折叠提示**；状态词为**加粗工具名** + 耗时 + 状态：运行中蓝色 `Running`（前缀图标是**动图**；D1′ 自研资产**待 P2 选定上传**，当前过渡态仍是借来的共享 `img_key`）/ 成功绿色 `✓` / 红色 `Failed`·`Blocked`·`Timed out` / 灰色 `Cancelled`·`Skipped`，命令或 skill 名另起一行灰色小字；`tool_row_icon: "emoji"` 是 2026-09-21 那版 emoji 内联的**回退开关**（那条路不带 `custom_icon`） | ✅ 数据来自官方钩子；工具行动作词/状态词为**语言固定边界**（markdown 不承载 `i18n_content`）。**图标四条纪律**（2026-09-22 定版）：① 默认**线性 `_outlined` + 统一灰**（CLS 观感；彩色 `_colorful` 只有 13 个且颜色写死，不用）；② **token 必须逐个对飞书官方图标枚举页查证存在**（`enumerations-for-icons`；写错客户端不渲染且不报错）—— 白名单冻结在 `test_units.py::_VERIFIED_LINEAR_TOKENS`；③ `ICON_ALIASES`（28 条逐条等于 CLS）仍是**对齐判据的唯一真相**，`tool_icon_token(name, token)` 只是**渲染层精化**（60+ 真实工具名不再挤 14 个 token）；④ **字段表纪律**（同日真机 `200621` 的产物）：服务端对**未知字段**是**整卡被拒**（不是忽略，而且一次只报一个）—— `markdown` 没有 `text_color`（灰色只能写进 content：`<font color='grey'>…</font>`），`div` 的前缀 `icon` 在**组件级**；新增/改元素前先核官方 2.0 字段表并登记进 `check_cardview._assert_panel_element_fields()` 的白名单（未登记 tag 直接红）。✅ v0.6.2 默认 `panel_color_tags: true`（官方 Card 2.0 markdown 文档确认 `<font color>` 与色板）+ `text_profile: compact`（面板/页脚 12px notation、正文 normal）。⚠️ 真机视觉待用户目视确认（探针卡 `om_x100b64159f75b0a0c2f35ecdf3f0d36`）。⚠️ `panel_color_tags: false` 今天**只作用 legacy 文本函数**（`core/cards.py::_colorize`），结构化卡（v0.7.1 起唯一在跑的引擎）**无条件**写 `<font>` ⇒ 关它不会去色、反而可能把字面标签显示出来（v0.7.3 登记项） |
+| 页脚：状态 → 耗时 → 模型 → 上下文用量（`✅ 已完成 · 10.4s · … · ctx …`；v0.7.2 去段前缀 emoji；状态词 `✅`/`❌`/`⛔` 保留） | ✅ 数据来自官方钩子。**v0.7.2 起不再有 🔖 短码**（用户 2026-09-21 口径：那从来不是要求；同类插件页脚也都没有）——短码只保留在**日志自检行**（`卡片=<6 位>`），用户可见处一律不出现（`test_v4_17b` 整卡 + 出站载荷全量扫描） |
 | 上下文用量三样式（纯文字 / 图形条 / 数字+条） | ✅ 真机渲染已确认 |
 | 推理文本 / 工具结果上限 + 元素溢出保护 | ✅ |
 | **工具参数预览会脱敏** | ✅ 面板里的工具步骤行显示的是**参数预览**（截到 80 字符），其中明显是凭据的片段会被涂成 `***`：JSON 键值对（键名以 `token` / `secret` / `password` / `api_key` / `cookie` … **结尾**）、头部形态（`Cookie:` / `Authorization:` / `X-Api-Key:`）、裸 `Bearer <token>`、shell 风格 `KEY=value`；家目录折叠成 `~/…`。判据是**键名**而**不是猜值** —— 猜值会把 `max_tokens` / `token_count` 这类正常内容涂掉，那比不脱敏更难查。卡片会出现在群里，所以这是**安全**项、不是观感项。 |
@@ -208,16 +208,17 @@ plugins:
         native_transport: cardkit # 流式帧传输：cardkit（默认，**真逐字打字机**；买它的代价见「已知限制」）/ patch（旧路径，整卡替换，字是几个几个跳）
         tool_row_icon: "line"    # 工具行图标形态：line（默认，飞书官方**线性**图标做文本前缀——2026-09-22 真机三臂对照选版：0px 垂直偏差、统一灰色）/ emoji（2026-09-21 选的 emoji 内联，可切回）
         unified_panel: true      # 推理 + 工具合并为一个底部面板
-        panel_expanded: false    # 面板默认展开（默认收起）
+        panel_expanded: false    # **收尾**时面板展开（默认收起：展开态很占屏）
+        streaming_panel_expanded: true   # **运行中**面板展开（默认 true；流式中间帧不带 expanded ⇒ 你手动收起后不会被顶开）
         streaming_print_ms: 15   # 客户端打字机的逐字间隔（毫秒，只对流式帧有效）；0 = 关闭；超出 [1,2000] 退默认并留 WARNING
         reactions: true          # 在用户消息上打「处理中」表情（飞书的「输入提示」）；关掉更接近 aiduPOP 的观感
-        footer_metrics: "off"    # 页脚附加指标：off（默认）/ basic（缓存命中率 ⚡ + API 次数 🔁）/ full（再 + 首字节延迟 🐢）
+        footer_metrics: "off"    # 页脚附加指标：off（默认）/ basic（+ cache 命中率 + api 次数）/ full（再 + ttfb 首字节延迟）
         progress_lines_in_body: false  # 核心的工具行不进正文（仅 body_source: legacy 生效；own 模式结构上不读帧）
         body_source: "own"      # 默认 own：正文只认插件 on_stream_delta 累积；legacy 仅过渡回退（P2b 后删除）
         visual_engine: "structured" # v0.7.1 视觉引擎：structured（**默认**，结构化元素树）。`legacy` 配置键自 v0.7.1 起**已退役**（设了只留一条退休 WARNING，行为仍是 structured）；旧渲染器仍作为 DEGRADE 车道的降级渲染器保留。真正回退请 revert 到 v0.7.0
         card_status_header: false # v0.7.2：顶部状态条**默认关**（用户口径「顶栏默认不显示」）；置 true 可开回来（非默认值告警）
         show_reasoning: false   # v0.7.1 V3：是否显示推理正文；默认 false（对齐 CLS/aiduPOP），摘要行始终保留；已登记未生效，V3 前两种取值观感相同（README no-op 说明）
-        footer: true             # 页脚：状态 → 耗时 → 模型 → 上下文用量（+ 本卡短码）
+        footer: true             # 页脚：状态 → 耗时 → 模型 → 上下文用量（v0.7.2 起**无段前缀 emoji、无本卡短码**）
         show_model: true         # 页脚里显示模型名（面板标题只放「💭 思考 / 🛠️ 工具执行」摘要）
         context_style: text      # 上下文用量样式：text | bar | both
         text_profile: "compact"  # CardKit 设备字号：compact（默认：面板/页脚 12px notation、正文 normal）/ off / mobile_friendly / large
@@ -457,6 +458,10 @@ LarkDeckFeishuAdapter → LarkDeckMixin → FeishuAdapter → BasePlatformAdapte
   `card_element.content` 带来，实体卡不带 `streaming_config`，拧它没有任何效果）与
   `panel_expanded`（展开态由建实体时的 `expanded` 决定；改配置要等下一次建卡才生效）。
   `unified_panel: false` 在两条传输下都关得掉面板。
+- **两条 expanded 配置各管一头**（v0.7.2 定版）：`streaming_panel_expanded`（默认 true）管
+  **运行中**那一次建卡实体，`panel_expanded`（默认 false）管**收尾**整卡。流式**中间帧**
+  （`panel_partial`）**永远不带 `expanded`** —— 带了就等于每帧重放建卡时的展开态，用户手动
+  收起的面板会被下一个 token 顶开。嵌套推理轮按「当前轮展开 / 已结束轮折叠」渲染。
 - **`cardkit` 传输的取舍**：它换来真正的逐字打字机，代价是三条硬约束 ——
   ① 卡片**结构在建实体时定死**（流式期间只按 `element_id` 写内容；**整卡替换**
   `message.patch`/`card.update` 会关闭流式会话。⚠️ 更正：CardKit 的**元素级/批量**接口
@@ -500,7 +505,7 @@ LarkDeckFeishuAdapter → LarkDeckMixin → FeishuAdapter → BasePlatformAdapte
   避免合成帧里的 terminal 命令/参数进正文；legacy 下保持旧行为。旧路径的 `正文剥进度=N`
   自检只在 legacy 出现，P2b 归档后删除。
   ⑤ 页脚**可以**再带上三个指标（`footer_metrics`，**默认 off**，不影响现有观感）：
-  `basic` = 缓存命中率 `⚡ 75%` + 本回合 API 次数 `🔁 7`；`full` 再加首字节延迟 `🐢 0.4s`。
+  `basic` = 缓存命中率 `cache 75%` + 本回合 API 次数 `api 7`；`full` 再加首字节延迟 `ttfb 0.4s`。
   三个数都是**载荷直接算出来的**；缺数据就少一段，**绝不编 0**（「不知道」与「真的 0%」是两件事）。
   成本**不做**：`post_api_request` 的载荷里没有成本字段，只能估算，而估算值放进卡片是误导；
   ⑥ **会话列表预览会随回合进展更新**（R7）：建卡时它的 `config.summary` 是 `Hermes`（卡标题

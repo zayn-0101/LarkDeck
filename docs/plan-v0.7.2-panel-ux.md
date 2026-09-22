@@ -97,7 +97,15 @@
 
 ## 5. 风险与未知（含三路审计发现定级）
 
-* **R1（高，A）patch/降级整卡车道**：`expanded` 省略只在 CardKit partial 生效；`edit_message` 非收尾帧走 `_ld_render_card → entity_skeleton`（`adapter.py:2491/2717-2725`）仍每帧带 `expanded` ⇒ 该车道里用户手动展开会被收回。**决定：本批只覆盖 CardKit partial 车道**，如实写进文档，彻底解决登记 v0.7.3。
+* **R1（高，A）整卡替换车道**：`expanded` 省略只在 CardKit partial 生效。**审计 A（P3）把范围核实得更宽**，以下路径**中途**仍会带 `expanded`：
+  * native 失败回落 `send`/`edit_message` → `_ld_render_card`（用终态语义 `panel_expanded`；实测 `panel_expanded=true, streaming=false` 时中途整卡 outer/nested 都是展开的）；
+  * `_ld_structured_degrade`（卡级死法 → 整卡 patch）；
+  * `_ld_ck_split` 的**封旧卡**那一次整卡 patch（旧卡是终态，**这一条是有意的**）；
+  * 非 native 的纯 `send/edit` 流式。
+  **决定：本批只覆盖 CardKit partial 车道**（实现与门禁都在那一层），其余如实写进文档，彻底解决登记 v0.7.3。
+* **R1b（低，A）内外层手动手势都不持久**（v0.7.3 登记）：`panel_elements` 每帧按 `finalized` 重写**内层**轮（`cardview.py:616`）⇒ 用户手动展开某个已结束轮，下一帧会被收回；当前轮手动收起同理（下一帧写回 `expanded=True`）。A1 的方向如此；本批只登记 + 在 P6 探针里让用户看到这一点（§8-7）。
+* **R1c（低，A）回合结束后的迟到推理**（v0.7.3 登记）：`record_turn_end` 之后同回合若再来一段 `reasoning`（跨钩子无顺序保证），`_open_round_locked` 会再开一个 `finalized=False` 的新轮 ⇒ 终态卡上又出现一个展开轮。本批不修（需要钩子时序语义，登记）。
+* **R1d（中，A）`native_transport: patch` 在 structured 下是死配置**（既有问题）：`_ld_stream_frame` 对 structured 直接进 CardKit 路径、不读 `_ld_transport()` ⇒ README「patch 可回退」不成立。本批**只改文档口径**（登记 v0.7.3 要么恢复真回退、要么删掉这个键）。
 * **R2（高，A/C）双表同源**：`cardview.status_style` 与 `cards._TOOL_STATUS_STYLES` 同提交改；`check_cardview` **直接断言 cardview 侧**。
 * **R3（高，A）P4 不许只靠夹具**：夹具只证明 `code==fixture`，不证明 `fixture==决策` ⇒ 必须落 §0.1 的硬字面量断言。
 * **R4（高，C）提速与冻结清单冲突**：§4 已按 B 结论重写；发布脚本补 `full_audit_at == HEAD` 校验。
@@ -133,6 +141,16 @@
 
 **P1 收敛结论：GO-WITH-CHANGES**（三路发现全部处置；两条更正已写进 §4；一条口径澄清见 §0-B1；两个 v0.7.3 登记已加）。
 
+### P3（生产代码）三路对抗审计 —— 全部已回、逐条处置
+
+| 路 | agent id | 发现（编号+严重度） | 处置 |
+| --- | --- | --- | --- |
+| A 协议/语义 | `6228d4d8` | ①（中）`finalized` 从不在回合结束/中止落地 ⇒ 纯推理回合与 `/stop` 的终态卡里嵌套轮仍展开、耗时继续涨；②（中）`record_tool_started` 在幂等闸门**之前**切轮 ⇒ 重复 `tool_call_id` 会把在写的推理轮提前定稿；③（中）R1 范围比计划写的宽（`_ld_render_card` / 降级车道 / split 封旧卡也带 `expanded`）；④（中）`native_transport: patch` 在 structured 下是死配置（既有问题，README 的"可回退"不成立）；⑤（中）真机跑的是旧 `.deploy`；⑥（低）V4-66 名实不符（只锚 seed 第一处）；⑦（中）"手动展开是否保留"无自动化证据（merge 语义）；⑧（低）D1′ 仍是过渡态；⑨（低）内外层手动手势都不持久 | ①②**已修**（`panel.py`：回合结束/中止定稿；幂等命中先 return 再切轮）+ 两条新用例 + V4-77/V4-78/V4-76；⑥**已修**（改名 + 新增 V4-75 + structured 车道专用用例 `test_v072_a1_seal_split_new_card_is_expanded`）；③⑨**登记**（见 §5-R1 扩写 + v0.7.3）；④⑦**折进 §8 探针规格**（补 `/stop`、内层手势两格）；⑤⑧是**既定状态**（P6 才重指 `.deploy`；资产待用户选定） |
+| B 证据/判别力 | `9b0b5a01` | F1（**高**）`finally` 里盖章 ⇒ Ctrl-C/未捕获异常也能盖 `full_audit_at`（实测 SIGINT 0.5s ⇒ `full_audit_at=HEAD` + `entries=0`）；F2（**高**）split 第二处 seed 无任何门禁（删掉那行六支门禁全绿） | F1**已修**（`finally` 只写增量；全量章挪到「变异循环 + 对照循环都跑完且零缺陷」之后；`sigint_probe.py` 复验：中断后账本无 `full_audit_at` ✓）；F2**已修**（V4-75 + 专用用例） |
+| C 文档/口径 | `f1723fab` | 15 条：2 高（README/plugin.yaml 把 D1′ 写成已上线）、8 中（注释口径 / 新默认未钉 / split 无门禁 / 页脚旧描述四处 / AGENTS 旧状态词 / P7 文档同步 / 资产与发布脚本行未实现 / 账本过期）、5 低（running 带脏 duration 会拼出耗时段；check_cardview 历史标注；check_hooks 缩进把空页脚变成"渲染异常"；其它） | 高 2 条 + 中 6 条 + 低 3 条**已修**（含 `test_declared_defaults_are_an_explicit_decision` 新增两条默认断言、`running` 不拼耗时段 + 断言、`check_hooks` 缩进、历史标注）；其余（P7 文档同步、资产行）按阶段进行 |
+
+**P3 收敛结论：GO-WITH-CHANGES**（A/B 的高项与 C 的两条高项全部落地并复验；A③④⑦⑨ 登记或折进 P6 探针；无 NO-GO 项）。
+
 ## 8. P6 探针卡规格（一张卡，多行；用户只看/回一句）
 
 1. 运行中的工具行（动图 + 蓝 `Running`）；
@@ -141,4 +159,7 @@
 4. 页脚三态（基础 / `basic` / `full` 各一行）；
 5. **动图对照**：现役（借来的）vs 我们的（P2 已选定则只放选定那张 + 标注）；
 6. **展开态面板**（**必须 `show_reasoning=true`** 才有嵌套轮：当前轮展开、已结束轮折叠）；
-7. **手动展开实验**（文字说明 + 两张卡）：seed 展开 → 请用户手动收起 → 我们发一帧"有内容变化但无 `expanded`"的 partial → 请用户回"是否保持收起"（验证 §5-R1/R7 的省略语义）。
+7. **手动展开实验**（文字说明 + 两张卡）：seed 展开 → 请用户手动收起 → 我们发一帧"有内容变化但无 `expanded`"的 partial → 请用户回"是否保持收起"（验证 §5-R1/R7 的省略语义）。⚠️ **这是本批唯一无法自动化、也是最重要的协议前提**（审计 A：仓库内只有「去 expanded 的载荷 code=0」这一条证据，不证明 merge 语义）⇒ 必须真机做完并记录用户原话。
+8. **回合结束的定稿行为**（审计 A 的 ①）：一张 **`show_reasoning=true` + 纯推理**（没有工具、没有正文）的卡，收尾后那个"第 1 轮"应该是**折叠**的；再给一张 **`/stop` 中止**的卡（`panel_expanded=false` 与 `true` 各一张更好）—— 请用户回「嵌套轮是收起还是展开」。
+9. **内层手势**（审计 A 的 ⑨，登记项，只观察不改）：请用户在一个**已结束**的嵌套轮上点一下展开，然后等我们发下一帧 ⇒ 回一句「它是否又自己收起来了」（用来证实 R1b 的登记描述与真机一致）。
+10. **`native_transport: patch` 的死配置**（审计 A 的 ④，只观察）：探针卡里附一行说明（`patch` 在 structured 下无效），避免用户以为切这个键能回退。

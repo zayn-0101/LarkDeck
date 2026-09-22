@@ -4,5 +4,7 @@
   "footer_order": ["status", "elapsed", "model", "context"],
   "short_code_visible": false,
   "short_code_note": "短码只出现在**日志自检行**（`_log_turn_selfcheck` 的 `卡片=<6 位>`），用户可见处一律不出现（卡片头/正文/面板/折叠提示/页脚/收尾 patch 全覆盖，见 tests/test_units.py::test_v4_17b）",
-  "card_status_header_default": false
+  "card_status_header_default": false,
+  "segment_prefix_emoji": false,
+  "segment_prefix_note": "B1（用户 2026-09-22 拍板）：页脚**段前缀** emoji（⏱/🤖 + footer_metrics 的 ⚡/🔁/🐢）改纯文本；状态词里的 ✅/❌/⛔ 保留（那是 i18n 状态词的一部分，用户确认过的逐字表里有）。逐字表见 docs/plan-v0.7.2-panel-ux.md §0.1；硬字面量断言见 tests/test_units.py::test_v072_footer_lines_are_exact"
 }
