@@ -105,7 +105,7 @@ LarkDeck 换了一条路：**不改源码，不 monkeypatch，升级不用重装
 | 即时响应：首帧早于首个 token（native seed 帧）+ 等待期占位 + 可关的「处理中」表情 | ✅ 真机实测 seed 帧建卡 `code=0`；等待期正文区显示「⏳ 正在生成…」（默认中文；markdown 无 `i18n_content`，英文客户端也显示这一份），收尾帧不带，避免空答案停在「正在生成…」；`reactions: false` 可关掉飞书那侧相当于「输入提示」的表情（**默认保持 Hermes 行为 = aiduPOP 的做法**，它的测试明确断言「reaction 拦截保持禁用」，见 `docs/plan-6-effects.md` §9） |
 | **回合状态色**：完成绿边 / 报错红边 / 中止黄边 | ✅ 数据来自官方 `on_session_end`（每回合一次）；颜色画在面板边框上 |
 | **推理按轮分段**（`第 N 轮 · 6.2s`；一轮 = 一段连续推理，被正文或工具打断） | ✅ |
-| 过程面板（CLS 观感）：`💭 思考 1.6s · 🛠️ 工具执行 · 3 步`；工具行 = **飞书官方线性图标做文本前缀**（`markdown.icon`，统一灰 `color:"grey"`；2026-09-22 真机三臂对照选版：`div.icon` 实测图标高 3px、`column_set` 横向空 179px，前缀图标 0px）—— 同一批图标也用在**工具详情行 / 错误块标题 / 长回合折叠提示**；状态词为**加粗工具名** + 耗时 + 状态：运行中蓝色 `Running`（前缀图标是**动图**；D1′ 自研资产**待 P2 选定上传**，当前过渡态仍是借来的共享 `img_key`）/ 成功绿色 `✓` / 红色 `Failed`·`Blocked`·`Timed out` / 灰色 `Cancelled`·`Skipped`，命令或 skill 名另起一行灰色小字；`tool_row_icon: "emoji"` 是 2026-09-21 那版 emoji 内联的**回退开关**（那条路不带 `custom_icon`） | ✅ 数据来自官方钩子；工具行动作词/状态词为**语言固定边界**（markdown 不承载 `i18n_content`）。**图标四条纪律**（2026-09-22 定版）：① 默认**线性 `_outlined` + 统一灰**（CLS 观感；彩色 `_colorful` 只有 13 个且颜色写死，不用）；② **token 必须逐个对飞书官方图标枚举页查证存在**（`enumerations-for-icons`；写错客户端不渲染且不报错）—— 白名单冻结在 `test_units.py::_VERIFIED_LINEAR_TOKENS`；③ `ICON_ALIASES`（28 条逐条等于 CLS）仍是**对齐判据的唯一真相**，`tool_icon_token(name, token)` 只是**渲染层精化**（60+ 真实工具名不再挤 14 个 token）；④ **字段表纪律**（同日真机 `200621` 的产物）：服务端对**未知字段**是**整卡被拒**（不是忽略，而且一次只报一个）—— `markdown` 没有 `text_color`（灰色只能写进 content：`<font color='grey'>…</font>`），`div` 的前缀 `icon` 在**组件级**；新增/改元素前先核官方 2.0 字段表并登记进 `check_cardview._assert_panel_element_fields()` 的白名单（未登记 tag 直接红）。✅ v0.6.2 默认 `panel_color_tags: true`（官方 Card 2.0 markdown 文档确认 `<font color>` 与色板）+ `text_profile: compact`（面板/页脚 12px notation、正文 normal）。⚠️ 真机视觉待用户目视确认（探针卡 `om_x100b64159f75b0a0c2f35ecdf3f0d36`）。⚠️ `panel_color_tags: false` 今天**只作用 legacy 文本函数**（`core/cards.py::_colorize`），结构化卡（v0.7.1 起唯一在跑的引擎）**无条件**写 `<font>` ⇒ 关它不会去色、反而可能把字面标签显示出来（v0.7.3 登记项） |
+| 过程面板（CLS 观感）：`💭 思考 1.6s · 🛠️ 工具执行 · 3 步`；工具行 = **飞书官方线性图标做文本前缀**（`markdown.icon`，统一灰 `color:"grey"`；2026-09-22 真机三臂对照选版：`div.icon` 实测图标高 3px、`column_set` 横向空 179px，前缀图标 0px）—— 同一批图标也用在**工具详情行 / 错误块标题 / 长回合折叠提示**；状态词为**加粗工具名** + 耗时 + 状态：运行中蓝色 `Running`（前缀图标是**自研动图** `img_v3_0215p_a0b0bd11…`，源文件 `assets/spinner-tool.gif`；借来的共享 key 只作**最后回落**）/ 成功绿色 `✓` / 红色 `Failed`·`Blocked`·`Timed out` / 灰色 `Cancelled`·`Skipped`，命令或 skill 名另起一行灰色小字；`tool_row_icon: "emoji"` 是 2026-09-21 那版 emoji 内联的**回退开关**（那条路不带 `custom_icon`） | ✅ 数据来自官方钩子；工具行动作词/状态词为**语言固定边界**（markdown 不承载 `i18n_content`）。**图标四条纪律**（2026-09-22 定版）：① 默认**线性 `_outlined` + 统一灰**（CLS 观感；彩色 `_colorful` 只有 13 个且颜色写死，不用）；② **token 必须逐个对飞书官方图标枚举页查证存在**（`enumerations-for-icons`；写错客户端不渲染且不报错）—— 白名单冻结在 `test_units.py::_VERIFIED_LINEAR_TOKENS`；③ `ICON_ALIASES`（28 条逐条等于 CLS）仍是**对齐判据的唯一真相**，`tool_icon_token(name, token)` 只是**渲染层精化**（60+ 真实工具名不再挤 14 个 token）；④ **字段表纪律**（同日真机 `200621` 的产物）：服务端对**未知字段**是**整卡被拒**（不是忽略，而且一次只报一个）—— `markdown` 没有 `text_color`（灰色只能写进 content：`<font color='grey'>…</font>`），`div` 的前缀 `icon` 在**组件级**；新增/改元素前先核官方 2.0 字段表并登记进 `check_cardview._assert_panel_element_fields()` 的白名单（未登记 tag 直接红）。✅ v0.6.2 默认 `panel_color_tags: true`（官方 Card 2.0 markdown 文档确认 `<font color>` 与色板）+ `text_profile: compact`（面板/页脚 12px notation、正文 normal）。⚠️ 真机视觉待用户目视确认（探针卡 `om_x100b64159f75b0a0c2f35ecdf3f0d36`）。⚠️ `panel_color_tags: false` 今天**只作用 legacy 文本函数**（`core/cards.py::_colorize`），结构化卡（v0.7.1 起唯一在跑的引擎）**无条件**写 `<font>` ⇒ 关它不会去色、反而可能把字面标签显示出来（v0.7.3 登记项） |
 | 页脚：状态 → 耗时 → 模型 → 上下文用量（`✅ 已完成 · 10.4s · … · ctx …`；v0.7.2 去段前缀 emoji；状态词 `✅`/`❌`/`⛔` 保留） | ✅ 数据来自官方钩子。**v0.7.2 起不再有 🔖 短码**（用户 2026-09-21 口径：那从来不是要求；同类插件页脚也都没有）——短码只保留在**日志自检行**（`卡片=<6 位>`），用户可见处一律不出现（`test_v4_17b` 整卡 + 出站载荷全量扫描） |
 | 上下文用量三样式（纯文字 / 图形条 / 数字+条） | ✅ 真机渲染已确认 |
 | 推理文本 / 工具结果上限 + 元素溢出保护 | ✅ |
@@ -454,9 +454,13 @@ LarkDeckFeishuAdapter → LarkDeckMixin → FeishuAdapter → BasePlatformAdapte
   任何一步失败都 fail-open 回落、翻默认前先过对抗审计 + 真机生产路径探针）。
   取值超出 `[1, 2000]` 毫秒会被退回默认 15ms，并在日志里留一条限流 WARNING
   （写错配置不会静默 —— 「想要最慢」却得到「最快」是必须能查出来的）。
-- **`cardkit` 传输下有两个配置是 no-op**：`streaming_print_ms`（打字机由
+- **`native_transport: patch` 本身在 `structured` 引擎下是 no-op**（自 v0.7.1 起唯一引擎是
+  structured，帧路径不读这个键）—— 想要真回退请 revert 到 v0.7.0；登记 v0.7.3 决定是恢复真回退
+  还是删掉这个键。
+- **`cardkit` 传输下还有两个配置是 no-op**：`streaming_print_ms`（打字机由
   `card_element.content` 带来，实体卡不带 `streaming_config`，拧它没有任何效果）与
-  `panel_expanded`（展开态由建实体时的 `expanded` 决定；改配置要等下一次建卡才生效）。
+  `panel_expanded`（**收尾整卡**的展开态在建卡那一刻定死，改配置要等下一次建卡才生效；
+  运行中的展开态由 `streaming_panel_expanded` 决定，见上一条）。
   `unified_panel: false` 在两条传输下都关得掉面板。
 - **两条 expanded 配置各管一头**（v0.7.2 定版）：`streaming_panel_expanded`（默认 true）管
   **运行中**那一次建卡实体，`panel_expanded`（默认 false）管**收尾**整卡。流式**中间帧**

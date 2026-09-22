@@ -29,8 +29,9 @@
   **只有成功**换成绿色 **`✓`**；失败 / 超时 / 中止 / 跳过**保留词**（红/灰）。两张状态表同源。
 - **工具行运行中图标 = 动图（D1′）**：与正文前的加载指示**共用同一张自研 GIF**（源文件
   `assets/spinner-tool.gif` + 生成脚本 `tools/make_spinner_gif.py` 入库，用自己的 app 上传一次）。
-  ⚠️ 本条的**资产落库与 key 写入**在用户确认最终外观后进行（进度：
-  `docs/audits/v0.7.2/loading-asset-v2.md`）；在那之前 `SPINNER_TOOL_IMG_KEY` 仍是借来那张的别名。
+  ✅ **已落库**（用户 2026-09-22「就它」）：`assets/spinner-tool.gif` + 生成脚本入库，`SPINNER_TOOL_IMG_KEY`
+  = `img_v3_0215p_a0b0bd11…`（借来的共享 key 降级为**最后回落**）。记录见
+  `docs/audits/v0.7.2/loading-asset-v2.md`。
 - **加载指示**形状不变（`div` + `custom_icon` + 空格；无文字），只换资产。
 
 ### 变更（用户可见）

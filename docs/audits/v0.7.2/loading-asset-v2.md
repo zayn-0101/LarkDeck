@@ -1,6 +1,6 @@
 # P2 加载指示 / 工具行动图：v2（自研资产，进行中）
 
-**日期**：2026-09-22 · **阶段**：v0.7.2 P2（第二轮）· **状态**：**待用户选定**（未完成，不许当已完成）
+**日期**：2026-09-22 · **阶段**：v0.7.2 P2 · **状态**：**已完成**（用户 2026-09-22「就它」；资产入库 + key 写入常量，提交 `36c3929`）
 
 ## D1′ 的约束（为什么必须自制）
 
@@ -37,8 +37,8 @@ aiduPOP 的本地检出在 `~/.larkdeck-scratch/route-audit/aiduPOP`：
 
 | 候选 | 形状 | 生成参数 | `img_key` |
 | --- | --- | --- | --- |
-| **C** | 三点 · 灰 | `--variant dots --color grey` | `img_v3_0215p_ad8dd428-42e2-4c40-9140-6c1f14f5091g` |
-| **D** | 三点 · 深灰（头部更黑，更贴参考图对比度） | `--variant dots --color grey_dark` | `img_v3_0215p_63842d0e-4184-4d35-b043-20e9565c05cg` |
+| C | 三点 · 灰 | `--variant dots --color grey` | `img_v3_0215p_ad8dd428-…`（候选） |
+| D | 三点 · 深灰 | `--variant dots --color grey_dark` | `img_v3_0215p_63842d0e-…`（候选） |
 
 * 挑图卡：`om_x100b6411a860d8b4dd88420cef6dc33`（第 ① 行是**现役那张**当作参照）。
 * 生成器：`tools/make_spinner_gif.py`（`dots` 变体，12 帧 / 70ms / 24×24 画布 ⇒ 卡片按 16px 渲染；
@@ -72,5 +72,10 @@ aiduPOP 的本地检出在 `~/.larkdeck-scratch/route-audit/aiduPOP`：
    「`assets/spinner-tool.gif` 存在 ⇒ `SPINNER_TOOL_IMG_KEY` 必须**不等于**共享 key」这条守卫留在门禁里；
 4. 重生成黄金夹具（`running` 行的 `img_key` 会变）⇒ 全量重验（helper 指纹变）。
 
-⚠️ **在 2 完成之前，`SPINNER_TOOL_IMG_KEY` 只是共享 key 的别名**（`= SPINNER_IMG_KEY`）——
-那是过渡态，**任何文档/提交信息都不许写成「自研资产已上线」**。
+## 落库结果（2026-09-22 完成）
+
+* 用户确认：第三轮反馈（清晰度 / 速度 / 大小起伏）后收到 **「就它」**；
+* 终版参数：`--variant dots --color grey_dark` —— **48×48 画布、10 帧 × 50ms、点径随亮度波 4.8→1.9px**（1896 bytes，生成器复跑字节一致）；
+* 上传：`im.v1.image.create`（`image_type=message`）**code=0**，key = **`img_v3_0215p_a0b0bd11-a182-433f-9647-8573d0dd7efg`**（上传凭据只在仓外 `~/.larkdeck-scratch/v0.7.2-spinner/asset-keys4.txt`，不入库）；
+* 写入 `core/cardview.py::SPINNER_TOOL_IMG_KEY`（≠ `SPINNER_IMG_KEY`，后者只作最后回落）；`assets/spinner-tool.gif` + `tools/make_spinner_gif.py` 已入库；黄金夹具与门禁字面量同步；
+* 真机「会不会动」仍由 P6 探针与用户目视确认（§8-5 的对照行）。
