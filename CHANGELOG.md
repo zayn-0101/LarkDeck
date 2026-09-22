@@ -18,7 +18,7 @@
 
 ### 变更（用户可见）
 
-- **工具细节行 / Error-Result 块**：`text_size` 固定为 `x-small`（markdown 宿主已真机目视确认；`div.text=lark_md` / `plain_text` 宿主 2026-09-23 服务端均 `code=0`，真机目视待确认——见 `docs/verify-log.md`）；字面量，不随 `text_profile` 放大；**无运行时自动回退**，未过的宿主需改代码退回 `notation`。
+- **工具细节行 / Error 块**（Result 分支共用该元素，生产当前仅 Error 可达）：`text_size` 固定为 `x-small`（markdown 宿主已真机目视确认；`div.text=lark_md` / `plain_text` 宿主 2026-09-23 服务端均 `code=0`，真机目视待确认——见 `docs/verify-log.md`）；字面量，不随 `text_profile` 放大；**无运行时自动回退**，未过的宿主需改代码退回 `notation`。
 - **系统提示去状态词**：Gateway online/restarting、Session database、Hermes update、cron/后台完成等已知系统提示整卡不渲染面板/状态头/页脚（不再出现 `✅ 已完成`）；**真实回合卡一个字不动**。
 - 顺手修正历史口径注释（context/i18n/adapter/cards/mutate_check）。
 
@@ -116,7 +116,7 @@
   `check_clarify_e2e` 去掉 6 处固定睡眠（4.2s → 1.98s）；`test_cardkit_transport_*` 的批次断言
   不再依赖时钟（4 分片并发下的假红已修）。
 
-## [Unreleased] - v0.7.1 视觉层重构
+## [0.7.1] - 2026-09-21 视觉层重构
 
 ### 变更（V0 登记）
 - 新增过渡配置键 `visual_engine`（默认 `legacy`）、`card_status_header`（默认 `true`）、

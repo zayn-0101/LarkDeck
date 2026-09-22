@@ -262,3 +262,15 @@ A1（3 处 partial 少 `expanded`、entity `expanded` false→true）、C1（`tu
 * **真机目视结论（待用户回话，未回话前不得写成已验证）**：x-small 是否确实更小、以及 C 的 20+ 行 Error 栈是否仍可读；三主题/客户端差异同样待目视。
 * 回退规则：若某 host 被拒或不变小 ⇒ **该 host 退回 `notation`**（改代码 + 断言/变异/夹具 + 重跑 P3）；当前代码**没有运行时自动回退**。
 * `send 判定 turn=` 日志复核：待 `.deploy=C` + 网关重启后执行并回填。
+
+## 2026-09-23 02:51 · v0.7.3 P3 全量变异（冻结提交 `65c1c5f`）
+
+* 6 分片并行、独立账本/日志、坏 0（无 💥/🟢/❓）；合并 `tools/merge_ledger4.py --write`：
+  **523/523 red-assert**、`full_audit_at=65c1c5f`、
+  `full_audit_tree=779d67eb05492809db1946e51e03097cac57e22f`（== `65c1c5f^{tree}`）、
+  `tree_dirty=false`、继承 0；
+* **实测墙钟 886.1s**（02:36:17→02:51:09）；`--preflight 535/535`；`-k V073` 24/24 red；
+* 证据：`~/.larkdeck-scratch/v0.7.3/full-run-evidence.json`、`seed{1..6}.json`、`shard{1..6}.log`、
+  `docs/audits/v0.7.3/README.md`；
+* P3 事后三路审计：证据链（deepseek-flash）/ 反假绿（glm-5.3-flash）/ 发布诚实性（qwen3.8-flash）
+  全部 PASS，无 false green；`.deploy` 仍为 `6fd68f3`，P4 部署与真机目视待执行。

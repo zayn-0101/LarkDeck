@@ -240,7 +240,7 @@ tests/        见「验证」
     没有 `text_color` 字段，写了整卡被拒），生产自 v0.6.2 起默认开（`panel_color_tags: true`）；
     ⚠️ 但这个开关**只作用 legacy 文本函数**（`core/cards.py::_colorize`），结构化卡（v0.7.1 起
     唯一在跑的引擎）**无条件**写 `<font>` ⇒ 关掉它不会去色，有的客户端反而会把字面标签显示出来
-    （v0.7.3 登记项：要么让 cardview 也吃这个开关，要么删掉开关）。
+    （v0.7.4 登记项，见 `docs/plan-v0.7.3.md` §7：要么让 cardview 吃这个开关，要么删键）。
     每帧**元素写**预算 2 次（常量 `_CK_WRITES_PER_FRAME`；卡级上限 10 次/秒 × 帧窗口 0.25s）；
     R7 起再加一次**会话预览**写（`card.settings`，`_CK_SUMMARY_INTERVAL = 5s` 限频 ⇒ 平均
     ≈0.2 次/秒，且**不重试**）⇒ 折算 ≈8.2 逻辑写/秒 < 卡级上限 10 次/秒；
@@ -510,15 +510,16 @@ force-add 前先扫描敏感值，例如：
 `docs/verify-log.md` 的「09-21 协议变更」——`--seed-inherited <上次全绿的 tag>` 标继承、
 `--ledger-status` 看覆盖率、`full_audit_at` 为空或过期时在低负载后台补一次全量直跑。
 ⚠️ 继承只对生产代码区域做指纹、**不对测试套件**做 —— 别把 inherited 念成「跑过了」。
-⚠️ **`--shard i/n`（n≥2）分片跑不会自己盖 `full_audit_at`**（`_full` 的判据是「本片 picked 数 ==
-全量条数」，n≥2 时必然不等；`1/1` 才会为真）：分片账本要按「当日 🔴 名字并集覆盖全部条目 +
-对照 0 假红 + 三重指纹一致」合并后才能盖章（逐段证据写进账本 `_meta`；工具固化已登记 v0.7.3）。
+⚠️ **`--shard i/n`（任何 n，含 `1/1`）分片跑都不会自己盖 `full_audit_at`**：v0.7.2 起
+`_is_full_run` 对任何非空 `--shard` 直接返回 False（`tests/mutate_check.py`）。分片账本要按
+「当日 🔴 名字并集覆盖全部条目 + 对照 0 假红 + 三重指纹一致」合并后才能盖章；合并器已固化进仓
+（`tools/merge_ledger4.py`，v0.7.2 `fc15e6c` 起）。
 ⚠️ **测试里的等待必须有界**：用例里写无界的 `await <Event>.wait()`，一旦被测分支被变异短路，
-事件永不 set ⇒ 整支门禁挂到 45s 超时 ⇒ 被记 💥「只有崩溃」，一条**有牙的变异**就被记成
+事件永不 set ⇒ 整支门禁挂到 90s 硬超时（`_GATE_TIMEOUT_S`） ⇒ 被记 💥「只有崩溃」，一条**有牙的变异**就被记成
 「没有证据」（`V1-2` 实测踩到）—— 用 `_await_event(event, timeout, what)`（超时转断言）。
-存量还有 3 处无界 `await release.wait()`（`tests/test_units.py:11730/11786/12346`，
+存量还有 3 处无界 `await release.wait()`（`tests/test_units.py`，行号随重构漂移，用 grep 定位；
 都在带 `_await_event` 或 `finally: release.set()` 的同用例里，当前不会实际挂死），
-已登记 v0.7.3 全仓扫描 + 静态门禁。
+已登记 v0.7.4 全仓扫描 + 静态门禁（见 `docs/plan-v0.7.3.md` §7）。
 
 **改了任何断言，都要跑 `tests/mutate_check.py`。** 它是本仓库「先写变异，再写断言」的落点：
 清单里每条变异 = 一处「把某条修复撤掉」的定向改动，判定标准是**至少一个门禁变红**。
