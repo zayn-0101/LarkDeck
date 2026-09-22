@@ -45,3 +45,29 @@
 * 4 处**代码注释**里的历史口径（`core/context.py` / `core/i18n.py` / `core/adapter.py` /
   `tests/mutate_check.py`）—— 顺手改会动指纹 ⇒ 与本项**同一次**全量重验里一起做。
 * 清场（审计 worktree / 临时目录）待用户点头。
+
+---
+
+## 4. 第 2 项（用户 2026-09-22 新报）：**系统提示卡不许带「已完成」标识**
+
+**现象**（用户截图，22:00）：`Gateway online — Hermes is back and ready.` 与
+`Gateway restarting — Your current task will be interrupted…` 两种**系统提示卡**底部都挂着
+`✅ 已完成`（用户：「Hermes 的系统提示，这些不要加这种已完成标识」）。其中 `restarting` 那张
+尤其错 —— 那一刻回合是被**打断**的，却写「已完成」。
+
+**机制（已定位到代码，不是猜测）**：`core/adapter.py::_ld_footer()` 的状态词有一段**兜底** ——
+`status_text = _ld_status_text(status or (panel_snap.get("status") …))`，即调用方不传 `status` 时
+去读 `panel.snapshot()` 里**上一个回合**留下的状态。系统提示卡不属于任何回合，但紧跟在
+「刚完成的回合」之后 ⇒ 抄到陈旧的 `✅ 已完成`。
+
+**变更清单（待审计）**：
+
+| 文件 | 改动 | 约束 |
+| --- | --- | --- |
+| `core/adapter.py::_ld_footer` | ① **删掉 `panel_snap` 状态兜底**（状态只认显式传入）；② 「非回合消息」⇒ 返回 `None`（不渲染页脚）：判据 = `started` 为空 **且** 无显式 `status` | 流式/收尾/心跳/`/stop` 全部**显式传** status 或 started ⇒ 不受影响；`_ld_note_text` / `_ld_render_card` 等调用点逐一核 |
+| `tests/test_units.py` | 新增：一次完整回合 → 紧接着一条「系统提示样式」的 `send()` ⇒ 断言卡片**无 footer 元素 / 无状态词**；并断言**流式收尾卡仍有** `✅ 已完成`（防误伤） | 用例名新增（旧名不动） |
+| `tests/mutate_check.py` | 新增变异：把状态兜底加回 `_ld_footer` ⇒ 必须红 | `-k` 完整模式实红 |
+| `tests/golden_cardkit_trace.json` | 若夹具场景受影响则重生成（diff 逐条解释） | 预期**不**受影响（夹具里都是回合内） |
+| 真机探针 | 下一次网关重启/系统提示卡截图确认无 `✅ 已完成` | 用户目视 |
+
+**与本批第 1 项（细节行 `x-small`）合并做一次全量重验**（同一棵树上改完再跑 6 分片），发布为 **v0.7.3**。
