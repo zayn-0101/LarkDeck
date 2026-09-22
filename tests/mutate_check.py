@@ -1201,8 +1201,10 @@ MUTATIONS = [
     # ⚠️ 锚点在 R3 收窄版落地时**重对准过一次**（那一行整行被重写成「面板两块按关键字传」）：
     #    锚点失效 = 红（本项目规矩），而它当时确实让全量跑退出码 1 —— 重对准是唯一正确处置。
     ("R4-1-新卡重放整段（用户把前半段再看一遍）", "core/adapter.py",
-     '            ops = _ck_plan(visible, _panel_body, live_elems, self._ld_frame_footer(state),',
-     '            ops = _ck_plan(display, _panel_body, live_elems, self._ld_frame_footer(state),',
+     '            ops = _ck_plan(visible, _panel_body, live_elems,\n'
+     '                           self._ld_frame_footer({**state, "status": frame_status}),',
+     '            ops = _ck_plan(display, _panel_body, live_elems,\n'
+     '                           self._ld_frame_footer({**state, "status": frame_status}),',
      "test_units"),
     ("R4-2-封旧卡忘了关流式态（旧卡永远停在「正在生成」）", "core/adapter.py",
      '                                   streaming=False,',
@@ -2953,10 +2955,8 @@ MUTATIONS = [
      'test_units'),
     ('V073-2u-结构化收尾状态写死 processing（收尾丢 ✅）', 'core/adapter.py',
      '        status = _ld_view_status(chat, default="processing" if not finalize else "completed")\n'
-     '        state = {**state, "status": status}          # 本帧所有 footer 调用共用\n'
      '        view = self._ld_cardview(chat, visible, status=status, finalize=finalize,',
      '        status = "processing"  # V073-2u mutated\n'
-     '        state = {**state, "status": status}          # 本帧所有 footer 调用共用\n'
      '        view = self._ld_cardview(chat, visible, status=status, finalize=finalize,',
      'test_units'),
     ('V073-2v-legacy 收尾 footer 不注入 frame_status（丢 ✅）', 'core/adapter.py',
@@ -2969,21 +2969,37 @@ MUTATIONS = [
      '                                       footer=self._ld_frame_footer(state))',
      'test_units'),
     ('V073-2w-edit_message 收尾 footer 不显式传 status（丢 ✅）', 'core/adapter.py',
-     '                footer=self._ld_frame_footer({"message_id": message_id,\n'
-     '                                              "chat_id": state.get("chat_id") or chat_id,\n'
-     '                                              "t0": state.get("t0"),\n'
-     '                                              "status": turn_status},\n'
-     '                                             turn_card=True),',
-     '                footer=self._ld_frame_footer({"message_id": message_id,\n'
-     '                                              "chat_id": state.get("chat_id") or chat_id,\n'
-     '                                              "t0": state.get("t0")},\n'
-     '                                             turn_card=True),',
+     '                    footer=self._ld_frame_footer({"message_id": message_id,\n'
+     '                                                  "chat_id": state.get("chat_id") or chat_id,\n'
+     '                                                  "t0": state.get("t0"),\n'
+     '                                                  "status": turn_status},\n'
+     '                                                 turn_card=True),',
+     '                    footer=self._ld_frame_footer({"message_id": message_id,\n'
+     '                                                  "chat_id": state.get("chat_id") or chat_id,\n'
+     '                                                  "t0": state.get("t0")},\n'
+     '                                                 turn_card=True),',
      'test_units'),
     ('V073-2x-系统提示匹配不剥 VS16（♻️ 漏网）', 'core/adapter.py',
      '    text = str(content or "").lstrip().replace("\\ufe0f", "")\n'
      '    return text.startswith(tuple(p.replace("\\ufe0f", "") for p in _LD_SYSTEM_NOTICE_PREFIXES))',
      '    text = str(content or "").lstrip()\n'
      '    return text.startswith(tuple(p.replace("\\ufe0f", "") for p in _LD_SYSTEM_NOTICE_PREFIXES))',
+     'test_units'),
+    ('V073-2y-结构化 footer 元素写不注入本帧 status（丢 ✅）', 'core/adapter.py',
+     '        footer_text = self._ld_frame_footer({**state, "status": status}) or " "',
+     '        footer_text = self._ld_frame_footer(state) or " "  # V073-2y mutated',
+     'test_units'),
+    ('V073-2z-edit_message 无视非回合标记（静默卡又被装饰）', 'core/adapter.py',
+     '        turn_card = bool(state.get("turn_card", True)) if isinstance(state, dict) else True',
+     '        turn_card = True  # V073-2z mutated',
+     'test_units'),
+    ('V073-2aa-非回合 send 清掉真回合的 last_text（/stop 找不到卡）', 'core/adapter.py',
+     '            if turn_card:\n'
+     '                for other in self._ld_state.values():\n'
+     '                    if other.get("chat_id") == chat_id:',
+     '            if True:  # V073-2aa mutated\n'
+     '                for other in self._ld_state.values():\n'
+     '                    if other.get("chat_id") == chat_id:',
      'test_units'),
 
 

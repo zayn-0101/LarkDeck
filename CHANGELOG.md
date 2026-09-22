@@ -18,9 +18,9 @@
 
 ### 变更（用户可见）
 
-- **工具细节行 / Error-Result 块**：`text_size` 固定为 `x-small`（markdown 宿主 2026-09-22 真机已验证；其它宿主按 `tests/probe_text_size_hosts.py` 矩阵结果决定，未过者退回 `notation`）；字面量，不随 `text_profile` 放大。
+- **工具细节行 / Error-Result 块**：`text_size` 固定为 `x-small`（markdown 宿主已真机目视确认；`div.text=lark_md` / `plain_text` 宿主 2026-09-23 服务端均 `code=0`，真机目视待确认——见 `docs/verify-log.md`）；字面量，不随 `text_profile` 放大；**无运行时自动回退**，未过的宿主需改代码退回 `notation`。
 - **系统提示去状态词**：Gateway online/restarting、Session database、Hermes update、cron/后台完成等已知系统提示整卡不渲染面板/状态头/页脚（不再出现 `✅ 已完成`）；**真实回合卡一个字不动**。
-- 顺手修正 6 处历史口径注释（context/i18n/adapter/cards/mutate_check）。
+- 顺手修正历史口径注释（context/i18n/adapter/cards/mutate_check）。
 
 ## [0.7.2] - 2026-09-22 真机反馈收敛
 

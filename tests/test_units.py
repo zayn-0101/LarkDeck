@@ -14024,6 +14024,12 @@ def test_v073_non_turn_send_has_no_footer_element() -> None:
             "⚠️ Gateway restarting — Your current task will be interrupted. "
             "Send any message after restart and I'll try to resume where you left off.",
             "⏳ Gateway is busy — your message is queued.",
+            "⏩ Steered into current run (2 min elapsed). Your message arrives after the next tool call.",
+            "↪ Redirected current run. I'll adjust using your correction.",
+            "⏳ Subagent working (3 min elapsed).",
+            "⏳ Compressing context (1 min elapsed).",
+            "⏳ Queued for the next turn. I'll respond once the current task finishes.",
+            "⚡ Interrupting current task. I'll respond to your message shortly.",
             "⚠ Session database is locked; retrying.",
             "✅ Hermes update installed; restart to apply.",
             "❌ Hermes update failed: checksum mismatch.",
@@ -14142,10 +14148,11 @@ def test_v073_edit_message_finalize_keeps_status_and_preview_never_completes() -
 
 
 def test_v073_structured_finalize_injects_frame_status() -> None:
-    """v0.7.3 Design D：结构化帧入口把 status 注入 state；panel 快照为空时收尾仍必须有 ✅。
+    """v0.7.3 Design D：结构化帧的**元素写**页脚必须拿到本帧解析出的 status。
 
-    为什么单列：D1 审计手工变异（删掉 `state = {**state, "status": status}`）当时全绿 ——
-    收尾页脚会退回「读 panel 快照」，而 on_session_end 与帧各有队列，那一刻快照常常还是空。
+    为什么单列：审计 A（2026-09-23）指出只断言整卡 patch 抓不到状态注入 —— 整卡走
+    `_ld_cardview(status=status)`，元素写那条 `_ld_frame_footer({**state,"status":status})`
+    才是注入的真实消费者；移除注入后整卡仍绿。这里同时钉两条：整卡 ✅ + footer 元素写 ✅。
     """
     chat, turn = "oc_v073_csf", "t1"
     raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
@@ -14158,6 +14165,12 @@ def test_v073_structured_finalize_injects_frame_status() -> None:
         assert ups, "前提：结构化收尾必须走整卡 patch（否则这一格什么都没验）"
         blob = json.dumps(json.loads(ups[-1]["content"]), ensure_ascii=False)
         assert "✅ 已完成" in blob, f"结构化收尾在空 panel 快照下丢了状态词：{blob}"
+        footer_written = [
+            a["params"]["partial_element"]["content"]
+            for b in calls["batch"] for a in b[0]
+            if a.get("params", {}).get("element_id") == "footer"]
+        assert any("✅ 已完成" in (t or "") for t in footer_written), \
+            f"结构化收尾的 footer 元素写也必须带上本帧 status：{footer_written}"
     finally:
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
@@ -14181,6 +14194,69 @@ def test_v073_legacy_finalize_injects_frame_status() -> None:
         assert "✅ 已完成" in blob, f"DEGRADE 收尾在空 panel 快照下丢了状态词：{blob}"
     finally:
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v073_edit_message_respects_non_turn_tracking() -> None:
+    """v0.7.3 审计 A 高：上游心跳会先 `send(_interim_send=True)` 再反复 `edit_message()`；
+    非回合卡被编辑后必须仍然是静默卡（不能重新长出面板/状态头/页脚/✅）。"""
+    defaults = dict(adapter._DEFAULTS)
+    panel.reset()
+    context.reset()
+    try:
+        adapter.configure(visual_engine="structured", unified_panel=True, footer=True,
+                          show_model=True, card_status_header=True,
+                          model_aliases="test-model=Test Model")
+        context.record_api_call(model="test-model",
+                                usage={"input_tokens": 1000, "output_tokens": 5})
+        adapter.configure(context_max_override=10000)
+        raw = _make()
+        notice = "♻️ Gateway online — Hermes is back and ready."
+        res = _run(raw.send("oc_v073_ntedit", notice))
+        mid = getattr(res, "message_id", "") or ""
+        assert (raw._ld_known(mid) or {}).get("turn_card") is False
+        ups = _wire_patch(raw)
+        assert _run(raw.edit_message("oc_v073_ntedit", mid, notice + "（心跳重发）"))
+        body = json.loads(ups[-1]["content"])
+        assert "header" not in body, body.get("header")
+        blob = json.dumps(body, ensure_ascii=False)
+        assert "collapsible_panel" not in blob and "footer" not in blob and "✅ 已完成" not in blob, \
+            f"非回合卡被 edit_message 重新装饰了：{blob}"
+    finally:
+        panel.reset()
+        context.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_v073_stop_redraw_survives_later_notice() -> None:
+    """v0.7.3 审计 A 中：非回合 send 不许清掉真实回合卡的 `last_text`，
+    否则 turn→notice→/stop 会找不到可重绘的卡（用户看到中止后卡片不变色）。"""
+    defaults = dict(adapter._DEFAULTS)
+    panel.reset()
+    context.reset()
+    try:
+        adapter.configure(visual_engine="structured", unified_panel=True, footer=True,
+                          show_model=True, model_aliases="test-model=Test Model")
+        context.record_api_call(model="test-model",
+                                usage={"input_tokens": 1000, "output_tokens": 5})
+        adapter.configure(context_max_override=10000)
+        raw = _make()
+        # `_make()` 的替身每次 send 都返回同一个 message_id（om_1），不能靠连续两次 send
+        # 得到两张卡；真实回合卡直接按生产记账原语登记，再用真实 send 发系统提示。
+        raw._ld_track("om_real", "oc_v073_stopn")
+        raw._ld_note_text("om_real", "真实回合回答")
+        _run(raw.send("oc_v073_stopn", "♻️ Gateway online — Hermes is back and ready."))
+        ups = _wire_patch(raw)
+        assert _run(raw._ld_redraw_stopped("oc_v073_stopn")) is True, \
+            "系统提示之后的 /stop 仍必须能重绘真实回合卡"
+        assert len(ups) == 1, f"真实回合卡的 /stop 重绘应产生 1 次 patch：{ups}"
+    finally:
+        panel.reset()
+        context.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
 
 
 def main() -> int:

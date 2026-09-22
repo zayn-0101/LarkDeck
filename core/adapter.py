@@ -1948,7 +1948,14 @@ _LD_SYSTEM_NOTICE_PREFIXES: Tuple[str, ...] = (
     "ℹ Configured compression", "ℹ Context compression deferred",
     "📬 No home channel", "⚠ Subagent",
     "⏳ Goal", "⏸ Goal", "🚫 Goal", "✓ Goal",
+    # gateway/run_busy.py:600-631 的「忙碌提示」：没有 _interim_send 标记，靠字面前缀。
+    "⏩ Steered", "↪ Redirected", "⏳ Subagent working",
+    "⏳ Compressing context", "⏳ Queued for the next turn", "⚡ Interrupting current task",
 )
+
+#: ⚠️ `gateway/run_notifications.py::_send_update_output` 的更新块以 ``` 开头；**故意不登记**：
+#: 真实答案也常以代码块开头，按内容前缀会误杀真终稿。这条边界写进 README「已知限制」，
+#: 由 P4 `send 判定 turn=` 日志观察是否真的在 Feishu 上成为用户可见噪声。
 
 
 def _ld_is_system_notice(content: str) -> bool:
@@ -2034,11 +2041,14 @@ class LarkDeckMixin:
                     self._ld_state.pop(key, None)
             now = time.monotonic()
             # last_text 只用于「中止时原地重绘」，见 _ld_redraw_stopped。
-            # 单个 chat 只留最近一张卡的正文（旧的清掉），所以内存量级 = 卡数 × 该卡正文，
-            # 而不是「追踪过的全部卡 × 全部正文」。
-            for other in self._ld_state.values():
-                if other.get("chat_id") == chat_id:
-                    other["last_text"] = ""  # 只留最近一张卡的正文
+            # 单个 chat 只留最近一张**回合卡**的正文（旧的清掉），所以内存量级 =
+            # 回合卡数 × 该卡正文；非回合卡（系统提示/心跳）不参与这条「只留最近一张」的
+            # 竞争 —— 否则一条系统提示就会把真实回合卡的回落正文清掉，`/stop` 找不到候选
+            # （A 路审计 2026-09-23 实测 turn→notice→stop 复现）。
+            if turn_card:
+                for other in self._ld_state.values():
+                    if other.get("chat_id") == chat_id:
+                        other["last_text"] = ""  # 只留最近一张回合卡的正文
             self._ld_state[message_id] = {"chat_id": chat_id, "t0": now, "last": now,
                                           "last_text": "",
                                           "turn_card": bool(turn_card)}
@@ -2605,8 +2615,6 @@ class LarkDeckMixin:
                 if turn_card and footer:
                     # 调用方已经算好的页脚优先（它是**当下**的值）；空则保留视图自己那份
                     view.footer = footer
-                if turn_card and not status_locked:
-                    status = _ld_view_status(chat_id, default=status)
                 card = _cardview.entity_skeleton(view)
                 card["config"]["streaming_mode"] = bool(streaming)
                 # 与 legacy 车道同一层保护（审计 B 中-2）：设备字号档位必须也作用在
@@ -2835,6 +2843,10 @@ class LarkDeckMixin:
             # **绝不能**把可能含合成进度的 `content` 交给 super()。用流里的 t0
             # 造一个最小追踪视图，正文选择仍走 own 规则。
             state = {"chat_id": chat_id, "t0": stream_state.get("t0"), "last": 0.0}
+        # A 路审计（2026-09-23 高）：上游长任务心跳会对**同一条**投递消息先 `send()`
+        # （带 `_interim_send=True`，被我们标成 `turn_card=False`）再反复 `edit_message()`。
+        # 编辑必须沿用这张卡的回合属性，否则静默卡会被重新挂上面板/页脚/状态词。
+        turn_card = bool(state.get("turn_card", True)) if isinstance(state, dict) else True
         try:
             if self._ld_body_source() == "own" and stream_state is not None:
                 if int(stream_state.get("answer_gen") or 0) == 0:
@@ -2863,21 +2875,31 @@ class LarkDeckMixin:
             # 不许把上一回合的 completed 读回来（A3-1/A3-2/B3-2）。
             # 非收尾**不许**读快照（上一回合 completed 会漏进预览）；只有收尾才用
             # 快照状态并缺省 completed（A3-2/B3-2）。
-            turn_status = (_ld_view_status(chat_id, default="completed")
-                           if finalize else "processing")
-            card = self._ld_render_card(
-                chat_id, content, streaming=not finalize,
-                status=turn_status,
-                panel=self._ld_panel(chat_id, report_empty=bool(finalize)),
-                footer=self._ld_frame_footer({"message_id": message_id,
-                                              "chat_id": state.get("chat_id") or chat_id,
-                                              "t0": state.get("t0"),
-                                              "status": turn_status},
-                                             turn_card=True),
-                started=state.get("t0"), message_id=message_id,
-                turn_card=True,
-                status_locked=not finalize,
-            )
+            if turn_card:
+                turn_status = (_ld_view_status(chat_id, default="completed")
+                               if finalize else "processing")
+                card = self._ld_render_card(
+                    chat_id, content, streaming=not finalize,
+                    status=turn_status,
+                    panel=self._ld_panel(chat_id, report_empty=bool(finalize)),
+                    footer=self._ld_frame_footer({"message_id": message_id,
+                                                  "chat_id": state.get("chat_id") or chat_id,
+                                                  "t0": state.get("t0"),
+                                                  "status": turn_status},
+                                                 turn_card=True),
+                    started=state.get("t0"), message_id=message_id,
+                    turn_card=True,
+                    status_locked=not finalize,
+                )
+            else:
+                # 非回合卡：沿用 `send()` 的静默形态（面板/状态头/页脚全关），
+                # 否则心跳编辑会把「Gateway online」这类提示重新装饰成回合卡。
+                card = self._ld_render_card(
+                    chat_id, content, streaming=False,
+                    status="completed", panel=None, footer=None,
+                    started=state.get("t0"), message_id=message_id,
+                    turn_card=False, status_locked=True,
+                )
             result = await self._ld_update_card(chat_id, message_id, card)
             if result is not None and getattr(result, "success", False):
                 self._ld_note_text(message_id, content)
@@ -3995,7 +4017,8 @@ class LarkDeckMixin:
         return lock
 
     async def _ld_structured_degrade(self, chat: str, state: Dict[str, Any],
-                                     live: Dict[str, Any], visible: str, code: int) -> bool:
+                                     live: Dict[str, Any], visible: str, code: int, *,
+                                     status: str) -> bool:
         """卡级死法 ⇒ **同卡 DEGRADE**（legacy 渲染 + `engine_stamp=degraded`）；成功返回 True。
 
         §9.3 说 DEGRADE 是唯一同卡回退车道。审计 A（高-4/中-5）实测结构化路径有两条缝：
@@ -4008,7 +4031,7 @@ class LarkDeckMixin:
         _log_ck_degrade_once(code)
         fallback = self._ld_build_card(visible, streaming=False,
                                        panel=self._ld_panel(chat, report_empty=True),
-                                       footer=self._ld_frame_footer(state))
+                                       footer=self._ld_frame_footer({**state, "status": status}))
         updated = await self._ld_update_card(chat, str(state.get("message_id") or ""), fallback)
         if updated is None or not getattr(updated, "success", False):
             return False
@@ -4123,7 +4146,6 @@ class LarkDeckMixin:
             offset = int(state.get("ck_offset") or 0)
             visible = display[offset:]
         status = _ld_view_status(chat, default="processing" if not finalize else "completed")
-        state = {**state, "status": status}          # 本帧所有 footer 调用共用
         view = self._ld_cardview(chat, visible, status=status, finalize=finalize,
                                  started=state.get("t0"),
                                  message_id=state.get("message_id"))
@@ -4168,7 +4190,7 @@ class LarkDeckMixin:
             if not res.ok:
                 if (res.code in _CARD_DEATH_DECOR_CODES
                         and await self._ld_structured_degrade(chat, state, live, visible,
-                                                              res.code)):
+                                                              res.code, status=status)):
                     live["ck_seq"] = seq          # 中-5：用掉的序号必须落账，别让下一帧重号
                     self._ld_stream_put(key, live)
                     _context.note_frame_ok()
@@ -4177,7 +4199,7 @@ class LarkDeckMixin:
                     [_CkOp("panel", "", _CK_ROLE_PANEL)], res.code, msg=res.msg)
             else:
                 live["ck_panel_sig"] = signature
-        footer_text = self._ld_frame_footer(state) or " "
+        footer_text = self._ld_frame_footer({**state, "status": status}) or " "
         if (_cards.CARDKIT_FOOTER_ID in self._ld_ck_elems(state)
                 and state.get("ck_footer") != footer_text):
             seq += 1
@@ -4186,7 +4208,8 @@ class LarkDeckMixin:
             if fres.ok:
                 live["ck_footer"] = footer_text
             elif (fres.code in _CARD_DEATH_DECOR_CODES
-                  and await self._ld_structured_degrade(chat, state, live, visible, fres.code)):
+                  and await self._ld_structured_degrade(chat, state, live, visible, fres.code,
+                                                        status=status)):
                 live["ck_seq"] = seq
                 self._ld_stream_put(key, live)
                 _context.note_frame_ok()
@@ -4200,7 +4223,8 @@ class LarkDeckMixin:
         if not wrote.ok and wrote.code in _CARD_DEATH_CODES:
             # 审计 A 高-4：正文（提交点）拿到卡级死法时必须**同卡 DEGRADE** —— 旧写法直接
             # `_ld_stream_fail` 掉 native，用户从卡片掉成纯文本、而卡还冻在流式态。
-            if await self._ld_structured_degrade(chat, state, live, visible, wrote.code):
+            if await self._ld_structured_degrade(chat, state, live, visible, wrote.code,
+                                                  status=status):
                 live["ck_seq"] = seq
                 self._ld_stream_put(key, live)
                 _context.note_frame_ok()
@@ -4525,7 +4549,8 @@ class LarkDeckMixin:
             # 用 `*parts` 展开会把工具块塞进 `elems`（实测症状：帧异常 ⇒ 整回合掉 native）。
             _panel_body, _panel_tools = self._ld_panel_parts(
                 chat, report_empty=bool(finalize))
-            ops = _ck_plan(visible, _panel_body, live_elems, self._ld_frame_footer(state),
+            ops = _ck_plan(visible, _panel_body, live_elems,
+                           self._ld_frame_footer({**state, "status": frame_status}),
                            panel_tools_text=_panel_tools, streaming=not finalize)
             live_state = dict(state)
             ok, seq_after, failed = await self._ld_ck_apply(card_id, ops, _ck_seq(state),

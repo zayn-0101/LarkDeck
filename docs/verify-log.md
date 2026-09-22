@@ -248,3 +248,17 @@ A1（3 处 partial 少 `expanded`、entity `expanded` false→true）、C1（`tu
   网关重启（自检通过，21:00:38 一行、网关进程 2 个）。
 * 追加决定：**A1 展开时序保持不变**（用户复确认；理由与代价见
   `docs/audits/v0.7.2/p6-live-verification.md` 的「追加决定」一节）。
+
+## 2026-09-23 · v0.7.3 宿主矩阵探针（服务端结果；真机目视待用户）
+
+* `tests/probe_text_size_hosts.py --send`（生产代码渲染，直接 SDK 发到 `FEISHU_HOME_CHANNEL`）：
+  **11 张卡全部 `code=0`**。
+  - A `markdown`（line 细节行）× ap_lite/neutral/ap_bubble：`om_x100b641fbacfe8b0c4cee59f31cb6c7` / `om_x100b641fbaecb0a4c4a585431153fcf` / `om_x100b641fba8da4a0ddcb1eb5bc0bc40`；
+  - B `div.text=plain_text`（emoji 细节行）× 三主题：`om_x100b641fbac390a8df3b85b8eb88fca` / `om_x100b641fbae728a4dda6d6fac814a19` / `om_x100b641fba84c8a0c44b97b9a308587`；
+  - C `div.text=lark_md`（Error 20+ 行栈 + 超长行）× 三主题：`om_x100b641fbada24a4c10f513cf14bba8` / `om_x100b641fbaf93ca8c42a49218f08ac5` / `om_x100b641fba9f30a0c16a23ea8ffaf90`；
+  - N1 已知系统提示静默卡：`om_x100b641fba9664a4c3f303c401a41bb`（本地断言无 header/panel/footer）；
+  - N2 真实回合卡：`om_x100b641fbaa8a8a0c2ecd6c33ddac0e`（本地断言必须有 `✅ 已完成`）。
+* **服务端结论**：三宿主都接受 `x-small`，未出现 `200621`/拒收。
+* **真机目视结论（待用户回话，未回话前不得写成已验证）**：x-small 是否确实更小、以及 C 的 20+ 行 Error 栈是否仍可读；三主题/客户端差异同样待目视。
+* 回退规则：若某 host 被拒或不变小 ⇒ **该 host 退回 `notation`**（改代码 + 断言/变异/夹具 + 重跑 P3）；当前代码**没有运行时自动回退**。
+* `send 判定 turn=` 日志复核：待 `.deploy=C` + 网关重启后执行并回填。
