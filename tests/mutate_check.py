@@ -2999,7 +2999,11 @@ def _classify(script: str, proc: "subprocess.CompletedProcess") -> str:
 
 
 #: 单支门禁的硬超时（秒）。⚠️ 汇总串里的数字必须用它算，别写死（终审 A 实测曾写死 120）。
-_GATE_TIMEOUT_S = 45.0
+#: 2026-09-22 由 45 → **90**：并行分片时（6 片 + 我自己的门禁/审计子代理同机）实测 `test_units`
+#: 墙钟被拖到 47–53s ⇒ 撞 45s 超时 ⇒ 那一批被判 **💥（只有崩溃、无断言文本）= 假坏**，
+#: 白跑一整轮还要补跑缺口。这是**上调**（把负载假坏消掉），不是下调 —— 下调会把真红变 💥
+#: （审计 B2 的明确警告）。真实断言红不受影响（它们远快于超时）。
+_GATE_TIMEOUT_S = 90.0
 
 GATE_ORDER = ["test_units.py", "check_override.py", "check_hooks.py",
               "check_clarify_e2e.py", "check_cardview.py", "check_cls_alignment.py"]
