@@ -168,11 +168,102 @@ def _assert_structured_builder() -> None:
     assert detail["tag"] == "markdown" and detail["margin"] == "0px 0px 0px 22px", detail
     assert detail["icon"] == {"tag": "standard_icon", "token": "tool-indent_outlined",
                               "color": "grey"}, detail
-    assert detail["content"] == "/tmp/a.txt" and detail["text_color"] == "grey", detail
+    # 灰色**只能写进 content**：`markdown` 没有 `text_color` 字段（真机 200621 实测，整卡被拒）
+    assert detail["content"] == "<font color='grey'>/tmp/a.txt</font>", detail
+    assert "text_color" not in detail, detail
     panel_op = {"partial_element": cardview.panel_partial(view.panel)}
     assert "tag" not in panel_op["partial_element"], panel_op
     assert "text_size" not in panel_op["partial_element"], panel_op
     assert [e.get("element_id") for e in body] == ["answer", "panel", "footer"], body
+
+
+#: 官方 2.0 字段白名单（只登记**我们会发出去**的元素/文本/图标节点）。
+#: 出处（2026-09-22 逐页核对）：富文本 `card-json-v2-components/content-components/rich-text`、
+#: 普通文本 `…/content-components/plain-text`（组件 tag 是 `div`）、折叠面板
+#: `…/containers/collapsible-panel`。
+#: 为什么要有这道门禁：服务端对**未知字段**是 `200621` **整卡被拒**（不是忽略），而且一次只报一个
+#: 字段 —— 2026-09-22 真机探针才发现「`markdown` 上写了 `text_color`」和「`icon` 挂进 `text`」。
+#: 本地白名单能在提交前拦住整类故障（长回合 ⇒ 纯文本回落 ⇒「卡片 + 灰色气泡」两张）。
+_ALLOWED_COMPONENT_FIELDS = {
+    "markdown": {"tag", "element_id", "margin", "content", "text_size", "text_align", "icon", "href"},
+    "div": {"tag", "element_id", "margin", "width", "text", "icon", "fields", "extra"},
+    "collapsible_panel": {"tag", "element_id", "margin", "expanded", "vertical_spacing",
+                          "vertical_align", "horizontal_spacing", "horizontal_align", "direction",
+                          "padding", "background_color", "header", "border", "elements"},
+}
+#: 文本子对象（`div.text`、面板标题）。`i18n_content` 只出现在面板标题（生产在用的 i18n 形态）。
+_ALLOWED_TEXT_FIELDS = {"tag", "element_id", "content", "text_size", "text_color", "text_align", "lines"}
+_ALLOWED_ICON_FIELDS = {"tag", "token", "color", "size", "img_key"}
+_ALLOWED_HEADER_FIELDS = {"title", "vertical_align", "icon", "icon_position",
+                          "icon_expanded_angle", "background_color", "width", "padding"}
+
+
+def _check_icon(node: dict, where: str) -> None:
+    assert node.get("tag") in ("standard_icon", "custom_icon"), f"{where}: 图标 tag 非法：{node}"
+    unknown = sorted(set(node) - _ALLOWED_ICON_FIELDS)
+    assert not unknown, f"{where}: 图标字段不在官方白名单里：{unknown}"
+    if node.get("tag") == "standard_icon":
+        assert node.get("token"), f"{where}: standard_icon 必须给 token"
+
+
+def _check_text(node: dict, where: str, *, allow_i18n: bool = False) -> None:
+    allowed = _ALLOWED_TEXT_FIELDS | ({"i18n_content"} if allow_i18n else set())
+    assert node.get("tag") in ("plain_text", "lark_md"), f"{where}: 文本 tag 非法：{node}"
+    unknown = sorted(set(node) - allowed)
+    assert not unknown, f"{where}: 文本字段不在官方白名单里：{unknown}（查 rich-text/plain-text 字段表）"
+    assert "icon" not in node, (
+        f"{where}: 前缀图标必须挂**组件级** `icon` —— `text` 里没有 icon 字段（真机 200621 整卡被拒）")
+    if node.get("tag") != "plain_text":
+        assert "text_color" not in node, (
+            f"{where}: `text_color` 只对 plain_text 生效；markdown/lark_md 上写它会 200621 整卡被拒，"
+            "灰色要写进 content：<font color='grey'>…</font>")
+
+
+def _check_element(node: dict, where: str) -> None:
+    tag = node.get("tag")
+    assert tag in _ALLOWED_COMPONENT_FIELDS, (
+        f"{where}: 未登记的元素 tag {tag!r} —— 新增元素前先核官方字段表并登记白名单")
+    unknown = sorted(set(node) - _ALLOWED_COMPONENT_FIELDS[tag])
+    assert not unknown, f"{where}: 元素字段不在官方白名单里：{unknown}"
+    if "text" in node:
+        _check_text(node["text"], f"{where}.text")
+    if "icon" in node:
+        _check_icon(node["icon"], f"{where}.icon")
+    if tag == "collapsible_panel":
+        header = node.get("header") or {}
+        unknown = sorted(set(header) - _ALLOWED_HEADER_FIELDS)
+        assert not unknown, f"{where}.header: 字段不在官方白名单里：{unknown}"
+        if "icon" in header:
+            _check_icon(header["icon"], f"{where}.header.icon")
+        if "title" in header:
+            _check_text(header["title"], f"{where}.header.title", allow_i18n=True)
+        for i, child in enumerate(node.get("elements") or []):
+            _check_element(child, f"{where}.elements[{i}]")
+
+
+def _assert_panel_element_fields() -> None:
+    """面板元素树字段白名单（两种图标模式都过一遍）。
+
+    服务端对未知字段**整卡被拒**、且一次只报一个 —— 这条门禁是 2026-09-22 真机 200621 的产物：
+    本地必须能一次报出**所有**越界字段（`_check_*` 不做「遇到第一个就返回」）。
+    """
+    view = cardview.PanelView(
+        title="🛠️ 工具执行 · 2 步",
+        collapsed_hint="还有 12 步未显示（折叠提示也带前缀图标）",
+        tools=[
+            cardview.ToolStepView(name="terminal", title="terminal", status="ok", duration_ms=1,
+                                  detail='{"command": "df -h"}',
+                                  icon_token=cardview.ICON_TOKENS["terminal"]),
+            cardview.ToolStepView(name="web_search", title="web_search", status="error",
+                                  error_block="403 Forbidden",
+                                  icon_token=cardview.ICON_TOKENS["search"]),
+        ],
+    )
+    for mode in ("line", "emoji"):
+        view.tool_icon_mode = mode
+        for i, node in enumerate(cardview.panel_elements(view)):
+            _check_element(node, f"panel_elements[{i}]（tool_icon_mode={mode}）")
+        _check_element(cardview.panel_shell(view), f"panel_shell（tool_icon_mode={mode}）")
 
 
 def _assert_v072_contracts() -> None:
@@ -315,6 +406,7 @@ def main() -> int:
     _assert_legacy_entity_card_content()
     _assert_tool_status_literals()
     _assert_structured_builder()
+    _assert_panel_element_fields()
     print("CARDVIEW OK")
     return 0
 

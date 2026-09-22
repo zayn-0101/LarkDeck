@@ -2515,8 +2515,8 @@ MUTATIONS = [
      '        if block:\n            elements.append(_tool_output_div(block, label, icon_mode))  # V4-26 mutated',
      "test_units"),
     ("V4-33-折叠提示用 plain_text（真机 300313，长回合卡片必坏）", "core/cardview.py",
-     '        node: Dict[str, Any] = {"tag": "markdown", "content": view.collapsed_hint,',
-     '        node: Dict[str, Any] = {"tag": "plain_text", "content": view.collapsed_hint,',
+     '        node: Dict[str, Any] = {"tag": "markdown", "content": _grey(view.collapsed_hint),',
+     '        node: Dict[str, Any] = {"tag": "plain_text", "content": _grey(view.collapsed_hint),',
      "test_units"),
     ("V4-28-结构化卡不做分级降载（长正文直接撞字节墙）", "core/adapter.py",
      '        tiers = (("ok", True, True), ("no-panel", False, True), ("bare", False, False))',
@@ -2662,18 +2662,24 @@ MUTATIONS = [
      '        "tag": "markdown",\n'
      '        "margin": TOOL_DETAIL_INDENT,\n'
      '        "icon": _icon_node(ICON_DETAIL),\n'
-     '        "content": text,\n'
+     '        "content": _grey(text),\n'
      '        "text_size": PANEL_TEXT_SIZE,\n'
-     '        "text_color": "grey",\n'
      '    }',
      '    return {\n'
      '        "tag": "markdown",\n'
      '        "margin": TOOL_DETAIL_INDENT,\n'
-     '        "content": text,\n'
+     '        "content": _grey(text),\n'
      '        "text_size": PANEL_TEXT_SIZE,\n'
-     '        "text_color": "grey",\n'
      '    }',
      'test_units'),
+    ('V4-60-工具详情行把灰色写回 markdown 的 text_color（服务端 200621 整卡被拒）', 'core/cardview.py',
+     '        "content": _grey(text),\n',
+     '        "content": text,\n        "text_color": "grey",\n',
+     'check_cardview'),
+    ('V4-61-错误块前缀图标挂进 div.text（服务端 200621 整卡被拒）', 'core/cardview.py',
+     '        node["icon"] = _icon_node(tok)\n',
+     '        node["text"]["icon"] = _icon_node(tok)\n',
+     'check_cardview'),
     ('V4-58-折叠提示丢掉前缀图标（长回合提示退回纯文字）', 'core/cardview.py',
      '        if icon_mode != "emoji":\n'
      '            # 「更全面」批次：折叠提示也带前缀图标（more = 省略号，已查证存在）\n'
@@ -2682,7 +2688,7 @@ MUTATIONS = [
      'test_units'),
     ('V4-59-错误块标题丢掉前缀图标', 'core/cardview.py',
      '        tok = ICON_ERROR if str(label).strip().lower().startswith("error") else ICON_RESULT\n'
-     '        node["text"]["icon"] = _icon_node(tok)\n',
+     '        node["icon"] = _icon_node(tok)\n',
      '        pass  # V4-59 mutated\n',
      'test_units'),
     ('V4-55-工具行不再按名字精化 emoji（terminal 复用面板标题的区段符号 🛠️）', 'core/cardview.py',

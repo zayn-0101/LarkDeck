@@ -420,6 +420,22 @@ def _icon_node(token: str) -> Dict[str, Any]:
     return {"tag": "standard_icon", "token": token, "color": ICON_COLOR}
 
 
+def _grey(text: Any) -> str:
+    """灰色正文。**富文本组件（`markdown`）没有 `text_color` 字段。**
+
+    官方 2.0 富文本字段表只有 `tag / text_align / text_size / icon / href / content`（外加公共的
+    `element_id`、`margin`）—— 写上 `text_color` 服务端回
+    `200621 unknown property, path: …(tag: markdown)`，而且**是整张卡被拒**（不是忽略该字段）：
+    长回合一旦走到这段代码就掉进纯文本回落，用户看到「卡片 + 灰色气泡」两张（= 用户反馈 #4 的
+    同一种故障）。2026-09-22 真机探针实测踩中，别再写回去。
+
+    2.0 里给正文上色**只能写进 `content`**：官方富文本「彩色文本样式」与 `lark_md` 语法表都是
+    `<font color='grey'>…</font>`（`color` 取颜色枚举值）。`div.text` 的 `text_color` 也**只对
+    `plain_text` 生效**，所以灰色正文统一走这里。
+    """
+    return f"<font color='grey'>{text}</font>"
+
+
 def _tool_title_div(step: ToolStepView, icon_mode: str = "line") -> Dict[str, Any]:
     status_text, color = step.status_style
     duration = f" ({step.duration_ms} ms)" if step.duration_ms else ""
@@ -454,13 +470,13 @@ def _tool_detail_div(text: str, icon_mode: str = "line") -> Dict[str, Any]:
         }
     # 前缀图标版（2026-09-22「更全面」批次）：缩进交给 margin，箭头改成官方线性图标
     # `tool-indent_outlined`（已查证存在）—— 整卡图标语言统一，不再用文字箭头。
+    # 灰色**必须写在 content 里**（`markdown` 不收 `text_color`，见 `_grey`）。
     return {
         "tag": "markdown",
         "margin": TOOL_DETAIL_INDENT,
         "icon": _icon_node(ICON_DETAIL),
-        "content": text,
+        "content": _grey(text),
         "text_size": PANEL_TEXT_SIZE,
-        "text_color": "grey",
     }
 
 
@@ -472,9 +488,12 @@ def _tool_output_div(block: str, label: str, icon_mode: str = "line") -> Dict[st
                  "text_size": PANEL_TEXT_SIZE},
     }
     if str(icon_mode or "line").strip().lower() != "emoji":
-        # 标题行加前缀图标：Error → ⚠️ 线性版；其它（Result 类）→ 代码块图标。都已查证存在。
+        # 标题行加前缀图标：Error → 警告线性版；其它（Result 类）→ 代码块图标。都已查证存在。
+        # ⚠️ 图标挂**组件级** `icon`（官方 2.0 普通文本组件字段：`icon` 是组件的「前缀图标」）。
+        # 挂进 `text` 里服务端**不认**（`text` 只有 tag/element_id/content/text_size/text_color/
+        # text_align/lines）⇒ 同样 200621 整卡被拒（2026-09-22 随 `text_color` 一起查出来的）。
         tok = ICON_ERROR if str(label).strip().lower().startswith("error") else ICON_RESULT
-        node["text"]["icon"] = _icon_node(tok)
+        node["icon"] = _icon_node(tok)
     return node
 
 
@@ -535,8 +554,10 @@ def panel_elements(view: PanelView) -> List[Dict[str, Any]]:
         # ⇒ 核心回落纯文本，用户看到「卡片 + 灰色气泡」两张（用户反馈 #4 的根因）。
         # 而且这条只在工具步数 > `max_steps`（默认 20）时才出现 ⇒ 长回合必炸。
         # `markdown` 与 `div` 都是合法子元素，这里用 markdown（同 legacy 面板的写法）。
-        node: Dict[str, Any] = {"tag": "markdown", "content": view.collapsed_hint,
-                                "text_size": PANEL_TEXT_SIZE, "text_color": "grey"}
+        # 灰色走 `_grey()` 写进 content —— 2026-09-22 真机探针实测：`markdown` 加 `text_color`
+        # 会 200621 **整卡被拒**（见 `_grey` 的说明）。
+        node: Dict[str, Any] = {"tag": "markdown", "content": _grey(view.collapsed_hint),
+                                "text_size": PANEL_TEXT_SIZE}
         if icon_mode != "emoji":
             # 「更全面」批次：折叠提示也带前缀图标（more = 省略号，已查证存在）
             node["icon"] = _icon_node(ICON_HINT_MORE)

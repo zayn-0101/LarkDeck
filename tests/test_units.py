@@ -13031,16 +13031,32 @@ def test_v4_57_line_icons_cover_detail_error_and_folded_hint():
     els = cv.tool_step_elements(step, "line")
     detail = [e for e in els if e.get("icon", {}).get("token") == cv.ICON_DETAIL]
     assert detail, f"详情行必须带前缀图标 {cv.ICON_DETAIL}：{els}"
-    assert detail[0].get("tag") == "markdown" and detail[0].get("text_color") == "grey", detail[0]
-    assert detail[0].get("content") == '{"command": "df -h"}' and "↳" not in str(detail[0].get("content")), detail[0]
+    # 灰色**只能写进 content**：`markdown` 没有 `text_color` 字段 —— 2026-09-22 真机探针实测
+    # 服务端回 `200621 unknown property … (tag: markdown)` ⇒ **整卡被拒**（不是忽略该字段）。
+    assert detail[0].get("tag") == "markdown" and "text_color" not in detail[0], detail[0]
+    assert detail[0].get("content") == '<font color=\'grey\'>{"command": "df -h"}</font>', detail[0]
+    assert "↳" not in str(detail[0].get("content")), detail[0]
     bad = cv.ToolStepView(name="terminal", title="terminal", status="error",
                           error_block="boom", icon_token=cv.ICON_TOKENS["terminal"])
     err = [e for e in cv.tool_step_elements(bad, "line")
-           if e.get("text", {}).get("icon", {}).get("token") == cv.ICON_ERROR]
+           if (e.get("icon") or {}).get("token") == cv.ICON_ERROR]
     assert err, "错误块标题必须带 warning 前缀图标"
+    # 前缀图标挂**组件级** `icon`（`div.text` 的字段表里没有 icon，挂进去同样 200621 整卡被拒）
+    assert "icon" not in (err[0].get("text") or {}), err[0]
+    assert err[0].get("tag") == "div" and "Error" in str((err[0].get("text") or {}).get("content")), err[0]
     hint = cv.panel_elements(cv.PanelView(title="t", collapsed_hint="还有 12 步未显示"))[0]
     assert hint.get("icon") == {"tag": "standard_icon", "token": cv.ICON_HINT_MORE,
                                 "color": "grey"}, hint
+    assert hint.get("content") == "<font color='grey'>还有 12 步未显示</font>", hint
+    assert "text_color" not in hint, hint
+    # 全树兜底：**任何** markdown 元素都不许带 text_color（本地门禁 check_cardview 也钉了这条）
+    for mode in ("line", "emoji"):
+        tree = (cv.panel_elements(cv.PanelView(title="t", tools=[step, bad], collapsed_hint="h"))
+                + [cv.panel_shell(cv.PanelView(title="t", tools=[step]))])
+        for node in tree:
+            for sub in (node, *node.get("elements", [])):
+                if sub.get("tag") == "markdown":
+                    assert "text_color" not in sub, (mode, sub)
     # emoji 模式：老形状（文字箭头 / 无图标）—— 两条路都可切，不能静默变成同一种
     els_e = cv.tool_step_elements(step, "emoji")
     assert els_e[1].get("tag") == "div" and "↳" in str((els_e[1].get("text") or {}).get("content")), els_e[1]
