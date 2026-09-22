@@ -479,7 +479,8 @@
 > ✅ **2026-09-17 CLS 观感更新**（读了 `Cheerwhy/hermes-lark-streaming` 源码后按用户截图落地，
 > 不照抄机制）：面板摘要行 `💭 思考 1.6s · 🛠️ 工具执行 · 3 步`；展开后正文里有
 > `💭 思考` / `🛠️ 工具执行` 两个灰色分区小标题；工具行 = 图标 + 加粗动作名 + 耗时
-> （`25 ms` / `1.2 s`）+ 带颜色的状态词（`Succeeded` 绿 / `Running` 青绿 / `Failed`、`Blocked` 红），
+> （`25 ms` / `1.2 s`）+ 带颜色的状态词（**2026-09-22 起**：`Running` 蓝 / 成功 `✓` 绿 /
+> `Failed`、`Blocked` 红；此前是 `Succeeded` 绿 / `Running` 青绿），
 > 命令或 skill 名另起一行灰色小字；被 80 字符截断的 JSON 预览走有界 key 提取，不再丢细节、
 > 也不倒原文。CLS 用 `lark_md` + 动态 icon 元素；我们是固定 5 元素结构 + emoji +
 > `markdown` 里的 `<font color>`，所以这是**行为问题解的对齐**，不是机制复刻。
