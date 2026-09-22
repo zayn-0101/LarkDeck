@@ -264,3 +264,34 @@ C2 另有两条「判定力是假的」观察，如实记下：
 | **A** | CAND-B2 断言判别力 / `_await_event` 抖动 / 同类盲点 | **两处改动本身通过**；A5 同类残余报「需修改」 | 实测入档 §8.2（25+25 次 0 失败、事件实际等待 ≤0.5ms、2×/4× 过订阅仍 0 失败；两层断言 + 反方向两变异都实测红）。A5（3 处裸 `await release.wait()` + 无界 **task join**）登记 v0.7.3，含「未来 async 死锁会把断言红伪装成 45s 💥」这一更强形态 |
 | **B** | 账本与证据链完整性 | B1/B2/B3/B6 字面通过；**B4/B5/附加 需修改** | ① `_meta.full_audit_evidence` 两处数字错（💥 62 不是 120；对照失败 **6 个**不是 12 行）⇒ 已更正；② `CAND-B2`/`V1-2` 的 `at=7e7a62d` 来源不成立（前者在 7e7a62d 不存在、后者依赖 a6b73ae 的有界等待）⇒ 两条改记 `396f0ae`，并在**干净树**上补可追溯复跑（`rerun-*-396f0ae.log`）；③ 当晚的合并脚本 v3 **可被伪造日志绕过**（不重算现场指纹/不校验 head/无条件覆盖 `at`）⇒ 补加固参考实现 `merge_ledger4.py`（现场重算三指纹 + head 必须真实 commit + 对照按 12 个名字核 + `at` 不覆盖），并把它对现账本的 dry-run 结果写进归档 README；④ 归档的 `gap_seed.py` 与实际执行不符（真实用的是**公共种子 354 条**）⇒ 补 `gap_seed_common.py` 并在 README 记录真实序列。⚠️ v4 仍**不能**证明日志真伪 —— 该边界写进脚本 docstring 与 README，真正修法（每条记 tree hash + 来源行号）登记 v0.7.3 |
 | **C** | 现役文档 / 发布清单可执行性 | **需修改**（1 条 P1 + 7 条 P2/P3） | 全部已改：§2 逐支循环补 `--require`（原会静默 SKIP）并补 `check_own_body`/`preflight`；自检时间 22:54:38→**22:54:43**；分片账本并发写丢更新（414 vs 413）⇒ 各写 `LARKDECK_LEDGER_PATH`；`--shard`「恒 False」→「**n≥2**」；影子树行改「曾达 22 个/1.5GB、已清 0」+3/27 个小残影；网关 PID 判据注明 2 个 PID；`--ledger-status` 与 `_meta.full_audit_at` 表述拆开；README 已发布列表补齐；`.deploy` 旧副本的复核项写进 §6 |
+
+### 8.5 P3 图标复验：区段符号被工具行复用 + 同 token 挤多语义（用户真机截图，2026-09-21）
+
+**用户反馈原文**：「头两张图是我之前给你发过别的插件的截图，第三张图是我们自研插件的截图，
+我看目前图标不一致。而且第三张图里红框圈出来的地方，**面板顶部标题的图标和下方使用命令行
+命令的图标是同一个**，这个不合理。如果我们和别的插件的这个图标不一致，我觉得也 OK，
+但**要比别的看起来更好**。」
+
+**根因（两处，都是「token 表全绿但观感坏」）**：
+
+1. **区段符号被复用**：14 个 CLS token 里 `setting_outlined` 一格塞了
+   exec / bash / command / run / terminal / execute / process / setup / close —— 渲染时全部
+   变成 🛠️，而 🛠️ 同时是**面板标题**（工具执行）的区段符号 ⇒ 用户一眼看到「标题 = terminal 行」。
+2. **同 token 挤多语义**：60+ 个真实工具名只有 14 个 emoji 可选（`memory` 与 `glob`/`drive`
+   共用 📁、`cronjob` 与 `todo` 共用 ✅、`image`/`skills`/`ha` 共用 🧩…），观感上「不一致」。
+
+**收口**：
+
+* 新增**渲染层** `cardview.TOOL_EMOJI_BY_ALIAS` + `tool_emoji(name, token)`：
+  ① 区段符号（🛠️/💭）不许出现在工具行（terminal/exec/bash/command/run/execute ⇒ 💻、
+  process ⇒ ⚙️、setup ⇒ 🔌、close ⇒ ✖️）；② 按名字精化（memory 🧠、cronjob ⏰、
+  session 🕘、image 🎨、video 🎬、speech/text 🗣️、vision 👁️、send ✉️、react 👍、
+  show_tip 💡、clarify ❓、computer 🖱️）。匹配规则与 token 解析同源（精确或 `alias_` 前缀）；
+  **token 表仍是 CLS 对齐的唯一真相**，`check_cls_alignment` 只读 token 表 ⇒ 仍全绿。
+* 断言：新 `test_v4_55`（真实工具名逐条不许落区段符号 + 覆盖表精化程度 ≥15 种 + terminal 家族
+  ≥4 种符号 + 老调用点 `tool_emoji("", token) == icon_emoji(token)`）；`test_v4_46` 改钉
+  两层（token 级 🛠️ / 行级 💻，并断言行内不出现 🛠️）；`test_v4_48b` 同步补行级断言。
+* 变异：新增 `V4-55`（撤掉按名字覆盖 ⇒ `tool_emoji` 退回 token 表 ⇒ 该用例实红）。
+* 夹具：golden trace 同步重生成，diff 即行为声明 —— 5 处 `🛠️ **terminal**` → `💻 **terminal**`。
+* 复验：`--delta` 因 helper 指纹（golden 夹具）变化触发**全量 476 条重跑**（2 分片），
+  跑完再报；账本随后按「现场重算三指纹 + 日志覆盖 + 12 名对照全绿」合并。

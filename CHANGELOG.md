@@ -28,6 +28,16 @@
 - **工具图标**：主表 **28 条逐条等于 CLS**（含顺序），`terminal` 单列登记偏差
   （CLS 表里没有它，而 Hermes 的 shell 工具就叫这个名字）；`tests/check_cls_alignment.py`
   直接解析 CLS 源码比对（CLS 侧改动会红）。
+  - **工具行 emoji 两条口径**（2026-09-21 真机截图复验后补：用户把定版卡标红 ——「面板顶部
+    标题的图标和下方使用命令行命令的图标是同一个，这个不合理」，并要求「比别的看起来更好」）：
+    ① **区段符号不复用** —— 面板标题的 🛠️（工具执行）/💭（思考）不再出现在工具行
+    （`terminal` ⇒ **💻**；旧行为是 9 个名字共用 `setting_outlined` ⇒ 全渲染成 🛠️）；
+    ② **同 token 按名字精化** —— 60+ 真实工具名不再挤 14 个符号（memory 🧠 / cronjob ⏰ /
+    session_search 🕘 / image 🎨 / video 🎬 / speech 🗣️ / vision 👁️ / send ✉️ / react 👍 /
+    show_tip 💡 / setup 🔌 / process ⚙️ / computer 🖱️ …）。
+    实现：渲染层 `cardview.tool_emoji(name, token)`（token 表仍是 CLS 对齐唯一真相）；
+    `test_v4_55` + 变异 `V4-55` 钉住，golden trace 同步重生成（diff = `🛠️ **terminal**` →
+    `💻 **terminal**`）。
 - **澄清卡表单提交契约**：`value` 为空、答案只在 `action.form_value` 的提交形态已覆盖
   （真 SDK payload 类 e2e）；组件级 `behaviors` 路径不变。
 - **出站留痕**（排障）：`send()` 卡片成功 / 卡片失败回落 / `edit_message` 成功 / 回落 各留一行

@@ -30,6 +30,9 @@ _cardview = _importlib.import_module("_larkdeck_probe.core.cardview")
 
 def build_card() -> dict:
     steps = [
+        _cardview.ToolStepView(name="skills_list", title="skills_list", status="ok",
+                               duration_ms=25, icon_token="app-default_outlined",
+                               detail='{"action": "list"}'),
         _cardview.ToolStepView(name="read_file", title="read_file", status="ok",
                                duration_ms=120, icon_token="file-link-text_outlined",
                                detail='{"path": "/tmp/a.txt"}'),
@@ -42,12 +45,13 @@ def build_card() -> dict:
                                duration_ms=8, icon_token="setting-inter_outlined"),
     ]
     view = _cardview.CardView(
-        answer="这一版工具行用**内联 emoji**（用户选版：乙）。请确认三点：\n"
-               "1. 图标（emoji）与文字是否**对得齐**；\n"
-               "2. 四个 emoji（📄 🛠️ 🔍 🔧）选得合不合适；\n"
-               "3. 有没有哪一行看着别扭。",
+        answer="按你 2026-09-21 的真机截图改了两点：\n"
+               "1. **区段符号不复用** —— 面板标题的 🛠️ 不再出现在工具行（terminal 现在用 💻）；\n"
+               "2. **同 token 的工具按名字精化** —— 60+ 真实工具名不再挤在 14 个符号上"
+               "（skills_list 🧩、read_file 📄、memory 🧠、cronjob ⏰、image 🎨…）。\n\n"
+               "请确认：① 图标与文字是否对得齐；② 每个 emoji 贴不贴切；③ 有没有哪一行别扭。",
         panel=_cardview.PanelView(
-            title="🛠️ 工具执行 · 4 步",
+            title="🛠️ 工具执行 · 5 步",
             tools=steps,
             border="grey",
         ),

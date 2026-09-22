@@ -48,7 +48,7 @@
 | --- | --- | --- |
 | 加载指示共享 `img_key` 会不会动 | **① 会动**（用户目视） | 对照卡 `om_x100b643abd6394b0dfa26a200d65018`；记录 `loading-asset.md` |
 | 工具行图标「偏上」 | 用户选**乙（emoji 内联）**，且「丙 没有换行」 | 三臂卡 `om_x100b6424d23e24a8c3368dfbdaad661`；`probe_icons.py` |
-| 定版确认（emoji 选型 + 对齐） | **待用户回话** | `om_x100b64256c1470acdfadc4d33133fca`（`probe_icons_final.py`，生产渲染器输出） |
+| 定版确认（emoji 选型 + 对齐） | **第一轮反馈：标题 🛠️ 与 terminal 行撞符号、整体不够好** ⇒ 已改成「区段符号不复用 + 同 token 按名字精化」（见 `releases/v0.7.2.md` §4.1、`audit-round1.md` §8.5）；**修复后待用户复看** | 修复前 `om_x100b64256c1470acdfadc4d33133fca` / 重发 `om_x100b642891ea30b0c4ed8f26a631531`；**修复后** `om_x100b64146cbc80a8c0230da27d9e9ef`（`probe_icons_final.py`，生产渲染器输出） |
 | 长回合（>20 工具步）不掉纯文本 / 无灰气泡 | **待用户复验** | 离线判据已绿：`test_v4_33_long_turn_card_never_puts_text_nodes_inside_collapsible_panels` |
 | `show_reasoning=true` 的**嵌套** `collapsible_panel` 客户端渲染（仓库自己的 `plan-consensus.md:111` 列为未验证） | **待用户回话** | 生产渲染器输出已发：`om_x100b6427ec67d4a4de74424945f4ca0`（`probe_nested_panel.py`） |
 

@@ -2642,6 +2642,15 @@ MUTATIONS = [
      '    return bool(snap.get("tools") or snap.get("rounds") or snap.get("reasoning"))',
      '    return bool(snap.get("rounds") or snap.get("reasoning"))',
      'test_units'),
+    ('V4-55-工具行不再按名字精化 emoji（terminal 复用面板标题的区段符号 🛠️）', 'core/cardview.py',
+     '    normalized = str(name or "").strip().lower().replace("-", "_")\n'
+     '    if normalized:\n'
+     '        for alias, emoji in TOOL_EMOJI_BY_ALIAS:\n'
+     '            if normalized == alias or normalized.startswith(alias + "_"):\n'
+     '                return emoji\n'
+     '    return icon_emoji(token)',
+     '    return icon_emoji(token)  # V4-55 mutated',
+     'test_units'),
 
 ]
 

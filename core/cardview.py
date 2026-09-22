@@ -273,11 +273,66 @@ def icon_emoji(token: str) -> str:
     return ICON_EMOJI.get(str(token or ""), ICON_EMOJI.get(ICON_FALLBACK, "🔧"))
 
 
+#: 工具名 → 工具行 emoji 的**渲染层覆盖**（用户 2026-09-21 P3 复验口径，两条）：
+#:   ① **区段符号不复用**：面板标题里的 🛠️（工具执行）/💭（思考）是**区段**符号。用户截图把
+#:      标题的 🛠️ 与 `terminal` 行一起标红：「面板顶部标题的图标和下方使用命令行命令的图标
+#:      是同一个，这个不合理」。14 个 CLS token 里 `setting_outlined` 同时被 exec / bash /
+#:      command / run / terminal / execute / process / setup / close 共用 ⇒ 一律撞标题符号。
+#:   ② **同 token 多工具按名字精化**：60+ 个真实工具名挤 14 个 token，按工具名给更贴切的 emoji
+#:      （skill 仍是 🧩、read 仍是 📄、search 仍是 🔍，只精化那些「一格塞多个语义」的格子）。
+#: 匹配规则与 token 解析**同源**（归一化后「精确 或 `alias_` 前缀」，不是子串）；**具体在前**。
+#: ⚠️ token 表（`ICON_ALIASES` / `ICON_ALIASES_LOCAL_EXTRA`）仍是 CLS 对齐的唯一真相；
+#: 本表**只影响渲染**，不参与 `check_cls_alignment` 的逐条比对（那条门禁只读 token 表）。
+TOOL_EMOJI_BY_ALIAS: List[Tuple[str, str]] = [
+    # —— 终端 / 执行类：🛠️ 留给面板标题，工具行用「机器 / 齿轮」语义
+    ("terminal", "💻"),
+    ("exec", "💻"),
+    ("bash", "💻"),
+    ("command", "💻"),
+    ("run", "💻"),
+    ("execute", "💻"),
+    ("process", "⚙️"),
+    ("setup", "🔌"),
+    ("close", "✖️"),
+    # —— 生成 / 媒体类（同 token 的 app-default 🧩 / language 🌐 太笼统）
+    ("image", "🎨"),
+    ("video", "🎬"),
+    ("speech", "🗣️"),
+    ("text", "🗣️"),
+    ("vision", "👁️"),
+    # —— 记忆 / 历史 / 计划
+    ("memory", "🧠"),
+    ("session", "🕘"),
+    ("cronjob", "⏰"),
+    # —— 消息 / 互动
+    ("send", "✉️"),
+    ("react", "👍"),
+    ("show_tip", "💡"),
+    ("clarify", "❓"),
+    # —— 界面操作
+    ("computer", "🖱️"),
+]
+
+
+def tool_emoji(name: str = "", token: str = "") -> str:
+    """工具行首 emoji：先按**工具名**覆盖（:data:`TOOL_EMOJI_BY_ALIAS`），再退回 token 表。
+
+    ``name`` 缺省时与 :func:`icon_emoji` 逐字一致（老调用点/只给 token 的场景不受影响）。
+    """
+    normalized = str(name or "").strip().lower().replace("-", "_")
+    if normalized:
+        for alias, emoji in TOOL_EMOJI_BY_ALIAS:
+            if normalized == alias or normalized.startswith(alias + "_"):
+                return emoji
+    return icon_emoji(token)
+
+
 def _tool_title_div(step: ToolStepView) -> Dict[str, Any]:
     status_text, color = step.status_style
     duration = f" ({step.duration_ms} ms)" if step.duration_ms else ""
-    # ⚠️ emoji **内联在文本里**，不用 `div.icon` —— 用户选版见 `ICON_EMOJI` 的说明。
-    content = (f"{icon_emoji(step.icon_token)} **{step.title}**{duration} · "
+    # ⚠️ emoji **内联在文本里**，不用 `div.icon` —— 用户选版见 `ICON_EMOJI` 的说明；
+    #    用哪个 emoji 走 `tool_emoji`（区段符号不复用 + 同 token 按名字精化）。
+    content = (f"{tool_emoji(step.name, step.icon_token)} **{step.title}**{duration} · "
                f"<font color='{color}'>{status_text}</font>")
     return {
         "tag": "div",

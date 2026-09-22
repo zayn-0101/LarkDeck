@@ -12926,15 +12926,21 @@ def test_v4_46_tool_rows_use_inline_emoji_not_div_icon():
     后一句同时**证伪**了审计 A 的假说（「行太长 ⇒ 换行 ⇒ 图标顶对齐」），
     所以修法是换**渲染方式**（内联 emoji），不是缩短文本。
 
-    这条用例钉两件事：① 工具 → CLS token → emoji 三者的对应；
-    ② 工具行的 `div` **没有** `icon` 字段（退回 `div.icon` 必须实红）。
+    这条用例钉两件事：① 工具 → CLS token → emoji 三者的对应；② 工具行的 `div` **没有**
+    `icon` 字段（退回 `div.icon` 必须实红）。
+
+    ⚠️ 2026-09-21 P3 复验后 emoji 分两层（用户截图：标题 🛠️ 与 terminal 行撞符号）：
+    `icon_emoji(token)` = 14 个 CLS token 的渲染表（不变），`tool_emoji(name, token)` =
+    **工具行**实际用的（区段符号不复用 + 同 token 按名字精化）。这里两层都钉。
     """
-    for name, token, emoji in (("read_file", "file-link-text_outlined", "📄"),
-                               ("terminal", "setting_outlined", "🛠️"),
-                               ("web_search", "search_outlined", "🔍"),
-                               ("完全没听过", "setting-inter_outlined", "🔧")):
+    for name, token, emoji, row_emoji in (
+            ("read_file", "file-link-text_outlined", "📄", "📄"),
+            ("terminal", "setting_outlined", "🛠️", "💻"),
+            ("web_search", "search_outlined", "🔍", "🔍"),
+            ("完全没听过", "setting-inter_outlined", "🔧", "🔧")):
         assert adapter.LarkDeckMixin._ld_icon_token(name) == token, name
         assert adapter._cardview.icon_emoji(token) == emoji, (name, token, emoji)
+        assert adapter._cardview.tool_emoji(name, token) == row_emoji, (name, token, row_emoji)
     panel.reset()
     try:
         panel.bind_chat_session("oc_v446", "s_v446")
@@ -12948,7 +12954,10 @@ def test_v4_46_tool_rows_use_inline_emoji_not_div_icon():
         assert rows, "前提：工具行必须在面板里"
         row = rows[0]
         assert "icon" not in row, f"工具行不许再用 div.icon（用户选的是内联 emoji）：{row}"
-        assert row["text"]["content"].startswith("🛠️ "), row["text"]["content"]
+        # 行首必须是**工具行** emoji（不是 token 表里的 🛠️ —— 那是面板标题的区段符号）
+        assert row["text"]["content"].startswith("💻 "), row["text"]["content"]
+        assert "🛠️" not in row["text"]["content"], \
+            f"工具行不许复用面板标题的区段符号 🛠️：{row['text']['content']}"
     finally:
         panel.reset()
 
@@ -13076,39 +13085,81 @@ def test_v4_50_stop_redraw_structured_card_closes_streaming_mode():
         _v41_teardown(raw, target_cls, old_reqs, saved_config, old_interval, chat)
 
 
+#: Hermes `tools/*.py` 的真实工具名（**冻结成字面量**，提取命令：
+#: `grep -rhoE 'name\s*=\s*"[a-z0-9_]+"' ~/.hermes/hermes-agent/tools/*.py | sort -u`，
+#: 再手工剔除配置值）。为什么冻结而不是现读：门禁必须能在 Hermes 缺席时也跑
+#: （现读会让相关断言变成「环境在就绿、不在就跳过」的形式化满足）。
+#: 两处引用（`test_v4_48b` 不许落兜底 / `test_v4_55` 不许复用区段符号）共用这一份清单。
+_REAL_HERMES_TOOL_NAMES: List[str] = [
+    "annotate_preview", "apply_layout", "browser_back", "browser_cdp", "browser_click",
+    "browser_console", "browser_dialog", "browser_exec", "browser_get_images",
+    "browser_navigate", "browser_press", "browser_scroll", "browser_snapshot",
+    "browser_type", "browser_vision", "clarify", "close_preview", "close_terminal",
+    "computer_use", "cronjob_manage", "delegate_task", "desktop_preview",
+    "desktop_project", "drive_preview", "execute_code", "feishu_doc_read",
+    "feishu_drive_add_comment", "focus_pane", "gui_tour", "ha_call_service",
+    "ha_get_state", "image_generate", "memory", "open_preview", "patch",
+    "process_manage", "react_to_message", "read_file", "read_preview", "read_terminal",
+    "read_window_below", "search_files", "send_message", "session_search", "setup_mcp",
+    "show_tip", "skill_manage", "skill_view", "skills_list", "terminal",
+    "text_to_speech", "todo_list", "video_analyze", "video_generate", "vision_analyze",
+    "web_extract", "web_search", "write_file", "x_search",
+]
+
+
 def test_v4_48b_real_hermes_tool_names_never_fall_back_to_the_generic_icon():
     """审计 B 实测：Hermes `tools/*.py` 的 42 个真实工具名里 **29 个落兜底**（🔧）——
     其中 `delegate_task` / `execute_code` / `memory` / `session_search` / `cronjob_manage` /
     `todo_list` 都在用户**已启用**的 toolset 里 ⇒ 卡片上一排兜底图标（用户可见的落差）。
 
-    这里把真实清单**冻结成字面量**（提取命令：
-    `grep -rhoE 'name\s*=\s*"[a-z0-9_]+"' ~/.hermes/hermes-agent/tools/*.py | sort -u`，
-    再手工剔除配置值），逐条断言**不许落兜底**。为什么要冻结而不是现读：门禁必须能在
-    Hermes 缺席时也跑（现读会让这条变成「环境在就绿、不在就跳过」的形式化满足）。
+    清单冻结在模块级 `_REAL_HERMES_TOOL_NAMES`（理由见那里的注释）；逐条断言**不许落兜底**。
     """
-    real_names = [
-        "annotate_preview", "apply_layout", "browser_back", "browser_cdp", "browser_click",
-        "browser_console", "browser_dialog", "browser_exec", "browser_get_images",
-        "browser_navigate", "browser_press", "browser_scroll", "browser_snapshot",
-        "browser_type", "browser_vision", "clarify", "close_preview", "close_terminal",
-        "computer_use", "cronjob_manage", "delegate_task", "desktop_preview",
-        "desktop_project", "drive_preview", "execute_code", "feishu_doc_read",
-        "feishu_drive_add_comment", "focus_pane", "gui_tour", "ha_call_service",
-        "ha_get_state", "image_generate", "memory", "open_preview", "patch",
-        "process_manage", "react_to_message", "read_file", "read_preview", "read_terminal",
-        "read_window_below", "search_files", "send_message", "session_search", "setup_mcp",
-        "show_tip", "skill_manage", "skill_view", "skills_list", "terminal",
-        "text_to_speech", "todo_list", "video_analyze", "video_generate", "vision_analyze",
-        "web_extract", "web_search", "write_file", "x_search",
-    ]
+    real_names = _REAL_HERMES_TOOL_NAMES
     pick = adapter.LarkDeckMixin._ld_icon_token
     fallback = [n for n in real_names if pick(n) == adapter._cardview.ICON_FALLBACK]
     assert not fallback, f"这些真实工具名落兜底图标（用户可见的落差）：{fallback}"
+    # ① token 级 emoji：14 个 CLS token 的渲染表（`icon_emoji`），**本表不随工具名变**；
     for name, emoji in (("delegate_task", "🤖"), ("execute_code", "🛠️"),
                         ("terminal", "🛠️"), ("session_search", "🔍"),
                         ("memory", "📁"), ("web_extract", "🌐"),
                         ("skills_list", "🧩"), ("todo_list", "✅")):
         assert adapter._cardview.icon_emoji(pick(name)) == emoji, (name, pick(name))
+    # ② **工具行**级 emoji（`tool_emoji` = 渲染层覆盖；用户 2026-09-21 P3 复验口径）：
+    #    区段符号 🛠️/💭 不复用 + 同 token 多工具按名字精化。
+    for name, emoji in (("delegate_task", "🤖"), ("execute_code", "💻"), ("terminal", "💻"),
+                        ("session_search", "🕘"), ("memory", "🧠"), ("web_extract", "🌐"),
+                        ("skills_list", "🧩"), ("todo_list", "✅")):
+        tok = pick(name)
+        assert adapter._cardview.tool_emoji(name, tok) == emoji, (name, tok)
+
+
+def test_v4_55_tool_rows_never_reuse_the_section_emoji():
+    """用户 2026-09-21 P3 复验（真机截图标红）：面板标题的 🛠️（工具执行）**不许**出现在工具行里。
+
+    截图原话：「面板顶部标题的图标和下方使用命令行命令的图标是同一个，这个不合理」。
+    为什么单列一条：所有 **token 级**断言都是绿的 —— 14 个 CLS token 里 `setting_outlined`
+    一格里塞了 exec/bash/command/run/terminal/execute/process/setup/close，谁都没违反 token 表，
+    但渲染出来就是「标题符号 = 工具行符号」。只有按**渲染层的工具行 emoji**（`tool_emoji`）
+    断言才抓得住这类「区段符号被复用 / 同 token 多语义共用一格」的观感缺陷。
+    """
+    cv = adapter._cardview
+    section = {"🛠️", "💭"}          # 两个区段符号（工具执行 / 思考）
+    pick = adapter.LarkDeckMixin._ld_icon_token
+    bad = [n for n in _REAL_HERMES_TOOL_NAMES if cv.tool_emoji(n, pick(n)) in section]
+    assert not bad, f"这些真实工具行的 emoji 复用了面板区段符号 {section}：{bad}"
+    # 覆盖表里**同族**允许共用（terminal/execute/bash 都是「跑命令」⇒ 💻；speech/text 都是
+    # `text_to_speech` 的两个别名 ⇒ 🗣️），但不许退化成「全表就那几个符号」：
+    values = [e for _, e in cv.TOOL_EMOJI_BY_ALIAS]
+    assert len(set(values)) >= 15, f"渲染层覆盖的 emoji 种类太少（没起到精化作用）：{sorted(set(values))}"
+    # 口径演示：terminal 与「面板标题」必须不同符号；且 terminal 家族（execute/bash/process）
+    # 不再共用同一个 emoji（旧行为是 9 个名字共用 🛠️）。
+    assert cv.tool_emoji("terminal", cv.ICON_TOKENS["terminal"]) != "🛠️"
+    fam = {cv.tool_emoji(n, pick(n)) for n in ("terminal", "execute_code", "process_manage",
+                                               "setup_mcp", "close_terminal")}
+    assert len(fam) >= 4, f"terminal 家族的 emoji 仍然糊在一起：{fam}"
+    # 未给 name 的老调用点行为不变（只给 token ⇒ 与 icon_emoji 逐字一致）
+    for tok in cv.ICON_EMOJI:
+        assert cv.tool_emoji("", tok) == cv.icon_emoji(tok), tok
 
 
 def test_v0_7_degraded_turn_never_reenters_the_structured_frame_path():
