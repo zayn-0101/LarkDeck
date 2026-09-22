@@ -40,20 +40,23 @@ def build_card() -> dict:
                                icon_token="setting_outlined",
                                detail='{"command": "df -h"}'),
         _cardview.ToolStepView(name="web_search", title="web_search", status="error",
-                               duration_ms=2340, icon_token="search_outlined"),
+                               duration_ms=2340, icon_token="search_outlined",
+                               error_block="403 Forbidden"),
         _cardview.ToolStepView(name="完全没听过", title="完全没听过", status="ok",
                                duration_ms=8, icon_token="setting-inter_outlined"),
     ]
     view = _cardview.CardView(
-        answer="按你 2026-09-21 的真机截图改了两点：\n"
-               "1. **区段符号不复用** —— 面板标题的 🛠️ 不再出现在工具行（terminal 现在用 💻）；\n"
-               "2. **同 token 的工具按名字精化** —— 60+ 真实工具名不再挤在 14 个符号上"
-               "（skills_list 🧩、read_file 📄、memory 🧠、cronjob ⏰、image 🎨…）。\n\n"
-               "请确认：① 图标与文字是否对得齐；② 每个 emoji 贴不贴切；③ 有没有哪一行别扭。",
+        answer="按你 2026-09-22 的两条口径改完了：\n"
+               "1. **统一灰色线性图标**（官方 `_outlined`，`color:\"grey\"`）—— 不再五颜六色；\n"
+               "2. **文本前缀**放法（三臂里你选的「乙」）—— 图标与文字同一行盒，实测 **0px** 偏差；\n"
+               "3. **更全面**：详情行（`tool-indent`）、错误块标题（`warning`）、折叠提示（`more`）都带上了。\n\n"
+               "请确认：① 图标与文字是否对得齐；② 每个图标贴不贴切；③ 有没有哪一行看着别扭。",
         panel=_cardview.PanelView(
             title="🛠️ 工具执行 · 5 步",
             tools=steps,
+            collapsed_hint="还有 12 步未显示（折叠提示也带前缀图标）",
             border="grey",
+            tool_icon_mode="line",
         ),
         header_enabled=False,
     )
