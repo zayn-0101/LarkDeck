@@ -1,4 +1,4 @@
-# v0.7.3 计划（第 1 项：细节行字号 `x-small`）
+# v0.7.3 计划（细节行字号 `x-small` + 系统提示去状态词 + 注释口径）
 
 > 承接 v0.7.2（已发布：tag `v0.7.2` = `6fd68f3`）。本文件是**下一批的唯一执行依据**；
 > 老规矩：**先出计划 → ≥3 路子代理对抗审计 → 收敛后才动手**；每阶段结束再过审计；
@@ -98,3 +98,85 @@
 
 **纪律**：每阶段审计回来 → 逐条给处置（含**未采纳的理由**）→ 讨论收敛后才进下一阶段；
 **禁止 sleep 轮询**（只用有界等待器）；全量重验期间**不碰任何文件**。
+
+---
+
+## 6. P0 审计收敛（三路对抗审计 → 逐条处置）
+
+审计 agent：A 技术可行性 `7fe3d34b` · B 用户可见效果与证据 `98c88adb` · C 流程与诚实性 `92f41a3f`。
+
+### 6.1 **必须更正的实现口径（C-3，高）**：第 2 项的判据不是「started/status 缺省」
+
+原判据（§4 表）有洞：系统提示卡走 `send()`，而 `_ld_render_card` 会用
+`_ld_cardview(status="completed")` **自算**状态，`_ld_view_status` 又用 panel 快照覆盖 ⇒ 提示卡
+即使「没有回合上下文」也可能拿到显式 status。**改为显式回合标志**：
+
+* 在 `send()/edit_message()` 里按「这条消息是不是某个回合的产出」传下 `turn_card: bool`（收尾帧=真，
+  静态发送/系统提示/命令回复=假）；
+* `_ld_footer(..., turn_card=...)`：**非回合**一律 `return None`（整段不出页脚）；
+* `_ld_view_status` / `_ld_render_card` 的 **panel 快照状态覆盖**只在 `turn_card=True` 时生效；
+* `_log_turn_selfcheck`（`adapter.py:1727`）自己那条「页脚=…」的日志：回合自检要显式传
+  `status`/`turn_card`，别因为改这里而永远打「页脚=无」；
+* **逐一核对调用点**：`1727 / 2668 / 3271 / 3785 / 4236 / 4825` 与
+  `tests/test_units.py:1533-1539 / 2241-2246 / 2321-2326 / 5238`，每处写「该有页脚 / 不该有」的结论。
+
+### 6.2 断言与变异清单（C-2，高；每条都要进 6 片全量）
+
+| # | 语义 | 硬字面量断言（文件/用例） | 新变异（old → new） |
+| --- | --- | --- | --- |
+| 1 | 细节行 `x-small` | 细节行元素 `text_size == "x-small"` | `"x-small"` → `"notation"` |
+| 2 | Error/Result 块 `x-small` | 同上（该元素） | 同上（该元素） |
+| 3 | 状态兜底不许回来 | 一次完成回合后发提示卡 ⇒ **无页脚** | `_ld_footer` 里加回 `panel_snap.get("status")` |
+| 4 | 非回合抑制不许丢 | 同上（无 footer 元素） | 去掉 `turn_card` 判据 |
+| 5 | **真实回合必须保留** `✅ 已完成` | 收尾卡断言 `startswith("✅ 已完成")` | 把 `turn_card` 判据写反（回合卡也抑制） |
+
+### 6.3 冻结与盖章纪律（C-4/C-5/C-6/C-7，高/中）
+
+* **全量不可避免**：golden 夹具含细节行的 `text_size:"notation"`（`_HELPER_FILES`）⇒ 重生成后
+  `helper_fp` 变 ⇒ `_delta_split` 令**全部 499+ 条 todo** ⇒ **禁 `--delta`、禁 `--seed-inherited`**；
+* 起跑前：**工作树干净 + 固定 HEAD**、清陈旧 `seed*/shard*`、每片独立 `LARKDECK_LEDGER_PATH`；
+  **跑中禁 commit**（v0.7.2 曾因起跑后提交作废一轮）；分片跑**永不盖章**，只在 merge 时盖；
+* merge：`--allow-at adea7cb`、现场三指纹、日志 🔴 并集、**12 名对照全绿**、`n_assert == len(MUTATIONS)`
+  （加了变异后 **N > 499**）、`tree_dirty=false`、记 `full_audit_tree`；
+* 改 `tests/check_cardview.py` ⇒ 14 条 `gate=check_cardview` 的整文件 `gate_fp` 失效；
+  `test_units` 的 463 条用**用例名子集** ⇒ **只许新增用例名，不许改名/删名**；
+* 预计失效窗：`R7-1/R7-2/T3`（`adapter.py:2229/2230/2250`）、`CLS-25`（`i18n.py:20-51`）、
+  `G2-11`（`4156-4187`）、`R9-9`（`4215-4245`）、`V4-72`（`mutate_check.py:2764`，只要不动
+  `_is_full_run` 正文就存活）⇒ 改完**先 `--preflight`**（且明确：**preflight 不是绿灯**，
+  `AGENTS.md:491-496`）；`py_compile` 必须用 venv 解释器
+  `/Users/Zayn/.hermes/hermes-agent/venv/bin/python3`。
+
+### 6.4 发布机制（C-12/C-13，中）
+
+* 新建 `~/.larkdeck-scratch/release-v0.7.3.py`：`TAG=v0.7.3`、`TAG_MSG` 补本批三项、
+  notes = `docs/releases/v0.7.3.md`、`--allow-at adea7cb`、新 scratch 目录 `seed{1..6}/shard{1..6}`；
+  8 步门禁**名字集合不变**；
+* `deploy_probe.py` 的部署标记与探针名换成 v0.7.3（别再用 `SPINNER_TOOL_IMG_KEY` 当标记）；
+* **顺序**：一次 commit `C`（代码+测试+夹具+注释+发布说明）→ preflight → 6 片 full on `C`
+  （跑中禁 commit）→ merge ⇒ `full_audit_at=C`、`n_inh=0` → 账本/文档 commit `D`
+  （不得碰 `core/`、`tests/`、`plugin.yaml`、`docs/audits/v0.7.2`）→ `.deploy` 指 `C`/最终提交
+  （**必须先于打 tag**）→ 用户终验 → `--check` → `--go`（push/tag/release/`.deploy` 指 tag/重启）
+  → 最后 post-release 文档；**tag 必须落在已部署且 `.deploy==HEAD` 的提交上**。
+
+### 6.5 诚实性修正（C-8/C-9/C-10/C-11，高/中）
+
+* **4 处注释现为假**（逐条登记，改时抄原文）：`core/context.py:374`（页脚上 🤖）、
+  `core/i18n.py:28`（`Succeeded`/`Running`/`Failed` 旧口径）、
+  `core/adapter.py:4180-4181 + 4233`（「页脚带短码 / 第二帧起」）、
+  `tests/mutate_check.py:3013 + 3019`（写 45s，实际 `_GATE_TIMEOUT_S=90.0`）；
+* `core/cards.py:221-222` 声称 `x-small` 不在官方文档 ⇒ 使用处**必须加限定**（只在明确档位启用）
+  + 附真机探针证据（本次卡 3/卡 4）；
+* `CHANGELOG.md:17` 仍是 `[Unreleased] - v0.7.2`（已 tag）⇒ 改 `[0.7.2]` + 开 v0.7.3；
+  `plugin.yaml` 的 `version` 要 bump；README/plugin.yaml 补「非回合不再出页脚、真实回合不变」；
+* `tests/test_units.py` 里短码旧口径 docstring（`6536 / 6781 / 6841 / 1593`）顺手改。
+
+### 6.6 登记卫生（C-15/C-16，中）
+
+* 证据强度标签：`text_weight`（`200621` + path + 探针脚本 `tests/probe_style_candidates.py`，**强**）；
+  十六进制颜色（卡 id + 用户目视「三行一样」，**中**：无 payload/截图哈希）；`grey` 最浅枚举
+  （**弱**：未附枚举出处，需在实现时补官方链接或改写为「实测十六进制无效」）；
+* **清场清单**（待用户点头）：审计 worktree、`/tmp/larkdeck`、`~/.larkdeck-scratch/v0.7.2-*` 临时目录；
+* **旧登记项处置**：`docs/plan-v0.7.2.md` 里标「登记 v0.7.3」的一批（表单容器 / 澄清卡 TTL /
+  `panel_color_tags` 对结构化无效 / 全卡字段白名单 / ledger 来源凭证 / 无界等待 / B4 页脚多列图标 /
+  D5 自绘 / E2 交错结构 / 嵌套 partial 探针）**必须逐项写 defer 或 re-scope + 理由**，
+  否则发布后「登记 v0.7.3」这个标签就是假的。
