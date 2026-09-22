@@ -22,34 +22,37 @@
 | --- | --- | --- |
 | `core/cardview.py` | `_tool_detail_div` **line 分支**的 `text_size`：`PANEL_TEXT_SIZE` → `"x-small"`（emoji 分支的 `plain_text` 同步改） | 细节行是**独立元素** ⇒ 只影响它；`PANEL_TEXT_SIZE` 本身保持 `"notation"`（其它元素继续用） |
 | `core/cardview.py` | `_tool_output_div`（Error / Result 代码块）：`text_size` → `"x-small"` | ⚠️ 该元素里 `**Error**` 标签与代码文本**同属一个元素** ⇒ 标签一起变小（用户已确认不拆元素） |
-| `core/adapter.py` | **Design B**（§6.1）：`send()` 显式 turn 判定；`_ld_render_card(..., turn_card=)` 必填；`_ld_footer` 退纯格式器（删 `panel_snap` 兜底、默认 `turn_card=False` ⇒ None）；`_ld_frame_footer` 显式解析状态；非回合 `view.footer_enabled=False`（CardKit seed 例外） | 每个调用点逐一给结论；非 native 真终稿靠 `notify`/`expect_edits` 保住 ✅；判定打限流诊断日志 |
+| `core/adapter.py` | **Design C**（§6.10）：`_ld_footer` 纯格式器（默认 fail-closed）；`send()` 显式回合判定 `_ld_send_is_turn`（interim 排除 → 命令打点 → guarded/notify/expect_edits → 最近帧内容认领 → 默认非回合）；`status_locked` 锁预览；非回合 panel/header/footer 全关；`_ld_frame_footer(default_status=)` 兜收尾竞态 | 每个调用点逐一给结论（含 4039）；判定打限流日志（P4 复核）；无标记且无流记忆的 recovered/queued final 如实登记为不挂页脚 |
+| `core/context.py` | 命令回复打点：`note_command_inbound` / `clear_command_inbound` / `command_reply_active`（TTL 60s、有界、绝不抛） | 只写内存；`pre_gateway_dispatch` 与 `send()` 共用 |
+| `core/hooks.py` | `_on_pre_gateway_dispatch` 对 `event.is_command()` 打点，非命令入站清除 | 只观察，恒返回 None，不干预分发 |
 | `core/cards.py` | 注释口径：`x-small` 从「不在文档、别赌」改为「markdown 真机已验 + 其它宿主见宿主矩阵；未过退回 notation」 | 不改 `text_profile` 档位表 |
-| `tests/test_units.py` | 三条新用例（B 给名）：`test_v073_detail_and_error_text_sizes_are_x_small` / `test_v073_footer_turn_scope_and_status_is_explicit` / `test_v073_non_turn_send_has_no_footer_element`；**并**修 5238/5251/5254/5258/5263/5265 等旧无参调用（改到 red-assert、不 crash） | **只新增用例名**；旧用例只改函数体，不许改名/删名 |
-| `tests/mutate_check.py` | 新增 V073-1a/1b/1c/2a/2b/2c/2d（§6.2）；同步改 V4-57 两侧锚点与 V4-7/V4-17B/G2-3；顺手修 45s→90s 注释 | 每条 `-k` 完整模式实红；post-change 锚点唯一性逐一 grep |
+| `tests/test_units.py` | 三条新用例（名字见 §6.10.6）；**并**修 §6.10.6 全表旧调用点（1533/1537…5306/5312、6860/6901、10914/10918 等） | **只新增用例名**；旧用例只改函数体，不许改名/删名；失败必须 red-assert 不 crash |
+| `tests/mutate_check.py` | 新增 12 条 V073（§6.10.7）；同步重写 G2-3/V4-7/V4-10/V4-17B/V4-57 五条旧锚点；`_is_full_run` 加 `not args.shard`；45s→90s 注释 | 每条 `-k` 完整模式实红；post-change 锚点唯一性 grep = 1 |
 | `tests/check_cardview.py` | 加 Error 块夹具 + `detail/error text_size=="x-small"` 断言 + `PANEL_TEXT_SIZE=="notation"` | 字段白名单分档不变（`div.icon` 可带 size、`markdown.icon` 不可） |
-| `tests/write_golden_trace.py` | 首选给场景加一个 Error/Result 步骤（否则写明不扩理由） | 只改夹具场景，不改判定 |
-| `tests/golden_cardkit_trace.json` | 重生成：既有 9 叶 `notation→x-small`（B-7 清单）+（若加 Error）新增叶；item2 预期 **0 叶**变化 | `--check` 必先一致；diff 逐条解释；有 0 之外的 item2 diff 即判 `turn_card` 误分类 |
-| `tests/probe_text_size_hosts.py` | **新增**宿主矩阵探针：`markdown` / `div.text=lark_md` / `div.text=plain_text` 各一张，内含 notation vs x-small 对照，逐张打印 `code` | 任一宿主非 0 或肉眼不更小 ⇒ **该宿主退回 `notation`**（改回后同步断言/变异/夹具再重验） |
+| `tests/write_golden_trace.py` | **不改场景**（§6.10.8：扩 Error 涟漪大、收益低） | Error 由单测 + check_cardview 双覆盖 |
+| `tests/golden_cardkit_trace.json` | 重生成：实测 **8 叶** detail `notation→x-small`（以实现后逐叶解释为准）；**item2 = 0 叶**（footer 叶 `✅ 已完成 · Test Model` 不变） | `--check` 必先一致；item2 出 diff 即判分类器误伤真回合 |
+| `tests/probe_text_size_hosts.py` | **新增**宿主矩阵探针：`markdown` / `div.text=lark_md` / `div.text=plain_text`，各含同卡 notation 对照；**三主题各复跑**；Error 用真实长栈 | 单 host 被拒/不变小 ⇒ 该 host 退回 `notation`；Error 不可读 ⇒ 只 Error 块退回；结论写 verify-log |
 | `docs/` + `plugin.yaml` + `CHANGELOG.md` | 完成记录 + `docs/releases/v0.7.3.md` + `version: 0.7.3` + `[0.7.2]` 收口/开 v0.7.3 + README/plugin.yaml 写清「非回合无页脚 / 真回合不变 / 命令回复无页脚」 | 只追加，不改历史行（历史证据保留） |
 
 ## 2. 验证计划（出口判据，机械可核）
 
-1. `py_compile`（venv 解释器）+ `run_fast --full`（8 步全 OK）+ `mutate_check --preflight` **全数绿**
-   （= `MUTATIONS` + 12 `CONTROLS`，不再出现 510/511）；明确 **preflight 不是绿灯**（`AGENTS.md:491-496`）；
-2. 7 条新变异 `V073-1a/1b/1c/2a/2b/2c/2d` **`-k` 完整模式实红且红在断言上**（贴输出；M4 必须走
-   `turn_card=True` 侧，防被非回合早退遮蔽）；
-3. 黄金夹具重生成 + diff 逐条解释：既有 **9 叶**细节行 `notation→x-small`（B-7 清单）+ 若扩场景的
-   Error 叶；**item 2 预期 0 叶变化**（有 diff 即判 `turn_card` 误分类）；`helper_fp` 变 ⇒ 全量必然；
-3b. **`x-small` 宿主矩阵探针**（A-3/B-8）：`tests/probe_text_size_hosts.py` 发 3 张独立卡
-   （`markdown` / `div.text=lark_md` / `div.text=plain_text`），逐张打印服务端 `code`；任一 `code!=0`
-   或用户目视不更小 ⇒ **该宿主退回 `notation`**（回退后同步改断言/变异/夹具并重验）；
-4. 既有门禁同步修好：`check_hooks.py:772` + `test_units.py` 的六个无参 `_ld_footer` 调用点
-   （5238/5251/5254/5258/5263/5265）必须显式传 `turn_card`/status，全绿且失败时仍是 red-assert；
+1. `py_compile`（venv 解释器）+ `run_fast --full`（8 步全 OK）+ `mutate_check --preflight` **523/523**
+   （511 变异 + 12 对照）；preflight 不是绿灯（`AGENTS.md:491-496`）；
+2. 12 条新变异 `V073-1a…2i` **`-k` 完整模式实红且红在 `test_units`**（贴输出；2a/2i 必须用
+   能穿透早退/内容认领的断言，否则假绿）；
+3. 黄金夹具重生成 + diff 逐叶解释：**实测 8 叶** detail `notation→x-small`；**item2 = 0 叶**
+   （footer 叶不变）；helper_fp 变 ⇒ 全量必然；Error 不靠夹具（§6.10.8）；
+3b. **`x-small` 宿主 × 主题探针**（§6.10.10）：3 host（markdown / `div.text=lark_md` /
+   `div.text=plain_text`）× 3 主题（ap_lite/neutral/ap_bubble），Error 带 20–30 行真实栈；
+   任一 host `code!=0`/不变小 ⇒ 该 host 退回 `notation`；Error 不可读 ⇒ 只 Error 块退回；
+4. 既有门禁同步修好（§6.10.6 全表）：`check_hooks.py:772` + `test_units.py` 的
+   `1533/1537、2241/2245、2321/2325、5147-5209、5229、5238-5267 各点、5306/5312、6860/6901、
+   10914/10918` 必须显式传 `turn_card`/status，全绿且失败时仍是 red-assert；
 5. 全量变异重验：6 分片完整模式、独立账本、坏 0；合并后 `full_audit_at == 当时的 HEAD`、`n_inh == 0`；
    实测墙钟写回（v0.7.2 那轮参考：499 条 ≈25 分钟，本轮 N 更大；机器空闲时更快）；
 6. 真机探针卡：①「改前 / 改后」两行细节行对照 + 一个 Error 块（看可读性）；② 一张系统提示卡样例
-   （无 ✅、无空页脚行）；③ 一张真实回合收尾卡（`✅ 已完成 · …` 一字不动）；④ 宿主/主题各一张
-   （默认 `ap_lite` 之外至少一种）；用户目视确认；
+   （无 ✅、无空页脚行）；③ 一张真实回合收尾卡（`✅ 已完成 · …` 一字不动）；④ 宿主×主题探针
+   （3 host × 3 theme，见 §6.10.10）
 7. 发布：用户终验 → **新建 `~/.larkdeck-scratch/release-v0.7.3.py`**（§6.4：TAG/notes 指向 v0.7.3、
    8 步门禁名字集合不变）→ `--check` 全绿 → `--go`（push/tag/`.deploy`/重启）。
 
@@ -76,15 +79,16 @@
 去读 `panel.snapshot()` 里**上一个回合**留下的状态。系统提示卡不属于任何回合，但紧跟在
 「刚完成的回合」之后 ⇒ 抄到陈旧的 `✅ 已完成`。
 
-**变更清单（已审计；实现口径以 §6.1 定版为准）**：
+**变更清单（已审计；实现口径以 §6.10 Design C 为准；§6.1 已被取代）**：
 
 | 文件 | 改动 | 约束 |
 | --- | --- | --- |
-| `core/adapter.py` | **Design B（§6.1 定版）**：`_ld_footer` 退**纯格式器**（删 `panel_snap` 兜底、默认 `turn_card=False` ⇒ None）；`_ld_render_card(..., turn_card=)` 必填，非回合关 `footer_enabled`/`footer`（否则 `entity_skeleton` 会留空 footer 元素）；`_ld_frame_footer` 自己解析本回合状态；`send()` 按 `notify`/`expect_edits`/`_interim_send`/`guarded` 显式判定 | `edit_message` 恒 `turn_card=True`；非 native 真终稿靠 `notify`/`expect_edits` 保留 ✅；每个调用点逐一给「该有页脚 / 不该有」结论；判定打限流诊断日志（P4 grep 复核） |
-| `tests/test_units.py` | 新增 B 的 3 条用例（§6.2 注：细节/错误块硬字面量、turn 侧恰好无 ✅、非回合 send 无 footer 元素）；**并**修 5238/5251/5254/5258/5263/5265 等旧无参调用 | 旧用例只改函数体；用例名新增（旧名不动），失败保持 red-assert |
-| `tests/mutate_check.py` | 新增 7 条 V073 变异（§6.2）；同步重对 V4-57/V4-7/V4-17B/G2-3 锚点 | 每条 `-k` 完整模式实红；post-change 锚点唯一性 grep = 1 |
-| `tests/golden_cardkit_trace.json` | 重生成：既有 9 叶 `notation→x-small` +（若扩场景的 Error 叶）；**item 2 预期 0 叶变化** | diff 逐条解释；item2 出 diff 即判 `turn_card` 误分类 |
-| 真机探针 | 系统提示卡（无 ✅、无空 footer 行）+ 真实回合收尾卡（✅ 一字不动）+ 宿主矩阵/Error 可读性 | 用户目视；结论写 `docs/verify-log.md` |
+| `core/adapter.py` | **Design C（§6.10）**：`_ld_footer` 纯格式器；`_ld_send_is_turn` 六步判定；`status_locked` 锁预览；非回合 panel/header/footer 全关；`_ld_frame_footer(default_status=)`；最近帧文本记忆 | 每个调用点逐一给结论（含 4039）；无流记忆的 recovered/queued final 如实登记；判定打限流日志（P4 复核） |
+| `core/context.py` + `core/hooks.py` | 命令回复打点（`pre_gateway_dispatch` + TTL 60s） | 只观察、恒返回 None、绝不抛 |
+| `tests/test_units.py` | 3 条新用例 + §6.10.6 全表旧调用点更新 | 旧用例只改函数体；失败保持 red-assert 不 crash |
+| `tests/mutate_check.py` | 12 条 V073 变异（§6.10.7）；重写 G2-3/V4-7/V4-10/V4-17B/V4-57 锚点；`_is_full_run` 加 `not args.shard` | 每条 `-k` 完整模式实红；post-change 锚点唯一性 grep = 1 |
+| `tests/golden_cardkit_trace.json` | 重生成：实测 8 叶 detail `notation→x-small`；**item2 = 0 叶变化** | diff 逐叶解释；item2 出 diff 即判分类器误伤真回合 |
+| 真机探针 | 系统提示卡（无 ✅/无面板/无空 footer 行）+ 真实回合收尾卡（✅ 一字不动）+ 3 host × 3 theme + 长栈 Error 可读性 | 用户目视二值确认；结论写 `docs/verify-log.md` |
 
 **与本批第 1 项（细节行 `x-small`）合并做一次全量重验**（同一棵树上改完再跑 6 分片），发布为 **v0.7.3**。
 
@@ -104,9 +108,9 @@
 
 | 阶段 | 内容 | 出口判据（硬） | 对抗审计 |
 | --- | --- | --- | --- |
-| **P0 规划** | 本文件冻结（范围 = §1 + §4 + 旧登记项处置 §7；含用户逐字确认 §4.1） | 文件入库 + 用户无异议 + **三路全量报告逐条处置（§6）后，再跑 3 路只读快速复核 Design B（聚焦 §6.1/§6.2/§6.3），无高阻断才进 P1** | **≥3 路**（技术可行性 / 用户可见效果与证据 / 流程与诚实性）—— 2026-09-22 起跑（`7fe3d34b` / `98c88adb` / `92f41a3f`），全量报告见 §6.8/§6.9/§6.7；复核 A2/B2/C2 另报 |
-| **P1 实现** | `core/cardview.py`（细节行 line+emoji、Error 块 = `x-small`）、`core/adapter.py`（Design B：显式 turn 判定 + `_ld_footer` 纯格式器 + 非回合 `footer_enabled=False`）、6 处注释口径（§6.7.1） | `py_compile`（venv）全绿；`_ld_footer`/`_ld_render_card`/`_ld_frame_footer` 的**每个调用点**逐一核对并留「该有/不该有页脚」表；`--preflight` 全数绿（不是 510/511） | **≥3 路**（判别力 / 协议不破坏 / 文档诚实） |
-| **P2 断言与变异** | B 的 3 条硬字面量用例 + 7 条 V073 变异（`-k` 全模式实红）+ 既有锚点 V4-57/V4-7/V4-17B/G2-3 同步改 + `check_cardview` Error 夹具/常量断言 + 黄金夹具重生成（9 叶解释 + item2 预期 0 叶）+ **宿主矩阵探针**（未过的宿主退回 notation） | 每条新变异**实红且红在断言上**；夹具 diff 逐条解释；宿主矩阵逐张 `code` 打印、用户目视 | **≥3 路**（变异判别力 / 夹具覆盖 / 无自证循环） |
+| **P0 规划** | 本文件冻结（范围 = §1 + §4 + 旧登记项处置 §7；含用户逐字确认 §4.1） | 文件入库 + 用户无异议 + 三路全量（§6.7-6.9）+ 三路快速复核（§6.11）逐条处置 + **Design C 沙箱全绿（§6.10.12）** | **≥3 路**×2 轮（技术可行性 / 用户可见效果与证据 / 流程与诚实性；第二轮 A2/B2/C2） |
+| **P1 实现** | 按 §6.10 落地：cardview 三处 `x-small`；adapter Design C；context/hooks 命令打点；6 处注释口径（§6.7.1）；按 scratch 三脚本执行并人审 diff | `py_compile`（venv）全绿；`run_fast --full` 8/8；`--preflight` 523/523；调用点表（含 4039）逐条结论 | **≥3 路**（判别力 / 协议不破坏 / 文档诚实） |
+| **P2 断言与变异** | 3 条硬字面量用例 + 12 条 V073 变异（`-k` 全模式实红）+ 5 条旧锚点重写 + `check_cardview` Error 夹具/常量断言 + 黄金夹具重生成（实测 8 叶 + item2 0 叶）+ 宿主×主题探针（§6.10.10） | 每条新变异**实红且红在 `test_units`**；夹具 diff 逐叶解释；宿主矩阵逐张 `code` + 用户二值判读 | **≥3 路**（变异判别力 / 夹具覆盖 / 无自证循环） |
 | **P3 全量重验** | 6 分片完整模式（独立账本、`-u` 不缓冲、起跑前清陈旧证据 + 校验工作树干净） | 每片坏 0、合并 `✅ N 条通过`（**N = 旧 499 + 新增 − 合并/重对后的净数，以实际 `len(MUTATIONS)` 为准**）、`full_audit_at == 被测提交`、`n_inh == 0`、`--ledger-status` N/N 待跑 0、**实测墙钟写回本文件** | **≥3 路**（证据链 / 时间与隔离 / 反假绿） |
 | **P4 部署与真机探针** | `.deploy` 指被测提交 + 网关重启（有界等「启动自检通过」）+ 探针卡 4 项：细节行改前/改后、Error 块可读性、系统提示卡（无 ✅/无空 footer 行）、真实回合收尾卡（✅ 一字不动）；另 grep `turn=…` 日志复核分类 | 自检通过；用户目视回话；`turn` 日志证据、探针卡 id 写进 `docs/verify-log.md` | **≥3 路**（探针可判读 / 两侧覆盖 / 无误导） |
 | **P5 发布** | 用户终验后 push + tag **v0.7.3** + `gh release` + `.deploy` 指 tag + 网关重启 | 发布脚本 `--check` 全绿后 `--go`；tag/`.deploy`/自检三处留痕 | **≥3 路**（发布完整性 / 坐标一致 / 文档与证据一致） |
@@ -122,6 +126,9 @@
 审计 agent：A 技术可行性 `7fe3d34b` · B 用户可见效果与证据 `98c88adb` · C 流程与诚实性 `92f41a3f`。
 
 ### 6.1 第 2 项定版口径（C-3 + A 路 2 条高阻断全量报告后冻结）：显式 turn 决策 + `_ld_footer` 退成纯格式器
+
+> ⚠️ **本节已被 §6.10 Design C 取代**（Design B 被 A2/B2 第二轮实测否掉：notify 非回合专属、
+> 无标记真终稿会漏判）。保留作审计轨迹，实现以 §6.10 为准。
 
 **两版错判据都被实测否掉**：
 
@@ -189,6 +196,8 @@
 
 ### 6.2 断言与变异清单（C-2，高；每条都要进 6 片全量）
 
+> ⚠️ **变异编号已被 §6.10.7 取代**（12 条 V073-x）；本表保留作审计轨迹。
+
 | # | 语义 | 硬字面量断言（文件/用例） | 新变异（old → new） |
 | --- | --- | --- | --- |
 | 1 | 细节行（line）`x-small` | `test_v073_detail_and_error_text_sizes_are_x_small`：`tool_step_elements(step,"line")[0]["text_size"]=="notation"`（标题不动）、`[1]["text_size"]=="x-small"` | **V073-1a**：detail-line 块 `"text_size": "x-small"` → `"notation"`（与 V4-57 同锚点，V4-57 两侧同步改） |
@@ -207,6 +216,8 @@
 > 保证唯一（B 路 Q2 表：post-unique 必须 = 1）。
 
 ### 6.3 冻结与盖章纪律（C-4/C-5/C-6/C-7，高/中）
+
+> ⚠️ 计数/锚点以 §6.10.7-§6.10.9 为准（511 变异 / 523 锚点 / 5 条重写 / 动态 `_fa`）。
 
 * **全量不可避免**：golden 夹具含细节行的 `text_size:"notation"`（`_HELPER_FILES`）⇒ 重生成后
   `helper_fp` 变 ⇒ `_delta_split` 令**全部 499+ 条 todo** ⇒ **禁 `--delta`、禁 `--seed-inherited`、
@@ -343,9 +354,216 @@
 | 8 | Q4 用户可见：host×theme 探针、Error 可读性、`text_profile=large` 不放大 x-small、澄清卡不受影响 | **采纳** | §2 3b + §6.5 + P4 探针清单；`large` 限制写进 README |
 | 9 | Q5 发布脚本逐行参数化 + 120/150 低项 | **采纳** | §6.4 第一条逐行清单（含 15 行计数、139/148 审计路径、165/167-168 scratch、169/173 allow-at、210 notes、18 行 120→150） |
 
-**P0 收敛结论**：A/B/C 三路的高阻断项全部采纳并落到 §6.1-§6.9；设计在 A/B 实测后由「C 前版」演进为
-**Design B**（`_ld_footer` 纯格式器 + send 层显式 turn + 非回合关 `footer_enabled`），属于实质变更 ⇒
-在 P1 动手前再跑 **一轮 3 路只读快速复核**（聚焦 §6.1/§6.2/§6.3，基线为本次提交），复核无高阻断才进 P1。
+**P0 收敛结论（第二轮后）**：A/B/C 三路全量报告 + A2/B2/C2 三路快速复核共 6 份，全部逐条处置
+（§6.7-§6.9、§6.11）。设计由「C 前版 → Design B → **Design C**」演进：`_ld_footer` 纯格式器、
+`send()` 显式回合判定（命令打点 + 最近帧内容认领）、非回合静默卡（panel/header/footer 全关）、
+收尾 `default_status` 竞态兜底。**Design C 已在干净沙箱 clone 上完整验证**（§6.10.12：
+run_fast 8/8、test_units 293/293、preflight 523/523、12 条新变异全 red-assert、golden footer 叶不变）。
+下一步：把验证过的三个脚本落到仓库（P1，人审 diff）→ P1 阶段 3 路审计 → P2 断言/变异/夹具/宿主探针。
+> ⚠️ **修订（2026-09-22 深夜）**：A/B/C 全量报告回来后又跑了第二轮只读复核（A2 `68f8f2f1` /
+> B2 `4ec4599b` / C2 `b72bf8d0`）。三路一致指出 **Design B 的 `send()` 分型不可实现**
+> （`notify` 不是回合专属、存在无标记真终稿、命令回复也带 `notify`）。设计已改版为 **Design C**
+> （见 §6.10）；§6.1-§6.3 保留作审计轨迹，实现口径以 §6.10 为准。
+
+---
+
+### 6.10 第二轮复核收敛：**Design C**（定版）
+
+#### 6.10.1 Design B 被实测否掉的两头
+
+* **通知/命令会被误判成回合**：`/larkdeck` 与核心 slash 命令的回复由 base 当「最终回复」发，
+  被 `_mark_notify_metadata` 打上 `notify=True`（`gateway/platforms/base.py:135-139, 3938-3960,
+  3120-3122`；`gateway/run_inbound.py:984-990, 1136-1144, 1204-1206`）⇒ 只看 `notify` 会把
+  `/larkdeck status` 也判成回合、继续挂 ✅/页脚（推翻 §6.1.5/§6.1.8 的承诺）。
+* **真终稿会漏判**：`run_startup.py:384-386`（重启后重投递 recovered final，metadata 仅 thread_id）、
+  `run_turn.py:3381-3383 → run_notifications.py:315-347`（queued-lane final fallback）、
+  `stream_consumer.py:481-498`（boundary fallback `adapter.send(chat_id, finalize_text)` 无 metadata）
+  都不带 `notify/expect_edits` ⇒ 默认非回合会丢 ✅。
+* 结论：**单靠 upstream metadata 判不出「回合」**；必须加「命令回复打点 + 本回合最后一帧内容认领」。
+
+#### 6.10.2 Design C 判定顺序（`_ld_send_is_turn(chat_id, content, metadata, guarded)`）
+
+1. `metadata["_interim_send"] is True` ⇒ **非回合**（中途播报，最高优先级，先掐）；
+2. 本 chat 刚派发过 slash 命令（`pre_gateway_dispatch` 打点，TTL 60s；非命令入站立刻清除）
+   ⇒ **非回合** —— 命令回复即使带 `notify=True` 也不出页脚；
+3. `guarded=True`（own 种子失败窗口，本回合首帧）⇒ **回合**；
+4. `metadata["notify"] is True`（终稿）或 `metadata["expect_edits"] is True`（可编辑预览）⇒ **回合**；
+5. 内容与本回合**最后一帧文本**一致（新维护的 `_LD_RECENT_TURN_TEXT`，TTL 120s；boundary/queued
+   回落终稿没有 metadata 标记）⇒ **回合**；
+6. 其余（网关系统提示 / 后台任务 / 媒体播报 / 未识别消息）⇒ **非回合**（fail-closed）。
+
+**回合 status 显式定义**（B2-2）：
+
+* `notify` / `guarded` / 内容认领 ⇒ `_ld_view_status(chat_id, default="completed")`
+  （error/stopped 快照照常保留 ⇒ ❌/⛔，成功/无结局 ⇒ ✅）；
+* `expect_edits` 预览（未收尾）⇒ `"processing"`，且 `_ld_render_card(status_locked=True)`
+  锁死状态 —— 预览**绝不提前挂 ✅**（防快照里的上一个 ok 把预览染绿）。
+
+**命令打点**：`core/hooks.py::_on_pre_gateway_dispatch` 对 `event.is_command()` 调
+`_context.note_command_inbound(chat_id)`，否则 `clear_command_inbound`；只观察、恒返回 None、
+绝不干预分发（`MessageEvent.is_command()` 是官方 API）。
+
+**已知边界（写进 README/verify-log，不吹）**：我们**没**见过 native 流的重启后 recovered final
+（无任何本地流记忆）按未知消息处理 ⇒ 不挂页脚；媒体 caption / 后台 watcher 直发同理。
+P4 用 `turn=…` 限流日志覆盖真实流量复核，若发现误伤再补判据（要重验就必须重跑 P3）。
+
+#### 6.10.3 非回合静态卡 = 静默消息卡（B2-1/A2-4）
+
+`_ld_render_card(..., turn_card=False)` 在 `_ld_cardview` 之后强制：
+
+```python
+view.panel_enabled = False      # 旧回合面板可留 1800s（panel.py:57）⇒ 必须显式关
+view.header_enabled = False     # card_status_header=true 时否则会渲染「✅ 已完成」
+view.footer_enabled = False     # 只把 footer 置空不够：entity_skeleton 会写 view.footer or " "
+view.footer = None
+```
+
+CardKit **seed 建卡**不受影响（结构建卡定死、之后还要写元素，footer 槽位必须保留）。
+测试必须预置 stale panel + `card_status_header=true`，断言整卡只有 `answer`（无 panel/header/footer）。
+
+#### 6.10.4 收尾竞态（B2-3/A2-3）
+
+`_ld_frame_footer(state, *, turn_card=True, default_status="")` 自己解析状态：
+`state["status"]` → 本回合 panel 快照；只认 `ok/completed/error/stopped` 四个值，其余
+（processing/缺失）用 `default_status` —— **不脑补**。
+
+* `edit_message(finalize=True)`：先算 `turn_status = _ld_view_status(chat_id, default="completed")`，
+  同时传给 `_ld_render_card(status=turn_status)` 与 `_ld_frame_footer({"status": turn_status})`；
+  非 finalize 用 `"processing"`；
+* native 收尾整卡（`adapter.py:4281`）：`_ld_frame_footer(state, default_status="completed")`；
+* `_ld_ck_split` legacy 封旧卡：`default_status="completed"`（与结构化分支同语义）；
+* 其它帧路径（3871/4039/4382/4437/4480）保持 `default_status=""`（未收尾不挂状态词）。
+
+测试：`panel.status` 为空/processing 时 finalize 仍有 ✅；`panel.status=error` 时仍 ❌。
+
+#### 6.10.5 调用点全表（补 A2-5 / B2-8）
+
+* `_ld_footer` 直接调用：`1727`（自检 ⇒ `_ld_frame_footer({"chat_id":…})`）、`2203`（定义）、
+  `2668`（send ⇒ 按 6.10.2）、`3271`（封旧卡 ⇒ frame footer + `default_status="completed"`）、
+  `3785`（view 基础页脚 ⇒ `turn_card=True`）、`4236`（legacy seed ⇒ `turn_card=True`、不传 status）。
+* `_ld_frame_footer`：`2016 / 2739 / 3871 / **4039（补）** / 4281 / 4382 / 4437 / 4480 / 4825`
+  —— 全部回合路径，逐个核对；`4039` 是 CardKit 每帧 footer 实物写入（默认 transport），
+  默认 True 但**必须在表里**。
+* `_ld_render_card`：`2665`（send）、`2735`（edit）。
+* `_ld_cardview` 8 个 caller：`2026`（诊断）/ `2509`（透传）/ `3261`/`3285`（切卡）/ `3629`（心跳）/
+  `3925`/`3986`（帧）/ `4829`（/stop）—— 全为回合或由 `_ld_render_card` 决定，已核。
+* 澄清卡 `4885-4888` 不经 footer；`5877` 是 docstring，实际 `/larkdeck` 回复走 `send()`（由命令打点覆盖）。
+
+#### 6.10.6 测试同步（A2-6 / B2-6 / C2-2）
+
+* 旧用例（**只改函数体，不改/删名字**）：`test_units.py` 的
+  `1533/1537、2241/2245、2321/2325、5147-5209、5229、5238/5239、5243-5247、5251、5254、5258、
+  5263、5265、5267、5306、5312、6860、6901、10914/10918`；
+  `check_hooks.py:772` 显式 `status="completed", turn_card=True`；
+  `probe_render.py:228/994` 的无参 `_ld_footer()` 同步补 `turn_card=True`。
+* `send()` 驱动真实回合的旧用例补 `metadata={"notify": True}`（`test_units.py` 7 处 + `raw2` 1 处）。
+* 新用例 3 条（B2 命名建议，采纳）：`test_v073_detail_and_error_text_sizes_are_x_small` /
+  `test_v073_footer_turn_scope_and_status_is_explicit` /
+  `test_v073_non_turn_send_has_no_footer_element`（覆盖：stale panel+header 静默、命令回复静默、
+  notify 终稿 ✅、expect_edits 预览无 ✅、最近帧内容认领、interim 无 footer、finalize 竞态兜底）。
+* 失败性质：改完必须是 **red-assert**，不得 `None.startswith`/`TypeError` 式 red-crash；
+  `5254/5265/5312` 原来是「`or ""` 假绿」，必须显式传参后仍有判别力。
+
+#### 6.10.7 变异与锚点（C2-3/5/6/7 + A2-7）
+
+* **新变异 12 条**（全部 gate `test_units`，`-k` 完整模式实红）：`V073-1a`（line 细节）、`V073-1b`
+  （emoji 细节）、`V073-1c`（Error 块）、`V073-2a`（快照兜底加回）、`2b`（非回合早退失效）、
+  `2c`（回合侧被误杀）、`2d`（空 footer 元素）、`2e`（忽略 notify/expect_edits）、`2f`（分类器恒
+  回合）、`2g`（命令打点失效）、`2h`（最近帧认领失效）、`2i`（interim 不再排除）。
+  每条 old 锚点按 P1 后的实现逐字冻结；`2a` 必须用 turn 侧断言（防早退遮蔽）。
+* **5 条旧锚点同步重写**（不是「失效窗」）：`G2-3`（`_ld_frame_footer` 的新 return）、`V4-7`、
+  `V4-17B`（`base_footer` 新格式）、`V4-10`（`status_locked` 行）、`V4-57`（detail 两侧 `x-small`）。
+* **计数**：499 + 12 = **511 变异**；preflight = 511 + 12 = **523/523**；账本/merge 为 **511/511**。
+  release 脚本里 ledger 与 preflight 两个数字要分开写，并断言
+  `preflight_total == len(MUTATIONS) + len(CONTROLS)`。
+* 其它 ±15 窗指纹失效**不穷举**（实测只有上述 5 条锚点断），以 P1 后实际 fingerprint 为准；
+  golden helper_fp 必变 ⇒ 全量不可避免（禁 `--delta/--seed-inherited/--target-only`）。
+* `--preflight` 不是绿灯（`AGENTS.md:491-496`）；`_is_full_run` 显式加 `not args.shard`
+  （C2-6）；分片账本必须 `--update-ledger` 各写各的 `LARKDECK_LEDGER_PATH`。
+
+#### 6.10.8 golden 夹具决策（C2-8 / A-4）
+
+**保留现有场景、不扩 Error 步骤**：扩 Error 会改 header 步数（2→3）并新增/重排多批 decor/final
+叶，远超「9+1」，整体重冻结成本高于收益；Error 改由
+`test_v073_detail_and_error_text_sizes_are_x_small`（硬字面量三层）+ `check_cardview` Error 夹具
+双覆盖，并在本文件写明「golden 不覆盖 Error」这一事实。
+实测 item1 diff = 8 个叶（detail 行 notation→x-small；B 报的 9 恰是上一版场景计数，以实现后
+实际 diff 为准逐叶解释）；**item2 = 0 叶变化**（footer 叶仍是 `✅ 已完成 · Test Model`）。
+
+#### 6.10.9 发布机制修订（C2-4/5/6/7）
+
+* `--allow-at` **保留动态 `_fa`**（merge 后 `full_audit_at=C`，发布在 D 上跑）：`adea7cb` 只作历史
+  补充，不得硬编码顶替动态值；
+* release 计数：ledger **511/511**、preflight **523/523**；步骤 0 断言
+  `docs/releases/v0.7.3.md` 存在、`plugin.yaml` version == TAG；`--check` 对 `.deploy != HEAD`
+  直接失败（不只打日志）；
+* 1a 追加：`_meta.tree_dirty is False`、`_meta.full_audit_tree == git rev-parse HEAD^{tree}`、
+  逐条 `verdict == "red-assert"` 且 `at == full_audit_at`、`len(entries) == len(MUTATIONS)`；
+* 低项：脚本 18 行 120s→150s。
+
+#### 6.10.10 探针修订（B2-4/5）
+
+`tests/probe_text_size_hosts.py` 三张卡各出**同卡 notation 对照**，且 **ap_lite / neutral / ap_bubble
+三主题各复跑**（不能只「主题各一张」）：① `markdown` 生产 detail(line)；
+② `div.text=plain_text` emoji detail；③ `div.text=lark_md` **真实 Error**（`**Error**` + 20–30 行
+栈 + 一条超长行）。用户看三件事：`code==0`、x-small 确实更小且不换行溢出、Error 仍可读（二值）。
+回退规则：单 host 被拒/不变小 ⇒ **该 host 全部退回 `notation`**；Error 能发但不可读 ⇒ **只 Error
+块**退回 `notation`；两者都要同步改断言/变异/夹具再重验。设备/客户端/主题写进 `docs/verify-log.md`。
+
+#### 6.10.11 文档与措辞（B2-6/9）
+
+* README/plugin.yaml 补：工具详情行 / Error-Result 块 = 字面量 `x-small`，**不随
+  `text_profile` 放大**（`apply_text_profile` 只补缺省值，`cards.py:285-288`）；未过宿主矩阵探针
+  的宿主退回 `notation`；非回合消息**无面板/状态头/页脚**（不只是无 footer）；
+* 把 §6.1/§6.2 里「结构上不可能」「非 native 终稿仍有 ✅」等强于证据的话改成有条件表述，
+  条件 = 6.10.2 的判定顺序 + P4 日志复核；
+* `plugin.yaml` version 在 commit C 里 bump；CHANGELOG `[0.7.2]` 收口 + 开 v0.7.3。
+
+#### 6.10.12 沙箱验证（本轮已做，证据在 scratch）
+
+在 `~/.larkdeck-scratch/sandbox-v073/larkdeck` 的干净 clone 上按上述实现（脚本：
+`~/.larkdeck-scratch/v0.7.3-apply_core.py` / `-apply_tests.py` / `-apply_mut.py`）：
+
+* `run_fast --full` = **8 步全 OK**，`test_units 293/293 passed`；
+* `--preflight` = **523/523**（511 变异 + 12 对照）；
+* `-k V073`：**12 条全部 red-assert（expected test_units）**；重写后的
+  `V4-57/V4-7/V4-17B/V4-10/G2-3` 也全部 red-assert；
+* golden 重生成：detail 叶 `notation→x-small`、footer 叶 `✅ 已完成 · Test Model` **不变**。
+* ⇒ P1 在仓库落地时按这三个脚本执行（仍要人审 diff），随后 P1/P2 阶段审计再跑。
+
+
+#### 6.11 第二轮三路逐条处置（A2 `68f8f2f1` · B2 `4ec4599b` · C2 `b72bf8d0`）
+
+| 路 | 编号 | 原文摘要 | 处置 | 落点 |
+| --- | --- | --- | --- | --- |
+| A2 | 1 | notify 非回合专属、命令回复被误判 | **采纳（高）** | §6.10.2 命令打点；§6.10.3 静默卡；新变异 2g |
+| A2 | 2 | 无标记真终稿漏判（boundary/queued/startup） | **采纳（高）**：boundary/queued 用最近帧内容认领；startup recovered/无流记忆路径**如实登记为不挂页脚**，P4 日志复核 | §6.10.2 第 5 条 + §6.10.8 边界 |
+| A2 | 3 | §6.2 七条变异没打分类器 | **采纳** | §6.10.7 新增 2e/2f/2g/2h/2i（12 条） |
+| A2 | 4 | 非回合只关 footer、旧面板泄漏 | **采纳** | §6.10.3 三项全关 + 测试预置 stale panel/header |
+| A2 | 5 | 调用点漏 `4039`、`3271` status 未定、8 个 `_ld_cardview` caller 未列 | **采纳** | §6.10.5 |
+| A2 | 6 | 测试红/绿性质与漏点（5306/5312/6562/6566/probe_render） | **采纳** | §6.10.6 |
+| A2 | 7 | 锚点精确文本与 V073 唯一性 | **采纳** | §6.10.7（5 条重写 + 12 条逐字锚点 + post-grep） |
+| B2 | 1 | 非回合 panel/header 泄漏 | **采纳（高）** | §6.10.3（与 A2-4 合并） |
+| B2 | 2 | send 真终稿 status 未定义（丢 ✅ / 预览假 ✅） | **采纳（高）** | §6.10.2 status 段 + `status_locked` + 新用例 |
+| B2 | 3 | 收尾 ✅ 依赖 hook 时序 | **采纳（高）** | §6.10.4 `default_status` + 显式 turn_status + 竞态断言 |
+| B2 | 4/5 | Error 可读性无回退；host×theme 探针不足 | **采纳** | §6.10.10（3 host × 3 theme、长栈 Error、二值判读 + 单 host/单块回退） |
+| B2 | 6 | README/plugin.yaml 缺 x-small/非回合口径 | **采纳** | §6.10.11 |
+| B2 | 7 | interim/后台/媒体口径与 queued final | **采纳**：interim/后台/媒体无页脚**明写**；queued 有流记忆则认领、无则登记边界 | §6.10.2 边界 + README |
+| B2 | 8 | 调用点漏 4039 | **采纳** | §6.10.5 |
+| B2 | 9 | 措辞强于证据 | **采纳** | §6.10.11 条件化表述 |
+| C2 | 1 | V073-2a 前置必须完整 | **采纳** | §6.10.6/§6.10.7：完成快照 + footer/show_model/model_aliases/context_max_override；turn 侧断言 |
+| C2 | 2 | 漏 5306/5312/6562/6566 | **采纳** | §6.10.6 |
+| C2 | 3 | preflight 实际断 5 条、其余是窗口失效 | **采纳**：实测 5 条（G2-3/V4-7/V4-10/V4-17B/V4-57）；窗口失效不穷举 | §6.10.7 |
+| C2 | 4 | `--allow-at` 不能硬编码 adea7cb | **采纳** | §6.10.9（保留动态 `_fa`） |
+| C2 | 5 | 计数 511/523 而非 506/518 | **采纳** | §6.10.7/§6.10.9（断言两数分开） |
+| C2 | 6 | merge/release 门禁名不副实 | **采纳** | §6.10.9 追加 tree_dirty/tree hash/verdict/at 检查；`_is_full_run` 加 `not args.shard` |
+| C2 | 7 | 发布顺序缺口（notes/plugin version/--check） | **采纳** | §6.10.9 步骤 0 + `--check` 硬失败 |
+| C2 | 8 | golden 不扩 Error 更稳、item2 无机械门禁 | **采纳** | §6.10.8（保留场景 + 单测/check_cardview 双覆盖 + footer 叶断言） |
+| C2 | 9 | helper_fp 强制全量、分片需 `--update-ledger` | **采纳** | §6.10.7 末条 |
+| C2 | 10 | 计划残留/不一致 | **采纳** | 本条 + §6.10 全节；§6.1-§6.3 标注为被取代的审计轨迹 |
+
+
+
 
 ---
 
