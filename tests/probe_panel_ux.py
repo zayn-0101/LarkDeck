@@ -30,8 +30,14 @@ def load_core():
 
 
 def main() -> int:
+    import argparse
+    ap = argparse.ArgumentParser(description="P6 面板 UX 探针（**默认只预览，--send 才真发**）")
+    ap.add_argument("--send", action="store_true", help="真发到 FEISHU_HOME_CHANNEL")
+    a = ap.parse_args()
     import lark_oapi as lark  # noqa: F401  (probe_render 自己建 client)
     cv, cds = load_core()
+    if not a.send:
+        print("（预览模式，未发送。加 --send 才真发到用户会话）")
     env = P.load_env()
     client = (lark.Client.builder().app_id(env["FEISHU_APP_ID"])
               .app_secret(env["FEISHU_APP_SECRET"]).log_level(lark.LogLevel.ERROR).build())
@@ -104,7 +110,18 @@ def main() -> int:
         head("**⑥ 附加说明**：`native_transport: patch` 在 structured 引擎下**无效**"
              "（不会真的切回旧路径）—— 想回退请 revert 到 v0.7.0。"),
     ]
+    # §8-5 动图对照（我们自研的那张 vs 借来的回落那张）—— 单列一行，一眼比对
+    row0 = [{"tag": "div", "icon": {"tag": "custom_icon", "img_key": cv.spinner_img_key(),
+                                    "size": "16px 16px"},
+             "text": {"tag": "plain_text", "content": " ① 我们的（自研）"}},
+            {"tag": "div", "icon": {"tag": "custom_icon", "img_key": cv.SPINNER_IMG_KEY,
+                                    "size": "16px 16px"},
+             "text": {"tag": "plain_text", "content": " ② 原来的（借来的，只作回落）"}}]
+    elements[1:1] = [head("**⓪ 动图对照**：① 我们自研上传的那张（生产生效）｜② 原来借来那张（现在只当回落）")] + row0
     card = {"schema": "2.0", "config": {"streaming_mode": False}, "body": {"elements": elements}}
+    if not a.send:
+        print(f"卡片已构建（{len(elements)} 个元素，含 §8 各格）—— 未发送")
+        return 0
     code, msg, mid = P.send(client, env["FEISHU_HOME_CHANNEL"], card)
     print(f"发送结果: code={code} msg={msg!r} message_id={mid}")
     return 0 if code == 0 else 1

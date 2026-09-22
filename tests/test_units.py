@@ -12678,8 +12678,11 @@ def test_v4_14_loading_hint_is_inserted_then_deleted_on_first_token():
         hint = _find_element(entity, "loading_hint")
         assert hint is not None, entity
         assert hint["element_id"] == "loading_hint" and hint["tag"] == "div", hint
+        # D1′ 落库后：生效 key 是**自研**那条（`SPINNER_TOOL_IMG_KEY`），不再是借来的回落 key。
+        assert adapter._cardview.SPINNER_TOOL_IMG_KEY != adapter._cardview.SPINNER_IMG_KEY, \
+            "自研资产已入库 ⇒ 两个常量不许再相等（P2 的验收条件之一）"
         assert hint["icon"] == {"tag": "custom_icon",
-                                "img_key": adapter._cardview.SPINNER_IMG_KEY,
+                                "img_key": adapter._cardview.spinner_img_key(),
                                 "size": "16px 16px"}, hint["icon"]
         assert hint["text"] == {"tag": "plain_text", "content": " "}, \
             f"提示元素必须无文字（用户口径：会动、无文字）：{hint['text']!r}"

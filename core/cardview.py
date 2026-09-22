@@ -207,7 +207,7 @@ SPINNER_IMG_KEY = "img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg"
 #: 第二轮按 aiduPOP 官方截图里的**三个圆点**重画，挑图卡 `om_x100b6411a860d8b4dd88420cef6dc33`
 #: 等用户回「C」或「D」后上传，把新 key 写在这一行 ——
 #: 形状/字段/回落语义均已定稿，只等这一个字符串；**别在别处再写一份 key**。
-SPINNER_TOOL_IMG_KEY = SPINNER_IMG_KEY
+SPINNER_TOOL_IMG_KEY = "img_v3_0215p_a0b0bd11-a182-433f-9647-8573d0dd7efg"
 
 #: 允许被「上传一次并缓存」得到的 key 覆盖（adapter 启动时若拿到自有资产就注入）；
 #: 空串 ⇒ 用下面两个常量里的第一个非空值。

@@ -205,7 +205,7 @@ plugins:
         native_streaming: true   # 一回合一张卡（工具进度合入同卡）；关掉退回逐段新消息
         clarify_cards: true      # 澄清用交互卡
         clarify_dialect: "2.0"   # 澄清卡方言：2.0 下拉+输入框（默认，真机点击已验证）/ 1.0 按钮（旧路径，仍然可用）
-        native_transport: cardkit # 流式帧传输：cardkit（默认，**真逐字打字机**；买它的代价见「已知限制」）/ patch（旧路径，整卡替换，字是几个几个跳）
+        native_transport: cardkit # 流式帧传输：cardkit（默认，**真逐字打字机**；买它的代价见「已知限制」）/ patch ⚠️ **在 structured 引擎下无效**（自 v0.7.1 起唯一引擎是 structured，帧路径不看这个键；要回退请 revert 到 v0.7.0）
         tool_row_icon: "line"    # 工具行图标形态：line（默认，飞书官方**线性**图标做文本前缀——2026-09-22 真机三臂对照选版：0px 垂直偏差、统一灰色）/ emoji（2026-09-21 选的 emoji 内联，可切回）
         unified_panel: true      # 推理 + 工具合并为一个底部面板
         panel_expanded: false    # **收尾**时面板展开（默认收起：展开态很占屏）

@@ -365,7 +365,7 @@ def _assert_v072_contracts() -> None:
     # 会被 `img_v3_FAKE` + 同步重生成夹具绕过 ⇒ 这里把三个字段写成字面量）
     _hint = cardview.loading_hint_element()
     assert _hint["icon"] == {"tag": "custom_icon",
-                             "img_key": "img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg",
+                             "img_key": "img_v3_0215p_a0b0bd11-a182-433f-9647-8573d0dd7efg",
                              "size": "16px 16px"}, _hint["icon"]
     assert _hint["text"] == {"tag": "plain_text", "content": " "}, _hint["text"]
 
