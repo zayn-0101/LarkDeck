@@ -28,16 +28,22 @@
 - **工具图标**：主表 **28 条逐条等于 CLS**（含顺序），`terminal` 单列登记偏差
   （CLS 表里没有它，而 Hermes 的 shell 工具就叫这个名字）；`tests/check_cls_alignment.py`
   直接解析 CLS 源码比对（CLS 侧改动会红）。
-  - **工具行 emoji 两条口径**（2026-09-21 真机截图复验后补：用户把定版卡标红 ——「面板顶部
-    标题的图标和下方使用命令行命令的图标是同一个，这个不合理」，并要求「比别的看起来更好」）：
-    ① **区段符号不复用** —— 面板标题的 🛠️（工具执行）/💭（思考）不再出现在工具行
-    （`terminal` ⇒ **💻**；旧行为是 9 个名字共用 `setting_outlined` ⇒ 全渲染成 🛠️）；
-    ② **同 token 按名字精化** —— 60+ 真实工具名不再挤 14 个符号（memory 🧠 / cronjob ⏰ /
-    session_search 🕘 / image 🎨 / video 🎬 / speech 🗣️ / vision 👁️ / send ✉️ / react 👍 /
-    show_tip 💡 / setup 🔌 / process ⚙️ / computer 🖱️ …）。
-    实现：渲染层 `cardview.tool_emoji(name, token)`（token 表仍是 CLS 对齐唯一真相）；
-    `test_v4_55` + 变异 `V4-55` 钉住，golden trace 同步重生成（diff = `🛠️ **terminal**` →
-    `💻 **terminal**`）。
+  - **工具行图标定版：飞书官方线性图标做「文本前缀」**（2026-09-22 真机三臂对照选版，
+    卡 `om_x100b6414825f3ca8c339ed0a7cef3e9`；我按用户截图逐像素量过）：
+    * 甲 元素级 `div.icon`（CLS 同款）⇒ 图标比文字**高 3px**（2026-09-21 那次「偏上」就是它）；
+    * **乙 `markdown.icon`（官方文档叫「前缀图标」）⇒ 0px** —— **用户选它**；
+    * 丙 `column_set` 居中 ⇒ 1px 但横向空 179px。
+    风格 = **线性 `_outlined` + 统一灰 `color:"grey"`**（用户口径：「emoji 花里胡哨、颜色不统一，
+    CLS 那种统一颜色更高级」）。token 全部**逐个对飞书官方图标枚举页查证存在**
+    （`enumerations-for-icons`，1154 个），名字写错客户端不渲染且不报错 ⇒ 白名单冻结在
+    `test_units.py::_VERIFIED_LINEAR_TOKENS`。
+  - **图标扩展到更多场景**（用户：「CLS 只在一部分场景用了这些图标，我们应该更全面」）：
+    同一批线性图标现在也用在**工具详情行**（`tool-indent_outlined`，替掉文字箭头 `↳`）、
+    **错误块标题**（`warning_outlined`）、**长回合折叠提示**（`more_outlined`）。
+  - **可切换**：`tool_row_icon: "line"`（默认）/ `"emoji"`（2026-09-21 选过的 emoji 内联形态，
+    保留为可回退；两条路都有门禁 + 变异钉住）。
+    `ICON_ALIASES`（28 条逐条等于 CLS）**仍是对齐判据的唯一真相** —— `check_cls_alignment` 只读它；
+    `tool_icon_token(name, token)` 只是渲染层精化（60+ 真实工具名不再挤 14 个 token）。
 - **澄清卡表单提交契约**：`value` 为空、答案只在 `action.form_value` 的提交形态已覆盖
   （真 SDK payload 类 e2e）；组件级 `behaviors` 路径不变。
 - **出站留痕**（排障）：`send()` 卡片成功 / 卡片失败回落 / `edit_message` 成功 / 回落 各留一行

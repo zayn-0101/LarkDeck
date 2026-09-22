@@ -212,10 +212,17 @@ tests/        见「验证」
     **实体卡流式期间**的形态，收尾那一刻整卡一换就回到一个 markdown（今天本来就是这样）。
     ⚠️ **观感摘要（2026-09-17，向 CLS 看齐）**：折叠面板摘要行是
     `💭 思考 {耗时} · 🛠️ 工具执行 · {n} 步`（i18n 节点，中英文各一份）；展开后正文里
-    同样有 `💭 思考` / `🛠️ 工具执行` 两个灰色分区小标题。工具行 = 图标 + 加粗**英文
-    动作名**（Read file / Run command / Load skill …）+ 耗时（`25 ms` / `1.2 s`）+
+    同样有 `💭 思考` / `🛠️ 工具执行` 两个灰色分区小标题。工具行 = **飞书官方线性图标**
+    做**文本前缀**（`markdown.icon` + `color:"grey"`；放法是用户 2026-09-22 真机三臂对照选的：
+    元素级 `div.icon` 实测图标高 3px、`column_set` 横向空 179px，前缀图标 0px）+
+    加粗**英文动作名**（Read file / Run command / Load skill …）+ 耗时（`25 ms` / `1.2 s`）+
     **带颜色的状态词**（`Succeeded` 绿 / `Running` 青绿 / `Failed`、`Blocked` 红 /
-    `Cancelled`·`Skipped` 灰），命令或 skill 名另起一行 `<font color='grey'>↳ …</font>`。
+    `Cancelled`·`Skipped` 灰），命令或 skill 名另起一行（灰色 + `tool-indent_outlined` 前缀图标）。
+    ⚠️ **图标三条纪律**：① 默认**线性 `_outlined` + 统一灰**（彩色 `_colorful` 只有 13 个、
+    颜色写死，不用）；② token 必须**逐个对飞书官方枚举页查证存在**（`enumerations-for-icons`，
+    写错客户端不渲染且不报错）—— 白名单冻结在 `test_units.py::_VERIFIED_LINEAR_TOKENS`；
+    ③ `ICON_ALIASES`（28 条逐条等于 CLS）是**对齐判据的唯一真相**（`check_cls_alignment` 只读它），
+    `tool_icon_token(name, token)` 只是渲染层精化；想回 emoji 形态配 `tool_row_icon: "emoji"`。
     ⚠️ **i18n 边界**：`markdown` element.content 不承载 `i18n_content` ⇒ 工具行动作词/
     状态词固定英文、分区小标题固定中文；完整句子提示仍走 `i18n.t()`。不要把它写成
     “动作词双语”。
