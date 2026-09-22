@@ -235,3 +235,16 @@ A1（3 处 partial 少 `expanded`、entity `expanded` false→true）、C1（`tu
   整轮停掉重跑；② 6 片并行时 `test_units` 墙钟 47–53s 撞 45s 门禁超时 ⇒ 10 条被记 `💥`（只有崩溃、
   无断言文本）。⇒ 门禁硬超时**上调 45s→90s**（上调是消假坏；下调才会把真红变 💥），重跑后坏 0；
 * 真机（P6）与发布（P7）见下文。
+
+## 2026-09-22 22:00 · 发布（P7）
+
+* 用户终验：**通过**（真实回合卡截图：面板收尾折叠 + 标题 `💭 思考 52.0s · 🛠️ 工具执行 · 8 步` +
+  页脚 `✅ 已完成 · 52.0s · DeepSeek V4.1 Flash · ctx 32.9k/1m · 3%` —— 页脚那一格从「待验」转为**已验证**）。
+* `release-v0.7.2.py --check`：门禁 8/8 · 锚点 511/511 · 账本 499/499 · 1a（`full_audit_at=adea7cb`
+  是 HEAD 祖先、指纹路径未改、继承 0）· 1b（`✅ 499 条通过`）全绿。
+* `deploy_probe.py`：`.deploy` → `6fd68f3` + 网关重启 + `启动自检通过`。
+* `release-v0.7.2.py --go`：push `main` + tag **`v0.7.2`** + GitHub Release
+  （https://github.com/zayn-0101/larkdeck/releases/tag/v0.7.2）+ `.deploy` 指 tag 提交 `6fd68f3` +
+  网关重启（自检通过，21:00:38 一行、网关进程 2 个）。
+* 追加决定：**A1 展开时序保持不变**（用户复确认；理由与代价见
+  `docs/audits/v0.7.2/p6-live-verification.md` 的「追加决定」一节）。
