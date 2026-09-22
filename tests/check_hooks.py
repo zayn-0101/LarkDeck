@@ -779,9 +779,15 @@ else:
                     problems.append(f"黄金路径：页脚最前面不是完成状态：{footer!r}")
                 if "⏱" not in footer or "12.3s" not in footer:
                     problems.append(f"黄金路径：页脚没有耗时段（期望「⏱ 12.3s」）：{footer!r}")
-                # 2026-09-22 用户口径：页脚要**模型名**不要模型 ID ⇒ 这里钉格式化后的名字
-                if "🤖 DeepSeek V4 Flash" not in footer:
-                    problems.append(f"黄金路径：页脚没有模型名（应为显示名而非 ID）：{footer!r}")
+                # 2026-09-22 用户口径：页脚要**模型名**不要模型 ID。具体名字是**可变输入**
+                # （models.dev 缓存 / 别名文件 / 配置），所以这里只钉**形态**：
+                # 「🤖 后面非空、不是原始 ID、不带 provider 路径」；具体解析优先级由
+                # `test_v4_62`（stub 掉数据源，确定性）钉住。
+                model_seg = footer.split("🤖 ", 1)[1].split(" · ", 1)[0].strip() \
+                    if "🤖 " in footer else ""
+                if (not model_seg or model_seg == "deepseek-v4-flash" or "/" in model_seg
+                        or "_" in model_seg):
+                    problems.append(f"黄金路径：页脚模型段不是「模型名」而是 ID/路径：{footer!r}")
                 if "ctx " not in footer:
                     problems.append(f"黄金路径：页脚没有上下文用量：{footer!r}")
                 if not (footer.index("✅") < footer.index("⏱") < footer.index("🤖")

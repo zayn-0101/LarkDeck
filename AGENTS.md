@@ -450,9 +450,12 @@ tests/        见「验证」
   要按会话隔离得从钩子载荷的 `session_id` 分桶（未做）。
 - **页脚模型段显示「模型名」不是模型 ID**（用户 2026-09-22：「显示现在的好像是模型 ID，我想要
   做成显示模型名」）：`context.display_model()` = 别名优先（配置 `model_aliases`，其次
-  `~/.hermes/model_aliases.json` 子串匹配、热更新）→ 确定性格式化（token 表 / 版本号 / 参数量 /
-  尾部日期戳）。加名字只改这两处，**不要在页脚里再拼原始 ID**；别名文件读坏只许退化成格式化，
-  不许把页脚弄没（`test_v4_62` + 变异 `V4-62`/`V4-63`）。
+  `~/.hermes/model_aliases.json` 子串匹配、热更新）→ **models.dev 真名**（Hermes 官方解析器
+  `agent.models_dev`，只读本机 `models_dev_cache.json`、不发网络请求；`opencode-go` 的
+  `deepseek-flash` ⇒ `DeepSeek V4.1 Flash` —— 该 provider 条目 `name` 就是 ID 时，会扫注册表找
+  同名条目里的真名）→ 确定性格式化（token 表 / 版本号 / 参数量 / 尾部日期戳）。加名字只改这几处，
+  **不要在页脚里再拼原始 ID**；任何一层坏掉只许退化成下一档，不许把页脚弄没
+  （`test_v4_62` + 变异 `V4-62`/`V4-63`）。
 - 面板数据策略与页脚不同：`panel.py` 按 `session_id` 分桶；归属优先用
   `pre_gateway_dispatch` 观察到的 `chat_id -> session_id` 映射（确定性），拿不到才退回
   「最近活跃」。**回合状态色**（ok/error/stopped）走同一套归属，颜色载体是

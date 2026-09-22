@@ -40,7 +40,7 @@ import pathlib
 import re
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import i18n as _i18n
 
@@ -447,17 +447,100 @@ def _prettify_model(stem: str) -> str:
     return " ".join(out)
 
 
-def display_model(name: str) -> str:
+#: 真名解析：`agent.models_dev` 模块句柄。`None` = 还没试过；`False` = 试过、不可用（独立进程/测试）。
+_MODELSDEV_MODULE: Any = None
+#: `(provider, model) -> 真名`（空串 = 查过、没有）。**只是缓存、不是状态**：
+#: 两个世代各存一份也无所谓（最坏多查一次），所以不需要进共享盒子。
+_MODEL_NAME_CACHE: Dict[Tuple[str, str], str] = {}
+
+
+def _modelsdev():
+    """Hermes 自己的 models.dev 解析器（拿不到返回 ``None``）。
+
+    为什么敢 import Hermes 内部模块：我们在**同一个进程**里，而且这条路早就走通了 ——
+    本模块的上下文长度探测用的就是 ``agent.model_metadata.get_model_context_length``
+    （见 :func:`context_max`），`compat.py` 也用 ``hermes_constants`` / ``hermes_cli``。
+    拿不到（探针起的独立进程、单测环境）就整条跳过，退回到确定性格式化。
+    """
+    global _MODELSDEV_MODULE
+    if _MODELSDEV_MODULE is None:
+        try:
+            from agent import models_dev as _md  # type: ignore
+            _MODELSDEV_MODULE = _md
+        except Exception:                       # noqa: BLE001 —— 拿不到就当没有这个数据源
+            _MODELSDEV_MODULE = False
+    return _MODELSDEV_MODULE or None
+
+
+def _hermes_model_name(model: str, provider: str = "") -> str:
+    """向 models.dev 要**真实模型名**（只读本地缓存，不发网络请求；拿不到返回空串）。
+
+    为什么要这一步（用户 2026-09-22 实测）：`opencode-go` 下的 ID `deepseek-flash`，
+    真名是 **`DeepSeek V4.1 Flash`** —— 靠 ID 猜永远猜不到。Hermes 自己维护着一份
+    models.dev 注册表（`~/.hermes/models_dev_cache.json`）并有官方解析器，所以直接问它。
+
+    查找顺序（与 `hermes_cli/inventory.py:344` 同一个套路，再补一层全表扫描）：
+      ① 当前 provider；② `openrouter`；
+      ③ 扫一遍注册表找**同名条目** —— 很多 provider 的条目 `name` 就是 ID 本身
+         （`opencode-go` 的 `deepseek-flash` 正是如此），真名在厂商条目里（`deepseek`）。
+    `name` 与 ID 相同 ⇒ 视为「没有真名」，继续往下找。结果按 `(provider, model)` 记住。
+    """
+    if not model:
+        return ""
+    key = (str(provider or "").strip().lower(), str(model).strip().lower())
+    if key in _MODEL_NAME_CACHE:
+        return _MODEL_NAME_CACHE[key]
+    md = _modelsdev()
+    name = ""
+    if md is not None:
+        low = model.strip().lower()
+
+        def _ask(prov: str) -> str:
+            if not prov:
+                return ""
+            try:
+                info = md.get_model_info(prov, model, allow_network=False)
+            except Exception:                   # noqa: BLE001 —— 数据源抽风不许影响页脚
+                return ""
+            cand = str(getattr(info, "name", "") or "").strip()
+            return "" if cand.lower() == low else cand
+
+        name = _ask(provider) or _ask("openrouter")
+        if not name:
+            try:
+                registry = md.fetch_models_dev(allow_network=False) or {}
+            except Exception:                   # noqa: BLE001
+                registry = {}
+            for block in registry.values():
+                models = block.get("models") if isinstance(block, dict) else None
+                if not isinstance(models, dict):
+                    continue
+                for model_id, entry in models.items():
+                    if str(model_id).strip().lower() != low:
+                        continue
+                    cand = str((entry or {}).get("name", "") or "").strip()
+                    if cand and cand.lower() != low:
+                        name = cand
+                        break
+                if name:
+                    break
+    _MODEL_NAME_CACHE[key] = name
+    return name
+
+
+def display_model(name: str, provider: str = "") -> str:
     """模型 ID → 页脚里显示的**模型名**（用户 2026-09-22：「要模型名，不是 ID」）。
 
-    优先级（前两步是「用户说了算」，后两步是确定性格式化）：
+    优先级（前两步「用户说了算」，第三步「问数据源」，最后才格式化）：
 
       1. **显式别名**（配置 `model_aliases` 或 `LARKDECK_MODEL_ALIASES`，精确匹配）；
       2. `~/.hermes/model_aliases.json`：**子串匹配**（大小写不敏感、改文件即生效）——
          与 `hermes-fry-cards` 同一份文件，同机两个插件显示同一个名字；
-      3. 已知 token 表 + 版本号/参数量格式化（`deepseek-v4-flash` ⇒ `DeepSeek V4 Flash`）；
-      4. 都不命中：剥掉 `vendor/` 前缀与 `:free` 之类后缀后**原样**返回（旧行为：
-         宁可原样显示，也不猜一个可能错的名字）。
+      3. **models.dev 真名**（`~/.hermes/models_dev_cache.json`，经 Hermes 官方解析器；
+         如 `opencode-go` 的 `deepseek-flash` ⇒ `DeepSeek V4.1 Flash`）—— 只读本地缓存；
+      4. 确定性格式化（已知 token 表 + 版本号/参数量 + 尾部日期戳），例如
+         `deepseek-v4-flash` ⇒ `DeepSeek V4 Flash`；
+      5. 都不命中：剥掉 `vendor/` 前缀与 `:free` 之类后缀后**原样**返回。
     """
     name = str(name or "").strip()
     if not name:
@@ -470,6 +553,9 @@ def display_model(name: str) -> str:
     for needle, value in _alias_file_map().items():
         if needle in lowered:
             return value
+    real = _hermes_model_name(name, provider)
+    if real:
+        return real
     short = name.rsplit("/", 1)[-1]          # openrouter 那种 vendor/model
     short = short.split(":", 1)[0]           # 后缀变体 :free / :nitro
     short = _MODEL_DATE_RE.sub("", short)    # 尾部日期戳
@@ -496,7 +582,7 @@ def snapshot() -> Dict[str, Any]:
         pct = min(100.0, used / maximum * 100.0)
     return {
         "model": model,
-        "model_display": display_model(model),
+        "model_display": display_model(model, provider=str(raw.get("provider") or "")),
         "provider": raw.get("provider", ""),
         "input_tokens": used,
         "prompt_tokens": raw.get("prompt_tokens"),

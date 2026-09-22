@@ -4445,64 +4445,122 @@ def test_context_store_snapshot_and_aliases() -> None:
 def test_v4_62_footer_model_shows_display_name_not_id() -> None:
     """页脚 `🤖` 后面是**模型名**，不是模型 ID（用户 2026-09-22 口径）。
 
-    原话：「显示现在的好像是模型 ID，我想要做成显示模型名」。这里只做**确定性的格式化**
-    （已知 token 表 + 版本号/参数量 + 尾部日期戳），语义名字仍由别名决定；别名优先级与
-    文件来源（`~/.hermes/model_aliases.json`，与 hermes-fry-cards 同源）一并钉住。
+    原话：「显示现在的好像是模型 ID，我想要做成显示模型名」；随后用户实测指出
+    **`opencode-go` 下的 `deepseek-flash` 真名是 `DeepSeek V4.1 Flash`** —— 靠 ID 猜不出来，
+    所以要问数据源。优先级：配置别名 → `~/.hermes/model_aliases.json` → **models.dev 真名**
+    （Hermes 官方解析器，只读本地缓存）→ 确定性格式化（token 表 / 版本号 / 参数量 / 日期戳）。
+    models.dev 那一层用 **stub** 钉住（真机缓存不能进单测，否则换台机器结论就变）。
     """
     import json as _json
     import os as _os
     import pathlib as _pathlib
     import tempfile as _tempfile
+    import types as _types
 
     context.set_aliases({}, spec="")
-    cases = {
-        # 用户本机在用的几个（config.yaml 的 default / fallback）
-        "deepseek-flash": "DeepSeek Flash",
-        "deepseek-v4-flash": "DeepSeek V4 Flash",
-        "mimo-v2.5-free": "MiMo V2.5 Free",
-        "agnes-3.0-flash": "Agnes 3.0 Flash",
-        # provider/vendor 前缀 + 变体后缀
-        "opencode-go/deepseek-v4-pro": "DeepSeek V4 Pro",
-        "nvidia/moonshotai/kimi-k3": "Kimi K3",
-        "openrouter/anthropic/claude-x:free": "Claude X",
-        # 版本/日期/参数量
-        "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5",
-        "anthropic/claude-opus-4.8": "Claude Opus 4.8",
-        "qwen-2-5-72b": "Qwen 2.5 72B",
-        "hermes-3-405b": "Hermes 3 405B",
-        # 不认识的也至少有个人样，且不吞掉内容
-        "mystery-model-x": "Mystery Model X",
-    }
-    for raw, want in cases.items():
-        got = context.display_model(raw)
-        assert got == want, f"{raw!r} 应显示 {want!r}，实际 {got!r}"
-    assert context.display_model("") == ""
-
-    # ⓵ 显式配置的别名永远优先（用户说了算），即使它长得很怪
-    context.set_aliases({"nvidia/moonshotai/kimi-k3": "哈基米"}, spec="")
-    assert context.display_model("nvidia/moonshotai/kimi-k3") == "哈基米"
-    context.set_aliases({}, spec="")
-
-    # ⓶ `~/.hermes/model_aliases.json`：子串匹配 + 改文件即生效（坏 JSON 退化成格式化）
-    tmp = _pathlib.Path(_tempfile.mkdtemp()) / "model_aliases.json"
-    saved = context._ALIAS_FILE
-    context._ALIAS_FILE = tmp
-    context._ALIAS_FILE_CACHE.clear()
+    saved_md, saved_md_cache = context._MODELSDEV_MODULE, dict(context._MODEL_NAME_CACHE)
+    context._MODELSDEV_MODULE = False        # 先把数据源关掉 ⇒ 本节只验「格式化」（确定性）
+    context._MODEL_NAME_CACHE.clear()
     try:
-        tmp.write_text(_json.dumps({"longcat": "哈基米", "kimi": "Kimi 亲"},
-                                   ensure_ascii=False), encoding="utf-8")
-        assert context.display_model("nvidia/moonshotai/kimi-k3") == "Kimi 亲"
-        later = tmp.stat().st_mtime + 10
-        tmp.write_text(_json.dumps({"kimi": "月暗面"}, ensure_ascii=False), encoding="utf-8")
-        _os.utime(tmp, (later, later))          # 强制 mtime 变化 ⇒ 必须热更新
-        assert context.display_model("nvidia/moonshotai/kimi-k3") == "月暗面"
-        tmp.write_text("{ 坏 JSON", encoding="utf-8")
-        _os.utime(tmp, (later + 10, later + 10))
-        assert context.display_model("nvidia/moonshotai/kimi-k3") == "Kimi K3", \
-            "别名文件坏了只能退化成格式化，不许把页脚弄没"
-    finally:
-        context._ALIAS_FILE = saved
+        cases = {
+            # 用户本机在用的几个（config.yaml 的 default / fallback）
+            "deepseek-flash": "DeepSeek Flash",
+            "deepseek-v4-flash": "DeepSeek V4 Flash",
+            "mimo-v2.5-free": "MiMo V2.5 Free",
+            "agnes-3.0-flash": "Agnes 3.0 Flash",
+            # provider/vendor 前缀 + 变体后缀
+            "opencode-go/deepseek-v4-pro": "DeepSeek V4 Pro",
+            "nvidia/moonshotai/kimi-k3": "Kimi K3",
+            "openrouter/anthropic/claude-x:free": "Claude X",
+            # 版本/日期/参数量
+            "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5",
+            "anthropic/claude-opus-4.8": "Claude Opus 4.8",
+            "qwen-2-5-72b": "Qwen 2.5 72B",
+            "hermes-3-405b": "Hermes 3 405B",
+            # 不认识的也至少有个人样，且不吞掉内容
+            "mystery-model-x": "Mystery Model X",
+        }
+        for raw, want in cases.items():
+            got = context.display_model(raw)
+            assert got == want, f"{raw!r} 应显示 {want!r}，实际 {got!r}"
+        assert context.display_model("") == ""
+
+        # ⓵ 显式配置的别名永远优先（用户说了算），即使它长得很怪
+        context.set_aliases({"nvidia/moonshotai/kimi-k3": "哈基米"}, spec="")
+        assert context.display_model("nvidia/moonshotai/kimi-k3") == "哈基米"
+        context.set_aliases({}, spec="")
+
+        # ⓶ `~/.hermes/model_aliases.json`：子串匹配 + 改文件即生效（坏 JSON 退化成格式化）
+        tmp = _pathlib.Path(_tempfile.mkdtemp()) / "model_aliases.json"
+        saved = context._ALIAS_FILE
+        context._ALIAS_FILE = tmp
         context._ALIAS_FILE_CACHE.clear()
+        try:
+            tmp.write_text(_json.dumps({"longcat": "哈基米", "kimi": "Kimi 亲"},
+                                       ensure_ascii=False), encoding="utf-8")
+            assert context.display_model("nvidia/moonshotai/kimi-k3") == "Kimi 亲"
+            later = tmp.stat().st_mtime + 10
+            tmp.write_text(_json.dumps({"kimi": "月暗面"}, ensure_ascii=False), encoding="utf-8")
+            _os.utime(tmp, (later, later))          # 强制 mtime 变化 ⇒ 必须热更新
+            assert context.display_model("nvidia/moonshotai/kimi-k3") == "月暗面"
+            tmp.write_text("{ 坏 JSON", encoding="utf-8")
+            _os.utime(tmp, (later + 10, later + 10))
+            assert context.display_model("nvidia/moonshotai/kimi-k3") == "Kimi K3", \
+                "别名文件坏了只能退化成格式化，不许把页脚弄没"
+        finally:
+            context._ALIAS_FILE = saved
+            context._ALIAS_FILE_CACHE.clear()
+
+        # ⓷ **models.dev 真名**优先于格式化：用户实测 `opencode-go` 的 `deepseek-flash`
+        # 真名是 `DeepSeek V4.1 Flash`（该 provider 条目里 name == ID，真名在厂商条目里）。
+        class _Info:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+        asked: list = []
+
+        def _get_model_info(prov: str, model: str, **kw):
+            asked.append((prov, model))
+            assert not kw.get("allow_network"), "真名解析不许发网络请求（渲染路径）"
+            if prov == "opencode-zen":
+                return _Info("MiMo 真名")
+            if prov == "opencode-go" and model == "deepseek-flash":
+                return _Info("deepseek-flash")      # name == ID ⇒ 视为「没有真名」
+            return None
+
+        def _fetch_models_dev(**kw):
+            assert not kw.get("allow_network"), "真名解析不许发网络请求（渲染路径）"
+            return {"deepseek": {"models": {"deepseek-flash": {"name": "DeepSeek V4.1 Flash"}}}}
+
+        context._MODELSDEV_MODULE = _types.SimpleNamespace(
+            get_model_info=_get_model_info, fetch_models_dev=_fetch_models_dev)
+        context._MODEL_NAME_CACHE.clear()
+        # provider 直接给出真名
+        assert context.display_model("mimo-v2.5-free", "opencode-zen") == "MiMo 真名"
+        # provider 条目 name == ID ⇒ 扫注册表拿到厂商条目里的真名
+        assert context.display_model("deepseek-flash", "opencode-go") == "DeepSeek V4.1 Flash"
+        assert ("opencode-go", "deepseek-flash") in asked
+        # 同一个 (provider, model) 只查一次（渲染路径每帧都会调）
+        n_asked = len(asked)
+        assert context.display_model("deepseek-flash", "opencode-go") == "DeepSeek V4.1 Flash"
+        assert len(asked) == n_asked, "真名结果必须按 (provider, model) 记住"
+        # 别名依旧压过真名
+        context.set_aliases({"deepseek-flash": "哈基米"}, spec="")
+        assert context.display_model("deepseek-flash", "opencode-go") == "哈基米"
+        context.set_aliases({}, spec="")
+        # 数据源抛异常 ⇒ 静默退回格式化，页脚不许被弄坏
+        def _boom(*_a, **_kw):
+            raise RuntimeError("models.dev 挂了")
+
+        context._MODELSDEV_MODULE = _types.SimpleNamespace(
+            get_model_info=_boom, fetch_models_dev=_boom)
+        context._MODEL_NAME_CACHE.clear()
+        assert context.display_model("deepseek-flash", "opencode-go") == "DeepSeek Flash"
+    finally:
+        context.set_aliases({}, spec="")
+        context._MODELSDEV_MODULE = saved_md
+        context._MODEL_NAME_CACHE.clear()
+        context._MODEL_NAME_CACHE.update(saved_md_cache)
 
 
 

@@ -99,7 +99,7 @@ config_schema:
   show_model:
     type: boolean
     default: true
-    description: "页脚里显示**模型名**（`deepseek-v4-flash` ⇒ `DeepSeek V4 Flash`；别名优先，面板标题只放「💭 思考 / 🛠️ 工具执行」摘要）"
+    description: "页脚里显示**模型名**（真名取自 Hermes 的 models.dev 缓存，例：`deepseek-flash` ⇒ `DeepSeek V4.1 Flash`；别名优先，数据源查不到才格式化；面板标题只放「💭 思考 / 🛠️ 工具执行」摘要）"
   context_style:
     type: string
     default: "text"
