@@ -218,20 +218,28 @@ tests/        见「验证」
     加粗**英文动作名**（Read file / Run command / Load skill …）+ 耗时（`25 ms` / `1.2 s`）+
     **带颜色的状态词**（`Succeeded` 绿 / `Running` 青绿 / `Failed`、`Blocked` 红 /
     `Cancelled`·`Skipped` 灰），命令或 skill 名另起一行（灰色 + `tool-indent_outlined` 前缀图标）。
-    ⚠️ **图标三条纪律**：① 默认**线性 `_outlined` + 统一灰**（彩色 `_colorful` 只有 13 个、
+    ⚠️ **图标四条纪律**：① 默认**线性 `_outlined` + 统一灰**（彩色 `_colorful` 只有 13 个、
     颜色写死，不用）；② token 必须**逐个对飞书官方枚举页查证存在**（`enumerations-for-icons`，
     写错客户端不渲染且不报错）—— 白名单冻结在 `test_units.py::_VERIFIED_LINEAR_TOKENS`；
     ③ `ICON_ALIASES`（28 条逐条等于 CLS）是**对齐判据的唯一真相**（`check_cls_alignment` 只读它），
-    `tool_icon_token(name, token)` 只是渲染层精化；想回 emoji 形态配 `tool_row_icon: "emoji"`。
+    `tool_icon_token(name, token)` 只是渲染层精化；想回 emoji 形态配 `tool_row_icon: "emoji"`；
+    ④ **字段表纪律**（2026-09-22 真机 `200621` 的产物）：服务端对**未知字段**是**整卡被拒**
+    （不是忽略，而且一次只报一个）——`markdown` 没有 `text_color`（灰色只能写进 content：
+    `<font color='grey'>…</font>`，见 `cardview._grey`），`div` 的前缀 `icon` 在**组件级**
+    （`div.text` 里没有这个字段）。新增/改元素前先核官方 2.0 字段表，并登记进
+    `check_cardview._assert_panel_element_fields()` 的白名单（未登记 tag 直接红）。
     ⚠️ **i18n 边界**：`markdown` element.content 不承载 `i18n_content` ⇒ 工具行动作词/
     状态词固定英文、分区小标题固定中文；完整句子提示仍走 `i18n.t()`。不要把它写成
     “动作词双语”。
     参数预览被上游 80 字符截断时走 `_preview_value()` 的有界提取，**绝不把 JSON 原文
     倒回卡上**。CardKit 实体卡的外层折叠面板 header 建卡时定死；Phase 1 header
     局部更新探针的最终结论是 **c：不实现生产代码**，收尾/降级/`/stop` 仍走整卡替换
-    （见 `docs/audits/cls-ui/phase-1/consensus.md`）。`<font color>` 在 `markdown` 元素上的
-    真机渲染待截图确认；确认前 v0.6.0 默认 `panel_color_tags: false`（无色降级），
-    确认后才可显式打开；不要把它写成“默认已开启”。
+    （见 `docs/audits/cls-ui/phase-1/consensus.md`）。`<font color='…'>` 是给
+    `markdown`/`lark_md` 正文上色的**唯一**合法写法（官方富文本「彩色文本样式」；`markdown`
+    没有 `text_color` 字段，写了整卡被拒），生产自 v0.6.2 起默认开（`panel_color_tags: true`）；
+    ⚠️ 但这个开关**只作用 legacy 文本函数**（`core/cards.py::_colorize`），结构化卡（v0.7.1 起
+    唯一在跑的引擎）**无条件**写 `<font>` ⇒ 关掉它不会去色，有的客户端反而会把字面标签显示出来
+    （v0.7.3 登记项：要么让 cardview 也吃这个开关，要么删掉开关）。
     每帧**元素写**预算 2 次（常量 `_CK_WRITES_PER_FRAME`；卡级上限 10 次/秒 × 帧窗口 0.25s）；
     R7 起再加一次**会话预览**写（`card.settings`，`_CK_SUMMARY_INTERVAL = 5s` 限频 ⇒ 平均
     ≈0.2 次/秒，且**不重试**）⇒ 折算 ≈8.2 逻辑写/秒 < 卡级上限 10 次/秒；

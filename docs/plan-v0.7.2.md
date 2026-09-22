@@ -52,12 +52,12 @@
 
 | 阶段 | 内容 | 验收（硬指标） | 状态 |
 | --- | --- | --- | --- |
-| **P0 折叠提示元素类型**（计划外·已修） | `c625562:core/cardview.py:235` 把折叠提示写成 `collapsible_panel` 的 `plain_text` 直接子元素 ⇒ tools>20 时 `300313` ⇒ 收尾 `200621` ⇒ 核心回落 `send()`（**14:44 灰气泡的真根因**）。已改成 `markdown` | 变异 `V4-33`（改回 `plain_text`）实红；真机长回合复验 | ✅ 已修 + 变异红 |
+| **P0 折叠提示元素类型**（计划外·已修） | `c625562:core/cardview.py:235` 把折叠提示写成 `collapsible_panel` 的 `plain_text` 直接子元素 ⇒ tools>20 时 `300313` ⇒ 收尾 `200621` ⇒ 核心回落 `send()`（**14:44 灰气泡的真根因**）。已改成 `markdown`。⚠️ **同源第二半（2026-09-22 真机探针实测）**：换类型时新节点又带上了非法字段 `text_color` ⇒ 同样 `200621` **整卡被拒**（只在长回合走到）⇒ 已改 `<font color='grey'>` 并加字段白名单门禁（见 `audits §8.7`） | 变异 `V4-33`（改回 `plain_text`）实红；`V4-60`（写回 `text_color`）实红；真机长回合复验 | ✅ 已修 + 变异红 |
 | **P1 页脚** | 去掉两处页脚短码；重写钉短码的用例 + 重跑黄金夹具；短码保留在自检日志 | 全五门禁绿；变异「又挂回短码」实红（`G2-10`/`Y20`/`V4-17B`）；`test_v4_17b` 扫**整卡 + 出站载荷** | ✅ |
 | **P2 加载指示** | `loading_hint_element()` = aiduPOP `_loading_element`（`custom_icon(共享 key)` + `text:" "`，会动无文字）；首字即删；删除失败**换号重试**、`300313` 只按 msg 判定、上限 3 次 | 探针目视「会动、无文字」✅；变异 `V4-32/40/41/42/43` 实红 | ✅ |
-| **P3 图标** | 主表 28 条逐条等于 CLS（含顺序）+ `terminal` 登记偏差；`tests/check_cls_alignment.py` 直连 CLS 源码；A/B 探针（**同一文本、只变 icon**）确认「偏上」 | 对照表逐条 ✅ + CLS 对齐门禁 OK；变异 `V4-44` 实红；用户回话选定探针版本 | 代码 ✅ / 探针待发 |
+| **P3 图标** | 主表 28 条逐条等于 CLS（含顺序）+ `terminal` 登记偏差；`tests/check_cls_alignment.py` 直连 CLS 源码；三臂布局探针（**同一文本、只变 icon 放法**）→ 用户选「乙 = `markdown` 前缀图标」；线性 `_outlined` + 统一灰，并扩展到详情行/错误块/折叠提示 | 对照表逐条 ✅ + CLS 对齐门禁 OK；变异 `V4-46/56/57/58/59/60/61` 实红；落地探针卡 `om_x100b64159f75b0a0c2f35ecdf3f0d36` 发送成功 | 代码 ✅ / 等用户目视确认 |
 | **P4 澄清卡** | 三态可提交（pending/submitted/confirmed）；组件级 `behaviors` 路径已通；表单容器（`form_value[name]`）**未实现**——登记为残余项 | `check_clarify_e2e` 覆盖「选中/多选/输入/**表单提交** → 回执 → 重复点击 toast」✅；真机点一次成功（已达成）；retry/TTL 待做 | 部分 |
-| **P5 灰气泡** | 真根因是 P0（不是内核 `Working` 文本）；出站留痕覆盖 `send()` 卡片成功 / 卡失败回落 / `edit_message` 成功 / 回落 | 长回合（tools>20）重放：卡 JSON 无 `plain_text` 子元素、日志无 `300313`/`200621`、`/larkdeck status` 掉回纯文本计数不增；留痕三处有测试 + P5×3 变异实红 | 根因 ✅ / 长回合复验待做 |
+| **P5 灰气泡** | 真根因是 P0（不是内核 `Working` 文本）；出站留痕覆盖 `send()` 卡片成功 / 卡失败回落 / `edit_message` 成功 / 回落 | 长回合（tools>20）重放：卡 JSON 无 `plain_text` 子元素、无非法字段（`markdown.text_color` / `div.text.icon`，2026-09-22 真机 `200621` 实测已修，见 `audits §8.7`）、日志无 `300313`/`200621`、`/larkdeck status` 掉回纯文本计数不增；留痕三处有测试 + P5×3 变异实红 | 根因 ✅ / 长回合复验待做 |
 | **P6 收尾** | `/neat-freak` 洁癖收尾；README/AGENTS/CHANGELOG/handoff/plan 口径同步；`v0.7.2` tag + release；Mac 本机插件同步生效 | 「全量门禁」范围见 §2 末；用户终验；tag 已推；`.deploy` = tag 提交且网关已重启 | 进行中 |
 
 ## 2. 流程纪律（用户重申，必须遵守）
@@ -80,8 +80,8 @@
   图标表可被「生产表 + 冻结 JSON 同时改」绕过 ⇒ CLS 直连必须进列，且 `run_fast` 走 `--require`）。
 * **P6「全量门禁」的范围与预算**（审计 A：全矩阵在负载机器上约 6.5h，必须写清口径）：
   1. **六支**门禁全量各跑一次、全绿；2. `mutate_check --delta`（三重指纹：代码区域 × 用例名集合 ×
-  helper/fixture）+ 周期性全量直跑背景刷新账本（`--ledger-status`：475/475、待跑 0；**
-  2026-09-21 实测**：全量直跑分 2 片并行 ≈18 分钟，另加缺口补跑 ≈7 分钟）；
+  helper/fixture）+ 周期性全量直跑背景刷新账本（`--ledger-status`：482/482、待跑 0；**
+  2026-09-22 实测**：全量直跑分 4 片并行 ≈15 分钟，另加 8 条负载 💥 定向复跑 ≈3 分钟）；
   3. ≥1 条真机探针记录（本轮：加载指示「会动」+ 澄清点击 + 长回合无灰气泡 + 图标选版）。
   `--preflight`、`-k` 局部子集、单独 `check_cardview` **都不能**当最终绿。
   ⚠️ **2026-09-21 协议修订**（用户质疑全量矩阵耗时）：全量直跑**不再每版必跑** —— 见
@@ -95,6 +95,8 @@
 | 表单容器形态（`form` + `form_action_type:"submit"` + 组件 `name` + `form_value[name]` 解析）未实现 | 本仓 | 真机点一次 submit 按钮 + `check_clarify_e2e` 覆盖 | v0.7.3 |
 | submitted/retry/30min TTL 三态未做（现为 pending → 原地换成已答复卡） | 本仓 | 真机 + e2e | v0.7.3 |
 | 长回合（tools>20）真机复验未做 | 真机 | 日志无 `300313`/`200621` + 卡片有折叠提示 | **v0.7.2 发布前（用户终验）** |
+| `panel_color_tags` 对**结构化车道**是死开关：`core/cards.py::_colorize` 吃这个开关，但 v0.7.1 起唯一在跑的 engine 是 structured，`cardview` **无条件**写 `<font color='…'>` ⇒ 配 `false` 不会去色，而在不认该语法的客户端上会把字面标签显示出来（2026-09-22 真机文档核对时发现） | 本仓 | 让 cardview 也吃这个开关（或删掉这个配置键）+ 断言两种取值下的卡 JSON | v0.7.3 |
+| 字段白名单只覆盖**面板树**（`check_cardview._assert_panel_element_fields`）；`entity_skeleton` 的 header / footer / answer 与降级车道尚未登记 —— 服务端对未知字段是**整卡被拒**，这些元素写错同样会让整卡掉进纯文本回落 | 本仓 | 白名单扩到整卡（按官方 2.0 字段表逐 tag 登记），新增 tag 不同时登记即门禁红 | v0.7.3 |
 | `show_reasoning=true` 的嵌套 `collapsible_panel` 客户端渲染未验证（默认 false 规避） | 真机 | 探针已发 `om_x100b6427ec67d4a4de74424945f4ca0`（「内层面板能展开吗」），**等用户目视结论** | v0.7.3 |
 | 低层出站原语（`_ld_ck_create`/`_ld_send_card`/`_ld_update_card`）无统一留痕 | 本仓 | 调用点枚举断言 + 灰度日志 | v0.7.3 |
 | `seq += 1` 的换号重试只被黄金夹具保护（C2：夹具同步重生成即失守） | 本仓 | 构造「删除是这一帧最后一次写」的场景断言 | v0.7.3 |

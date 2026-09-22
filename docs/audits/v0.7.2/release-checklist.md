@@ -12,7 +12,7 @@
 | 六支门禁 | ✅（本轮多次） | `run_fast.py --full`：全 OK，合计 ~10.4s |
 | 阶段审计（A/B/C/C2 + 收口复核） | ✅ | `docs/audits/v0.7.2/audit-round1.md`（含绿变异、收口对照、第八节收口第二轮） |
 | 真机探针 | 部分 | 加载指示「① 会动」（用户目视）；图标定版卡 `om_x100b64256c1470acdfadc4d33133fca`；嵌套面板探针 `om_x100b6427ec67d4a4de74424945f4ca0` |
-| 变异账本 | ✅ | `--ledger-status` = **475/475 可跳过（真跑 475 + 继承 0）、待跑 0**；`full_audit_at=7e7a62d` 是账本 `_meta` 字段（`--ledger-status` 不打印它）；日志 `~/.larkdeck-scratch/v0.7.2-full-20260921/` |
+| 变异账本 | ✅ | `--ledger-status` = **482/482 可跳过（真跑 482 + 继承 0）、待跑 0**；`full_audit_at=37d2ab1` 是账本 `_meta` 字段（`--ledger-status` 不打印它）；日志 `~/.larkdeck-scratch/v0.7.2-full-20260921/` |
 | 候选部署 | ✅ | `.deploy` = `7e7a62d`，网关已重启，`启动自检通过`（**22:54:43**，行 33029；重启时刻 22:54:37） |
 
 ## 1. 用户终验（唯一待办）
@@ -47,16 +47,17 @@ $PY tests/test_units.py && $PY tests/check_override.py && $PY tests/check_hooks.
 ```bash
 PY=/Users/Zayn/.hermes/hermes-agent/venv/bin/python3
 cd /Users/Zayn/Code/larkdeck
-$PY tests/mutate_check.py --preflight              # 0.2–0.8s，先对锚点（目标 487/487）
-$PY tests/mutate_check.py --ledger-status          # 只报覆盖率（目标：475/475、待跑 0）
+$PY tests/mutate_check.py --preflight              # 0.2–0.8s，先对锚点（目标 494/494）
+$PY tests/mutate_check.py --ledger-status          # 只报覆盖率（目标：482/482、待跑 0）
 # ⚠️ `--ledger-status` **不打印** full_audit_at（它在账本 `_meta` 里），要看就：
 $PY -c "import json;print(json.load(open('tests/mutation-verdicts.json'))['_meta']['full_audit_at'])"
-$PY tests/mutate_check.py --delta --list           # 预期「待跑 0 / 跳过 475」；有新增才真跑
+$PY tests/mutate_check.py --delta --list           # 预期「待跑 0 / 跳过 482」；有新增才真跑
 $PY tests/mutate_check.py --delta --update-ledger  # 只跑「区域变过 / 新增」的（秒~分钟级）
 ```
 
-⚠️ **只有 `_meta.full_audit_at` 为空 / 过期时才需要全量直跑**（v0.7.2 已在 `7e7a62d` 上做过：
-475/475、`full_audit_at=7e7a62d`）。真要补一次时的口径（2026-09-21 实测 ≈18 分钟）：
+⚠️ **只有 `_meta.full_audit_at` 为空 / 过期时才需要全量直跑**（v0.7.2 已在 `37d2ab1` 上做过：
+482/482、`full_audit_at=37d2ab1`）。真要补一次时的口径（2026-09-22 实测：4 分片并行 ≈15 分钟；
+负载高时可能有若干条被判 💥（45s 门禁超时）⇒ 定向 `-k` 复跑写进 `seed5.json` 再合并 ≈3 分钟）：
 
 ```bash
 PY=/Users/Zayn/.hermes/hermes-agent/venv/bin/python3
@@ -69,7 +70,7 @@ LARKDECK_LEDGER_PATH=/tmp/f1-ledger.json \
   $PY -u tests/mutate_check.py --shard 1/2 --update-ledger > ~/.larkdeck-scratch/f1.log 2>&1 &
 LARKDECK_LEDGER_PATH=/tmp/f2-ledger.json \
   $PY -u tests/mutate_check.py --shard 2/2 --update-ledger > ~/.larkdeck-scratch/f2.log 2>&1 &
-# ⚠️ `--shard i/n`（n≥2）不会自己盖 `full_audit_at`（`_full` 要求 picked == 全量 475 条）
+# ⚠️ `--shard i/n`（n≥2）不会自己盖 `full_audit_at`（`_full` 要求 picked == 全量 482 条）
 #    ⇒ 必须按**当日证据**合并：
 #    「日志里 🔴 名字并集覆盖全部条目 + 对照 ≥6 全绿且 0 假红 + 三重指纹一致」才可盖章；
 #    异常退出（💥 成片）时把缺口从种子账本删掉再 `--delta` 补跑。
@@ -79,7 +80,7 @@ LARKDECK_LEDGER_PATH=/tmp/f2-ledger.json \
 #       at 不无条件覆盖 / 对照按 12 个名字核），它仍**不能**证明日志真伪 —— 能力边界写在
 #       脚本 docstring 与归档 README 里。
 #    公共种子的真实生成步骤见 `gap_seed_common.py`（删掉并集缺口 = 公共种子，两片共用）。
-# 最后复核：$PY tests/mutate_check.py --ledger-status   # 必须 475/475、待跑 0
+# 最后复核：$PY tests/mutate_check.py --ledger-status   # 必须 482/482、待跑 0
 ```
 
 判定：`🟢` = 断言没判别力；`⚪` = 变异没生效；`💥` = 只有崩溃、不算证据；`❓` = 锚点脱节。

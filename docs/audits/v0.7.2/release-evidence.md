@@ -8,27 +8,32 @@
 
 | 门禁 | 结果 | 耗时 |
 | --- | --- | --- |
-| `tests/test_units.py` | **279/279 passed** | ~2.8s |
+| `tests/test_units.py` | **282/282 passed** | ~4s |
 | `tests/check_override.py` | `OVERRIDE OK`（真插件加载器，报 `larkdeck v0.7.2`） | ~1.8s |
 | `tests/check_hooks.py` | `HOOKS OK` | ~3.7s |
 | `tests/check_clarify_e2e.py` | `CLARIFY E2E OK`（含**真 SDK payload 类**的表单提交场景） | ~1.7s |
 | `tests/check_cardview.py` | `CARDVIEW OK`（含独立字面量：图标表/真实工具名/spinner 三字段） | ~0.05s |
 | `tests/check_cls_alignment.py --require` | `CLS ALIGN OK`（28 条逐条 + 顺序；缺席即 FAIL） | ~0.06s |
-| `tests/run_fast.py --full` | 各步全 OK，合计 **10.3s** | — |
+| `tests/run_fast.py --full` | 各步全 OK（六支 + `check_own_body` + 锚点预检 494/494），合计 **11.5s** | — |
 
-## 2. 变异验证（**475 条全 red-assert**，`full_audit_at = 7e7a62d`）
+## 2. 变异验证（**482 条全 red-assert**，`full_audit_at = 37d2ab1`）
 
-* 账本 `tests/mutation-verdicts.json`：`--ledger-status` = `475/475 可跳过（真跑过 475 + 继承 0）；待跑 0 条`；
-  `--delta --list` = 待跑 0 / 跳过 475；`--preflight` = 487/487（475 变异 + 12 对照）。
-  ⚠️ `--ledger-status` **不打印** `full_audit_at` —— 它在账本 `_meta` 里（现为 `7e7a62d`，
+* 账本 `tests/mutation-verdicts.json`：`--ledger-status` = `482/482 可跳过（真跑过 482 + 继承 0）；待跑 0 条`；
+  `--delta --list` = 待跑 0 / 跳过 482；`--preflight` = 494/494（482 变异 + 12 对照）。
+  ⚠️ `--ledger-status` **不打印** `full_audit_at` —— 它在账本 `_meta` 里（现为 `37d2ab1`，
   逐段证据见 `_meta.full_audit_evidence`）；要看用
   `python3 -c "import json;print(json.load(open('tests/mutation-verdicts.json'))['_meta']['full_audit_at'])"`。
 * 每条记录同时带**代码区域指纹**（锚点 ±15 行）与**测试侧指纹**（当年抓它的那批用例名，
   判定用「这些名字今天是否都还在」——删/改名会重跑，**加新用例不会**让 400+ 条作废）。
   ⇒ 不需要任何「继承」声明。
-* 本轮实跑构成：增量 193 条（2 分片、目标门禁直跑）+ 升级补齐 278 条（把历史继承条目重跑一遍）
-  + 定向复核若干（`--only`）。
-* **收口后的全量刷新（2026-09-21 深夜）**：473 条在 `7e7a62d` 上有当日 `🔴` 证据 ——
+* 本轮实跑构成（**2026-09-22，P3.1 图标定版落地后的缺陷修复**）：**482 条全量直跑**（4 分片
+  119+119+118+118；其中 8 条因机器负载 27 撞 45s 门禁超时被判 💥 ⇒ 定向 `-k` 复跑全部转
+  red-assert，写 `seed5.json`）+ 合并器现场重算三指纹。**没有「继承」条目**：账本 482 条全部是
+  当日实跑。
+* **为什么又全量跑**：这次改了 `core/cardview.py`（`markdown` 非法字段 `text_color` → 进 content 的
+  `<font color='grey'>`；`div` 前缀图标挪到组件级）与 `tests/check_cardview.py`（新增字段白名单门禁）
+  + `golden_cardkit_trace.json`（helper 指纹）⇒ 按协议所有历史判定作废，必须重跑全量。
+* **收口后的全量刷新（2026-09-21 深夜，历史）**：473 条在 `7e7a62d` 上有当日 `🔴` 证据 ——
   分片直跑 179 + 175，缺口 `--delta` 补跑 60 + 59（23:09 瞬时故障窗口：分片 2 的 **62 条 💥** +
   分片 1 的 **58 条没跑到** = 缺口 120，用公共种子 354 条补跑；同一批快照重跑正常），
   另两条 `CAND-B2`/`V1-2` 在干净树 `396f0ae` 上定向复跑（`at=396f0ae`，日志
@@ -37,8 +42,10 @@
   三指纹一致」才盖
   `full_audit_at`。详见 `audit-round1.md` 第八节；日志与工具在
   `~/.larkdeck-scratch/v0.7.2-full-20260921/`。
-* 代价对比：旧口径全量 **60–90 分钟** ⇒ 本版 **~26 分钟**（分片直跑 ~18 分钟 + 缺口补跑 ~7 分钟）；
-  下一版只跑区域/门禁变过的（秒级~分钟级）。
+* 代价对比：旧口径全量 **60–90 分钟** ⇒ 2026-09-21 版 **~26 分钟**（分片直跑 ~18 + 缺口补跑 ~7）；
+  2026-09-22 版 **~20 分钟**（4 分片并行 ~15 + 8 条 💥 定向复跑 ~3）；下一版只跑区域/门禁变过的
+  （秒级~分钟级）。⚠️ 起分片必须 `start_new_session=True`：14:31 那次用 `nohup … &` 起的进程
+  在常驻 shell 被重置时一起被杀（跑到 ~98/121，无账本写入 ⇒ 已归档 `dead-1431/` 重跑）。
 * 本轮由变异验证**揪出并修掉的 8 个真缺陷**（含收口复核新增的 `CAND-B2`）：
   见 `docs/audits/v0.7.2/audit-round1.md` 第六节与第八节。
 
@@ -48,8 +55,8 @@
 | --- | --- | --- |
 | 加载指示共享 `img_key` 会不会动 | **① 会动**（用户目视） | 对照卡 `om_x100b643abd6394b0dfa26a200d65018`；记录 `loading-asset.md` |
 | 工具行图标「偏上」 | 用户选**乙（emoji 内联）**，且「丙 没有换行」 | 三臂卡 `om_x100b6424d23e24a8c3368dfbdaad661`；`probe_icons.py` |
-| 定版确认（emoji 选型 + 对齐） | **第一轮反馈：标题 🛠️ 与 terminal 行撞符号、整体不够好** ⇒ 已改成「区段符号不复用 + 同 token 按名字精化」（见 `releases/v0.7.2.md` §4.1、`audit-round1.md` §8.5）；**修复后待用户复看** | 修复前 `om_x100b64256c1470acdfadc4d33133fca` / 重发 `om_x100b642891ea30b0c4ed8f26a631531`；**修复后** `om_x100b64146cbc80a8c0230da27d9e9ef`（`probe_icons_final.py`，生产渲染器输出） |
-| 长回合（>20 工具步）不掉纯文本 / 无灰气泡 | **待用户复验** | 离线判据已绿：`test_v4_33_long_turn_card_never_puts_text_nodes_inside_collapsible_panels` |
+| 定版确认（emoji 选型 + 对齐） | **第一轮反馈：标题 🛠️ 与 terminal 行撞符号、整体不够好** ⇒ 已改成「区段符号不复用 + 同 token 按名字精化」（见 `releases/v0.7.2.md` §4.1、`audit-round1.md` §8.5）；第二轮用户口径改为**统一灰色线性图标**（CLS 观感）+「应用到更多场景」⇒ P3.1 落地（`markdown` 前缀图标 + 详情行/错误块/折叠提示）；**待用户目视** | 修复前 `om_x100b64256c1470acdfadc4d33133fca` / 重发 `om_x100b642891ea30b0c4ed8f26a631531`；**线性定版卡** `om_x100b6414825f3ca8c339ed0a7cef3e9`（三臂）；**落地确认卡** `om_x100b64159f75b0a0c2f35ecdf3f0d36`（`probe_icons_final.py`，生产渲染器输出） |
+| 长回合（>20 工具步）不掉纯文本 / 无灰气泡 | **待用户复验**（探针已把该卡会踩的非法字段全部打掉：`markdown.text_color` / `div.text.icon` ⇒ 真机 `200621` 整卡被拒，见 `audit-round1.md` §8.7） | 离线判据：`test_v4_33` + `V4-60`/`V4-61` 变异实红 + 面板字段白名单门禁；真机长回合**待用户触发** |
 | `show_reasoning=true` 的**嵌套** `collapsible_panel` 客户端渲染（仓库自己的 `plan-consensus.md:111` 列为未验证） | **待用户回话** | 生产渲染器输出已发：`om_x100b6427ec67d4a4de74424945f4ca0`（`probe_nested_panel.py`） |
 
 ## 4. 安装路径（`--copy` / NAS）

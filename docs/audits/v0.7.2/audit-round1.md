@@ -323,3 +323,50 @@ C2 另有两条「判定力是假的」观察，如实记下：
 * 夹具：golden trace 同步重生成，diff 即行为声明 —— 5 处 `🛠️ **terminal**` → `💻 **terminal**`。
 * 复验：`--delta` 因 helper 指纹（golden 夹具）变化触发**全量 476 条重跑**（2 分片），
   跑完再报；账本随后按「现场重算三指纹 + 日志覆盖 + 12 名对照全绿」合并。
+
+### 8.7 P3.1 落地真机复验踩出的 `200621`：`markdown` 上不能写 `text_color`（2026-09-22）
+
+**怎么发现的**：P3.1 改完先发真机探针（`tests/probe_icons_final.py`：5 行工具 + 详情行 +
+错误块 + 折叠提示），**第一发就被服务端拒**：
+
+```
+code=230099 … ErrCode: 200621; ErrMsg: msg: [parse card json err … value: [unknown property,
+property: text_color, path: ROOT -> body -> elements -> [1](tag: collapsible_panel)
+-> elements -> [0](tag: markdown)]
+```
+
+**两处同源缺陷（都是 P0 级：服务端对未知字段是「整卡被拒」，不是忽略，且一次只报一个）**：
+
+1. **`markdown`（富文本）没有 `text_color` 字段** —— 官方 2.0 字段表只有
+   `tag / text_align / text_size / icon / href / content`（+ 公共 `element_id` / `margin`）。
+   命中两处：
+   * 工具**详情行**（P3.1 新增）—— 影响面只在新批次；
+   * **折叠提示**（2026-09-21 那次 P0 修复引入）—— 只在工具步数 > `max_steps`（默认 20）时出现，
+     也就是**长回合必炸**；它和用户反馈 #4「卡片 + 灰色气泡」是**同一种故障**，说明那次 P0
+     修复只修了一半（元素类型从 `plain_text` 换成 `markdown`，字段却带上了新的非法值），
+     而当时只用单测验证过、没有真机验证。
+   合法写法：灰色写进 `content` = `<font color='grey'>…</font>`（官方富文本「彩色文本样式」与
+   `lark_md` 语法表；`div.text` 的 `text_color` 也**只对 `plain_text` 生效**）。
+2. **`div.text` 里没有 `icon`** —— 官方 2.0 普通文本组件（`tag: div`）里 `icon` 是**组件级**
+   「前缀图标」（`text` 子对象只有 tag/element_id/content/text_size/text_color/text_align/lines）
+   ⇒ 错误块的前缀图标从 `node["text"]["icon"]` 挪到 `node["icon"]`。
+
+**修法**：`cardview._grey()`（一处、docstring 带官方出处）替换两处非法 `text_color`；错误块图标
+挪到组件级。
+
+**门禁**：`check_cardview._assert_panel_element_fields()` —— 面板元素树**字段白名单**（按官方三页
+字段表登记：rich-text / plain-text(组件 tag = `div`) / collapsible-panel）。规则：未登记 tag 直接红、
+`text` 里不许有 `icon`、`markdown`/`lark_md` 不许有 `text_color`、`plain_text` 才允许 `text_color`，
+且**一次报出所有越界字段**（跟着服务端试字段要一轮一轮发真机卡，太慢也太吵）。
+
+**变异**：新增 `V4-60`（把灰色写回 `text_color`）、`V4-61`（图标挂回 `text`），两条都由
+`check_cardview` 实红；`V4-33` / `V4-57` / `V4-59` 锚点随行为改动重对齐。
+
+**复验**：修复后探针卡发送成功（`om_x100b64159f75b0a0c2f35ecdf3f0d36`）；golden 夹具 diff =
+行为声明（详情行/折叠提示 content 变 `<font color='grey'>…</font>`）。因夹具在 helper 指纹里，
+按协议触发**全量重跑**（482 条 = 480 + 新增 2，4 分片）。
+
+**教训（并入 `lessons`）**：本地门禁过去只钉「**我们想要的形状**」，没钉「**服务端收不收这个字段**」；
+而字段写错的代价是**整卡**被拒，还偏偏只在长回合（`collapsed_hint`）才走到 ⇒ 单测全绿、真机照炸。
+字段白名单比断言更早、更全；本轮先做面板树，全卡（header/footer/answer/降级车道）登记 v0.7.3。
+
