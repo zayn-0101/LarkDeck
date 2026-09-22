@@ -225,7 +225,7 @@ def build_footer_cases(cards) -> list:
     for style, label in labels:
         _adapter._CONFIG["context_style"] = style
         # 页脚现在只放上下文用量（模型/耗时进了面板标题行），所以不再需要 started
-        footer = _adapter.LarkDeckMixin._ld_footer()
+        footer = _adapter.LarkDeckMixin._ld_footer(turn_card=True)
         body = f"页脚样式 **{style}**。下面这行是真适配器算出来的：\n`{footer}`"
         cases.append((label, cards.reply_card(body, streaming=True,
                                               footer=f"{footer} · {mark}")))
@@ -991,7 +991,7 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
         _ctx_mod.record_api_call(model="probe-model",
                                  usage={"input_tokens": 4321, "output_tokens": 10})
         _ctx_mod.set_context_override(20000)
-        footer_at_start = adapter._ld_footer() or ""
+        footer_at_start = adapter._ld_footer(turn_card=True) or ""
         print(f"   探针页脚（建实体前灌进去的） = {footer_at_start!r}")
         try:
             ok_seed = loop.run_until_complete(adapter.send_stream_frame(

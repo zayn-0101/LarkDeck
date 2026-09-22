@@ -509,7 +509,7 @@ def _tool_detail_div(text: str, icon_mode: str = "line") -> Dict[str, Any]:
             "tag": "div",
             "margin": TOOL_DETAIL_INDENT,
             "text": {"tag": "plain_text", "content": f"↳ {text}",
-                     "text_color": "grey", "text_size": PANEL_TEXT_SIZE},
+                     "text_color": "grey", "text_size": "x-small"},
         }
     # 前缀图标版（2026-09-22「更全面」批次）：缩进交给 margin，箭头改成官方线性图标
     # `tool-indent_outlined`（已查证存在）—— 整卡图标语言统一，不再用文字箭头。
@@ -519,7 +519,7 @@ def _tool_detail_div(text: str, icon_mode: str = "line") -> Dict[str, Any]:
         "margin": TOOL_DETAIL_INDENT,
         "icon": _icon_node(ICON_DETAIL),
         "content": _grey(text),
-        "text_size": PANEL_TEXT_SIZE,
+        "text_size": "x-small",
     }
 
 
@@ -528,7 +528,7 @@ def _tool_output_div(block: str, label: str, icon_mode: str = "line") -> Dict[st
         "tag": "div",
         "margin": TOOL_DETAIL_INDENT,
         "text": {"tag": "lark_md", "content": f"**{label}**\n```\n{block}\n```",
-                 "text_size": PANEL_TEXT_SIZE},
+                 "text_size": "x-small"},
     }
     if str(icon_mode or "line").strip().lower() != "emoji":
         # 标题行加前缀图标：Error → 警告线性版；其它（Result 类）→ 代码块图标。都已查证存在。

@@ -683,7 +683,7 @@ def test_i18n_text_is_bilingual():
 # --------------------------------------------------------------------------- #
 def test_send_renders_card_and_tracks():
     raw = _make()
-    result = _run(raw.send("oc_1", "你好"))
+    result = _run(raw.send("oc_1", "你好", metadata={"notify": True}))
     assert result.message_id == "om_card_1"
     kind = raw.calls[0]
     assert kind[0] == "send" and kind[1] == "interactive", raw.calls
@@ -695,7 +695,7 @@ def test_send_renders_card_and_tracks():
 def test_send_falls_back_to_text_on_card_failure():
     raw = _make(fail_cards=True)
     context.reset()
-    result = _run(raw.send("oc_1", "你好"))
+    result = _run(raw.send("oc_1", "你好", metadata={"notify": True}))
     assert result.message_id == "om_text_1", "卡片失败必须回落纯文本"
     assert any(c[0] == "SUPER.send" for c in raw.calls), raw.calls
     # ⚠️ **接线判据**（审计 X14）：`send()` 是「用户看到纯文本」的**主路径之一**，
@@ -735,7 +735,7 @@ def test_send_cards_off_falls_back():
     try:
         adapter.configure(cards=False)
         raw = _make()
-        _run(raw.send("oc_1", "你好"))
+        _run(raw.send("oc_1", "你好", metadata={"notify": True}))
         assert raw.calls[0][0] == "SUPER.send", "cards=False 必须完全退回纯文本"
     finally:
         adapter._CONFIG.clear()
@@ -778,7 +778,7 @@ def test_send_and_edit_include_panel():
         adapter.configure(unified_panel=True)
         panel.record_reasoning("s1", "t1", "推理中……")
         raw = _make()
-        _run(raw.send("oc_1", "你好"))
+        _run(raw.send("oc_1", "你好", metadata={"notify": True}))
         payload = json.loads(raw.calls[0][2])
         assert "collapsible_panel" in _all_tags(payload), "首帧就该带上面板"
         # §9.3「show_reasoning 全车道」：默认 false ⇒ 面板里只留摘要行，正文一个字不上卡
@@ -819,14 +819,14 @@ def test_send_first_frame_after_turn_switch_has_no_stale_panel():
         adapter.configure(unified_panel=True)
         panel.record_reasoning("s1", "t1", "上一回合的推理")
         raw = _make()
-        _run(raw.send("oc_1", "你好"))
+        _run(raw.send("oc_1", "你好", metadata={"notify": True}))
         first = json.loads(raw.calls[0][2])
         assert "collapsible_panel" in _all_tags(first), "有数据时首帧应带面板"
 
         # 模型开始了新回合：on_stream_start 先清旧数据（真实派发在 check_hooks 验）。
         panel.begin_turn("s1", "t2")
         raw.calls.clear()
-        _run(raw.send("oc_1", "新回合第一句话"))
+        _run(raw.send("oc_1", "新回合第一句话", metadata={"notify": True}))
         second = json.loads(raw.calls[0][2])
         assert "collapsible_panel" not in _all_tags(second), "新回合首帧不该带上回合的面板"
     finally:
@@ -1530,11 +1530,11 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         # ── 下面两帧专门验 R2 的「**未变化不重写**」：装饰只在内容真的变了时才发那一次 batch。
         #    驱动用的是**真的数据层**（页脚走 `context`、面板走 `panel`），不是替身 ——
         #    这条规则唯一的失败形态是「装饰静默冻结」，只有在真数据层上才验得出来。
-        footer_before = raw._ld_footer() or ""
+        footer_before = raw._ld_footer(turn_card=True) or ""
         context.record_api_call(model="test-model",
                                 usage={"input_tokens": 4242, "output_tokens": 8})
         context.set_context_override(10000)
-        footer_after = raw._ld_footer() or ""
+        footer_after = raw._ld_footer(turn_card=True) or ""
         assert footer_after and footer_after != footer_before, \
             f"⑱ 前提：这一帧的页脚必须真的变了，否则证不了「变了就重写」：{footer_before!r} → {footer_after!r}"
         assert _run(raw.send_stream_frame("正文一，正文二，正文三",
@@ -2238,11 +2238,11 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         #    这条用例的前提（第 4 次写 = 第二帧的正文）就不成立了。所以每帧之间要让装饰
         #    **真的变一次** —— 用真页脚数据层驱动（`context`），不是替身。
         def _move_footer(tokens: int, why: str) -> str:
-            before = raw15._ld_footer() or ""
+            before = raw15._ld_footer(turn_card=True) or ""
             context.record_api_call(model="test-model",
                                     usage={"input_tokens": tokens, "output_tokens": 4})
             context.set_context_override(10000)
-            after = raw15._ld_footer() or ""
+            after = raw15._ld_footer(turn_card=True) or ""
             assert after and after != before, f"{why}：页脚必须真的变了（{before!r} → {after!r}）"
             return after
 
@@ -2318,11 +2318,11 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             assert _run(raw19.send_stream_frame("", chat_id="oc_ck20", turn_id="t-20"))
 
             def _footer(tokens: int, why: str) -> str:
-                before = raw19._ld_footer() or ""
+                before = raw19._ld_footer(turn_card=True) or ""
                 context.record_api_call(model="test-model",
                                         usage={"input_tokens": tokens, "output_tokens": 4})
                 context.set_context_override(10000)
-                after = raw19._ld_footer() or ""
+                after = raw19._ld_footer(turn_card=True) or ""
                 assert after and after != before, f"{why}：页脚必须真的变了（{before!r}→{after!r}）"
                 return after
 
@@ -4999,10 +4999,12 @@ def test_markdown_hygiene_covers_every_whole_text_writer_not_just_native_finaliz
         raw_b._ld_track("om_edit", "oc_md_edit")
         assert _run(raw_b.edit_message("oc_md_edit", "om_edit", raw, finalize=False))
         mid_texts = _markdown_of(updates[-1]["content"])
-        assert mid_texts == [raw], f"中间帧必须**原样**（前缀链）：{mid_texts}"
+        assert raw in mid_texts and clean not in mid_texts, \
+            f"中间帧必须**原样**（前缀链）：{mid_texts}"
         assert _run(raw_b.edit_message("oc_md_edit", "om_edit", raw, finalize=True))
         fin_texts = _markdown_of(updates[-1]["content"])
-        assert fin_texts == [clean], f"收尾整卡必须做卫生：{fin_texts}"
+        assert clean in fin_texts and raw not in fin_texts, \
+            f"收尾整卡必须做卫生：{fin_texts}"
 
         # ③ /stop 重绘：正文来自我们自己的追踪表，必须与收尾帧一致
         panel.reset()
@@ -5117,7 +5119,8 @@ def test_markdown_hygiene_covers_every_whole_text_writer_not_just_native_finaliz
                                                 turn_id="t-ck"))
             assert patch_cards, "收尾必须走一次整卡 patch"
             tail_texts = _markdown_of(patch_cards[-1])
-            assert tail_texts == [clean], f"CardKit 的收尾整卡必须做卫生：{tail_texts}"
+            assert clean in tail_texts and raw not in tail_texts, \
+                f"CardKit 的收尾整卡必须做卫生：{tail_texts}"
         finally:
             type(raw_d)._ld_ck_requests = original_requests
     finally:
@@ -5144,14 +5147,14 @@ def test_footer_metrics_are_opt_in_and_never_fake_zero() -> None:
                                 usage={"input_tokens": 1000, "output_tokens": 5,
                                        "prompt_tokens": 4000, "cache_read_tokens": 3000})
         context.set_context_override(20000)
-        _off = adapter.LarkDeckMixin._ld_footer()
+        _off = adapter.LarkDeckMixin._ld_footer(turn_card=True)
         assert "ctx" in (_off or ""), f"上下文用量照旧必须在：{_off!r}"
         # B1（2026-09-22）：三段改成纯文本段（cache / api / ttfb）
         for symbol in ("cache ", "api ", "ttfb "):
             assert symbol not in (_off or ""), f"默认必须一个字都不加：{_off!r}"
 
         adapter.configure(footer_metrics="basic")
-        _basic = adapter.LarkDeckMixin._ld_footer() or ""
+        _basic = adapter.LarkDeckMixin._ld_footer(turn_card=True) or ""
         assert "cache 75%" in _basic, f"缓存命中率 = 3000/4000：{_basic!r}"
         assert "api 7" in _basic, f"API 次数：{_basic!r}"
         assert "ttfb" not in _basic, f"basic 不含 TTFB：{_basic!r}"
@@ -5161,7 +5164,7 @@ def test_footer_metrics_are_opt_in_and_never_fake_zero() -> None:
                                 started_at=1000.0, first_chunk_at=1000.42,
                                 usage={"input_tokens": 1000, "output_tokens": 5,
                                        "prompt_tokens": 4000, "cache_read_tokens": 3000})
-        _full = adapter.LarkDeckMixin._ld_footer() or ""
+        _full = adapter.LarkDeckMixin._ld_footer(turn_card=True) or ""
         assert "ttfb 0.4s" in _full, f"TTFB = 0.42s ⇒ 0.4s：{_full!r}"
 
         # **真的 0% 命中**必须显示出来（`cache_read=0` 是「一次都没命中」，与「不知道」是
@@ -5171,7 +5174,7 @@ def test_footer_metrics_are_opt_in_and_never_fake_zero() -> None:
                                 usage={"input_tokens": 4000, "output_tokens": 5,
                                        "prompt_tokens": 4000, "cache_read_tokens": 0})
         context.set_context_override(20000)
-        _zero = adapter.LarkDeckMixin._ld_footer() or ""
+        _zero = adapter.LarkDeckMixin._ld_footer(turn_card=True) or ""
         assert "cache 0%" in _zero, f"真的 0% 命中必须显示（不许当成「缺数据」）：{_zero!r}"
 
         # 反向：`api_call_count=0` / `ttfb=0.0` **不显示** —— 这是**有意的不对称**
@@ -5183,7 +5186,7 @@ def test_footer_metrics_are_opt_in_and_never_fake_zero() -> None:
                                usage={"input_tokens": 1000, "output_tokens": 5,
                                       "prompt_tokens": 4000, "cache_read_tokens": 3000})
         context.set_context_override(20000)
-        _zeros = adapter.LarkDeckMixin._ld_footer() or ""
+        _zeros = adapter.LarkDeckMixin._ld_footer(turn_card=True) or ""
         assert "api " not in _zeros and "ttfb" not in _zeros, \
             f"0 次调用 / 0.0s 首字节视为「无意义」，不许画成读数：{_zeros!r}"
         assert "cache 75%" in _zeros, f"同一帧里真实读数照常显示：{_zeros!r}"
@@ -5192,7 +5195,7 @@ def test_footer_metrics_are_opt_in_and_never_fake_zero() -> None:
         context.reset()
         context.record_api_call(model="m", usage={"input_tokens": 1000, "output_tokens": 5})
         context.set_context_override(20000)
-        _bare = adapter.LarkDeckMixin._ld_footer() or ""
+        _bare = adapter.LarkDeckMixin._ld_footer(turn_card=True) or ""
         assert ("cache " not in _bare and "api " not in _bare and "ttfb" not in _bare), \
             f"缺数据必须少一段，绝不编 0：{_bare!r}"
 
@@ -5206,7 +5209,7 @@ def test_footer_metrics_are_opt_in_and_never_fake_zero() -> None:
                                        "prompt_tokens": 4000, "cache_read_tokens": 3000})
         context.set_context_override(20000)
         adapter.configure(footer_metrics="???")
-        _unknown = adapter.LarkDeckMixin._ld_footer() or ""
+        _unknown = adapter.LarkDeckMixin._ld_footer(turn_card=True) or ""
         assert ("cache " not in _unknown and "api " not in _unknown and "ttfb" not in _unknown), \
             f"认不出的取值必须按 off（不猜、不放大）：{_unknown!r}"
     finally:
@@ -5226,7 +5229,8 @@ def test_adapter_footer_wiring() -> None:
         adapter.configure(footer=True, show_model=True, context_style="text",
                           model_aliases="test-model=Test Model")
         # 钩子还没触发 → 没有任何一段可显示 → 不渲染脚注
-        assert adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw") is None
+        assert adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw",
+                                               turn_card=True) is None
 
         panel.bind_chat_session("oc_fw", "s-fw")
         context.record_api_call(model="test-model",
@@ -5235,36 +5239,46 @@ def test_adapter_footer_wiring() -> None:
         # 会调用 `_apply_metrics_config()`，现在它无条件把配置值推给 context（审计 A1），
         # 直接戳的临时值会被正确覆盖掉。
         adapter.configure(context_max_override=10000)
-        assert adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw") == \
+        assert adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw",
+                                               turn_card=True) == \
             "Test Model · ctx 1k/10k · 10%"
 
         # 结局一到，状态必须出现在**最前面**，且排在耗时/模型之前（AP 的 `已完成 · 1m 4s · ✳ model`）
         panel.record_turn_end("s-fw", "t-fw", completed=True)
+        # B-1（Design D）：turn 侧**只认显式 status** —— 不传就恰好没有状态词
+        assert adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw",
+                                               turn_card=True) == \
+            "Test Model · ctx 1k/10k · 10%"
         line = adapter.LarkDeckMixin._ld_footer(
-            chat_id="oc_fw", started=time.monotonic() - 12.3)
+            chat_id="oc_fw", started=time.monotonic() - 12.3,
+            status="completed", turn_card=True)
         assert line is not None
         assert re.search(r"✅ 已完成 · 12\.[0-9]s · Test Model · ctx ", line), line
         # B1：emoji 段前缀没了 ⇒ 顺序断言改用段首（状态 → 时长 → 模型 → ctx）
         assert line.index("✅") < line.index("12.") < line.index("Test Model") < line.index("ctx")
         assert "⏱" not in line and "🤖" not in line, line
-        # 显式传入的 status 也要能覆盖面板快照（`/stop` 重绘没有等待快照那一帧）
+        # 显式传入的 status 必须生效（`/stop` 重绘不走快照）
         assert adapter.LarkDeckMixin._ld_footer(
-            chat_id="oc_fw", status="stopped").startswith("⛔ 已中止 · ")
+            chat_id="oc_fw", status="stopped", turn_card=True).startswith("⛔ 已中止 · ")
         # started=0/False 不是合法回合起点（monotonic 不会为 0）：不许算出机器 uptime 级假耗时
-        _no_start = adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw", started=0) or ""
+        _no_start = adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw", started=0,
+                                                       turn_card=True) or ""
         assert not re.search(r"(^|· )\d+\.\d+s( ·|$)", _no_start), \
             f"started=0 被当成了合法起点（不该出现「时长」段）：{_no_start!r}"
         # ❌ 执行出错 三态里必须有独立覆盖（Phase 1 审计 HIGH-1）
         assert adapter.LarkDeckMixin._ld_footer(
-            chat_id="oc_fw", status="error").startswith("❌ 执行出错 · ")
+            chat_id="oc_fw", status="error", turn_card=True).startswith("❌ 执行出错 · ")
         assert adapter._ld_status_text(panel.STATUS_ERROR) == "❌ 执行出错"
 
         adapter.configure(context_style="bar")
-        assert "[█░░░░░░░]" in adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw")
+        assert "[█░░░░░░░]" in adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw",
+                                                              turn_card=True)
         adapter.configure(show_model=False)
-        assert "Test Model" not in (adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw") or "")
+        assert "Test Model" not in (adapter.LarkDeckMixin._ld_footer(
+            chat_id="oc_fw", turn_card=True) or "")
         adapter.configure(footer=False)
-        assert adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw") is None
+        assert adapter.LarkDeckMixin._ld_footer(chat_id="oc_fw",
+                                               turn_card=True) is None
     finally:
         panel.reset()
         context.set_context_override(None)
@@ -5303,14 +5317,16 @@ def test_adapter_panel_wiring() -> None:
         header = with_time["header"]["title"]["content"]
         assert "🤖" not in header and "⏱" not in header, header
         assert "💭 思考" in header and "🛠️ 工具执行 · 1 步" in header, header
-        footer = adapter.LarkDeckMixin._ld_footer(started=time.monotonic() - 12.3) or ""
+        footer = adapter.LarkDeckMixin._ld_footer(started=time.monotonic() - 12.3,
+                                             turn_card=True) or ""
         assert re.search(r"12\.[0-9]s", footer), footer
         assert "⏱" not in footer, f"B1：页脚不再有段前缀 emoji：{footer}"
         assert "Test Model" in footer, footer
         adapter.configure(show_model=False)
         assert "🤖" not in adapter.LarkDeckMixin._ld_panel()["header"]["title"]["content"]
         assert "Test Model" not in (adapter.LarkDeckMixin._ld_footer(
-            started=time.monotonic() - 12.3) or "")
+            started=time.monotonic() - 12.3,
+                                             turn_card=True) or "")
 
         # 只有推理（没有工具）也给面板：标题只带思考段，不出现空的工具段
         panel.reset()
@@ -5670,7 +5686,7 @@ def test_panel_card_renders_rounds_and_honours_panel_expanded():
         panel.record_reasoning("s1", "t1", "第二段推理")
 
         raw = _make()
-        _run(raw.send("oc_1", "你好"))
+        _run(raw.send("oc_1", "你好", metadata={"notify": True}))
         card = json.loads(raw.calls[0][2])
         blob = json.dumps(card, ensure_ascii=False)
         assert "第 1 轮" in blob and "第 2 轮" in blob, \
@@ -5681,7 +5697,7 @@ def test_panel_card_renders_rounds_and_honours_panel_expanded():
 
         adapter.configure(panel_expanded=True)
         raw2 = _make()
-        _run(raw2.send("oc_1", "你好"))
+        _run(raw2.send("oc_1", "你好", metadata={"notify": True}))
         assert _find_collapsible(json.loads(raw2.calls[0][2]))["expanded"] is True, \
             "panel_expanded=True 没生效 —— 配置成了摆设"
     finally:
@@ -6559,11 +6575,13 @@ def test_frame_footer_carries_the_card_trace_id():
         assert raw._ld_frame_footer({"card_id": "card_zzz999"}) == "ctx 1k/2k"
         assert adapter._ld_trace_id("om_abcdef123456") == "123456", \
             "短码本身还要能算（日志自检行用它）"
-        assert seen == {"chat_id": "", "started": None, "status": None}, \
+        assert seen == {"chat_id": "", "started": None, "status": None,
+                        "turn_card": True}, \
             "三次都没有 chat_id / t0 / status 时，往下传的必须是中性缺省（不猜）"
         raw._ld_frame_footer({"message_id": "om_abcdef123456", "chat_id": "oc_t",
                               "t0": 123.0, "status": "ok"})
-        assert seen == {"chat_id": "oc_t", "started": 123.0, "status": "ok"}, seen
+        assert seen == {"chat_id": "oc_t", "started": 123.0, "status": "ok",
+                        "turn_card": True}, seen
         # ⚠️ 基数页脚为空 ⇒ 仍然是 None（短码不许把「页脚=无」这个诊断信号抹掉）
         adapter.LarkDeckMixin._ld_footer = classmethod(lambda cls, **kwargs: None)
         assert raw._ld_frame_footer({"message_id": "om_abcdef123456"}) is None
@@ -6857,7 +6875,7 @@ def test_stop_redraw_and_edit_message_keep_the_trace_id():
         context.record_api_call(model="test-model",
                                usage={"input_tokens": 4242, "output_tokens": 8})
         context.set_context_override(10000)
-        assert raw._ld_footer(), "前提：这一刻必须真的有基数页脚，否则这一格什么都没验"
+        assert raw._ld_footer(turn_card=True), "前提：这一刻必须真的有基数页脚，否则这一格什么都没验"
         _ups = _wire_patch(raw)
         assert _run(raw.send_stream_frame("", finalize=False, chat_id="oc_stop", turn_id="c1"))
         assert _run(raw.send_stream_frame("正文", finalize=False, chat_id="oc_stop",
@@ -6898,7 +6916,7 @@ def test_stop_redraw_and_edit_message_keep_the_trace_id():
         context.record_api_call(model="test-model",
                                usage={"input_tokens": 4242, "output_tokens": 8})
         context.set_context_override(10000)
-        assert raw_b._ld_footer(), "前提：必须有基数页脚，否则短码本来就不该出现"
+        assert raw_b._ld_footer(turn_card=True), "前提：必须有基数页脚，否则短码本来就不该出现"
         _ups_b = _wire_patch(raw_b)
         assert _run(raw_b.send_stream_frame("", finalize=False, chat_id="oc_fin", turn_id="tf"))
         assert _run(raw_b.send_stream_frame("正文一，正文二", finalize=False,
@@ -7904,7 +7922,7 @@ def test_invariant_2_fallbacks_survive_exceptions_not_just_failures():
         raw = _make()
         raw._ld_build_card = classmethod(lambda cls, *a, **k: (_ for _ in ()).throw(
             RuntimeError("卡片层炸了")))
-        result = _run(raw.send("oc_1", "你好"))     # 不许抛
+        result = _run(raw.send("oc_1", "你好", metadata={"notify": True}))     # 不许抛
         assert result.message_id == "om_text_1", result
         assert any(c[0] == "SUPER.send" for c in raw.calls), raw.calls
 
@@ -10911,11 +10929,11 @@ def test_ck_write_window_guard_skips_the_decor_batch_without_freezing_it():
 
         # 让装饰**真的变一次**（页脚走真数据层 + 真时钟），否则「未变化不重写」会先把 batch 拦下，
         # 这条用例就变成在验去重、不是在验守卫。
-        before_footer = raw._ld_footer() or ""
+        before_footer = raw._ld_footer(turn_card=True) or ""
         context.record_api_call(model="test-model",
                                 usage={"input_tokens": 4242, "output_tokens": 8})
         context.set_context_override(10000)
-        assert (raw._ld_footer() or "") not in ("", before_footer), "前提：页脚要真的变了"
+        assert (raw._ld_footer(turn_card=True) or "") not in ("", before_footer), "前提：页脚要真的变了"
 
         # ① 窗口顶满 ⇒ 本帧的装饰批量必须被让出
         state = raw._ld_stream_get(_frame_key(chat, turn)) or {}
@@ -12125,7 +12143,7 @@ def test_v4_4_static_cards_use_structured_panel():
                                    duration_ms=347, tool_call_id="tc44",
                                    result="Filesystem 460G 92%")
         raw = _make()
-        _run(raw.send("oc_v44", "磁盘占用 92%"))
+        _run(raw.send("oc_v44", "磁盘占用 92%", metadata={"notify": True}))
         payload = json.loads(raw.calls[0][2])
         blob = json.dumps(payload, ensure_ascii=False)
         assert "header" in payload, "结构化静态卡必须带卡级状态头"
@@ -13332,7 +13350,7 @@ def test_v4_15_static_and_fit_lanes_never_reopen_disabled_panel_or_footer():
         panel.record_reasoning("s_v415r", "t-v415r", "刚开始想，还没形成完整推理轮。")
         adapter.configure(unified_panel=True, footer=True)
         sent_cards.clear()
-        _run(raw.send("oc_v415r", "只有推理的回复"))
+        _run(raw.send("oc_v415r", "只有推理的回复", metadata={"notify": True}))
         ids_r = [e.get("element_id") for e in sent_cards[-1]["body"]["elements"]]
         assert "panel" in ids_r, \
             f"只有推理轮的回合也必须出面板（否则状态色与摘要行一起丢）：{ids_r}"
@@ -13350,7 +13368,7 @@ def test_v4_15_static_and_fit_lanes_never_reopen_disabled_panel_or_footer():
             "纯工具快照（没有推理轮）也必须算「有过程数据」"
         adapter.configure(unified_panel=True, footer=True)
         sent_cards.clear()
-        _run(raw.send("oc_v415t", "工具有了"))
+        _run(raw.send("oc_v415t", "工具有了", metadata={"notify": True}))
         ids_t = [e.get("element_id") for e in sent_cards[-1]["body"]["elements"]]
         assert "panel" in ids_t, \
             f"纯工具回合走静态 send 也必须保留执行面板（否则工具名/耗时/状态色全丢）：{ids_t}"
@@ -13909,7 +13927,8 @@ def test_v072_is_full_run_only_stamps_a_whole_clean_matrix():
     import mutate_check
 
     def args(**kw):
-        base = dict(delta=False, k="", upgrade_inherited=False, target_only=False)
+        base = dict(delta=False, k="", upgrade_inherited=False, target_only=False,
+                    shard="")
         base.update(kw)
         return types.SimpleNamespace(**base)
 
@@ -13918,11 +13937,250 @@ def test_v072_is_full_run_only_stamps_a_whole_clean_matrix():
     assert mutate_check._is_full_run(args(), every, []) is True, "全量 + 零缺陷 ⇒ 可以盖章"
     assert mutate_check._is_full_run(args(target_only=True), every, []) is False, \
         "--target-only 只跑目标门禁，绝不允许盖全量章（审计 B 高发现）"
+    assert mutate_check._is_full_run(args(shard="2/6"), every, []) is False, \
+        "分片跑绝不能盖全量章"
     assert mutate_check._is_full_run(args(delta=True), every, []) is False
     assert mutate_check._is_full_run(args(k="P1"), every, []) is False
     assert mutate_check._is_full_run(args(upgrade_inherited=True), every, []) is False
     assert mutate_check._is_full_run(args(), every[:-1], []) is False, "只跑了一部分不算全量"
     assert mutate_check._is_full_run(args(), every, ["V4-1: 没生效"]) is False, "有缺陷不算全量"
+
+
+
+def test_v073_detail_and_error_text_sizes_are_x_small() -> None:
+    """v0.7.3：工具细节行（line/emoji 两宿主）与 Error/Result 块 = ``x-small``；
+    工具标题继续 ``notation``（不许整表漂移）。"""
+    step = adapter._cardview.ToolStepView(
+        name="terminal", title="terminal", status="ok",
+        detail='{"command": "df -h"}', error_block="boom")
+    line = adapter._cardview.tool_step_elements(step, "line")
+    assert len(line) >= 3, f"生产元素结构变了（line）：{line}"
+    assert line[0].get("text_size") == "notation", line[0]
+    assert line[1].get("text_size") == "x-small", line[1]
+    assert (line[2].get("text") or {}).get("text_size") == "x-small", line[2]
+    emoji = adapter._cardview.tool_step_elements(step, "emoji")
+    assert len(emoji) >= 3, f"生产元素结构变了（emoji）：{emoji}"
+    assert (emoji[1].get("text") or {}).get("text_size") == "x-small", emoji[1]
+    assert adapter._cardview.PANEL_TEXT_SIZE == "notation"
+
+
+def test_v073_footer_turn_scope_and_status_is_explicit() -> None:
+    """v0.7.3 Design D：``_ld_footer`` 是纯格式器 —— turn 侧也不许自己读快照补状态；
+    非回合直接 ``None``；真实回合的状态词必须由调用方显式传入。"""
+    defaults = dict(adapter._DEFAULTS)
+    try:
+        context.reset()
+        panel.reset()
+        adapter.configure(footer=True, show_model=True, context_style="text",
+                          model_aliases="test-model=Test Model")
+        panel.bind_chat_session("oc_v073", "s-v073")
+        context.record_api_call(model="test-model",
+                                usage={"input_tokens": 1000, "output_tokens": 5})
+        adapter.configure(context_max_override=10000)
+        panel.record_turn_end("s-v073", "t-v073", completed=True)
+        # turn 侧、不传 status ⇒ 恰好只剩时长之外的三段，绝不出现「✅ 已完成」
+        assert adapter.LarkDeckMixin._ld_footer(chat_id="oc_v073", turn_card=True) == \
+            "Test Model · ctx 1k/10k · 10%"
+        assert adapter.LarkDeckMixin._ld_footer(chat_id="oc_v073", turn_card=False) is None
+        assert adapter.LarkDeckMixin._ld_footer() is None
+        real = adapter.LarkDeckMixin._ld_footer(
+            chat_id="oc_v073", started=time.monotonic() - 12.3,
+            status="completed", turn_card=True) or ""
+        assert real.startswith("✅ 已完成 · "), real
+        # B2 收尾竞态：panel 快照还没写上结局（processing/缺失）时，收尾帧的
+        # `default_status="completed"` 必须兜住 ✅（否则 on_session_end 排队就会丢）。
+        assert adapter.LarkDeckMixin._ld_frame_footer(
+            {"chat_id": "oc_v073_race", "t0": time.monotonic() - 1.0},
+            default_status="completed").startswith("✅ 已完成 · ")
+    finally:
+        panel.reset()
+        context.set_context_override(None)
+        context.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_v073_non_turn_send_has_no_footer_element() -> None:
+    """v0.7.3 定版：已知系统提示（默认回合 + 负清单）整卡无 panel/header/footer、不进 /stop 追踪；
+    无标记的非 native 真回答仍必须有 ✅；expect_edits 预览与 _interim_send 不得挂状态词。"""
+    defaults = dict(adapter._DEFAULTS)
+    panel.reset()
+    context.reset()
+    try:
+        adapter.configure(visual_engine="structured", unified_panel=True,
+                          footer=True, show_model=True, card_status_header=True,
+                          model_aliases="test-model=Test Model")
+        panel.bind_chat_session("oc_v073_s", "s-v073s")
+        context.record_api_call(model="test-model",
+                                usage={"input_tokens": 1000, "output_tokens": 5})
+        adapter.configure(context_max_override=10000)
+        panel.record_turn_end("s-v073s", "t-v073s", completed=True)
+
+        # ① 真实上游系统提示文案（含 VS16/无 VS16 两种写法）⇒ 静默卡，且标记 turn_card=False
+        notices = (
+            "♻️ Gateway online — Hermes is back and ready.",
+            "♻ Gateway restarted successfully. Your session continues.",
+            "⚠️ Gateway restarting — Your current task will be interrupted. "
+            "Send any message after restart and I'll try to resume where you left off.",
+            "⏳ Gateway is busy — your message is queued.",
+            "⚠ Session database is locked; retrying.",
+            "✅ Hermes update installed; restart to apply.",
+            "❌ Hermes update failed: checksum mismatch.",
+            "⚠ Cron job 'nightly' skipped: previous run still active.",
+            "✅ Background task complete\nPrompt: \"x\"\n\n结果",
+            "✅ Background task finished (exit 0)",
+            "❌ Background task t-1 failed: boom",
+            "[Background process p-1] finished with exit code 0.",
+            "[IMPORTANT: background process p-1 matched watch pattern.",
+            "⚕ **Update needs your input:**\n\nChoose a channel.",
+            "◐ Session reset after being stopped.",
+            "⚠️ Context compression aborted — retrying.",
+            "ℹ️ Configured compression model `small` failed; recovered.",
+            "ℹ Context compression deferred until next turn.",
+            "📬 No home channel is set for Feishu.",
+            "⚠️ Subagent failed — \"research\": Error code: 404 (after 12s)",
+            "⏳ Goal paused: waiting for judge.",
+            "✓ Goal achieved: done",
+        )
+        for notice in notices:
+            assert adapter._ld_is_system_notice(notice),                 f"负清单漏了这条真实上游文案：{notice!r}"
+            raw = _make()
+            res = _run(raw.send("oc_v073_s", notice))
+            payload = json.loads(raw.calls[0][2])
+            els = payload["body"]["elements"]
+            assert [e.get("element_id") for e in els] == ["answer"], els
+            assert "header" not in payload, payload.get("header")
+            blob = json.dumps(payload, ensure_ascii=False)
+            assert "collapsible_panel" not in blob and "✅ 已完成" not in blob, blob
+            assert "footer" not in blob, blob
+            mid = getattr(res, "message_id", "") or ""
+            entry = raw._ld_known(mid) or {}
+            assert entry.get("turn_card") is False,                 "非回合卡可以追踪，但必须标记 turn_card=False（/stop 回落会跳过它）"
+            ups = _wire_patch(raw)
+            assert _run(raw._ld_redraw_stopped("oc_v073_s")) is False,                 "系统提示卡不该被 /stop 回落重绘"
+            assert ups == [], f"/stop 不该给系统提示卡发 patch：{ups}"
+
+        # ② 无标记的普通 send（非 native 真回答 / boundary/queued 回落）⇒ 默认回合，必须有 ✅
+        raw2 = _make()
+        _run(raw2.send("oc_v073_s", "普通真回答"))
+        p2 = json.loads(raw2.calls[0][2])
+        footer2 = [e for e in p2["body"]["elements"] if e.get("element_id") == "footer"]
+        assert footer2 and "✅ 已完成" in json.dumps(footer2, ensure_ascii=False), footer2
+        ups2 = _wire_patch(raw2)
+        assert _run(raw2._ld_redraw_stopped("oc_v073_s")) is True,             "对照：真回合卡必须仍被 /stop 重绘"
+        assert len(ups2) == 1, f"真回合卡的中止重绘应产生 1 次 patch：{ups2}"
+
+        # ③ 带 notify 的终稿 ⇒ 必须有 ✅（真实回合一个字不动）
+        raw3 = _make()
+        _run(raw3.send("oc_v073_s", "真实终稿", metadata={"notify": True}))
+        footer3 = [e for e in json.loads(raw3.calls[0][2])["body"]["elements"]
+                   if e.get("element_id") == "footer"]
+        assert footer3 and "✅ 已完成" in json.dumps(footer3, ensure_ascii=False), footer3
+
+        # ④ 预览（expect_edits、未收尾）⇒ 回合卡（页脚可在），但不许提前挂 ✅
+        raw4 = _make()
+        _run(raw4.send("oc_v073_s", "预览文本", metadata={"expect_edits": True}))
+        p4 = json.loads(raw4.calls[0][2])
+        footer4 = [e for e in p4["body"]["elements"] if e.get("element_id") == "footer"]
+        assert footer4, f"预览卡应仍是回合卡（允许 model/ctx 页脚）：{p4}"
+        assert "✅ 已完成" not in json.dumps(p4, ensure_ascii=False), p4
+
+        # ⑤ 中途播报（_interim_send）⇒ 静默卡（即使内容看起来像普通回答）
+        raw5 = _make()
+        _run(raw5.send("oc_v073_s", "普通回答的中途播报",
+                       metadata={"_interim_send": True}))
+        p5 = json.loads(raw5.calls[0][2])
+        assert [e for e in p5["body"]["elements"] if e.get("element_id") == "footer"] == [], p5
+        assert "header" not in p5, p5.get("header")
+    finally:
+        panel.reset()
+        context.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_v073_edit_message_finalize_keeps_status_and_preview_never_completes() -> None:
+    """v0.7.3 Design D 生产路径：edit_message(finalize=True) 在 panel 快照为空/processing 的
+    竞态下仍要有状态词；edit_message(finalize=False) 面对陈旧 completed 快照也不许提前 ✅。"""
+    defaults = dict(adapter._DEFAULTS)
+    panel.reset()
+    context.reset()
+    try:
+        adapter.configure(visual_engine="structured", unified_panel=True, footer=True,
+                          show_model=True, model_aliases="test-model=Test Model")
+        context.record_api_call(model="test-model",
+                                usage={"input_tokens": 1000, "output_tokens": 5})
+        adapter.configure(context_max_override=10000)
+
+        # finalize：panel 没有结局（模拟 on_session_end 还没写）⇒ 缺省 completed
+        raw = _make()
+        raw._ld_track("om_v073_f", "oc_v073_f")
+        ups = _wire_patch(raw)
+        assert _run(raw.edit_message("oc_v073_f", "om_v073_f", "终稿", finalize=True))
+        body = json.loads(ups[-1]["content"])
+        foot = [e for e in body["body"]["elements"] if e.get("element_id") == "footer"]
+        assert foot and "✅ 已完成" in json.dumps(foot, ensure_ascii=False),             f"收尾竞态下丢了状态词：{foot}"
+
+        # 预览：上一回合 completed 的陈旧快照不许被读回来
+        panel.reset()
+        panel.bind_chat_session("oc_v073_p", "s-v073p")
+        panel.record_turn_end("s-v073p", "t-v073p", completed=True)
+        raw2 = _make()
+        raw2._ld_track("om_v073_p", "oc_v073_p")
+        ups2 = _wire_patch(raw2)
+        assert _run(raw2.edit_message("oc_v073_p", "om_v073_p", "预览", finalize=False))
+        blob = json.dumps(json.loads(ups2[-1]["content"]), ensure_ascii=False)
+        assert "✅ 已完成" not in blob, f"预览读了上一回合的 completed 快照：{blob}"
+    finally:
+        panel.reset()
+        context.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_v073_structured_finalize_injects_frame_status() -> None:
+    """v0.7.3 Design D：结构化帧入口把 status 注入 state；panel 快照为空时收尾仍必须有 ✅。
+
+    为什么单列：D1 审计手工变异（删掉 `state = {**state, "status": status}`）当时全绿 ——
+    收尾页脚会退回「读 panel 快照」，而 on_session_end 与帧各有队列，那一刻快照常常还是空。
+    """
+    chat, turn = "oc_v073_csf", "t1"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    try:
+        adapter.configure(unified_panel=True, footer=True, show_model=True)
+        ups = _wire_patch(raw)
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        assert _run(raw.send_stream_frame("正文", chat_id=chat, turn_id=turn))
+        assert _run(raw.send_stream_frame("终稿", finalize=True, chat_id=chat, turn_id=turn))
+        assert ups, "前提：结构化收尾必须走整卡 patch（否则这一格什么都没验）"
+        blob = json.dumps(json.loads(ups[-1]["content"]), ensure_ascii=False)
+        assert "✅ 已完成" in blob, f"结构化收尾在空 panel 快照下丢了状态词：{blob}"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v073_legacy_finalize_injects_frame_status() -> None:
+    """v0.7.3 Design D：DEGRADE/legacy 收尾在入口解析 frame_status 并显式传给 footer。"""
+    chat, turn = "oc_v073_lsf", "t1"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    try:
+        adapter.configure(unified_panel=True, footer=True, show_model=True)
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        key = f"{chat}:{turn}"
+        state = dict(raw._ld_stream_get(key) or {})
+        assert state, "前提：seed 帧必须留下流状态"
+        state["engine_stamp"] = "degraded"
+        raw._ld_stream_put(key, state)
+        ups = _wire_patch(raw)
+        assert _run(raw.send_stream_frame("终稿", finalize=True, chat_id=chat, turn_id=turn))
+        assert ups, "前提：DEGRADE 收尾必须走整卡 patch（否则这一格什么都没验）"
+        blob = json.dumps(json.loads(ups[-1]["content"]), ensure_ascii=False)
+        assert "✅ 已完成" in blob, f"DEGRADE 收尾在空 panel 快照下丢了状态词：{blob}"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
 
 def main() -> int:

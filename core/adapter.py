@@ -1724,7 +1724,7 @@ def _log_turn_selfcheck(chat_id: str, transport: str, frames: int,
         return
     panel_ok = bool(info.get("rounds") or info.get("tools"))
     try:
-        footer_text = LarkDeckMixin._ld_footer(chat_id=chat_id) or ""
+        footer_text = LarkDeckMixin._ld_frame_footer({"chat_id": chat_id}) or ""
     except Exception:
         footer_text = ""
     logger.info(
@@ -1907,6 +1907,56 @@ _OUTBOUND_LOG_INTERVAL_S = 30.0
 _OUTBOUND_LOGGED: Dict[str, float] = {}
 
 
+#: `send()` 回合判定的限流留痕（chat -> monotonic）：P4 真机用日志复核「真实终稿有标记 /
+#: 系统提示无标记」，不让分类器黑盒化。
+_LD_TURN_DECISION_LOGGED: Dict[str, float] = {}
+
+
+def _log_turn_decision_once(chat_id: str, turn_card: bool, guarded: bool,
+                            metadata: Optional[Dict[str, Any]]) -> None:
+    """限流 30s 记录一次 `send()` 的回合判定证据（只记**相关键名**，不记内容）。"""
+    now = time.monotonic()
+    key = str(chat_id or "")
+    if now - _LD_TURN_DECISION_LOGGED.get(key, 0.0) < 30.0:
+        return
+    _LD_TURN_DECISION_LOGGED[key] = now
+    if len(_LD_TURN_DECISION_LOGGED) > 256:                 # 有界（B3/A3：不能长跑积累）
+        cutoff = now - 30.0
+        for k in [k for k, v in _LD_TURN_DECISION_LOGGED.items() if v < cutoff]:
+            _LD_TURN_DECISION_LOGGED.pop(k, None)
+    try:
+        md = metadata if isinstance(metadata, dict) else {}
+        keys = sorted(k for k in md if k in ("notify", "expect_edits", "_interim_send",
+                                             "reply_to_message_id", "thread_id"))
+    except Exception:                                   # pragma: no cover - 装饰，绝不抛
+        keys = []
+    logger.info("[larkdeck] send 判定 turn=%s guarded=%s keys=%s", turn_card, guarded, keys)
+
+
+#: v0.7.3 定版：**已知系统提示前缀**（负清单）。这些消息走 `adapter.send()` 且没有回合语义；
+#: 来源可枚举（gateway/run_notifications.py、run_shutdown.py、run_busy.py、run_turn.py、
+#: session_stall.py、cron/scheduler_prompt.py、后台进程 watcher 文案）。匹配前先剥
+#: U+FE0F（VS16）：上游同一通知存在 `♻ Gateway` 与 `♻️ Gateway` 两种写法（D1 实测漏网）。
+#: 未命中清单的 outbound 一律按回合（保真终稿/非 native 回落）；新系统提示必须先登记，
+#: 再靠 P4 `send 判定 turn=` 日志确认没有漏网。
+_LD_SYSTEM_NOTICE_PREFIXES: Tuple[str, ...] = (
+    "♻ Gateway", "⚠ Gateway", "⚠ Session database",
+    "✅ Hermes update", "❌ Hermes update", "⚠ Cron job",
+    "✅ Background task", "❌ Background task", "[Background process", "[IMPORTANT:",
+    "⏳ Gateway", "⚕ **Update needs your input:**", "◐ Session reset",
+    "⚠ Agent session", "⚠ Context compression aborted",
+    "ℹ Configured compression", "ℹ Context compression deferred",
+    "📬 No home channel", "⚠ Subagent",
+    "⏳ Goal", "⏸ Goal", "🚫 Goal", "✓ Goal",
+)
+
+
+def _ld_is_system_notice(content: str) -> bool:
+    """内容是否命中已知系统提示前缀（只看行首；VS16 归一后匹配）。"""
+    text = str(content or "").lstrip().replace("\ufe0f", "")
+    return text.startswith(tuple(p.replace("\ufe0f", "") for p in _LD_SYSTEM_NOTICE_PREFIXES))
+
+
 def _ld_view_status(chat_id: str, *, default: str = "processing") -> str:
     """面板快照的结局词汇（``ok``/``error``/``stopped``）→ **卡级状态词汇**。
 
@@ -1969,7 +2019,8 @@ class LarkDeckMixin:
         self._ld_seed_failures: Dict[str, Any] = {}
         self._ld_lock = threading.Lock()
 
-    def _ld_track(self, message_id: str, chat_id: str) -> None:
+    def _ld_track(self, message_id: str, chat_id: str,
+                  *, turn_card: bool = True) -> None:
         if not message_id:
             return
         with self._ld_lock:
@@ -1989,7 +2040,8 @@ class LarkDeckMixin:
                 if other.get("chat_id") == chat_id:
                     other["last_text"] = ""  # 只留最近一张卡的正文
             self._ld_state[message_id] = {"chat_id": chat_id, "t0": now, "last": now,
-                                          "last_text": ""}
+                                          "last_text": "",
+                                          "turn_card": bool(turn_card)}
 
     def _ld_note_text(self, message_id: str, text: str) -> None:
         """记下这张卡最后渲染过的正文（供非 native 路径的「中止重绘」用）。
@@ -2190,7 +2242,9 @@ class LarkDeckMixin:
         )
 
     @classmethod
-    def _ld_frame_footer(self, state: Dict[str, Any]) -> Optional[str]:
+    def _ld_frame_footer(self, state: Dict[str, Any], *,
+                         turn_card: bool = True,
+                         default_status: str = "") -> Optional[str]:
         """**帧路径**的页脚 = 基数页脚（v0.7.2 起不再接短码）。
 
         两条纪律：
@@ -2199,14 +2253,34 @@ class LarkDeckMixin:
         ② 短码（`message_id`/`card_id` 后 6 位）**只进日志自检行**（`卡片=xxxxxx`），
            用户可见处一律不出现（用户 2026-09-21 口径；`test_v4_17b` 扫整卡与出站载荷）。
         """
-        # V4.17：短码不上用户可见页脚（见 `_ld_cardview` 同段说明），只留基数页脚
-        return self._ld_footer(chat_id=str(state.get("chat_id") or ""),
+        if not turn_card:
+            return None
+        # Design D：状态在**这里**显式解析（state 优先，其次本回合 panel 快照），
+        # 再交给纯格式器 `_ld_footer` —— 非回合早已 return None。
+        # `default_status` 只给**没有显式 status 的收尾调用点**兜底（DEGRADE 帧）；
+        # `send()` / `edit_message()` 都在本帧解析好 status 显式传入，不靠它猜。
+        chat_id = str(state.get("chat_id") or "")
+        raw = state.get("status")
+        if not raw and chat_id:
+            try:
+                snap = _panel.snapshot(chat_id)
+            except Exception:
+                snap = None
+            raw = snap.get("status") if isinstance(snap, dict) else None
+        norm = str(raw or "")
+        if norm in ("ok", "completed", "error", "stopped"):
+            status = norm                      # 两套词汇都收（`_ld_status_text` 认）
+        else:
+            status = default_status            # processing/缺失 ⇒ 收尾 default，绝不脑补
+        return self._ld_footer(chat_id=chat_id,
                                started=state.get("t0"),
-                               status=state.get("status"))
+                               status=status or None,
+                               turn_card=True)
 
     @classmethod
     def _ld_footer(cls, chat_id: str = "", started: Optional[float] = None,
-                   status: Optional[str] = None) -> Optional[str]:
+                   status: Optional[str] = None, *,
+                   turn_card: bool = False) -> Optional[str]:
         """页脚一行：``状态 · 时长 · 模型 · ctx 用量``（v0.7.2 起**没有短码**、
         **也没有段前缀 emoji** —— B1，2026-09-22）。
 
@@ -2224,15 +2298,19 @@ class LarkDeckMixin:
         不能因为它把整张卡片搞坏。
         """
         try:
+            # Design D（v0.7.3）：非回合消息**整段不渲染页脚**；默认 False 是
+            # fail-closed —— 不确定就静默，绝不抄 panel 快照里的上一个回合状态。
+            if not turn_card:
+                return None
             if not _cfg("footer"):
                 return None
             mode = str(_cfg_raw("footer_metrics") or "off").strip().lower()
             if mode not in ("off", "basic", "full"):
                 mode = "off"          # 认不出的值按 off（不猜、不放大）
             ctx_snap = _context.snapshot() or {}
-            panel_snap = _panel.snapshot(chat_id) if chat_id else _panel.snapshot()
-            status_text = _ld_status_text(
-                status or (panel_snap.get("status") if isinstance(panel_snap, dict) else None))
+            # 纯格式器：**不读 panel 快照**（Design D）。回合状态由调用方显式传入；
+            # 缺失就只出耗时/模型/ctx，绝不自己发明「已完成」。
+            status_text = _ld_status_text(status)
             model = ""
             if _cfg("show_model"):
                 model = str(ctx_snap.get("model_display") or "")
@@ -2485,7 +2563,9 @@ class LarkDeckMixin:
     def _ld_render_card(self, chat_id: str, content: str, *, streaming: bool,
                         status: str, panel: Optional[Dict[str, Any]],
                         footer: Optional[str], started: Optional[float] = None,
-                        message_id: Optional[str] = None) -> Dict[str, Any]:
+                        message_id: Optional[str] = None,
+                        turn_card: bool,
+                        status_locked: bool = False) -> Dict[str, Any]:
         """**非流式车道**（`send()` / `edit_message()`）的卡片 JSON。
 
         为什么必须有这一层（V4.4，真机截图发现）：`structured` 只覆盖了 native 流式卡与
@@ -2505,18 +2585,28 @@ class LarkDeckMixin:
         """
         if _ld_visual_engine() == "structured":
             try:
-                status = _ld_view_status(chat_id, default=status)
+                if turn_card and not status_locked:
+                    status = _ld_view_status(chat_id, default=status)
                 view = self._ld_cardview(chat_id, content, status=status,
                                         started=started, message_id=message_id)
                 # V4.15：非流式车道（`send()`/`edit_message()`）本条消息**没有任何过程数据**时
                 # 不出面板 —— 系统提示类（"Gateway online…" / 命令回复）过去会带一个
                 # 「执行详情」空面板，点开什么都没有（用户明确说冗余，要旧形态）。
-                if not _panel_has_data(chat_id):
+                if not turn_card:
+                    # Design D：非回合 = 静默消息卡（面板/状态头/页脚都不留）。
+                    # ⚠️ 只把 footer 置空不够：`entity_skeleton` 会写 `view.footer or " "`，
+                    # 用户会看到一行空页脚（B 路实测）⇒ 必须关 footer_enabled。
                     view.panel_enabled = False
-                if footer:
+                    view.header_enabled = False
+                    view.footer_enabled = False
+                    view.footer = None
+                elif not _panel_has_data(chat_id):
+                    view.panel_enabled = False
+                if turn_card and footer:
                     # 调用方已经算好的页脚优先（它是**当下**的值）；空则保留视图自己那份
                     view.footer = footer
-                status = _ld_view_status(chat_id, default=status)
+                if turn_card and not status_locked:
+                    status = _ld_view_status(chat_id, default=status)
                 card = _cardview.entity_skeleton(view)
                 card["config"]["streaming_mode"] = bool(streaming)
                 # 与 legacy 车道同一层保护（审计 B 中-2）：设备字号档位必须也作用在
@@ -2529,6 +2619,8 @@ class LarkDeckMixin:
                                   _cards.card_bytes(card))
             except Exception:
                 logger.warning("[larkdeck] 结构化静态卡渲染失败，退回旧面板", exc_info=True)
+        if not turn_card:
+            return self._ld_build_card(content, streaming=streaming, panel=None, footer=None)
         return self._ld_build_card(content, streaming=streaming, panel=panel, footer=footer)
 
     @classmethod
@@ -2633,6 +2725,24 @@ class LarkDeckMixin:
         return PatchMessageRequest.builder().message_id(message_id).request_body(body).build()
 
     # -------------------------------------------------------------------- send
+    def _ld_send_is_turn(self, chat_id: str, content: str,
+                         metadata: Optional[Dict[str, Any]], guarded: bool) -> bool:
+        """**Design D 定版**（v0.7.3）：``send()`` 这条消息是不是某个回合的产出。
+
+        定版口径是「**默认回合 + 已知系统提示负清单**」：
+          1. ``_interim_send=True``（上游中途播报）⇒ 非回合；
+          2. 命中 ``_ld_is_system_notice(content)``（网关/更新/DB/cron/后台完成等已知
+             系统提示前缀）⇒ 非回合；
+          3. 其余一律**回合** —— 非 native 真终稿（含 boundary/queued/无标记）、命令回复
+             （带 ``notify``）、非命令控制回复都保持页脚/状态词，一个字不动。
+        为什么默认回合：旧版（Design B/C）默认非回合时，非 native 真终稿（无 metadata 标记）
+        会静默丢 ✅，且现有 6 类 `/stop` 回落全断；系统提示则用**来源可枚举的前缀**识别。
+        """
+        md = metadata if isinstance(metadata, dict) else {}
+        if md.get("_interim_send") is True:
+            return False
+        return not _ld_is_system_notice(content)
+
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None, **kwargs: Any):
         """把回复渲染成卡片；任何一步出问题都回落到内置的纯文本发送。"""
@@ -2662,14 +2772,30 @@ class LarkDeckMixin:
             # 走 native 收尾的回合看到降级后的标题，掉到 `send()` 的回合还露着字面 `**` 与 H1。
             # 判据是「这份文本是不是**完整文本**」，不是「这是哪条路径」（见 cards.sanitize_markdown）。
             content = _sanitize_for_send(content)
+            turn_card = self._ld_send_is_turn(chat_id, content, metadata, guarded)
+            _log_turn_decision_once(chat_id, turn_card, guarded, metadata)
+            if turn_card:
+                _md = metadata if isinstance(metadata, dict) else {}
+                # 预览（expect_edits 且不是终稿）⇒ processing 并锁状态；其余（终稿/无标记
+                # 真回答）⇒ 本回合快照状态，缺省 completed（error/stopped 照常保留）。
+                _preview = (_md.get("expect_edits") is True
+                            and _md.get("notify") is not True)
+                turn_status = ("processing" if _preview
+                               else _ld_view_status(chat_id, default="completed"))
+                turn_footer = self._ld_footer(chat_id=chat_id, status=turn_status,
+                                             turn_card=True)
+                turn_panel = self._ld_panel(chat_id, report_empty=True)
+            else:
+                turn_status, turn_footer, turn_panel = "completed", None, None
+                _preview = False
             card = self._ld_render_card(
-                chat_id, content, streaming=guarded, status="completed",
-                panel=self._ld_panel(chat_id, report_empty=True),
-                footer=self._ld_footer(chat_id=chat_id))
+                chat_id, content, streaming=guarded, status=turn_status,
+                panel=turn_panel, footer=turn_footer, turn_card=turn_card,
+                status_locked=_preview)
             result = await self._ld_send_card(chat_id, card, reply_to=reply_to, metadata=metadata)
             if result is not None and getattr(result, "success", False):
                 message_id = getattr(result, "message_id", "") or ""
-                self._ld_track(message_id, chat_id)
+                self._ld_track(message_id, chat_id, turn_card=turn_card)
                 self._ld_note_text(message_id, content)
                 _log_outbound("card", chat_id, content, message_id)
                 if guarded:
@@ -2732,14 +2858,25 @@ class LarkDeckMixin:
                 content = _sanitize_for_send(content)
             # ⚠️ 用 `_ld_frame_footer`（审计 C1）：这一帧**手上就有** message_id/chat/t0，
             #    页脚的值必须是**当下**的这一份（退回进程级快照会让页脚串台）。
+            # Design D：状态在**这里**解析一次并同时给 render 与 frame_footer ——
+            # on_session_end 与帧各自排队，收尾那一刻快照可能还没写 ok；非收尾锁 processing，
+            # 不许把上一回合的 completed 读回来（A3-1/A3-2/B3-2）。
+            # 非收尾**不许**读快照（上一回合 completed 会漏进预览）；只有收尾才用
+            # 快照状态并缺省 completed（A3-2/B3-2）。
+            turn_status = (_ld_view_status(chat_id, default="completed")
+                           if finalize else "processing")
             card = self._ld_render_card(
                 chat_id, content, streaming=not finalize,
-                status="completed" if finalize else "processing",
+                status=turn_status,
                 panel=self._ld_panel(chat_id, report_empty=bool(finalize)),
                 footer=self._ld_frame_footer({"message_id": message_id,
                                               "chat_id": state.get("chat_id") or chat_id,
-                                              "t0": state.get("t0")}),
+                                              "t0": state.get("t0"),
+                                              "status": turn_status},
+                                             turn_card=True),
                 started=state.get("t0"), message_id=message_id,
+                turn_card=True,
+                status_locked=not finalize,
             )
             result = await self._ld_update_card(chat_id, message_id, card)
             if result is not None and getattr(result, "success", False):
@@ -3268,8 +3405,10 @@ class LarkDeckMixin:
             card = self._ld_build_card(sealed + "\n\n" + _i18n.t("stream.continued"),
                                        streaming=False,
                                        panel=self._ld_panel(chat, report_empty=True),
-                                       footer=self._ld_footer(chat_id=chat,
-                                                              started=state.get("t0")))
+                                       footer=self._ld_frame_footer({
+                                           "chat_id": chat, "t0": state.get("t0"),
+                                           "status": state.get("status")},
+                                           default_status="completed"))
         result = await self._ld_update_card(chat, old_message_id, card)
         if result is None or not getattr(result, "success", False):
             logger.warning("[larkdeck] 卡链：封旧卡失败（%s），本帧回落",
@@ -3782,7 +3921,8 @@ class LarkDeckMixin:
         # V4.17（用户口径）：页脚**不再挂 🔖 短码** —— 它从来不是用户的要求，
         # 是 V2/V3 阶段内部审计为「截图↔日志对齐」加的。短码仍进日志自检行（`_ld_trace_id`），
         # 只是不出现在用户看得见的卡片上。页脚字段对齐同类插件：状态 · 时长 · 模型 · ctx。
-        base_footer = self._ld_footer(chat_id=chat, started=started, status=status) or ""
+        base_footer = self._ld_footer(chat_id=chat, started=started, status=status,
+                                      turn_card=True) or ""
         return _cardview.CardView(
             answer=answer,
             # V4.5：关掉面板的人不该还看到面板。
@@ -3983,6 +4123,7 @@ class LarkDeckMixin:
             offset = int(state.get("ck_offset") or 0)
             visible = display[offset:]
         status = _ld_view_status(chat, default="processing" if not finalize else "completed")
+        state = {**state, "status": status}          # 本帧所有 footer 调用共用
         view = self._ld_cardview(chat, visible, status=status, finalize=finalize,
                                  started=state.get("t0"),
                                  message_id=state.get("message_id"))
@@ -4113,6 +4254,10 @@ class LarkDeckMixin:
             return self._ld_stream_fail("没有 chat / SDK 客户端")
         key = f"{chat}:{turn_id}" if turn_id else chat
         state = self._ld_stream_get(key)
+        # Design D：帧状态在本帧入口解析一次；下面所有 footer 调用都显式带上它，
+        # 不再依赖 on_session_end 的排队时序（收尾缺省 completed、运行中 processing）。
+        frame_status = _ld_view_status(
+            chat, default="processing" if not finalize else "completed")
         engine = _ld_visual_engine()  # V0：生产读取配置；V1 structured canary
         if engine == "structured" and not (state and state.get("engine_stamp") == "degraded"):
             return await self._ld_stream_frame_structured(
@@ -4175,10 +4320,10 @@ class LarkDeckMixin:
                 # R3 收窄版：面板是**两块**（推理 / 工具），建实体时都定死，之后只改内容
                 panel_text, panel_tools_text = self._ld_panel_parts(
                     chat, report_empty=bool(finalize))
-                # ⚠️ 这里**故意**用 `_ld_footer()` 而不是 `_ld_frame_footer(state)`：
-                # 这一帧就是**建卡那一帧**，`message_id`/`card_id` 此刻还不存在 ——
-                # 短码是「本卡的 id 后 6 位」，在 id 诞生之前不可能有。**从下一帧起**
-                # （每帧装饰 / 元素写 / 收尾整卡）页脚就带上短码了。
+                # ⚠️ 这里**故意**用 `_ld_footer(..., turn_card=True)` 而不是
+                # `_ld_frame_footer(state)`：这一帧就是**建卡那一帧**，还没有
+                # state/message_id 可用；这里只要「耗时 → 模型 → ctx」的基数页脚
+                # （v0.7.2 起页脚本身已无短码）。
                 made = await self._ld_ck_create(chat, answer=display, panel_text=panel_text,
                                                 panel_tools_text=panel_tools_text,
                                                 reply_to=reply_to)
@@ -4229,11 +4374,11 @@ class LarkDeckMixin:
                 # 详见 `context.note_frame_ok` 的说明与 README 的「写卡帧数」一条）。
                 _context.note_frame_ok()      # R9：建实体 + 发实体卡 = 这一帧真的有东西发出去了
                 return True
-            # ⚠️ 同理（见上面 CardKit 那处）：**建卡那一帧**还没有 id ⇒ 只能是基数页脚；
-            # 短码从第二帧起才有。
+            # ⚠️ 同理（见上面 CardKit 那处）：**建卡那一帧**还没有 id/state ⇒ 直接算
+            # 基数页脚（v0.7.2 起页脚无短码；Design D 显式传 turn_card=True）。
             card = self._ld_build_card(display, streaming=True,
                                        panel=self._ld_panel(chat, report_empty=bool(finalize)),
-                                       footer=self._ld_footer(chat_id=chat, started=now))
+                                       footer=self._ld_footer(chat_id=chat, started=now, turn_card=True))
             result = await self._ld_send_card(chat, card, reply_to=reply_to)
             if result is None or not getattr(result, "success", False):
                 return self._ld_stream_fail(
@@ -4278,7 +4423,8 @@ class LarkDeckMixin:
             tail_visible = _sanitize_for_send(display[tail_offset:])
             card = self._ld_build_card(tail_visible or " ", streaming=False,
                                        panel=self._ld_panel(chat, report_empty=True),
-                                       footer=self._ld_frame_footer(state))
+                                       footer=self._ld_frame_footer(
+                                           {**state, "status": frame_status}))
             result = await self._ld_update_card(chat, message_id, card)
             if result is None or not getattr(result, "success", False):
                 return self._ld_stream_fail(
@@ -4434,7 +4580,8 @@ class LarkDeckMixin:
                 # ⚠️ 降级后写的也是**本卡那一段**（同 R4：写全文会把封掉的几段重放一遍）
                 card = self._ld_build_card(visible, streaming=True,
                                            panel=self._ld_panel(chat),
-                                           footer=self._ld_frame_footer(state))
+                                           footer=self._ld_frame_footer(
+                                               {**state, "status": frame_status}))
                 result = await self._ld_update_card(chat, message_id, card)
                 if result is None or not getattr(result, "success", False):
                     self._ld_stream_put(key, {**live_state, "ck_degrade": degrade_code,
@@ -4477,7 +4624,8 @@ class LarkDeckMixin:
         # 把已经封掉的几段重放一遍（与元素车道同一条纪律）。
         card = self._ld_build_card(visible, streaming=True,
                                    panel=self._ld_panel(chat, report_empty=bool(finalize)),
-                                   footer=self._ld_frame_footer(state))
+                                   footer=self._ld_frame_footer(
+                                       {**state, "status": frame_status}))
         result = await self._ld_update_card(chat, message_id, card)
         if result is None or not getattr(result, "success", False):
             return self._ld_stream_fail(
@@ -4745,7 +4893,8 @@ class LarkDeckMixin:
                 # 非 native 路径：取这个 chat 最近更新过、且记着正文的那张卡
                 candidates = [(value.get("last", 0.0), mid, value)
                               for mid, value in self._ld_state.items()
-                              if value.get("chat_id") == chat and value.get("last_text")]
+                              if (value.get("chat_id") == chat and value.get("last_text")
+                                  and value.get("turn_card", True))]
                 if candidates:
                     fallback = max(candidates, key=lambda item: item[0])
         if keys:

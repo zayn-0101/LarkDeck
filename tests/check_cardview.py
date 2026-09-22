@@ -196,6 +196,17 @@ def _assert_structured_builder() -> None:
     # 灰色**只能写进 content**：`markdown` 没有 `text_color` 字段（真机 200621 实测，整卡被拒）
     assert detail["content"] == "<font color='grey'>/tmp/a.txt</font>", detail
     assert "text_color" not in detail, detail
+    # v0.7.3：细节行/Error 块的 text_size = x-small；标题与生产常量保持 notation。
+    assert detail["text_size"] == "x-small", detail
+    err_step = cardview.ToolStepView(
+        name="terminal", title="terminal", status="error",
+        detail='{"command": "false"}', error_block="boom")
+    err_els = cardview.tool_step_elements(err_step, "line")
+    assert len(err_els) >= 3, err_els
+    assert err_els[0].get("text_size") == "notation", err_els[0]
+    assert err_els[1].get("text_size") == "x-small", err_els[1]
+    assert (err_els[2].get("text") or {}).get("text_size") == "x-small", err_els[2]
+    assert cardview.PANEL_TEXT_SIZE == "notation"
     panel_op = {"partial_element": cardview.panel_partial(view.panel)}
     assert "tag" not in panel_op["partial_element"], panel_op
     assert "text_size" not in panel_op["partial_element"], panel_op

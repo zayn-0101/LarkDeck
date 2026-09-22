@@ -218,8 +218,9 @@ _TEXT_PROFILE_STYLES: Dict[str, Dict[str, Dict[str, str]]] = {
         "notice": {"default": "notation", "pc": "notation", "mobile": "notation"},
     },
     # 整体紧凑：正文 normal(14px)，面板/脚注 notation(12px)。
-    # ⚠️ 只用官方文档列出的值（`normal` / `notation`）；曾经的 `x-small` 不在文档枚举里，
-    # 客户端可能忽略甚至拒收，不能拿真机卡片赌一个没写进文档的 token。
+    # `x-small`（v0.7.3 细节行/Error 块专用）：2026-09-22 真机探针证明 `markdown` 宿主
+    # 服务端 `code=0` 且确实更小；`div.text=lark_md` / `plain_text` 宿主见宿主矩阵探针，
+    # 未过的宿主一律退回 `notation`。其它位置继续只用官方文档列出的 `normal` / `notation`。
     "compact": {
         "body": {"default": "normal", "pc": "normal", "mobile": "normal"},
         "panel": {"default": "notation", "pc": "notation", "mobile": "notation"},

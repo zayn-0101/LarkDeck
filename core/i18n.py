@@ -25,7 +25,8 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     # 英文单复数：单次调用时说 "1 tool call" 而不是 "1 tool calls"（中文无变化，但保持同表）。
     "panel.title_tools_one": {ZH: "思考与工具 · 1 次工具调用", EN: "Thinking & tools · 1 tool call"},
     # 2026-09-17 CLS 观感：统一面板里的**分区小标题**与折叠面板标题都用「思考/工具」两个
-    # 不同的 emoji；状态 → 带颜色的词（Succeeded / Running / Failed）由 cards.tool_step 给。
+    # 不同的 emoji；工具状态由 `cards.status_style` 与 `cardview.status_style` 两表对等给
+    # （v0.7.2 起：完成 `✓`(绿) / 运行中 `Running`(蓝) / 失败·拦截·超时仍是词）。
     # 这两个键也会被 `_ld_panel_summary` 复用为外层折叠标题（客户端收起时也能看到）。
     "panel.sec_thinking": {ZH: "💭 思考 · {elapsed}", EN: "💭 Thought · {elapsed}"},
     "panel.sec_thinking_plain": {ZH: "💭 思考", EN: "💭 Thought"},

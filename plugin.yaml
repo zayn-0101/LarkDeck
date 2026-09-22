@@ -1,7 +1,7 @@
 name: larkdeck
 label: LarkDeck — Feishu streaming cards
 kind: platform
-version: 0.7.2
+version: 0.7.3
 description: >
   Streaming Feishu / Lark cards for Hermes Agent. Shadows the built-in `feishu`
   platform adapter (registry last-writer-wins) and subclasses it, replacing the
@@ -55,7 +55,7 @@ config_schema:
   unified_panel:
     type: boolean
     default: true
-    description: "推理 + 工具合并为底部一个可折叠面板（数据来自官方钩子）"
+    description: "推理 + 工具合并为底部一个可折叠面板（数据来自官方钩子；v0.7.3 起已知系统提示等非回合消息不渲染面板与状态头）"
   panel_expanded:
     type: boolean
     default: false
@@ -99,7 +99,7 @@ config_schema:
   footer:
     type: boolean
     default: true
-    description: "页脚：状态 → 耗时 → 模型 → 上下文用量（v0.7.2 起**不再有短码**：短码只进日志自检行，用户可见处一律不出现）"
+    description: "页脚：状态 → 耗时 → 模型 → 上下文用量（v0.7.2 起**不再有短码**：短码只进日志自检行，用户可见处一律不出现；v0.7.3 起已知系统提示——Gateway online/restarting、Session DB、Hermes update、cron/后台完成等——整段不渲染页脚/面板/状态头）"
   show_model:
     type: boolean
     default: true
@@ -111,7 +111,7 @@ config_schema:
   text_profile:
     type: string
     default: "compact"
-    description: "CardKit 设备字号档位：compact（默认：面板/脚注 notation、正文 normal；真机视觉待确认）/ off（不缩放）/ mobile_friendly（PC 小、手机大）/ large（正文更大）"
+    description: "CardKit 设备字号档位：compact（默认：面板/脚注 notation、正文 normal；真机视觉待确认）/ off（不缩放）/ mobile_friendly（PC 小、手机大）/ large（正文更大）。⚠️ 工具详情行与 Error/Result 块是**字面量 `x-small`**，不随本档位（含 large）放大；宿主矩阵探针未通过的宿主退回 `notation`"
   theme:
     type: string
     default: "ap_lite"

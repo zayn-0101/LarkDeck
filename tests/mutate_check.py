@@ -262,15 +262,15 @@ MUTATIONS = [
      "check_hooks"),
     # ⚠️ R4 起收尾帧写的是**本卡那一段**（`tail_visible`），锚点跟着改（不然就是「清单与源码脱节」）
     ("SEQ3-收尾帧不关 streaming_mode", "core/adapter.py",
-     # ⚠️ 锚点在 2026-09-15 晚**重新对准过一次**：短码那批改动把收尾卡的页脚从
-     #    `_ld_footer()` 换成了 `_ld_frame_footer(state)` ⇒ 旧锚点失效（`❓ 锚点没找到` = 红，
-     #    规则上它与假绿同级：跑不到的变异等于没验）。
-     "            card = self._ld_build_card(tail_visible or \" \", streaming=False,\n                                       panel=self._ld_panel(chat, report_empty=True),\n                                       footer=self._ld_frame_footer(state))",
-     "            card = self._ld_build_card(tail_visible or \" \", streaming=True,\n                                       panel=self._ld_panel(chat, report_empty=True),\n                                       footer=self._ld_frame_footer(state))",
+     '            card = self._ld_build_card(tail_visible or " ", streaming=False,\n'
+     '                                       panel=self._ld_panel(chat, report_empty=True),\n'
+     '                                       footer=self._ld_frame_footer(\n'
+     '                                           {**state, "status": frame_status}))',
+     '            card = self._ld_build_card(tail_visible or " ", streaming=True,\n'
+     '                                       panel=self._ld_panel(chat, report_empty=True),\n'
+     '                                       footer=self._ld_frame_footer(\n'
+     '                                           {**state, "status": frame_status}))',
      "check_hooks"),
-    # ⚠️ **2026-09-21 重新指向**（全量变异实测：老锚点打在函数**顶部**那句**死代码**上 ——
-    #    structured 分支不读它、legacy 分支会覆盖它 ⇒ 等价变异，🟢 是正确判定）。
-    #    真正的载体是 legacy 分支里那一句（16 空格缩进），打在它上面 `test_units` 必须红。
     ("SEQ4-/stop 重绘不再带中止色（legacy 分支丢强制面板）", "core/adapter.py",
      "                panel = self._ld_panel(chat, report_empty=True) or _cards.unified_panel(\n                    status=_panel.STATUS_STOPPED)",
      "                panel = None",
@@ -946,8 +946,12 @@ MUTATIONS = [
      '_STATUS: Dict[str, Any] = dict(_STATUS_DEFAULTS)',
      "test_units"),
     ("R3-7-降级车道改用实体卡形状（把面板两块塞进普通卡载荷）", "core/adapter.py",
-     '                card = self._ld_build_card(visible, streaming=True,\n                                           panel=self._ld_panel(chat),\n                                           footer=self._ld_frame_footer(state))',
-     '                card = _cards.cardkit_entity_card(visible, "", streaming=True,\n                                                 panel_tools_text="")',
+     '                card = self._ld_build_card(visible, streaming=True,\n'
+     '                                           panel=self._ld_panel(chat),\n'
+     '                                           footer=self._ld_frame_footer(\n'
+     '                                               {**state, "status": frame_status}))',
+     '                card = _cards.cardkit_entity_card(visible, "", streaming=True,\n'
+     '                                                 panel_tools_text="")',
      "test_units"),
     ("R3-6-工具块的裁减方向写反（丢掉最近的、保留最早的）", "core/cards.py",
      '        lines.append(_i18n.t("panel.trimmed", n=len(steps) - max_steps))\n'
@@ -1600,12 +1604,14 @@ MUTATIONS = [
     #    （`started=` / `status=`）⇒ **语法错误** ⇒ 五门禁只报「💥 只有崩溃」，什么都没验。
     #    （同一天还修了 V2-1 的同型问题。）锚点必须是**完整语句**。
     ('G2-3-帧页脚又挂回短码（用户口径：页脚不要这个）', 'core/adapter.py',
-     '        return self._ld_footer(chat_id=str(state.get("chat_id") or ""),\n'
+     '        return self._ld_footer(chat_id=chat_id,\n'
      '                               started=state.get("t0"),\n'
-     '                               status=state.get("status"))',
-     '        base = self._ld_footer(chat_id=str(state.get("chat_id") or ""),\n'
+     '                               status=status or None,\n'
+     '                               turn_card=True)',
+     '        base = self._ld_footer(chat_id=chat_id,\n'
      '                               started=state.get("t0"),\n'
-     '                               status=state.get("status")) or ""\n'
+     '                               status=status or None,\n'
+     '                               turn_card=True) or ""\n'
      '        return f"{base} · \\U0001f516 {_ld_trace_id(state.get(chr(109)+chr(101)+chr(115)+chr(115)+chr(97)+chr(103)+chr(101)+chr(95)+chr(105)+chr(100)))}"',
      'test_units'),
     ('G2-4-自检行不再报卡短码', 'core/adapter.py',
@@ -1736,23 +1742,22 @@ MUTATIONS = [
     ("Y20-收尾整卡那一帧又挂回短码（用户最后看到的那张卡）", "core/adapter.py",
      '            card = self._ld_build_card(tail_visible or " ", streaming=False,\n'
      '                                       panel=self._ld_panel(chat, report_empty=True),\n'
-     '                                       footer=self._ld_frame_footer(state))\n'
+     '                                       footer=self._ld_frame_footer(\n'
+     '                                           {**state, "status": frame_status}))\n'
      '            result = await self._ld_update_card(chat, message_id, card)\n'
      '            if result is None or not getattr(result, "success", False):\n'
      '                return self._ld_stream_fail(\n'
-     '                    f"收尾帧失败（{getattr(result, \'error\', \'unknown\')}）")',
+     "                    f\"收尾帧失败（{getattr(result, 'error', 'unknown')}）\")",
      '            card = self._ld_build_card(tail_visible or " ", streaming=False,\n'
      '                                       panel=self._ld_panel(chat, report_empty=True),\n'
-     '                                       footer=(self._ld_frame_footer(state) or "")'
+     '                                       footer=(self._ld_frame_footer(\n'
+     '                                           {**state, "status": frame_status}) or "")'
      ' + f" · \\U0001f516 {_ld_trace_id(state.get(\'message_id\'))}")\n'
      '            result = await self._ld_update_card(chat, message_id, card)\n'
      '            if result is None or not getattr(result, "success", False):\n'
      '                return self._ld_stream_fail(\n'
-     '                    f"收尾帧失败（{getattr(result, \'error\', \'unknown\')}）")',
+     "                    f\"收尾帧失败（{getattr(result, 'error', 'unknown')}）\")",
      "test_units"),
-    # ---- 探针 ⑮ 的**凭据链**（2026-09-16）：那一格是「请真人点一次」，而一击只能点一次 ——
-    #      派发断了的话用户点完什么都看不到，而我们会误判成「点击没到服务端」⇒
-    #      **把一次成功的真机实验读成失败**，再据此决定「澄清卡不加按钮形态」。
     ("Y21-探针点击不再留凭据（真人点完，我们拿不到任何判定依据 ⇒ 会把成功读成失败）",
      "core/adapter.py",
      '            if _cards.is_probe_value(value):      # 判据只有一处（见 cards.is_probe_value）\n                return self._ld_log_probe_click(event=event, action=action)',
@@ -2425,8 +2430,10 @@ MUTATIONS = [
     # 真机截图（2026-09-21 10:2x）：`✅ 已完成 · 🧠 deepseek-flash · ctx 20.5k/1m · 2%` ——
     # 用户指定的顺序是「状态 → 时长 → 模型 → ctx → 短码」，中间少 `⏱`、末尾少 `🔖`。
     ("V4-7-结构化页脚不传 started（时长那一段消失）", "core/adapter.py",
-     '        base_footer = self._ld_footer(chat_id=chat, started=started, status=status) or ""',
-     '        base_footer = self._ld_footer(chat_id=chat, status=status) or ""  # V4-7 mutated',
+     '        base_footer = self._ld_footer(chat_id=chat, started=started, status=status,\n'
+     '                                      turn_card=True) or ""',
+     '        base_footer = self._ld_footer(chat_id=chat, status=status,\n'
+     '                                      turn_card=True) or ""  # V4-7 mutated',
      "test_units"),
     ("V4-8-结构化页脚又挂回短码（用户口径：页脚不要这个）", "core/adapter.py",
      '            footer=base_footer,',
@@ -2440,8 +2447,8 @@ MUTATIONS = [
     # 真机证据（用户 2026-09-21 的 /stop 回复截图）：回落车道还是旧 markdown 面板，
     # 且 show_reasoning=false 被绕过（推理正文上了卡）。
     ("V4-10-非流式车道不渲染结构化元素树（回落到旧面板）", "core/adapter.py",
-     '        if _ld_visual_engine() == "structured":\n            try:\n                status = _ld_view_status(chat_id, default=status)',
-     '        if False:  # V4-10 mutated\n            try:\n                status = _ld_view_status(chat_id, default=status)',
+     '        if _ld_visual_engine() == "structured":\n            try:\n                if turn_card and not status_locked:\n                    status = _ld_view_status(chat_id, default=status)',
+     '        if False:  # V4-10 mutated\n            try:\n                if turn_card and not status_locked:\n                    status = _ld_view_status(chat_id, default=status)',
      "test_units"),
     ("V4-11-cardkit 旧车道的推理块不过滤（正文上卡）", "core/adapter.py",
      '                    include_text=show_reasoning,',
@@ -2549,9 +2556,11 @@ MUTATIONS = [
     # ---- v0.7.2 P1/P2/P3/P4：审计 A/C 指出的「绿变异」反向收口 ----------------------
     # 每一条都对应一个**实测过五门禁全绿**的写法（审计 C 的原文），现在必须实红。
     ('V4-17B-error 回合的折叠提示里挂短码（整卡扫描抓它）', 'core/adapter.py',
-     '        base_footer = self._ld_footer(chat_id=chat, started=started, status=status) or ""\n'
+     '        base_footer = self._ld_footer(chat_id=chat, started=started, status=status,\n'
+     '                                      turn_card=True) or ""\n'
      '        return _cardview.CardView(',
-     '        base_footer = self._ld_footer(chat_id=chat, started=started, status=status) or ""\n'
+     '        base_footer = self._ld_footer(chat_id=chat, started=started, status=status,\n'
+     '                                      turn_card=True) or ""\n'
      '        if status == "error" and message_id:\n'
      '            panel.collapsed_hint = (\n'
      '                f"{panel.collapsed_hint} · \\U0001f516 {str(message_id)[-6:]}").strip()\n'
@@ -2667,13 +2676,13 @@ MUTATIONS = [
      '        "margin": TOOL_DETAIL_INDENT,\n'
      '        "icon": _icon_node(ICON_DETAIL),\n'
      '        "content": _grey(text),\n'
-     '        "text_size": PANEL_TEXT_SIZE,\n'
+     '        "text_size": "x-small",\n'
      '    }',
      '    return {\n'
      '        "tag": "markdown",\n'
      '        "margin": TOOL_DETAIL_INDENT,\n'
      '        "content": _grey(text),\n'
-     '        "text_size": PANEL_TEXT_SIZE,\n'
+     '        "text_size": "x-small",\n'
      '    }',
      'test_units'),
     ('V4-60-工具详情行把灰色写回 markdown 的 text_color（服务端 200621 整卡被拒）', 'core/cardview.py',
@@ -2800,6 +2809,183 @@ MUTATIONS = [
      '        _finalize_round_locked(state, now)\n',
      '',
      'test_units'),
+
+    # ---- v0.7.3：x-small（line/emoji/error 三宿主）+ 系统提示负清单 ----------------
+    ('V073-1a-细节行(line)退回 notation', 'core/cardview.py',
+     '        "content": _grey(text),\n'
+     '        "text_size": "x-small",\n'
+     '    }',
+     '        "content": _grey(text),\n'
+     '        "text_size": "notation",\n'
+     '    }',
+     'test_units'),
+    ('V073-1b-细节行(emoji)退回 notation', 'core/cardview.py',
+     '            "text": {"tag": "plain_text", "content": f"↳ {text}",\n'
+     '                     "text_color": "grey", "text_size": "x-small"},',
+     '            "text": {"tag": "plain_text", "content": f"↳ {text}",\n'
+     '                     "text_color": "grey", "text_size": "notation"},',
+     'test_units'),
+    ('V073-1c-Error/Result 块退回 notation', 'core/cardview.py',
+     '        "text": {"tag": "lark_md", "content": f"**{label}**\\n```\\n{block}\\n```",\n'
+     '                 "text_size": "x-small"},',
+     '        "text": {"tag": "lark_md", "content": f"**{label}**\\n```\\n{block}\\n```",\n'
+     '                 "text_size": "notation"},',
+     'test_units'),
+    ('V073-2a-页脚把 panel 快照兜底加回来（turn 侧偷状态）', 'core/adapter.py',
+     '            ctx_snap = _context.snapshot() or {}\n'
+     '            # 纯格式器：**不读 panel 快照**（Design D）。回合状态由调用方显式传入；\n'
+     '            # 缺失就只出耗时/模型/ctx，绝不自己发明「已完成」。\n'
+     '            status_text = _ld_status_text(status)',
+     '            ctx_snap = _context.snapshot() or {}\n'
+     '            panel_snap = _panel.snapshot(chat_id) if chat_id else _panel.snapshot()\n'
+     '            status_text = _ld_status_text(\n'
+     '                status or (panel_snap.get("status") if isinstance(panel_snap, dict) else None))',
+     'test_units'),
+    ('V073-2b-非回合结束早退失效（系统提示又出页脚）', 'core/adapter.py',
+     '            # Design D（v0.7.3）：非回合消息**整段不渲染页脚**；默认 False 是\n'
+     '            # fail-closed —— 不确定就静默，绝不抄 panel 快照里的上一个回合状态。\n'
+     '            if not turn_card:\n'
+     '                return None',
+     '            # Design D（v0.7.3）：非回合消息**整段不渲染页脚**；默认 False 是\n'
+     '            # fail-closed —— 不确定就静默，绝不抄 panel 快照里的上一个回合状态。\n'
+     '            if False:  # V073-2b mutated\n'
+     '                return None',
+     'test_units'),
+    ('V073-2c-回合侧被误杀（真回合丢 ✅）', 'core/adapter.py',
+     '            # Design D（v0.7.3）：非回合消息**整段不渲染页脚**；默认 False 是\n'
+     '            # fail-closed —— 不确定就静默，绝不抄 panel 快照里的上一个回合状态。\n'
+     '            if not turn_card:\n'
+     '                return None',
+     '            # Design D（v0.7.3）：非回合消息**整段不渲染页脚**；默认 False 是\n'
+     '            # fail-closed —— 不确定就静默，绝不抄 panel 快照里的上一个回合状态。\n'
+     '            if turn_card:  # V073-2c mutated\n'
+     '                return None',
+     'test_units'),
+    ('V073-2d-非回合卡留下空 footer 元素', 'core/adapter.py',
+     '                    view.footer_enabled = False\n'
+     '                    view.footer = None',
+     '                    view.footer = None',
+     'test_units'),
+    ('V073-2e-系统提示负清单失效（通知又出页脚）', 'core/adapter.py',
+     '        return not _ld_is_system_notice(content)',
+     '        return True  # V073-2e mutated',
+     'test_units'),
+    ('V073-2f-分类器默认改回非回合（真回答丢 ✅）', 'core/adapter.py',
+     '        return not _ld_is_system_notice(content)',
+     '        return False  # V073-2f mutated',
+     'test_units'),
+    ('V073-2i-中途播报不再排除（interim 也出页脚）', 'core/adapter.py',
+     '        if md.get("_interim_send") is True:\n'
+     '            return False',
+     '        if False:  # V073-2i mutated\n'
+     '            return False',
+     'test_units'),
+    ('V073-2j-预览状态不锁（expect_edits 提前挂 ✅）', 'core/adapter.py',
+     '                _preview = (_md.get("expect_edits") is True\n'
+     '                            and _md.get("notify") is not True)',
+     '                _preview = False  # V073-2j mutated',
+     'test_units'),
+    ('V073-2o-非回合卡也标成回合（/stop 会涂错卡）', 'core/adapter.py',
+     '                self._ld_track(message_id, chat_id, turn_card=turn_card)',
+     '                self._ld_track(message_id, chat_id)',
+     'test_units'),
+
+    ('V073-2p-/stop 回落不再跳过非回合卡（系统提示被涂色）', 'core/adapter.py',
+     '                candidates = [(value.get("last", 0.0), mid, value)\n'
+     '                              for mid, value in self._ld_state.items()\n'
+     '                              if (value.get("chat_id") == chat and value.get("last_text")\n'
+     '                                  and value.get("turn_card", True))]',
+     '                candidates = [(value.get("last", 0.0), mid, value)\n'
+     '                              for mid, value in self._ld_state.items()\n'
+     '                              if (value.get("chat_id") == chat and value.get("last_text"))]',
+     'test_units'),
+    ('V073-2q-预览状态锁失效（status_locked 被忽略）', 'core/adapter.py',
+     '                if turn_card and not status_locked:\n'
+     '                    status = _ld_view_status(chat_id, default=status)\n'
+     '                view = self._ld_cardview(chat_id, content, status=status,',
+     '                if turn_card:\n'
+     '                    status = _ld_view_status(chat_id, default=status)\n'
+     '                view = self._ld_cardview(chat_id, content, status=status,',
+     'test_units'),
+    ('V073-2r-帧 footer 收尾 default_status 兜底失效', 'core/adapter.py',
+     '        if norm in ("ok", "completed", "error", "stopped"):\n'
+     '            status = norm                      # 两套词汇都收（`_ld_status_text` 认）\n'
+     '        else:\n'
+     '            status = default_status            # processing/缺失 ⇒ 收尾 default，绝不脑补',
+     '        if norm in ("ok", "completed", "error", "stopped"):\n'
+     '            status = norm                      # 两套词汇都收（`_ld_status_text` 认）\n'
+     '        else:\n'
+     '            status = ""                        # V073-2r mutated',
+     'test_units'),
+    ('V073-2s-非回合卡面板没关（空面板泄漏）', 'core/adapter.py',
+     '                if not turn_card:\n'
+     '                    # Design D：非回合 = 静默消息卡（面板/状态头/页脚都不留）。\n'
+     '                    # ⚠️ 只把 footer 置空不够：`entity_skeleton` 会写 `view.footer or " "`，\n'
+     '                    # 用户会看到一行空页脚（B 路实测）⇒ 必须关 footer_enabled。\n'
+     '                    view.panel_enabled = False\n'
+     '                    view.header_enabled = False\n'
+     '                    view.footer_enabled = False\n'
+     '                    view.footer = None',
+     '                if not turn_card:\n'
+     '                    # Design D：非回合 = 静默消息卡（面板/状态头/页脚都不留）。\n'
+     '                    # ⚠️ 只把 footer 置空不够：`entity_skeleton` 会写 `view.footer or " "`，\n'
+     '                    # 用户会看到一行空页脚（B 路实测）⇒ 必须关 footer_enabled。\n'
+     '                    view.header_enabled = False\n'
+     '                    view.footer_enabled = False\n'
+     '                    view.footer = None',
+     'test_units'),
+    ('V073-2t-非回合卡状态头没关（状态头泄漏）', 'core/adapter.py',
+     '                if not turn_card:\n'
+     '                    # Design D：非回合 = 静默消息卡（面板/状态头/页脚都不留）。\n'
+     '                    # ⚠️ 只把 footer 置空不够：`entity_skeleton` 会写 `view.footer or " "`，\n'
+     '                    # 用户会看到一行空页脚（B 路实测）⇒ 必须关 footer_enabled。\n'
+     '                    view.panel_enabled = False\n'
+     '                    view.header_enabled = False\n'
+     '                    view.footer_enabled = False\n'
+     '                    view.footer = None',
+     '                if not turn_card:\n'
+     '                    # Design D：非回合 = 静默消息卡（面板/状态头/页脚都不留）。\n'
+     '                    # ⚠️ 只把 footer 置空不够：`entity_skeleton` 会写 `view.footer or " "`，\n'
+     '                    # 用户会看到一行空页脚（B 路实测）⇒ 必须关 footer_enabled。\n'
+     '                    view.panel_enabled = False\n'
+     '                    view.footer_enabled = False\n'
+     '                    view.footer = None',
+     'test_units'),
+    ('V073-2u-结构化收尾状态写死 processing（收尾丢 ✅）', 'core/adapter.py',
+     '        status = _ld_view_status(chat, default="processing" if not finalize else "completed")\n'
+     '        state = {**state, "status": status}          # 本帧所有 footer 调用共用\n'
+     '        view = self._ld_cardview(chat, visible, status=status, finalize=finalize,',
+     '        status = "processing"  # V073-2u mutated\n'
+     '        state = {**state, "status": status}          # 本帧所有 footer 调用共用\n'
+     '        view = self._ld_cardview(chat, visible, status=status, finalize=finalize,',
+     'test_units'),
+    ('V073-2v-legacy 收尾 footer 不注入 frame_status（丢 ✅）', 'core/adapter.py',
+     '            card = self._ld_build_card(tail_visible or " ", streaming=False,\n'
+     '                                       panel=self._ld_panel(chat, report_empty=True),\n'
+     '                                       footer=self._ld_frame_footer(\n'
+     '                                           {**state, "status": frame_status}))',
+     '            card = self._ld_build_card(tail_visible or " ", streaming=False,\n'
+     '                                       panel=self._ld_panel(chat, report_empty=True),\n'
+     '                                       footer=self._ld_frame_footer(state))',
+     'test_units'),
+    ('V073-2w-edit_message 收尾 footer 不显式传 status（丢 ✅）', 'core/adapter.py',
+     '                footer=self._ld_frame_footer({"message_id": message_id,\n'
+     '                                              "chat_id": state.get("chat_id") or chat_id,\n'
+     '                                              "t0": state.get("t0"),\n'
+     '                                              "status": turn_status},\n'
+     '                                             turn_card=True),',
+     '                footer=self._ld_frame_footer({"message_id": message_id,\n'
+     '                                              "chat_id": state.get("chat_id") or chat_id,\n'
+     '                                              "t0": state.get("t0")},\n'
+     '                                             turn_card=True),',
+     'test_units'),
+    ('V073-2x-系统提示匹配不剥 VS16（♻️ 漏网）', 'core/adapter.py',
+     '    text = str(content or "").lstrip().replace("\\ufe0f", "")\n'
+     '    return text.startswith(tuple(p.replace("\\ufe0f", "") for p in _LD_SYSTEM_NOTICE_PREFIXES))',
+     '    text = str(content or "").lstrip()\n'
+     '    return text.startswith(tuple(p.replace("\\ufe0f", "") for p in _LD_SYSTEM_NOTICE_PREFIXES))',
+     'test_units'),
+
 
 ]
 
@@ -3010,13 +3196,14 @@ GATE_ORDER = ["test_units.py", "check_override.py", "check_hooks.py",
 
 
 def _run_one_gate(repo: Path, script: str) -> "tuple[int, str]":
-    """跑单支门禁（**有界**：`_GATE_TIMEOUT_S`（45s）硬超时 —— 与「禁 sleep、等待必须有界」同一条纪律）。"""
+    """跑单支门禁（**有界**：`_GATE_TIMEOUT_S`（90s）硬超时 —— 与「禁 sleep、等待必须有界」同一条纪律）。"""
     try:
         proc = subprocess.run([sys.executable, str(repo / "tests" / script)],
                               capture_output=True, text=True, cwd=str(repo.parent),
                               env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
                               # 超时是**中止**、不是判定（💥 不记账，留给 `--only` 定向复核）。
-                              # 120s 时实测有变异把整轮拖到小时级（用户明确要求提速）⇒ 45s。
+                              # v0.7.2 六片并发实测：45s 误伤 10 条（💥 无断言文本）⇒ 90s；
+                              # 下调才会把真红变 💥，上调只消负载假坏。
                               timeout=_GATE_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         return ("red-crash", f"超时 >{_GATE_TIMEOUT_S:.0f}s：{script}")
@@ -3089,6 +3276,8 @@ def _is_full_run(args: "argparse.Namespace", picked: list, bad: list) -> bool:
     实际上每条只验了一支门禁。**这正是整个账本最该防的那种假绿**（盖章 ≠ 跑过）。
     抽成函数还有一个好处：它现在能被单测直接钉住（见 `tests/test_units.py`）。
     """
+    if getattr(args, "shard", ""):
+        return False          # 分片跑永远不盖章（合并后才允许）
     return bool(not args.delta and not args.k and not args.upgrade_inherited
                 and not args.target_only and not bad
                 and len(picked) == len([m for m in MUTATIONS if m[4]]))

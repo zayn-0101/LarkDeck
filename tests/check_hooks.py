@@ -770,7 +770,8 @@ else:
                     problems.append(f"黄金路径：思考/工具段被挤掉了：{t_title!r}")
 
             footer = _adm.LarkDeckMixin._ld_footer(
-                chat_id=_GOLDEN_CHAT, started=time.monotonic() - 12.3)
+                chat_id=_GOLDEN_CHAT, started=time.monotonic() - 12.3,
+                status="completed", turn_card=True)
             print(f"黄金路径页脚：{footer!r}")
             model_seg = ""          # 先初始化：下面整段都在 `else` 里用，别让空页脚把它变成
             if not footer:          # AttributeError（那会被外层 except 吞成「渲染异常」）

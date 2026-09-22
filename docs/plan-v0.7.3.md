@@ -22,7 +22,7 @@
 | --- | --- | --- |
 | `core/cardview.py` | `_tool_detail_div` **line 分支**的 `text_size`：`PANEL_TEXT_SIZE` → `"x-small"`（emoji 分支的 `plain_text` 同步改） | 细节行是**独立元素** ⇒ 只影响它；`PANEL_TEXT_SIZE` 本身保持 `"notation"`（其它元素继续用） |
 | `core/cardview.py` | `_tool_output_div`（Error / Result 代码块）：`text_size` → `"x-small"` | ⚠️ 该元素里 `**Error**` 标签与代码文本**同属一个元素** ⇒ 标签一起变小（用户已确认不拆元素） |
-| `core/adapter.py` | **Design D**（§6.12）：`_ld_footer` 纯格式器（显式 status，缺省 fail-closed）；`send()` 默认回合 + `_ld_is_system_notice` 负清单（interim/已知系统提示 ⇒ 非回合）；预览 `status_locked`；非回合 panel/header/footer 全关；`_ld_frame_footer(default_status=)` + 帧入口 `frame_status` 兜收尾竞态；非回合卡 `turn_card=False` 且 `/stop` 跳过 | 每个调用点逐一给结论（含 4039/SEQ3/R3-7/Y20）；判定打限流日志（P4 复核）；未登记前缀的新系统提示漏网要补清单并重跑 P3 |
+| `core/adapter.py` | **Design D**（§6.12）：`_ld_footer` 纯格式器（显式 status，缺省 fail-closed）；`send()` 默认回合 + `_ld_is_system_notice` 负清单（interim/已知系统提示 ⇒ 非回合）；预览 `status_locked`；非回合 panel/header/footer 全关；帧入口显式注入状态（structured `state["status"]` + legacy `frame_status`，`default_status` 只给 DEGRADE 收尾兜底）；非回合卡 `turn_card=False` 且 `/stop` 跳过 | 每个调用点逐一给结论（含 4039/SEQ3/R3-7/Y20）；判定打限流日志（P4 复核）；未登记前缀的新系统提示漏网要补清单并重跑 P3 |
 | `core/cards.py` | 注释口径：`x-small` 从「不在文档、别赌」改为「markdown 真机已验 + 其它宿主见宿主矩阵；未过退回 notation」 | 不改 `text_profile` 档位表 |
 | `tests/test_units.py` | 三条新用例（名字见 §6.10.6）；**并**修 §6.10.6 全表旧调用点（1533/1537…5306/5312、6860/6901、10914/10918 等） | **只新增用例名**；旧用例只改函数体，不许改名/删名；失败必须 red-assert 不 crash |
 | `tests/mutate_check.py` | 新增 12 条 V073（§6.12.3）；同步重写 8 条旧锚点（G2-3/V4-7/V4-10/V4-17B/V4-57/SEQ3/R3-7/Y20）；`_is_full_run` 加 `if getattr(args,"shard",""): return False`；45s→90s 注释 | 每条 `-k` 完整模式实红；post-change 锚点唯一性 grep = 1 |
@@ -76,14 +76,14 @@
 去读 `panel.snapshot()` 里**上一个回合**留下的状态。系统提示卡不属于任何回合，但紧跟在
 「刚完成的回合」之后 ⇒ 抄到陈旧的 `✅ 已完成`。
 
-**变更清单（已审计；实现口径以 §6.10 Design C 为准；§6.1 已被取代）**：
+**变更清单（已审计；实现口径以 §6.12 Design D 为准；§6.10/§6.1 仅作审计轨迹）**：
 
 | 文件 | 改动 | 约束 |
 | --- | --- | --- |
-| `core/adapter.py` | **Design C（§6.10）**：`_ld_footer` 纯格式器；`_ld_send_is_turn` 六步判定；`status_locked` 锁预览；非回合 panel/header/footer 全关；`_ld_frame_footer(default_status=)`；最近帧文本记忆 | 每个调用点逐一给结论（含 4039）；无流记忆的 recovered/queued final 如实登记；判定打限流日志（P4 复核） |
-| `core/context.py` + `core/hooks.py` | 命令回复打点（`pre_gateway_dispatch` + TTL 60s） | 只观察、恒返回 None、绝不抛 |
+| `core/adapter.py` | **Design D（§6.12）**：`_ld_footer` 纯格式器；`_ld_send_is_turn` **默认回合 + `_LD_SYSTEM_NOTICE_PREFIXES` 已知提示负清单**；`status_locked` 锁预览；非回合 panel/header/footer 全关；帧状态显式注入（structured `state["status"]` + legacy `frame_status`） | 每个调用点逐一给结论；未登记的新系统提示暂按回合（已知限制写 README/verify-log）；判定打限流日志（P4 复核）；**无命令打点/无最近帧记忆** |
+| `core/context.py` + `core/hooks.py` | **无运行时改动**（Design D 已删除命令打点/最近帧记忆；本批只修注释口径） | 不新增钩子状态；命令回复按默认回合保留页脚（有意） |
 | `tests/test_units.py` | 3 条新用例 + §6.10.6 全表旧调用点更新 | 旧用例只改函数体；失败保持 red-assert 不 crash |
-| `tests/mutate_check.py` | 12 条 V073 变异（§6.12.3）；重写 8 条旧锚点（G2-3/V4-7/V4-10/V4-17B/V4-57/SEQ3/R3-7/Y20）；`_is_full_run` 加 `if getattr(args,"shard",""): return False`（测试补 shard=""）；45s→90s 注释 | 每条 `-k` 完整模式实红；post-change 锚点唯一性 grep = 1 |
+| `tests/mutate_check.py` | 21 条 V073 变异（§6.12.3 + §6.14）；重写 8 条旧锚点（G2-3/V4-7/V4-10/V4-17B/V4-57/SEQ3/R3-7/Y20）；`_is_full_run` 加 `if getattr(args,"shard",""): return False`（测试补 shard=""）；45s→90s 注释 | 每条 `-k` 完整模式实红；post-change 锚点唯一性 grep = 1 |
 | `tests/golden_cardkit_trace.json` | 重生成：实测 8 叶 detail `notation→x-small`；**item2 = 0 叶变化** | diff 逐叶解释；item2 出 diff 即判分类器误伤真回合 |
 | 真机探针 | 系统提示卡（无 ✅/无面板/无空 footer 行）+ 真实回合收尾卡（✅ 一字不动）+ 3 host × 3 theme + 长栈 Error 可读性 | 用户目视二值确认；结论写 `docs/verify-log.md` |
 
@@ -351,20 +351,20 @@
 | 8 | Q4 用户可见：host×theme 探针、Error 可读性、`text_profile=large` 不放大 x-small、澄清卡不受影响 | **采纳** | §2 3b + §6.5 + P4 探针清单；`large` 限制写进 README |
 | 9 | Q5 发布脚本逐行参数化 + 120/150 低项 | **采纳** | §6.4 第一条逐行清单（含 15 行计数、139/148 审计路径、165/167-168 scratch、169/173 allow-at、210 notes、18 行 120→150） |
 
-**P0 收敛结论（第二轮后）**：A/B/C 三路全量报告 + A2/B2/C2 三路快速复核共 6 份，全部逐条处置
-（§6.7-§6.9、§6.11）。设计由「C 前版 → Design B → **Design C**」演进：`_ld_footer` 纯格式器、
-`send()` 显式回合判定（命令打点 + 最近帧内容认领）、非回合静默卡（panel/header/footer 全关）、
-收尾 `default_status` 竞态兜底。**Design C 已在干净沙箱 clone 上完整验证**（§6.10.12：
-run_fast 8/8、test_units 293/293、preflight 526/526、15 条新变异全 red-assert、golden footer 叶不变）。
-下一步：把验证过的三个脚本落到仓库（P1，人审 diff）→ P1 阶段 3 路审计 → P2 断言/变异/夹具/宿主探针。
+**P0 收敛结论（第三轮后）**：A/B/C 三路全量报告 + 两轮复核共 9 份，全部逐条处置
+（§6.7-§6.9、§6.11、§6.13）。设计最终定版 = **§6.12 Design D**：`_ld_footer` 纯格式器、
+`_ld_send_is_turn` **默认回合 + 已知系统提示负清单**、非回合静默卡（panel/header/footer 全关）、
+帧状态显式注入（structured `state["status"]` + legacy `frame_status`）。
+**Design D 已在干净沙箱 clone 上完整验证**（§6.12.5；D1/D2/D3 复核后的收口计数与新增用例见 §6.14）。
+下一步：把验证过的脚本落到仓库（P1，人审 diff）→ P1 阶段 3 路审计 → P2 断言/变异/夹具/宿主探针。
 
 > ⚠️ **第四轮修订**：以上第二轮结论里的 Design C 又被 A3/B3/C3 否掉（命令标记误杀真回合、
 > 默认非回合让非 native 真终稿丢 ✅）。**最终定版 = §6.12 Design D**，其沙箱证据见 §6.12.5
 > （run_fast 8/8、test_units 294/294、preflight 523/523、12 条 V073 全 red、8 条锚点全 red）。
 > ⚠️ **修订（2026-09-22 深夜）**：A/B/C 全量报告回来后又跑了第二轮只读复核（A2 `68f8f2f1` /
 > B2 `4ec4599b` / C2 `b72bf8d0`）。三路一致指出 **Design B 的 `send()` 分型不可实现**
-> （`notify` 不是回合专属、存在无标记真终稿、命令回复也带 `notify`）。设计已改版为 **Design C**
-> （见 §6.10）；§6.1-§6.3 保留作审计轨迹，实现口径以 §6.10 为准。
+> （`notify` 不是回合专属、存在无标记真终稿、命令回复也带 `notify`）。设计随后改版为 Design C，
+> 又被第四轮否掉 ⇒ **最终以 §6.12 Design D 为准**；§6.1-§6.3、§6.10 保留作审计轨迹。
 
 ---
 
@@ -452,7 +452,7 @@ CardKit **seed 建卡**不受影响（结构建卡定死、之后还要写元素
   `3925`/`3986`（帧）/ `4829`（/stop）—— 全为回合或由 `_ld_render_card` 决定，已核。
 * 澄清卡 `4885-4888` 不经 footer；`5877` 是 docstring，实际 `/larkdeck` 回复走 `send()`（由命令打点覆盖）。
 
-#### 6.10.6 测试同步（A2-6 / B2-6 / C2-2）
+#### 6.10.6 测试同步（A2-6 / B2-6 / C2-2；⚠️ 历史口径：命令打点/最近帧认领已被 Design D 删除，最终清单见 §6.14）
 
 * 旧用例（**只改函数体，不改/删名字**）：`test_units.py` 的
   `1533/1537、2241/2245、2321/2325、5147-5209、5229、5238/5239、5243-5247、5251、5254、5258、
@@ -467,7 +467,7 @@ CardKit **seed 建卡**不受影响（结构建卡定死、之后还要写元素
 * 失败性质：改完必须是 **red-assert**，不得 `None.startswith`/`TypeError` 式 red-crash；
   `5254/5265/5312` 原来是「`or ""` 假绿」，必须显式传参后仍有判别力。
 
-#### 6.10.7 变异与锚点（C2-3/5/6/7 + A2-7）
+#### 6.10.7 变异与锚点（C2-3/5/6/7 + A2-7；⚠️ 历史口径：2g/2h 已随 Design D 删除，最终 21 条见 §6.14）
 
 * **新变异 12 条**（全部 gate `test_units`，`-k` 完整模式实红）：`V073-1a`（line 细节）、`V073-1b`
   （emoji 细节）、`V073-1c`（Error 块）、`V073-2a`（快照兜底加回）、`2b`（非回合早退失效）、
@@ -538,6 +538,9 @@ CardKit **seed 建卡**不受影响（结构建卡定死、之后还要写元素
 
 #### 6.11 第二轮三路逐条处置（A2 `68f8f2f1` · B2 `4ec4599b` · C2 `b72bf8d0`）
 
+> ⚠️ 本节为第二轮历史处置：其中「命令打点 / 最近帧内容认领」已被 §6.12 Design D 推翻；
+> 当前实现/发布口径以 §6.12 + §6.14 为准。
+
 | 路 | 编号 | 原文摘要 | 处置 | 落点 |
 | --- | --- | --- | --- | --- |
 | A2 | 1 | notify 非回合专属、命令回复被误判 | **采纳（高）** | §6.10.2 命令打点；§6.10.3 静默卡；新变异 2g |
@@ -594,14 +597,19 @@ CardKit **seed 建卡**不受影响（结构建卡定死、之后还要写元素
      （带 notify）保持现状，真实回合状态词一个字不动。
 2. `_ld_is_system_notice` 负清单（行首匹配；来源 = `gateway/run_notifications.py`、
    `run_shutdown.py` 的实际文案；新增系统提示先登记再靠 P4 日志复核）：
-   `♻️ Gateway` / `⚠️ Gateway` / `⚠️ Session database` / `✅ Hermes update` /
-   `❌ Hermes update` / `⚠️ Cron job` / `❌ Background task` / `⚠️ Hermes` / `🏁` / `📣` / `🔔`。
+   `♻ Gateway` / `⚠ Gateway` / `⚠ Session database` / `✅ Hermes update` / `❌ Hermes update` /
+   `⚠ Cron job` / `✅ Background task` / `❌ Background task` / `[Background process` /
+   `[IMPORTANT:` / `⏳ Gateway` / `⚕ **Update needs your input:**` / `◐ Session reset` /
+   `⚠ Agent session` / `⚠ Context compression aborted` / `ℹ Configured compression` /
+   `ℹ Context compression deferred` / `📬 No home channel` / `⚠ Subagent` /
+   `⏳ Goal` / `⏸ Goal` / `🚫 Goal` / `✓ Goal`；匹配前先剥 VS16（U+FE0F），
+   真实上游两种写法（`♻ Gateway` / `♻️ Gateway`）都收。
 3. 回合 status 显式化：
    * `send()`：`expect_edits and not notify` ⇒ `processing` + `status_locked=True`；其余 ⇒
      `_ld_view_status(chat_id, default="completed")`（error/stopped 照常保留）；
    * `edit_message()`：`turn_status = _ld_view_status(default="completed") if finalize else "processing"`，
      同时传给 `_ld_render_card(status=..., status_locked=not finalize)` 与
-     `_ld_frame_footer({..., "status": turn_status}, default_status="completed" if finalize else "")`；
+     `_ld_frame_footer({..., "status": turn_status})`（显式状态，不再依赖 `default_status`）；
    * native/legacy/patch/degrade 帧：入口解析 `frame_status`（finalize 缺省 completed）；结构化
      路径 `state = {**state, "status": status}`，所有 footer 调用带显式状态。
 4. `_ld_footer` 仍是纯格式器（显式 status，缺省 `turn_card=False` ⇒ None）；非回合静态卡强制
@@ -614,10 +622,11 @@ CardKit **seed 建卡**不受影响（结构建卡定死、之后还要写元素
 
 * 旧锚点重写 **8 条**：G2-3 / V4-7 / V4-10 / V4-17B / V4-57 / **SEQ3 / R3-7 / Y20**
   （后三条由帧 footer 显式状态改动触发）。
-* 新变异 **12 条** V073：1a/1b/1c（x-small 三宿主）、2a（快照兜底加回）、2b（非回合早退失效）、
+* 新变异 **12 条** V073（定版基础；D1/D2/D3 收口再增 9 条，最终 21 条见 §6.14）：
+  1a/1b/1c（x-small 三宿主）、2a（快照兜底加回）、2b（非回合早退失效）、
   2c（回合侧误杀）、2d（空 footer 元素）、2e（负清单失效）、2f（默认改回非回合）、2i（interim 不排除）、
   2j（预览状态不锁）、2o（非回合标成回合）。全部 `test_units` red-assert。
-* 计数：499 + 12 = **511 变异**；preflight = **523/523**；账本/merge **511/511**。
+* 计数：499 + 21 = **520 变异**（12 条定版 + D1/D2/D3 收口新增 9 条，见 §6.14）；preflight = **532/532**；账本/merge **520/520**。
 
 #### 6.12.4 测试与夹具
 
@@ -638,11 +647,12 @@ CardKit **seed 建卡**不受影响（结构建卡定死、之后还要写元素
   footer 叶 `✅ 已完成 · Test Model` 两侧都在（item2 = 0）；不扩 Error 场景（单测 + check_cardview
   双覆盖）；helper_fp 变 ⇒ 全量必须。
 
-#### 6.12.5 沙箱验证（定版证据）
+#### 6.12.5 沙箱验证（定版 + D 收口证据）
 
-干净 clone + 三个脚本：`run_fast --full` **8/8**、`test_units` **294/294**、
-`--preflight` **523/523**、`-k V073` **12 条全 red-assert（test_units）**、8 条重写锚点 `-k` 全 red、
-golden 顶层 8 叶变化且 footer 叶不变。
+干净 clone + 脚本：`run_fast --full` **8/8**、`test_units` **≥294/294**、
+`--preflight` **532/532**、`-k V073` **21 条全 red-assert（test_units）**、8 条重写锚点 `-k` 全 red、
+golden 顶层 8 叶变化且 footer 叶不变；新增 `/stop` 行为断言与 structured/legacy 收尾状态注入用例。
+（D1/D2/D3 收口后的精确数字以 §6.14 为准，P3 全量按最终 520 条跑。）
 
 #### 6.12.6 残余边界（写 README/verify-log）
 
@@ -669,8 +679,44 @@ golden 顶层 8 叶变化且 footer 叶不变。
 | C3 | 4/5 | 计数不一致 / `_is_full_run` 漏 shard | **采纳**：511/523；`_is_full_run` 加 `if getattr(args,"shard",""): return False`（测试 SimpleNamespace 补 shard=""） | §6.12.3 + P1 |
 | C3 | 6/7/8 | golden 口径 / check_cardview / probe_render | **采纳**：8 叶=9 元素；后两者 P1/P2 | §6.12.4 |
 | C3 | 9/10 | release tree 比对对象 / 脚本缺口 | **采纳**：比对 `git rev-parse <full_audit_at>^{tree}`；notes+版本步骤 0、`--check` 硬失败、120→150、版本 `lstrip("v")` | §6.10.9 修正 |
-| C3 | 11/12 | merge 硬编码 REPO / 变异未钉 status/header/default | **采纳**：文档写明只在生产仓跑；变异清单含 2d/2j（status_locked/default_status 由手改 292/293 红的事实记录） | §6.12.3 |
+| C3 | 11/12 | merge 硬编码 REPO / 变异未钉 status/header/default | **采纳（D2 复核升级）**：文档写明只在生产仓跑；永久变异补 2p（/stop 过滤行为）、2q（status_locked）、2r（default_status）、2s/2t（非回合 panel/header）、2u/2v/2w（帧状态显式注入）、2x（VS16 归一），见 §6.14 | §6.12.3 + §6.14 |
 
+
+---
+
+### 6.14 D1/D2/D3 复核收口（2026-09-22 深夜）
+
+> D1 `d3e888d0` / D2 `5bb9d5af` / D3 `6eab7167` 三路只读对抗复核（沙箱副本手工变异 + 全门禁）。
+> 本节是 §6.10-§6.13 之后**唯一生效**的收口口径；与前面历史内容冲突时以本节为准。
+
+**已采纳的修复**
+
+1. 负清单补齐真实上游文案并**匹配前剥 VS16**：新增 `⏳ Gateway`、`⚕ **Update needs your input:**`、
+   `◐ Session reset`、`⚠ Agent session`、`[IMPORTANT:`、Goal 系列等；删除来源不明的裸 emoji
+   `🏁`/`📣`/`🔔`/`⚠ Hermes`。新用例逐条断言真实上游字面量（免 VS16/带 VS16 两种写法都覆盖），
+   并新增 `V073-2x`（去掉 VS16 归一会让 `♻️ Gateway` 漏网）。
+2. `/stop` 过滤成立但原先无行为断言（D3 手工变异六门禁全绿）⇒ 系统提示卡断言
+   `_ld_redraw_stopped` 返回 False 且**零 patch**，真回合卡对照必须重绘 1 次；新增永久变异 `V073-2p`。
+3. C3-11/12 声称的永久变异补齐：`2q`（预览 `status_locked`）、`2r`（`_ld_frame_footer`
+   `default_status`）、`2s`/`2t`（非回合 panel/header）、`2u`（结构化收尾状态解析）、
+   `2v`（legacy `frame_status` 注入）、`2w`（edit_message footer 显式 status）、`2x`（VS16 归一）
+   ——共 9 条新变异。
+4. 新增两条硬字面量用例：`test_v073_structured_finalize_injects_frame_status`、
+   `test_v073_legacy_finalize_injects_frame_status`（panel 快照为空时收尾仍必须有 `✅ 已完成`）。
+5. `edit_message` 的 `default_status` 是冗余参数（D3 低项）：已从该调用点删除，
+   `default_status` 仅保留给 DEGRADE 收尾调用点（`V073-2r` 钉住）。
+6. 探针 `tests/probe_text_size_hosts.py`：任一张 `code!=0` ⇒ 退出码非 0；新增 N1 已知系统提示卡
+   （本地断言无 header/panel/footer）与 N2 真实回合卡（断言必须有 `✅ 已完成`）；发送前提示记录
+   客户端主题/设备。
+7. 文档：README「已知限制」新增默认回合 + 负清单口径（未登记新提示仍会出 ✅，P4 日志复核）；
+   release notes 同口径；本计划 §6.10/§6.13 保留为历史审计轨迹，实现/发布口径统一到 §6.12 + §6.14。
+
+**最终计数（P1 落地后以 `--preflight` 实测为准）**
+
+* `MUTATIONS` = 499 + 21 = **520**；对照 12 ⇒ preflight **532/532**；账本/merge **520/520**；
+* 21 条 V073 = 1a/1b/1c + 2a/2b/2c/2d/2e/2f/2i/2j/2o + 2p/2q/2r/2s/2t/2u/2v/2w/2x；全部 `test_units` red-assert；
+* golden 顶层 8 叶变化（9 处 detail 元素）+ footer 叶不变；P3 必须用最终 520 条重跑 6 分片，
+  不许沿用 511 的旧账本。
 
 ---
 
