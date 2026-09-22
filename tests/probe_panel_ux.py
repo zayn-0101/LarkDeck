@@ -97,10 +97,14 @@ def main() -> int:
         head("**③ 回合结束的定稿**：纯推理回合收尾后，那一轮应该是**收起**的"),
         pure_panel,
         {"tag": "hr"},
-        head(f"**④ 页脚三态**（都**没有**段前缀 emoji、没有短码）\n"
-             f"* 基础：{foot_base}\n"
-             f"* `basic`：{foot_basic}\n"
-             f"* `full`：{foot_full}"),
+        head("**④ 页脚三态**（都**没有**段前缀 emoji、没有短码）—— 下面三行是**真实渲染的页脚元素**："),
+        {"tag": "markdown", "element_id": "footer_base", "content": foot_base or " ",
+         "text_size": "notation", "margin": "0px 0px 0px 0px"},
+        {"tag": "markdown", "element_id": "footer_basic", "content": foot_basic or " ",
+         "text_size": "notation", "margin": "0px 0px 0px 0px"},
+        {"tag": "markdown", "element_id": "footer_full", "content": foot_full or " ",
+         "text_size": "notation", "margin": "0px 0px 0px 0px"},
+        head("（依次：基础 → `basic` → `full`；真实回合的页脚与它们同源 —— 都是 `cards.footer_line`）"),
         {"tag": "hr"},
         head("**⑤ 需要你手动验的两条**（各自单独一张卡）：\n"
              "1. 上一张「手动收起实验」卡：手动收起面板后，我们发一帧**不带 `expanded`** 的更新 —— "
