@@ -156,18 +156,19 @@ def _assert_structured_builder() -> None:
     assert reasoning["vertical_spacing"] == "8px", reasoning
     assert reasoning["padding"] == "8px 8px 8px 8px", reasoning
     assert reasoning["elements"][0]["content"] == "原始推理", reasoning
-    title_div, detail = panel["elements"][1], panel["elements"][2]
-    assert title_div["tag"] == "div", title_div
-    # 用户 2026-09-21 真机选版：工具行**不用 `div.icon`**（客户端顶部对齐 ⇒ 图标比文字偏上），
-    # 改成把 emoji **内联进文本**（探针 tests/probe_icons.py，乙 那一臂）。
-    assert "icon" not in title_div, f"工具行不许再用 div.icon（用户选的是内联 emoji）：{title_div}"
-    assert title_div["text"]["content"].startswith(cardview.icon_emoji(
-        cardview.ICON_TOKENS["read"])), title_div["text"]["content"]
-    assert "**读取文件**" in title_div["text"]["content"], title_div
-    assert "Succeeded" in title_div["text"]["content"], title_div
-    assert detail["tag"] == "div" and detail["margin"] == "0px 0px 0px 22px", detail
-    assert detail["text"] == {"tag": "plain_text", "content": "↳ /tmp/a.txt",
-                              "text_color": "grey", "text_size": "notation"}, detail["text"]
+    title_md, detail = panel["elements"][1], panel["elements"][2]
+    # 用户 2026-09-22 真机三臂选版：`markdown.icon`（官方叫「前缀图标」）0px 垂直偏差；
+    # 元素级 `div.icon` 实测图标高 3px（2026-09-21 用户嫌「偏上」的就是它）⇒ 默认走前缀图标。
+    assert title_md["tag"] == "markdown", title_md
+    assert title_md["icon"] == {"tag": "standard_icon", "token": "file-link-text_outlined",
+                                "color": "grey"}, title_md
+    assert title_md["content"].startswith("**读取文件**"), title_md["content"]
+    assert "Succeeded" in title_md["content"], title_md["content"]
+    assert "icon" not in title_md.get("text", {}), title_md
+    assert detail["tag"] == "markdown" and detail["margin"] == "0px 0px 0px 22px", detail
+    assert detail["icon"] == {"tag": "standard_icon", "token": "tool-indent_outlined",
+                              "color": "grey"}, detail
+    assert detail["content"] == "/tmp/a.txt" and detail["text_color"] == "grey", detail
     panel_op = {"partial_element": cardview.panel_partial(view.panel)}
     assert "tag" not in panel_op["partial_element"], panel_op
     assert "text_size" not in panel_op["partial_element"], panel_op

@@ -750,6 +750,9 @@ _DEFAULTS: Dict[str, Any] = {
     # `澄清提交未生效（clarify=probe-c2）`）；② `check_clarify_e2e.py` 的 2.0 场景全绿。
     # 想回旧路径配 `clarify_dialect: "1.0"`（那条路仍可用、仍有测试锁形状）。见 AGENTS.md 不变量 5。
     "clarify_dialect": "2.0",
+    #: 工具行图标形态：line（默认，官方线性图标做文本前缀——用户 2026-09-22 真机三臂选版）
+    #: / emoji（2026-09-21 选的 emoji 内联，保留为可切换降级）
+    "tool_row_icon": "line",
     #: native 流式帧走哪条传输：``"cardkit"``（**默认**，真打字机）/ ``"patch"``（旧路径）。
     #: 2026-09-13 真机实测 + **用户肉眼判定**：普通卡 + `message.patch` 只是「几个字几个字」地跳，
     #: CardKit 实体 + `card_element.content` 才是一个字一个字往外冒 ⇒ 默认翻成 cardkit。
@@ -3736,6 +3739,8 @@ class LarkDeckMixin:
             collapsed_hint=collapsed_hint,
             border={"processing": "grey", "completed": "green",
                     "stopped": "yellow", "error": "red"}.get(status, "grey"),
+            # 工具行图标形态（用户 2026-09-22 口径：官方线性图标做文本前缀 = 统一灰、0px 偏差）
+            tool_icon_mode=str(_cfg_raw("tool_row_icon") or "line").strip().lower(),
         )
         # V4.17（用户口径）：页脚**不再挂 🔖 短码** —— 它从来不是用户的要求，
         # 是 V2/V3 阶段内部审计为「截图↔日志对齐」加的。短码仍进日志自检行（`_ld_trace_id`），

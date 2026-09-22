@@ -162,6 +162,8 @@ class PanelView:
     reasoning_rounds: List[ReasoningRoundView] = field(default_factory=list)
     tools: List[ToolStepView] = field(default_factory=list)
     collapsed_hint: str = ""
+    #: 工具行图标形态（配置 `tool_row_icon`）：`line`（默认，官方线性图标 + 文本前缀）/ `emoji`
+    tool_icon_mode: str = "line"
 
 
 @dataclass
@@ -327,47 +329,165 @@ def tool_emoji(name: str = "", token: str = "") -> str:
     return icon_emoji(token)
 
 
-def _tool_title_div(step: ToolStepView) -> Dict[str, Any]:
+#: 工具名 → **行首线性图标 token**（渲染层覆盖；用户 2026-09-22 口径：「更全面、更贴切」，且
+#: 明确「统一灰色线性图标看起来更高级」）。全部是飞书官方图标库的 `_outlined` token，
+#: **逐个对官方枚举页 `enumerations-for-icons` 查证过存在**（清单缓存见
+#: `~/.larkdeck-scratch/feishu-icons-tokens.txt`，1154 个）；名字写错客户端就不渲染 ⇒ 不猜。
+#: 匹配规则与 token 解析**同源**（归一化后「精确 或 `alias_` 前缀」，具体在前）。
+#: ⚠️ `ICON_ALIASES`（28 条 CLS 逐条对齐）仍是**对齐判据的唯一真相**，`check_cls_alignment`
+#: 只读那张表；本表只影响**渲染**（把 14 个 CLS token 细化到更贴切的官方 token）。
+TOOL_ICON_BY_ALIAS: List[Tuple[str, str]] = [
+    # —— 终端 / 执行 / 进程
+    ("terminal", "command_outlined"),
+    ("exec", "command_outlined"),
+    ("bash", "command_outlined"),
+    ("command", "command_outlined"),
+    ("run", "command_outlined"),
+    ("execute", "code_outlined"),
+    ("process", "admin-setting_outlined"),
+    ("setup", "appstore_outlined"),
+    ("close", "close_outlined"),
+    # —— 文件 / 编辑 / 检索
+    ("patch", "edit_outlined"),
+    ("grep", "doc-search_outlined"),
+    ("glob", "folder_outlined"),
+    ("read", "file-link-text_outlined"),
+    ("open", "view_outlined"),
+    ("preview", "view_outlined"),
+    # —— 网络
+    ("web_search", "search_outlined"),
+    ("web_fetch", "language_outlined"),
+    ("web", "language_outlined"),
+    # —— 生成 / 媒体
+    ("image", "image_outlined"),
+    ("video", "video_outlined"),
+    ("speech", "mic_outlined"),
+    ("text", "mic_outlined"),
+    ("vision", "big-eye_outlined"),
+    # —— 知识 / 记忆 / 计划
+    ("memory", "organization-book_outlined"),
+    ("session", "history-search_outlined"),
+    ("cronjob", "alarm-clock_outlined"),
+    ("todo", "todo_outlined"),
+    # —— 消息 / 互动
+    ("send", "send_outlined"),
+    ("react", "emoji_outlined"),
+    ("show_tip", "info_outlined"),
+    ("clarify", "chat_outlined"),
+    ("feishu_doc", "doc_outlined"),
+    ("feishu_drive", "folder_outlined"),
+    ("drive", "folder_outlined"),
+    ("ha", "home_outlined"),
+    # —— 界面 / 电脑
+    ("computer", "computer_outlined"),
+    ("browser", "browser-mac_outlined"),
+    ("playwright", "browser-mac_outlined"),
+    ("navigate", "browser-mac_outlined"),
+    ("gui", "browser-mac_outlined"),
+    ("desktop", "browser-mac_outlined"),
+    ("focus", "browser-mac_outlined"),
+    ("apply", "browser-mac_outlined"),
+    ("annotate", "browser-mac_outlined"),
+    # —— 子代理 / 技能 / 报告
+    ("skill", "app-default_outlined"),
+    ("summarize", "report_outlined"),
+    ("analyze", "report_outlined"),
+    ("prepare", "report_outlined"),
+]
+
+#: 详情行 / 折叠提示 / 结果块 / 错误块的固定前缀图标（同为官方 `_outlined`，已查证）
+ICON_DETAIL = "tool-indent_outlined"
+ICON_HINT_MORE = "more_outlined"
+ICON_RESULT = "codeblock_outlined"
+ICON_ERROR = "warning_outlined"
+
+
+def tool_icon_token(name: str = "", token: str = "") -> str:
+    """工具行首图标 token：先按**工具名**精化（:data:`TOOL_ICON_BY_ALIAS`），再退回 CLS token。
+
+    ``name`` 缺省时与直接使用 ``token`` 一致（老调用点不受影响）。
+    """
+    normalized = str(name or "").strip().lower().replace("-", "_")
+    if normalized:
+        for alias, tok in TOOL_ICON_BY_ALIAS:
+            if normalized == alias or normalized.startswith(alias + "_"):
+                return tok
+    return str(token or ICON_FALLBACK)
+
+
+def _icon_node(token: str) -> Dict[str, Any]:
+    """标准线性图标节点（统一灰 —— 用户口径：颜色统一才显高级；状态色只留在文字里）。"""
+    return {"tag": "standard_icon", "token": token, "color": ICON_COLOR}
+
+
+def _tool_title_div(step: ToolStepView, icon_mode: str = "line") -> Dict[str, Any]:
     status_text, color = step.status_style
     duration = f" ({step.duration_ms} ms)" if step.duration_ms else ""
-    # ⚠️ emoji **内联在文本里**，不用 `div.icon` —— 用户选版见 `ICON_EMOJI` 的说明；
-    #    用哪个 emoji 走 `tool_emoji`（区段符号不复用 + 同 token 按名字精化）。
-    content = (f"{tool_emoji(step.name, step.icon_token)} **{step.title}**{duration} · "
-               f"<font color='{color}'>{status_text}</font>")
+    content = f"**{step.title}**{duration} · <font color='{color}'>{status_text}</font>"
+    if str(icon_mode or "line").strip().lower() == "emoji":
+        # 旧路径（用户 2026-09-21 选的「乙 = emoji 内联」）：保留为可切换的降级选项 ——
+        # 用户 2026-09-22 的真机口径是「统一灰色线性更高级」，所以默认走下面的前缀图标。
+        return {
+            "tag": "div",
+            "text": {"tag": "lark_md",
+                     "content": f"{tool_emoji(step.name, step.icon_token)} {content}",
+                     "text_size": PANEL_TEXT_SIZE},
+        }
+    # **前缀图标**（用户 2026-09-22 真机三臂对照选版：`markdown` 的 `icon` 字段 ⇒ 0px 垂直偏差，
+    # 而元素级 `div.icon` 实测图标高 3px、`column_set` 居中版横向空 179px）。官方 2.0 文档把
+    # `markdown.icon` 叫「前缀图标」；图标随文本排版走，所以不存在「比文字靠上」的观感问题。
     return {
-        "tag": "div",
-        "text": {"tag": "lark_md", "content": content, "text_size": PANEL_TEXT_SIZE},
+        "tag": "markdown",
+        "icon": _icon_node(tool_icon_token(step.name, step.icon_token)),
+        "content": content,
+        "text_size": PANEL_TEXT_SIZE,
     }
 
 
-def _tool_detail_div(text: str) -> Dict[str, Any]:
+def _tool_detail_div(text: str, icon_mode: str = "line") -> Dict[str, Any]:
+    if str(icon_mode or "line").strip().lower() == "emoji":
+        return {
+            "tag": "div",
+            "margin": TOOL_DETAIL_INDENT,
+            "text": {"tag": "plain_text", "content": f"↳ {text}",
+                     "text_color": "grey", "text_size": PANEL_TEXT_SIZE},
+        }
+    # 前缀图标版（2026-09-22「更全面」批次）：缩进交给 margin，箭头改成官方线性图标
+    # `tool-indent_outlined`（已查证存在）—— 整卡图标语言统一，不再用文字箭头。
     return {
-        "tag": "div",
+        "tag": "markdown",
         "margin": TOOL_DETAIL_INDENT,
-        "text": {"tag": "plain_text", "content": f"↳ {text}",
-                 "text_color": "grey", "text_size": PANEL_TEXT_SIZE},
+        "icon": _icon_node(ICON_DETAIL),
+        "content": text,
+        "text_size": PANEL_TEXT_SIZE,
+        "text_color": "grey",
     }
 
 
-def _tool_output_div(block: str, label: str) -> Dict[str, Any]:
-    return {
+def _tool_output_div(block: str, label: str, icon_mode: str = "line") -> Dict[str, Any]:
+    node: Dict[str, Any] = {
         "tag": "div",
         "margin": TOOL_DETAIL_INDENT,
         "text": {"tag": "lark_md", "content": f"**{label}**\n```\n{block}\n```",
                  "text_size": PANEL_TEXT_SIZE},
     }
+    if str(icon_mode or "line").strip().lower() != "emoji":
+        # 标题行加前缀图标：Error → ⚠️ 线性版；其它（Result 类）→ 代码块图标。都已查证存在。
+        tok = ICON_ERROR if str(label).strip().lower().startswith("error") else ICON_RESULT
+        node["text"]["icon"] = _icon_node(tok)
+    return node
 
 
-def tool_step_elements(step: ToolStepView) -> List[Dict[str, Any]]:
+def tool_step_elements(step: ToolStepView, icon_mode: str = "line") -> List[Dict[str, Any]]:
     """一个工具步的 1–3 个元素（CLS builder.py:146-190）。"""
-    elements: List[Dict[str, Any]] = [_tool_title_div(step)]
+    elements: List[Dict[str, Any]] = [_tool_title_div(step, icon_mode)]
     if step.detail:
-        elements.append(_tool_detail_div(step.detail))
+        elements.append(_tool_detail_div(step.detail, icon_mode))
     # ⚠️ V4.8（用户真机口径优先）：**成功步不再挂 Result 大代码块** —— 每步一个 fenced block
     # 又长又丑，且对标插件只在有错误/需要排查时才展开输出。失败步的 Error 块保留
     # （plan 里「Result/Error 块」那条按用户这份反馈收窄，共识文档里有记）。
     if step.error_block:
-        elements.append(_tool_output_div(step.error_block, "Error"))
+        elements.append(_tool_output_div(step.error_block, "Error", icon_mode))
     return elements
 
 
@@ -406,6 +526,7 @@ def reasoning_panel(round_view: ReasoningRoundView) -> Dict[str, Any]:
 
 
 def panel_elements(view: PanelView) -> List[Dict[str, Any]]:
+    icon_mode = str(getattr(view, "tool_icon_mode", "line") or "line").strip().lower()
     elements: List[Dict[str, Any]] = []
     if view.collapsed_hint:
         # ⚠️ **不能用 `plain_text`**（真机 2026-09-21 14:44 实测）：`collapsible_panel` 的
@@ -414,12 +535,16 @@ def panel_elements(view: PanelView) -> List[Dict[str, Any]]:
         # ⇒ 核心回落纯文本，用户看到「卡片 + 灰色气泡」两张（用户反馈 #4 的根因）。
         # 而且这条只在工具步数 > `max_steps`（默认 20）时才出现 ⇒ 长回合必炸。
         # `markdown` 与 `div` 都是合法子元素，这里用 markdown（同 legacy 面板的写法）。
-        elements.append({"tag": "markdown", "content": view.collapsed_hint,
-                         "text_size": PANEL_TEXT_SIZE, "text_color": "grey"})
+        node: Dict[str, Any] = {"tag": "markdown", "content": view.collapsed_hint,
+                                "text_size": PANEL_TEXT_SIZE, "text_color": "grey"}
+        if icon_mode != "emoji":
+            # 「更全面」批次：折叠提示也带前缀图标（more = 省略号，已查证存在）
+            node["icon"] = _icon_node(ICON_HINT_MORE)
+        elements.append(node)
     for round_view in view.reasoning_rounds:
         elements.append(reasoning_panel(round_view))
     for step in view.tools:
-        elements.extend(tool_step_elements(step))
+        elements.extend(tool_step_elements(step, icon_mode))
     return elements
 
 

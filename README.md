@@ -206,6 +206,7 @@ plugins:
         clarify_cards: true      # 澄清用交互卡
         clarify_dialect: "2.0"   # 澄清卡方言：2.0 下拉+输入框（默认，真机点击已验证）/ 1.0 按钮（旧路径，仍然可用）
         native_transport: cardkit # 流式帧传输：cardkit（默认，**真逐字打字机**；买它的代价见「已知限制」）/ patch（旧路径，整卡替换，字是几个几个跳）
+        tool_row_icon: "line"    # 工具行图标形态：line（默认，飞书官方**线性**图标做文本前缀——2026-09-22 真机三臂对照选版：0px 垂直偏差、统一灰色）/ emoji（2026-09-21 选的 emoji 内联，可切回）
         unified_panel: true      # 推理 + 工具合并为一个底部面板
         panel_expanded: false    # 面板默认展开（默认收起）
         streaming_print_ms: 15   # 客户端打字机的逐字间隔（毫秒，只对流式帧有效）；0 = 关闭；超出 [1,2000] 退默认并留 WARNING

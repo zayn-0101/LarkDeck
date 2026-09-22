@@ -12917,30 +12917,45 @@ def _text_nodes_directly_inside_panels(node) -> list:
     return bad
 
 
-def test_v4_46_tool_rows_use_inline_emoji_not_div_icon():
-    """V4.46：工具行用**内联 emoji**，不用 `div.icon` —— 用户 2026-09-21 真机选版。
+#: 已对**飞书官方图标枚举页**逐个查证存在的线性 token（`enumerations-for-icons`，1154 个里挑的）。
+#: 缓存清单：`~/.larkdeck-scratch/feishu-icons-tokens.txt`（门禁离线跑，所以这里**冻结成字面量**：
+#: 往 `TOOL_ICON_BY_ALIAS` 里加新 token 时，必须同时证明它在官方清单里 —— 名字写错客户端不渲染）。
+_VERIFIED_LINEAR_TOKENS = [
+    "admin-setting_outlined", "alarm-clock_outlined", "app-default_outlined", "appstore_outlined",
+    "big-eye_outlined", "browser-mac_outlined", "chat_outlined", "close_outlined",
+    "code_outlined", "codeblock_outlined", "command_outlined", "computer_outlined",
+    "doc-search_outlined", "doc_outlined", "edit_outlined", "emoji_outlined",
+    "file-link-text_outlined", "folder_outlined", "history-search_outlined", "home_outlined",
+    "image_outlined", "info_outlined", "language_outlined", "list-check_outlined",
+    "mic_outlined", "more_outlined", "organization-book_outlined", "report_outlined",
+    "robot_outlined", "search_outlined", "send_outlined", "setting-inter_outlined",
+    "setting_outlined", "todo_outlined", "tool-indent_outlined", "video_outlined",
+    "view_outlined", "warning_outlined",
+]
 
-    探针 `tests/probe_icons.py`（`om_x100b6424d23e24a8c3368dfbdaad661`）三臂对照：
-    甲 = `div.icon` + 短文本、乙 = emoji 内联 + **同一段**短文本、丙 = `div.icon` + 长文本。
-    用户回：「**乙是图标与文字对得最齐的**，丙 那行**没有换行**」——
-    后一句同时**证伪**了审计 A 的假说（「行太长 ⇒ 换行 ⇒ 图标顶对齐」），
-    所以修法是换**渲染方式**（内联 emoji），不是缩短文本。
 
-    这条用例钉两件事：① 工具 → CLS token → emoji 三者的对应；② 工具行的 `div` **没有**
-    `icon` 字段（退回 `div.icon` 必须实红）。
+def test_v4_46_tool_rows_use_official_line_icon_as_text_prefix():
+    """V4.46 / P3.1：工具行行首图标 = **官方线性图标做文本前缀**（用户 2026-09-22 三臂选版）。
 
-    ⚠️ 2026-09-21 P3 复验后 emoji 分两层（用户截图：标题 🛠️ 与 terminal 行撞符号）：
-    `icon_emoji(token)` = 14 个 CLS token 的渲染表（不变），`tool_emoji(name, token)` =
-    **工具行**实际用的（区段符号不复用 + 同 token 按名字精化）。这里两层都钉。
+    真机三臂对照（`tests/probe_icons_layout.py`，卡 `om_x100b6414825f3ca8c339ed0a7cef3e9`，
+    我按像素量过用户截图）：
+      甲 元素级 `div.icon`（CLS 同款）⇒ **图标比文字高 3px**（就是用户 2026-09-21 嫌「偏上」的那种）；
+      乙 `markdown.icon`（官方 2.0 文档叫「**前缀图标**」）⇒ **0px 偏差** —— 用户选它；
+      丙 `column_set` 居中 ⇒ 1px 但横向空 179px。
+    风格：官方**线性** `_outlined` + `color:"grey"`（用户口径：「统一颜色看起来更高级」）。
     """
-    for name, token, emoji, row_emoji in (
-            ("read_file", "file-link-text_outlined", "📄", "📄"),
-            ("terminal", "setting_outlined", "🛠️", "💻"),
-            ("web_search", "search_outlined", "🔍", "🔍"),
-            ("完全没听过", "setting-inter_outlined", "🔧", "🔧")):
-        assert adapter.LarkDeckMixin._ld_icon_token(name) == token, name
-        assert adapter._cardview.icon_emoji(token) == emoji, (name, token, emoji)
-        assert adapter._cardview.tool_emoji(name, token) == row_emoji, (name, token, row_emoji)
+    for name, cls_token, tok in (
+            ("read_file", "file-link-text_outlined", "file-link-text_outlined"),
+            ("terminal", "setting_outlined", "command_outlined"),
+            ("web_search", "search_outlined", "search_outlined"),
+            ("memory", "folder_outlined", "organization-book_outlined"),
+            ("cronjob_manage", "list-check_outlined", "alarm-clock_outlined"),
+            ("完全没听过", "setting-inter_outlined", "setting-inter_outlined")):
+        # ① CLS 对齐表（token 级）**不动** —— check_cls_alignment 仍逐条比对
+        assert adapter.LarkDeckMixin._ld_icon_token(name) == cls_token, name
+        # ② 行级 token 走 `tool_icon_token`（渲染层精化，全部是查证过的官方 `_outlined`）
+        assert adapter._cardview.tool_icon_token(name, cls_token) == tok, (name, tok)
+        assert tok in _VERIFIED_LINEAR_TOKENS, tok
     panel.reset()
     try:
         panel.bind_chat_session("oc_v446", "s_v446")
@@ -12949,17 +12964,91 @@ def test_v4_46_tool_rows_use_inline_emoji_not_div_icon():
         raw = _make()
         view = raw._ld_cardview("oc_v446", "答案")
         rows = [e for e in adapter._cardview.panel_shell(view.panel)["elements"]
-                if e.get("tag") == "div"
-                and "terminal" in str(e.get("text", {}).get("content") or "")]
-        assert rows, "前提：工具行必须在面板里"
+                if e.get("tag") == "markdown" and "terminal" in str(e.get("content") or "")]
+        assert rows, "前提：工具行必须在面板里（markdown + 前缀图标）"
         row = rows[0]
-        assert "icon" not in row, f"工具行不许再用 div.icon（用户选的是内联 emoji）：{row}"
-        # 行首必须是**工具行** emoji（不是 token 表里的 🛠️ —— 那是面板标题的区段符号）
-        assert row["text"]["content"].startswith("💻 "), row["text"]["content"]
-        assert "🛠️" not in row["text"]["content"], \
-            f"工具行不许复用面板标题的区段符号 🛠️：{row['text']['content']}"
+        # ③ 前缀图标：`markdown.icon`（不是元素级 `div.icon`、也不是 emoji 内联）
+        assert row.get("icon") == {"tag": "standard_icon", "token": "command_outlined",
+                                  "color": "grey"}, row
+        content = str(row.get("content") or "")
+        assert content.startswith("**terminal**"), content
+        assert "🛠️" not in content and "💻" not in content, \
+            f"默认形态不再用 emoji（改成前缀图标）：{content}"
     finally:
         panel.reset()
+
+
+def test_v4_56_tool_row_icon_mode_switch_keeps_both_renderings():
+    """配置 `tool_row_icon`：`line`（默认，前缀线性图标）/ `emoji`（2026-09-21 选的 emoji 内联）。
+
+    为什么保留两条路：用户 2026-09-22 要「统一颜色」（线性），但 emoji 那版是 2026-09-21
+    真机选过的、且已验证过判别力（`test_v4_55` + 变异 `V4-55`）。切成配置项后两条路都活着，
+    用户改一个键就能回退，不用改代码 —— 代价是这条门禁必须证明**两条路都真的会渲染**。
+    """
+    chat, sess = "oc_v456", "s_v456"
+    panel.reset()
+    defaults = dict(adapter._DEFAULTS)
+    try:
+        panel.bind_chat_session(chat, sess)
+        panel.record_tool_started(sess, "t", "terminal", {"command": "df -h"},
+                                  tool_call_id="tc-v456")
+        raw = _make()
+        adapter.configure(tool_row_icon="line")
+        view = raw._ld_cardview(chat, "答案")
+        line_rows = [e for e in adapter._cardview.panel_shell(view.panel)["elements"]
+                     if e.get("tag") == "markdown" and "terminal" in str(e.get("content") or "")]
+        assert line_rows and (line_rows[0].get("icon") or {}).get("token") == "command_outlined", line_rows
+        adapter.configure(tool_row_icon="emoji")
+        view2 = raw._ld_cardview(chat, "答案")
+        emoji_rows = [e for e in adapter._cardview.panel_shell(view2.panel)["elements"]
+                      if e.get("tag") == "div"
+                      and "terminal" in str(e.get("text", {}).get("content") or "")]
+        assert emoji_rows, "emoji 模式下工具行必须是 div + 内联 emoji"
+        assert str((emoji_rows[0].get("text") or {}).get("content") or "").startswith("💻 "), emoji_rows[0]
+        # 未知取值 ⇒ 回落到默认 line（fail-safe，不猜）
+        adapter.configure(tool_row_icon="nonsense")
+        view3 = raw._ld_cardview(chat, "答案")
+        rows3 = [e for e in adapter._cardview.panel_shell(view3.panel)["elements"]
+                 if e.get("tag") == "markdown" and "terminal" in str(e.get("content") or "")]
+        assert rows3, "未知配置值必须回落到 line（否则工具行会整块消失）"
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        panel.reset()
+
+
+def test_v4_57_line_icons_cover_detail_error_and_folded_hint():
+    """P3.1「更全面」：详情行 / 错误块 / 折叠提示也带官方线性前缀图标（统一灰）。
+
+    用户口径（2026-09-22）：「CLS 只在一部分场景用了这些图标，我们的插件应该应用到更多场景」。
+    这条用例同时钉：① 新增位置的元素形状；② emoji 模式仍是老形状（可切）；③ 用到的 token
+    全在**已对官方清单查证**的白名单里（写错名字客户端不渲染，且不会有任何报错）。
+    """
+    cv = adapter._cardview
+    step = cv.ToolStepView(name="terminal", title="terminal", status="ok", duration_ms=1,
+                           detail='{"command": "df -h"}',
+                           icon_token=cv.ICON_TOKENS["terminal"])
+    els = cv.tool_step_elements(step, "line")
+    detail = [e for e in els if e.get("icon", {}).get("token") == cv.ICON_DETAIL]
+    assert detail, f"详情行必须带前缀图标 {cv.ICON_DETAIL}：{els}"
+    assert detail[0].get("tag") == "markdown" and detail[0].get("text_color") == "grey", detail[0]
+    assert detail[0].get("content") == '{"command": "df -h"}' and "↳" not in str(detail[0].get("content")), detail[0]
+    bad = cv.ToolStepView(name="terminal", title="terminal", status="error",
+                          error_block="boom", icon_token=cv.ICON_TOKENS["terminal"])
+    err = [e for e in cv.tool_step_elements(bad, "line")
+           if e.get("text", {}).get("icon", {}).get("token") == cv.ICON_ERROR]
+    assert err, "错误块标题必须带 warning 前缀图标"
+    hint = cv.panel_elements(cv.PanelView(title="t", collapsed_hint="还有 12 步未显示"))[0]
+    assert hint.get("icon") == {"tag": "standard_icon", "token": cv.ICON_HINT_MORE,
+                                "color": "grey"}, hint
+    # emoji 模式：老形状（文字箭头 / 无图标）—— 两条路都可切，不能静默变成同一种
+    els_e = cv.tool_step_elements(step, "emoji")
+    assert els_e[1].get("tag") == "div" and "↳" in str((els_e[1].get("text") or {}).get("content")), els_e[1]
+    assert "icon" not in els_e[1], els_e[1]
+    used = {tok for _, tok in cv.TOOL_ICON_BY_ALIAS} | {
+        cv.ICON_DETAIL, cv.ICON_HINT_MORE, cv.ICON_RESULT, cv.ICON_ERROR}
+    unknown = sorted(used - set(_VERIFIED_LINEAR_TOKENS))
+    assert not unknown, f"这些 token 没在「已查证官方清单」白名单里（写错就不渲染）：{unknown}"
 
 
 def test_v4_15_static_and_fit_lanes_never_reopen_disabled_panel_or_footer():

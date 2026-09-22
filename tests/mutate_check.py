@@ -2510,13 +2510,13 @@ MUTATIONS = [
      '        answer_text = _cards.answer_or_pending(visible, not finalize) or " "  # V4-25 mutated',
      "test_units"),
     ("V4-26-成功步又挂 Result 大代码块（用户嫌丑）", "core/cardview.py",
-     '    if step.error_block:\n        elements.append(_tool_output_div(step.error_block, "Error"))',
+     '    if step.error_block:\n        elements.append(_tool_output_div(step.error_block, "Error", icon_mode))',
      '    for label, block in (("Error", step.error_block), ("Result", step.result_block)):\n'
-     '        if block:\n            elements.append(_tool_output_div(block, label))  # V4-26 mutated',
+     '        if block:\n            elements.append(_tool_output_div(block, label, icon_mode))  # V4-26 mutated',
      "test_units"),
     ("V4-33-折叠提示用 plain_text（真机 300313，长回合卡片必坏）", "core/cardview.py",
-     '        elements.append({"tag": "markdown", "content": view.collapsed_hint,',
-     '        elements.append({"tag": "plain_text", "content": view.collapsed_hint,',
+     '        node: Dict[str, Any] = {"tag": "markdown", "content": view.collapsed_hint,',
+     '        node: Dict[str, Any] = {"tag": "plain_text", "content": view.collapsed_hint,',
      "test_units"),
     ("V4-28-结构化卡不做分级降载（长正文直接撞字节墙）", "core/adapter.py",
      '        tiers = (("ok", True, True), ("no-panel", False, True), ("bare", False, False))',
@@ -2590,12 +2590,18 @@ MUTATIONS = [
     ('P5-出站限流的 key 不含 chat（多会话并发时证据被吃掉）', 'core/adapter.py',
      '    key = f"outbound-{kind}-{chat_id}"',
      '    key = f"outbound-{kind}"', 'test_units'),
-    ('V4-46-工具行退回 div.icon（用户 2026-09-21 明确否掉的渲染方式）', 'core/cardview.py',
-     '    return {\n        "tag": "div",\n'
-     '        "text": {"tag": "lark_md", "content": content, "text_size": PANEL_TEXT_SIZE},\n    }',
-     '    return {\n        "tag": "div",\n'
-     '        "icon": {"tag": "standard_icon", "token": step.icon_token, "color": ICON_COLOR},\n'
-     '        "text": {"tag": "lark_md", "content": content, "text_size": PANEL_TEXT_SIZE},\n    }',
+    ('V4-46-工具行退回元素级 div.icon（用户 2026-09-22 三臂像素实测：图标比文字高 3px）', 'core/cardview.py',
+     '    return {\n'
+     '        "tag": "markdown",\n'
+     '        "icon": _icon_node(tool_icon_token(step.name, step.icon_token)),\n'
+     '        "content": content,\n'
+     '        "text_size": PANEL_TEXT_SIZE,\n'
+     '    }',
+     '    return {\n'
+     '        "tag": "div",\n'
+     '        "icon": _icon_node(tool_icon_token(step.name, step.icon_token)),\n'
+     '        "text": {"tag": "lark_md", "content": content, "text_size": PANEL_TEXT_SIZE},\n'
+     '    }',
      'test_units'),
     ('V4-47-工具图标退化成同一个兜底 emoji（per-tool 对应关系丢失）', 'core/cardview.py',
      '    return ICON_EMOJI.get(str(token or ""), ICON_EMOJI.get(ICON_FALLBACK, "🔧"))',
@@ -2641,6 +2647,43 @@ MUTATIONS = [
     ('CAND-B2-`_panel_has_data` 丢掉 tools（纯工具回合成静态卡时整块吞掉执行面板）', 'core/adapter.py',
      '    return bool(snap.get("tools") or snap.get("rounds") or snap.get("reasoning"))',
      '    return bool(snap.get("rounds") or snap.get("reasoning"))',
+     'test_units'),
+    ('V4-56-工具行图标 token 不再按名字精化（terminal 退回 CLS 的 setting_outlined）', 'core/cardview.py',
+     '    normalized = str(name or "").strip().lower().replace("-", "_")\n'
+     '    if normalized:\n'
+     '        for alias, tok in TOOL_ICON_BY_ALIAS:\n'
+     '            if normalized == alias or normalized.startswith(alias + "_"):\n'
+     '                return tok\n'
+     '    return str(token or ICON_FALLBACK)',
+     '    return str(token or ICON_FALLBACK)  # V4-56 mutated',
+     'test_units'),
+    ('V4-57-工具详情行丢掉前缀图标（退回文字箭头）', 'core/cardview.py',
+     '    return {\n'
+     '        "tag": "markdown",\n'
+     '        "margin": TOOL_DETAIL_INDENT,\n'
+     '        "icon": _icon_node(ICON_DETAIL),\n'
+     '        "content": text,\n'
+     '        "text_size": PANEL_TEXT_SIZE,\n'
+     '        "text_color": "grey",\n'
+     '    }',
+     '    return {\n'
+     '        "tag": "markdown",\n'
+     '        "margin": TOOL_DETAIL_INDENT,\n'
+     '        "content": text,\n'
+     '        "text_size": PANEL_TEXT_SIZE,\n'
+     '        "text_color": "grey",\n'
+     '    }',
+     'test_units'),
+    ('V4-58-折叠提示丢掉前缀图标（长回合提示退回纯文字）', 'core/cardview.py',
+     '        if icon_mode != "emoji":\n'
+     '            # 「更全面」批次：折叠提示也带前缀图标（more = 省略号，已查证存在）\n'
+     '            node["icon"] = _icon_node(ICON_HINT_MORE)\n',
+     '        # V4-58 mutated：折叠提示不再带前缀图标\n',
+     'test_units'),
+    ('V4-59-错误块标题丢掉前缀图标', 'core/cardview.py',
+     '        tok = ICON_ERROR if str(label).strip().lower().startswith("error") else ICON_RESULT\n'
+     '        node["text"]["icon"] = _icon_node(tok)\n',
+     '        pass  # V4-59 mutated\n',
      'test_units'),
     ('V4-55-工具行不再按名字精化 emoji（terminal 复用面板标题的区段符号 🛠️）', 'core/cardview.py',
      '    normalized = str(name or "").strip().lower().replace("-", "_")\n'
