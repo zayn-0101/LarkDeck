@@ -97,6 +97,8 @@
 | 长回合（tools>20）真机复验未做 | 真机 | 日志无 `300313`/`200621` + 卡片有折叠提示 | **v0.7.2 发布前（用户终验）** |
 | `panel_color_tags` 对**结构化车道**是死开关：`core/cards.py::_colorize` 吃这个开关，但 v0.7.1 起唯一在跑的 engine 是 structured，`cardview` **无条件**写 `<font color='…'>` ⇒ 配 `false` 不会去色，而在不认该语法的客户端上会把字面标签显示出来（2026-09-22 真机文档核对时发现） | 本仓 | 让 cardview 也吃这个开关（或删掉这个配置键）+ 断言两种取值下的卡 JSON | v0.7.3 |
 | 字段白名单只覆盖**面板树**（`check_cardview._assert_panel_element_fields`）；`entity_skeleton` 的 header / footer / answer 与降级车道尚未登记 —— 服务端对未知字段是**整卡被拒**，这些元素写错同样会让整卡掉进纯文本回落 | 本仓 | 白名单扩到整卡（按官方 2.0 字段表逐 tag 登记），新增 tag 不同时登记即门禁红 | v0.7.3 |
+| `mutate_check --update-ledger` 的 `_save_ledger` 只保留 `_meta.full_audit_at`，会把 `_meta.full_audit_evidence`（那段「机械核对通过：N 名恰好…」的叙述）**丢掉**（2026-09-22 晚实测：delta 更新 12 条后 evidence 消失，手工补回）。另外「测试侧指纹」只记**用例名集合** ⇒ 改某个 check 函数**内部断言**不会让条目失效（今天改 `check_hooks` 的页脚断言后，由它抓住的 11 条手动重验了一遍） | 本仓 | `_save_ledger` 保留未知 `_meta` 键；给「门禁断言被改动」加一条自动失效判据（例如 `gate_fp` 里带**断言行数/内容哈希**，或 `--write` 时把 when-changed 的条目列出来让人确认） | v0.7.3 |
+
 | `show_reasoning=true` 的嵌套 `collapsible_panel` 客户端渲染未验证（默认 false 规避） | 真机 | 探针已发 `om_x100b6427ec67d4a4de74424945f4ca0`（「内层面板能展开吗」），**等用户目视结论** | v0.7.3 |
 | 低层出站原语（`_ld_ck_create`/`_ld_send_card`/`_ld_update_card`）无统一留痕 | 本仓 | 调用点枚举断言 + 灰度日志 | v0.7.3 |
 | `seq += 1` 的换号重试只被黄金夹具保护（C2：夹具同步重生成即失守） | 本仓 | 构造「删除是这一帧最后一次写」的场景断言 | v0.7.3 |

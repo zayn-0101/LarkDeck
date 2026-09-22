@@ -2,7 +2,7 @@
  "_meta": {
   "_note": "变异验证账本：fp = 锚点区域的指纹（±15 行 + old/new）。fp 未变 ⇒ 该区域的判定仍然成立，增量模式跳过。`full_audit_at` = 最后一次**不做增量、全量直跑**的提交——继承判定（inherited）的兜底就是它，应该周期性刷新。",
   "full_audit_at": "f97ce19",
-  "full_audit_evidence": "机械核对通过：484 名恰好、现场三指纹一致、日志 🔴 并集覆盖、对照 12 名全绿。⚠️ 日志真伪不在本脚本能力内。"
+  "full_audit_evidence": "机械核对通过：484 名恰好、现场三指纹一致、日志 🔴 并集覆盖、对照 12 名全绿。2026-09-22 晚追加（models.dev 真名批次 `d4ad9ce`）：11 条 check_hooks 系条目在改动其断言后**逐条重验 red-assert**（V4-62 含在内），helper 指纹未变 ⇒ 未做全量。⚠️ 日志真伪不在本脚本能力内。"
  },
  "entries": {
   "A01-硬上限改到远超实测包络": {
@@ -1953,10 +1953,9 @@
    "fp": "c9112558313e31c4",
    "verdict": "red-assert",
    "gate": "check_hooks.py",
-   "gate_fp": "sha:434bac93921c5c77",
-   "at": "f97ce19",
+   "gate_fp": "sha:3bde04c3ce832fe7",
    "helper_fp": "b3941c25fbff2098",
-   "note": "P3 图标修复后的全量重验（--delta，helper 指纹因 golden 夹具重生成而变）：跑时工作树含 c75f2b0 的代码改动、逐字节相同（期间只并发改 docs）。"
+   "at": "d4ad9ce"
   },
   "P8-告警的原始口径传字符数": {
    "fp": "04bc9a58f2ff822e",
@@ -1971,19 +1970,17 @@
    "fp": "e8adad85575a851b",
    "verdict": "red-assert",
    "gate": "check_hooks.py",
-   "at": "f97ce19",
-   "gate_fp": "sha:434bac93921c5c77",
+   "gate_fp": "sha:3bde04c3ce832fe7",
    "helper_fp": "b3941c25fbff2098",
-   "note": "P3 图标修复后的全量重验（--delta，helper 指纹因 golden 夹具重生成而变）：跑时工作树含 c75f2b0 的代码改动、逐字节相同（期间只并发改 docs）。"
+   "at": "d4ad9ce"
   },
   "PA-2-正文仓库的按会话分桶被换成一把常量键（跨会话串台）": {
    "fp": "b2ab27bb2d72777d",
    "verdict": "red-assert",
    "gate": "check_hooks.py",
-   "gate_fp": "sha:434bac93921c5c77",
+   "gate_fp": "sha:3bde04c3ce832fe7",
    "helper_fp": "b3941c25fbff2098",
-   "at": "f97ce19",
-   "note": "P3 图标修复后的全量重验（--delta，helper 指纹因 golden 夹具重生成而变）：跑时工作树含 c75f2b0 的代码改动、逐字节相同（期间只并发改 docs）。"
+   "at": "d4ad9ce"
   },
   "PL-1-无视配置一律转发父类（工具行又并进正文）": {
    "fp": "d148f247b6164e64",
@@ -2079,10 +2076,9 @@
    "fp": "e2718a507ebf50c5",
    "verdict": "red-assert",
    "gate": "check_hooks.py",
-   "at": "f97ce19",
-   "gate_fp": "sha:434bac93921c5c77",
+   "gate_fp": "sha:3bde04c3ce832fe7",
    "helper_fp": "b3941c25fbff2098",
-   "note": "P3 图标修复后的全量重验（--delta，helper 指纹因 golden 夹具重生成而变）：跑时工作树含 c75f2b0 的代码改动、逐字节相同（期间只并发改 docs）。"
+   "at": "d4ad9ce"
   },
   "R11-6-自检不再报「剥了几帧」（真机上再没有凭据）": {
    "fp": "7ff6ff3afa615762",
@@ -2097,10 +2093,9 @@
    "fp": "42980fd41603c59d",
    "verdict": "red-assert",
    "gate": "check_hooks.py",
-   "at": "f97ce19",
-   "gate_fp": "sha:434bac93921c5c77",
+   "gate_fp": "sha:3bde04c3ce832fe7",
    "helper_fp": "b3941c25fbff2098",
-   "note": "P3 图标修复后的全量重验（--delta，helper 指纹因 golden 夹具重生成而变）：跑时工作树含 c75f2b0 的代码改动、逐字节相同（期间只并发改 docs）。"
+   "at": "d4ad9ce"
   },
   "R11-8-配置项 progress_lines_in_body 又变成空转（文档说的与做的不一致）": {
    "fp": "ece5e8661949b86c",
@@ -3312,28 +3307,25 @@
    "fp": "a52390af598b2b2f",
    "verdict": "red-assert",
    "gate": "check_hooks.py",
-   "gate_fp": "sha:434bac93921c5c77",
-   "at": "f97ce19",
+   "gate_fp": "sha:3bde04c3ce832fe7",
    "helper_fp": "b3941c25fbff2098",
-   "note": "P3 图标修复后的全量重验（--delta，helper 指纹因 golden 夹具重生成而变）：跑时工作树含 c75f2b0 的代码改动、逐字节相同（期间只并发改 docs）。"
+   "at": "d4ad9ce"
   },
   "SEQ2-收尾帧不再画状态色": {
    "fp": "9f6b46b509358a1b",
    "verdict": "red-assert",
    "gate": "check_hooks.py",
-   "at": "f97ce19",
-   "gate_fp": "sha:434bac93921c5c77",
+   "gate_fp": "sha:3bde04c3ce832fe7",
    "helper_fp": "b3941c25fbff2098",
-   "note": "P3 图标修复后的全量重验（--delta，helper 指纹因 golden 夹具重生成而变）：跑时工作树含 c75f2b0 的代码改动、逐字节相同（期间只并发改 docs）。"
+   "at": "d4ad9ce"
   },
   "SEQ3-收尾帧不关 streaming_mode": {
    "fp": "663ff3cfc304449e",
    "verdict": "red-assert",
    "gate": "check_hooks.py",
-   "at": "f97ce19",
-   "gate_fp": "sha:434bac93921c5c77",
+   "gate_fp": "sha:3bde04c3ce832fe7",
    "helper_fp": "b3941c25fbff2098",
-   "note": "P3 图标修复后的全量重验（--delta，helper 指纹因 golden 夹具重生成而变）：跑时工作树含 c75f2b0 的代码改动、逐字节相同（期间只并发改 docs）。"
+   "at": "d4ad9ce"
   },
   "SEQ4-/stop 重绘不再带中止色（legacy 分支丢强制面板）": {
    "fp": "5d89fecea9e0e202",
@@ -3366,19 +3358,17 @@
    "fp": "3a304a74f15176a9",
    "verdict": "red-assert",
    "gate": "check_hooks.py",
-   "gate_fp": "sha:434bac93921c5c77",
-   "at": "f97ce19",
+   "gate_fp": "sha:3bde04c3ce832fe7",
    "helper_fp": "b3941c25fbff2098",
-   "note": "P3 图标修复后的全量重验（--delta，helper 指纹因 golden 夹具重生成而变）：跑时工作树含 c75f2b0 的代码改动、逐字节相同（期间只并发改 docs）。"
+   "at": "d4ad9ce"
   },
   "T4-footer_line 不再渲染耗时": {
    "fp": "28c950e8c3af916e",
    "verdict": "red-assert",
    "gate": "check_hooks.py",
-   "gate_fp": "sha:434bac93921c5c77",
-   "at": "f97ce19",
+   "gate_fp": "sha:3bde04c3ce832fe7",
    "helper_fp": "b3941c25fbff2098",
-   "note": "P3 图标修复后的全量重验（--delta，helper 指纹因 golden 夹具重生成而变）：跑时工作树含 c75f2b0 的代码改动、逐字节相同（期间只并发改 docs）。"
+   "at": "d4ad9ce"
   },
   "T5-每轮耗时标题不再渲染": {
    "fp": "88b35c52681644c9",
@@ -4157,20 +4147,20 @@
    "at": "f97ce19"
   },
   "V4-62-页脚模型名退回原始 ID（用户 2026-09-22：要模型名不要 ID）": {
-   "fp": "785caa9bfc499b0c",
+   "fp": "39de129cfc4717fb",
    "verdict": "red-assert",
    "gate": "check_hooks.py",
-   "gate_fp": "sha:434bac93921c5c77",
+   "gate_fp": "sha:3bde04c3ce832fe7",
    "helper_fp": "b3941c25fbff2098",
-   "at": "f97ce19"
+   "at": "d4ad9ce"
   },
   "V4-63-模型别名不再优先（被格式化覆盖）": {
-   "fp": "0ed27749bc705d38",
+   "fp": "d9f77f05e4b77a2c",
    "verdict": "red-assert",
    "gate": "test_units.py",
    "gate_fp": "cases:test_accepts_positional_is_the_real_contract,test_adapter_footer_wiring,test_adapter_panel_wiring,test_adapter_theme_wiring_uses_default_ap_lite_and_neutral_fallback,test_aggregate_diagnosis_reports_facts_without_claiming_healthy,test_api_hook_passes_base_url_to_the_context_probe,test_args_preview_is_bounded_for_nested_and_long_inputs,test_build_adapter_falls_back_when_interface_missing,test_build_adapter_missing_required_stores_probe_snapshot_without_adopting,test_build_adapter_success_stores_probe_snapshot,test_card_action_unrelated_value_falls_through,test_card_body_bytes_measure_is_the_json_escaping_one,test_card_builders_apply_text_profile_not_just_the_helper,test_card_byte_budget_degrades_decorations_never_body,test_card_byte_constants_are_pinned_to_the_measured_envelope,test_card_tracking_cache_has_a_hard_bound,test_cardkit_answer_write_failure_keeps_specific_reason_and_code,test_cardkit_golden_trace_is_frozen,test_cardkit_transport_writes_elements_and_falls_open,test_ck_capacity_codes_are_deterministic_never_retried,test_ck_capacity_on_a_body_write_is_fatal_not_degrade,test_ck_create_rejection_is_traced_with_the_inner_reason,test_ck_create_wall_counts_elements_recursively,test_ck_decor_is_not_rewritten_when_nothing_changed,test_ck_inner_code_parses_the_two_real_machine_shapes,test_ck_plan_content_and_role_failures_are_pinned,test_ck_split_point_respects_budgets_and_avoids_code_fences,test_ck_split_preserves_session_turn_generation_fields,test_ck_write_window_guard_never_trips_at_production_cadence,test_ck_write_window_guard_skips_the_decor_batch_without_freezing_it,test_ck_write_window_semantics_are_pinned_by_the_constants,test_clarify_answer_extraction_covers_all_three_shapes,test_clarify_card_2_shows_the_choices_and_never_says_tap_a_button,test_clarify_card_buttons_and_i18n,test_clarify_card_must_be_legacy_dialect,test_clarify_click_from_unauthorized_user_is_ignored,test_clarify_click_other_marks_awaiting_text,test_clarify_click_resolves_gateway,test_clarify_click_that_did_not_commit_must_not_refill_card,test_clarify_dialect_switch_and_no_dialect_mixing,test_clarify_empty_submit_no_longer_silent,test_clarify_failed_priority_beats_other_hint,test_clarify_failed_submit_toasts_but_never_swaps_the_card,test_clarify_failed_toast_never_invites_an_impossible_retry,test_clarify_free_text_only_commits_when_the_core_accepts_it,test_clarify_gateway_bridge_degrades_safely,test_clarify_inline_swap_fallback_never_returns_to_builtin,test_clarify_other_hint_matches_the_dialect,test_clarify_other_toasts_and_keeps_the_card,test_clarify_question_and_choices_are_escaped_but_answers_stay_raw,test_clarify_rejected_selection_asks_for_a_retry,test_clarify_rejected_text_toasts_and_keeps_the_card,test_clarify_resolved_card_shares_the_same_dialect,test_clarify_silent_paths_emit_toasts_instead_of_nothing,test_code_spans_is_linear_not_quadratic_on_fence_heavy_input,test_code_spans_sees_unclosed_and_non_backtick_fences,test_color_tag_fallback_covers_status_heading_and_detail,test_command_card_help_states_the_queue_caveat,test_command_card_never_raises_even_when_state_read_fails,test_command_card_never_raises_even_when_the_error_itself_is_unprintable,test_command_card_reports_version_transport_and_three_records,test_command_card_says_so_when_the_version_is_unreadable,test_command_card_surfaces_probe_report_and_never_calls_it_healthy,test_compact_tokens,test_config_command_is_read_only_and_reload_is_all_or_nothing,test_config_schema_matches_defaults_exactly,test_config_schema_parser_fails_loudly_on_shapes_it_cannot_read,test_config_set_has_no_chat_write_path,test_context_indicator_styles,test_context_max_never_blocks_the_caller,test_context_snapshot_exposes_r7_footer_fields,test_context_store_snapshot_and_aliases,test_core_interrupt_lookup_detects_renamed_lookup,test_core_progress_only_frame_is_not_rendered_as_terminal_block,test_cross_module_constants_are_derived_not_copied,test_ctx_settings_bridge,test_declared_defaults_are_an_explicit_decision,test_degrade_log_names_the_wall_and_the_numbers,test_dialect_element_exclusivity,test_edit_message_falls_back_when_card_update_fails,test_edit_message_untracked_goes_to_builtin,test_edit_message_updates_tracked_card_and_finalizes,test_element_limit_is_enforced_recursively,test_empty_panel_diagnostic_reports_only_on_terminal_frames,test_empty_streaming_body_shows_a_pending_placeholder,test_entity_card_always_gets_a_footer_element_when_the_footer_is_enabled,test_every_python_file_compiles,test_every_text_node_carries_a_string_not_a_nested_node,test_f4_resend_frame_is_rejected_and_interim_edit_renders_own,test_finalize_without_active_stream_returns_false_but_is_not_a_write_failure,test_footer_metrics_are_opt_in_and_never_fake_zero,test_format_elapsed_and_footer_line,test_frame_failure_ledger_keeps_the_reason,test_frame_footer_carries_the_card_trace_id,test_frame_ledger_counts_only_real_card_writes,test_gate_import_guard_rejects_a_foreign_tree,test_generation_snapshot_is_machine_readable_and_never_fakes_it,test_help_text_record_count_matches_the_status_card,test_i18n_text_is_bilingual,test_inbound_heartbeat_is_recorded_by_the_real_hook_callback,test_inbound_heartbeat_is_the_first_statement_of_the_callback,test_inf_and_nan_config_never_escape_as_exceptions,test_inline_swap_degrade_still_answers_without_toast_class,test_inline_swap_degrades_when_core_cannot_take_a_card,test_install_sh_files_list_matches_the_runtime_modules,test_interrupt_never_blocks_stop_when_redraw_fails,test_interrupt_redraws_the_stream_card_in_stopped_color,test_invariant_2_fallbacks_survive_exceptions_not_just_failures,test_json_fragment_unescape_and_preview_value_are_not_fooled,test_late_begin_turn_must_not_poison_current_turn,test_ld_known_never_raises_without_setup,test_ledger_counts_send_edit_stop_clarify_and_never_double_counts,test_legacy_f4_path_keeps_old_in_place_finalize_behavior,test_long_body_still_redraws_on_stop_and_never_degrades_silently,test_markdown_hygiene_applies_to_finalize_only,test_markdown_hygiene_covers_every_whole_text_writer_not_just_native_finalize,test_merged_class_is_cached,test_merged_class_mro_and_flags,test_merged_class_never_stacks_our_mixin_twice,test_native_frame_failure_and_success_are_both_visible_in_logs,test_native_streaming_cap_never_evicts_active_streams,test_native_streaming_cap_reclaims_only_leaked_streams,test_native_streaming_failures_fall_back,test_native_streaming_frame_lifecycle,test_native_streaming_never_blanks_body_on_markdown_rule,test_native_streaming_probe_and_seed,test_native_streaming_throttle_skips_midframes_but_not_first,test_on_stream_end_is_registered_as_extra_observer_not_body_source,test_out_of_range_print_frequency_is_logged_not_silent,test_over_budget_tier_keeps_the_typewriter_and_never_truncates_body,test_own_binding_drift_fails_open_without_cross_session_text,test_own_body_strict_binding_never_falls_back_to_last_active,test_own_body_uses_only_own_accumulation_and_never_reads_core_frames,test_own_production_stream_path_never_renders_core_progress_and_finalize_uses_core,test_own_seed_before_first_delta_pins_generation_and_renders_own,test_own_seed_failure_guard_never_renders_core_composed_text,test_own_seed_placeholder_stays_out_of_ledger_fields,test_own_state_ignores_expired_binding_and_new_turn_without_delta,test_own_stop_body_uses_rendered_slice_not_raw_core_frame,test_own_turn_drift_and_missing_tracking_never_leak_core_text,test_p5_outbound_log_records_every_egress_shape,test_panel_and_context_state_survive_the_module_being_loaded_twice,test_panel_attribution_is_deterministic_by_chat_id,test_panel_begin_turn_clears_before_new_events,test_panel_caps_treat_zero_as_default_not_unlimited,test_panel_card_renders_rounds_and_honours_panel_expanded,test_panel_concurrent_writes_are_safe,test_panel_duration_falls_back_to_clock,test_panel_empty_round_drop_must_not_leave_phantom_length,test_panel_header_title_must_be_plain_text,test_panel_mark_stopped_targets_the_bound_session,test_panel_reasoning_accumulates_and_snapshots,test_panel_reasoning_buffer_compacts_and_caps,test_panel_reasoning_tolerates_non_str_delta,test_panel_renders_reasoning_rounds_with_durations,test_panel_round_bytes_never_inflate_with_round_count,test_panel_round_cut_ignores_unattributable_delta,test_panel_session_cap_evicts_oldest,test_panel_snapshot_empty_returns_none,test_panel_splits_reasoning_into_rounds,test_panel_status_priority_and_turn_reset,test_panel_summary_uses_cls_section_emojis_and_i18n,test_panel_title_english_plural,test_panel_tool_finish_without_start_appends_fallback,test_panel_tool_pairing_by_call_id,test_panel_tools_block_truncates_and_keeps_the_most_recent,test_panel_ttl_expires_sessions,test_panel_turn_change_resets_process_data,test_panel_turn_id_absent_keeps_accumulating,test_panel_unknown_status_passthrough,test_plan_progress_table_is_checkable_from_its_own_rows,test_plugin_ctx_handle_is_recorded_in_the_shared_box,test_plugin_manifest_declares_theme_default_ap_lite,test_print_frequency_is_clamped_and_never_raises,test_probe_adapter_class_reports_missing,test_probe_click_leaves_the_only_evidence_we_get,test_probe_report_warnings_name_the_right_contract,test_progress_cells_boundaries,test_reactions_override_respects_the_parent_and_is_registered,test_reactions_switch_overrides_only_itself,test_reload_clears_context_override_and_discloses_env_shadow,test_reply_card_footer_uses_20_footnote,test_reply_card_has_no_card_level_header,test_reply_card_is_20_with_summary,test_reply_card_shape,test_sanitize_markdown_is_idempotent_and_never_touches_code,test_sanitize_markdown_is_idempotent_on_every_realistic_shape,test_sanitize_never_rewrites_what_an_independent_extractor_calls_code,test_sanitize_reverts_when_it_would_push_the_card_over_the_limit,test_send_and_edit_include_panel,test_send_cards_off_falls_back,test_send_clarify_cards_off_falls_back,test_send_clarify_without_choices_falls_back,test_send_empty_content_or_missing_client_falls_back,test_send_falls_back_to_text_on_card_failure,test_send_first_frame_after_turn_switch_has_no_stale_panel,test_send_renders_card_and_tracks,test_send_stream_frame_records_failed_frame_and_rejects_f4_resend,test_session_attribution_helpers_degrade_safely,test_session_key_includes_profile_when_multiplexed,test_small_tool_char_limit_never_cuts_font_tag,test_standalone_client_init_is_required_and_falls_back,test_standalone_sender_uses_card_factory_and_falls_back_for_media,test_status_color_survives_the_byte_budget_degradation,test_status_colors_match_panel_constants,test_status_lines_never_claim_healthy_without_records,test_status_lines_report_real_records_with_time_and_count,test_status_only_turn_still_renders_a_coloured_panel,test_status_reason_is_collapsed_and_bounded,test_status_reports_uptime_fallback_and_error_code_top_n,test_stop_forwards_to_core_before_redrawing,test_stop_marks_the_bound_session_even_when_its_bucket_is_empty,test_stop_production_path_reads_last_rendered_body_not_raw_frame,test_stop_redraw_and_edit_message_keep_the_trace_id,test_stop_redraw_cleans_up_and_reaches_non_native_cards,test_stop_redraw_paints_an_empty_turn_yellow,test_stop_redraws_the_most_recently_used_card_and_keeps_one_copy_per_chat,test_stream_leak_threshold_stays_hour_scale,test_stream_liveness_survives_a_long_silent_turn,test_stream_state_drops_unattributed_events,test_stream_state_rejects_stale_turn_events,test_streaming_config_only_on_streaming_frames,test_streaming_flag_off_on_finalize,test_streaming_summary_is_never_empty,test_strip_core_progress_only_ever_returns_a_prefix_of_the_frame,test_success_click_swaps_the_card_inline_and_still_resolves,test_text_profile_applies_device_tokens_to_entity_card,test_theme_symbols_and_tool_icons_are_pinned,test_toast_path_never_raises_without_the_sdk,test_tool_args_preview_redacts_credentials_and_keeps_normal_fields,test_tool_duration_and_section_heading_helpers_are_dirty_data_safe,test_tool_step_formatting,test_tool_step_unknown_and_cancelled_statuses_never_crash,test_tracked_body_always_fits_the_status_shell_end_to_end,test_tracked_text_keeps_a_bounded_number_of_copies,test_transient_error_table_keeps_the_documented_code_only,test_transient_feishu_errors_are_retried_not_fatal,test_truncate_marks_omission,test_truncate_never_over_reports_omission,test_turn_end_ignores_stale_turn_and_note_turn_clears_status,test_unified_panel_applies_caps,test_unified_panel_empty_is_none,test_unified_panel_reserves_room_for_section_headings,test_unpaired_bold_drops_the_first_candidate_not_the_last,test_v0_7_degraded_turn_never_reenters_the_structured_frame_path,test_v0_visual_config_keys_are_read_with_warning,test_v1_structured_degrade_patches_same_card,test_v1_structured_seed_and_panel_update,test_v3_result_error_collected_truncated_and_redacted,test_v4_11_structured_card_degrades_instead_of_exceeding_the_byte_wall,test_v4_13_structured_titles_are_bilingual,test_v4_14_loading_hint_is_inserted_then_deleted_on_first_token,test_v4_14b_loading_asset_contract_has_no_text_and_survives_missing_key,test_v4_14c_loading_hint_delete_failure_keeps_flag_and_retries_with_fresh_seq,test_v4_15_static_and_fit_lanes_never_reopen_disabled_panel_or_footer,test_v4_15b_terminal_writes_keep_the_status_panel_even_without_process_data,test_v4_17b_no_trace_code_in_any_user_visible_writer,test_v4_18_icon_mapping_matches_cls_semantics,test_v4_1_duplicate_uuid_failure_is_not_card_death,test_v4_1_heartbeat_inflight_blocks_frame_and_keeps_seq_unique,test_v4_1_heartbeat_tick_skips_while_frame_write_in_flight,test_v4_1_inflight_frame_write_is_not_raced_by_heartbeat,test_v4_25_structured_answer_never_renders_the_pending_placeholder,test_v4_2_finalize_card_contains_duration_and_trace_element,test_v4_2_structured_footer_carries_elapsed_and_short_code,test_v4_33_long_turn_card_never_puts_text_nodes_inside_collapsible_panels,test_v4_46_tool_rows_use_official_line_icon_as_text_prefix,test_v4_48b_real_hermes_tool_names_never_fall_back_to_the_generic_icon,test_v4_4_legacy_lanes_honour_show_reasoning_filter,test_v4_4_static_cards_use_structured_panel,test_v4_50_stop_redraw_structured_card_closes_streaming_mode,test_v4_51_panel_expanded_config_reaches_the_structured_card,test_v4_55_tool_rows_never_reuse_the_section_emoji,test_v4_56_tool_row_icon_mode_switch_keeps_both_renderings,test_v4_57_line_icons_cover_detail_error_and_folded_hint,test_v4_5_structured_cards_carry_error_and_stopped_status,test_v4_5_tool_status_table_is_shared_and_configs_are_honoured,test_v4_62_footer_model_shows_display_name_not_id,test_v4_6_heartbeat_failures_are_visible_and_dead_marks_degrade,test_v4_6_structured_body_death_degrades_same_card,test_v4_6_structured_own_body_streams_mid_turn,test_v4_structured_panel_budget_trims_old_steps,test_when_rejects_dirty_timestamps_below_the_epoch_floor",
    "helper_fp": "b3941c25fbff2098",
-   "at": "f97ce19"
+   "at": "d4ad9ce"
   },
   "V4-7-结构化页脚不传 started（时长那一段消失）": {
    "fp": "d59bb0436043553c",
