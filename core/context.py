@@ -34,7 +34,10 @@ larkdeck 的替代路径（零源码改写）
 
 from __future__ import annotations
 
+import json
 import logging
+import pathlib
+import re
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -368,11 +371,93 @@ def known_aliases() -> Dict[str, str]:
         return dict(_ALIASES)
 
 
-def display_model(name: str) -> str:
-    """把真实模型名换成显示名。
+#: 已知厂商/系列 token → **固定大小写**（键是小写 token）。页脚上 `🤖` 后面那串从
+#: 「原始模型 ID」改成「模型名」时（用户 2026-09-22 口径：「显示现在的好像是模型 ID，
+#: 我想要做成显示模型名」），这里只做**确定性的格式化** —— token 命中就按表，没命中就首字母
+#: 大写；**真正的语义名字由别名决定**（配置 `model_aliases` / `~/.hermes/model_aliases.json`），
+#: 所以这里不承担「猜名字」的责任。
+_DISPLAY_TOKENS: Dict[str, str] = {
+    "agnes": "Agnes", "claude": "Claude", "deepseek": "DeepSeek", "flash": "Flash",
+    "free": "Free", "gemini": "Gemini", "glm": "GLM", "gpt": "GPT", "grok": "Grok",
+    "haiku": "Haiku", "hermes": "Hermes", "kimi": "Kimi", "lite": "Lite", "llama": "Llama",
+    "max": "Max", "mimo": "MiMo", "mini": "Mini", "mistral": "Mistral", "nano": "Nano",
+    "nemotron": "Nemotron", "opus": "Opus", "preview": "Preview", "pro": "Pro",
+    "qwen": "Qwen", "sonnet": "Sonnet", "thinking": "Thinking", "turbo": "Turbo",
+}
 
-    优先用户别名；否则做一次保守的瘦身：去掉 ``vendor/`` 前缀和 ``:free`` 之类后缀，
-    保留本名 —— 宁可原样显示，也不猜一个可能错的名字。
+#: `claude-sonnet-4-5-20250929` ⇒ 去掉尾部日期戳（它只是版本号，不是名字的一部分）。
+_MODEL_DATE_RE = re.compile(r"[-_](?:19|20)\d{6}$")
+#: `v4` / `2.5` / `4.8` 这类版本号。
+_MODEL_VER_RE = re.compile(r"^v?\d+(?:\.\d+)*$")
+#: `405b` / `7b` / `8k` 这类「数字 + 单位后缀」（参数量/上下文）。
+_MODEL_SIZE_RE = re.compile(r"^(\d+(?:\.\d+)*)([bmk])$")
+
+#: 与 `hermes-fry-cards` **同一份**别名文件（同机两个插件显示同一个名字），按 mtime 热更新。
+_ALIAS_FILE = pathlib.Path.home() / ".hermes" / "model_aliases.json"
+_ALIAS_FILE_CACHE: Dict[str, Any] = {"key": None, "map": {}}
+
+
+def _alias_file_map() -> Dict[str, str]:
+    """读 `~/.hermes/model_aliases.json`（``{"子串": "显示名"}``，大小写不敏感）。
+
+    纪律与配置别名一致：**读不到 / 坏 JSON ⇒ 空表**（退化成格式化，绝不抛）。
+    """
+    try:
+        stat = _ALIAS_FILE.stat()
+    except OSError:
+        return {}
+    key = (stat.st_mtime_ns, stat.st_size)
+    if _ALIAS_FILE_CACHE.get("key") == key:
+        return _ALIAS_FILE_CACHE.get("map") or {}
+    table: Dict[str, str] = {}
+    try:
+        raw = json.loads(_ALIAS_FILE.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            table = {str(k).strip().lower(): str(v).strip()
+                     for k, v in raw.items() if str(k).strip() and str(v).strip()}
+    except Exception:                                  # noqa: BLE001 —— 别名文件永远不许弄坏页脚
+        table = {}
+    _ALIAS_FILE_CACHE["key"] = key
+    _ALIAS_FILE_CACHE["map"] = table
+    return table
+
+
+def _prettify_model(stem: str) -> str:
+    """`deepseek-v4-flash` ⇒ `DeepSeek V4 Flash`；`claude-sonnet-4-5` ⇒ `Claude Sonnet 4.5`。
+
+    **纯格式化**：不动语义、不改 token 顺序，只统一大小写/版本号/日期戳。
+    """
+    out: List[str] = []
+    for token in re.split(r"[-_]+", stem):
+        if not token:
+            continue
+        low = token.lower()
+        size = _MODEL_SIZE_RE.match(low)
+        if low in _DISPLAY_TOKENS:
+            out.append(_DISPLAY_TOKENS[low])
+        elif size:
+            out.append(f"{size.group(1)}{size.group(2).upper()}")
+        elif (token.isdigit() and len(token) == 1 and out and out[-1].isdigit()
+              and len(out[-1]) <= 2):
+            out[-1] = f"{out[-1]}.{token}"            # claude-sonnet-4-5 ⇒ 4.5
+        elif _MODEL_VER_RE.match(low):
+            out.append(("V" + low[1:]) if low.startswith("v") else low)
+        else:
+            out.append(token[:1].upper() + token[1:])
+    return " ".join(out)
+
+
+def display_model(name: str) -> str:
+    """模型 ID → 页脚里显示的**模型名**（用户 2026-09-22：「要模型名，不是 ID」）。
+
+    优先级（前两步是「用户说了算」，后两步是确定性格式化）：
+
+      1. **显式别名**（配置 `model_aliases` 或 `LARKDECK_MODEL_ALIASES`，精确匹配）；
+      2. `~/.hermes/model_aliases.json`：**子串匹配**（大小写不敏感、改文件即生效）——
+         与 `hermes-fry-cards` 同一份文件，同机两个插件显示同一个名字；
+      3. 已知 token 表 + 版本号/参数量格式化（`deepseek-v4-flash` ⇒ `DeepSeek V4 Flash`）；
+      4. 都不命中：剥掉 `vendor/` 前缀与 `:free` 之类后缀后**原样**返回（旧行为：
+         宁可原样显示，也不猜一个可能错的名字）。
     """
     name = str(name or "").strip()
     if not name:
@@ -381,9 +466,14 @@ def display_model(name: str) -> str:
         alias = _ALIASES.get(name)
     if alias:
         return alias
+    lowered = name.lower()
+    for needle, value in _alias_file_map().items():
+        if needle in lowered:
+            return value
     short = name.rsplit("/", 1)[-1]          # openrouter 那种 vendor/model
     short = short.split(":", 1)[0]           # 后缀变体 :free / :nitro
-    return short or name
+    short = _MODEL_DATE_RE.sub("", short)    # 尾部日期戳
+    return _prettify_model(short) or short or name
 
 
 # --------------------------------------------------------------------------- #

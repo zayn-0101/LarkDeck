@@ -4401,8 +4401,8 @@ def test_context_store_snapshot_and_aliases() -> None:
     context.set_aliases({"claude-sonnet-4-6": "Sonnet 4.6"}, spec="c=d, e=f")
     assert context.known_aliases() == {"claude-sonnet-4-6": "Sonnet 4.6", "c": "d", "e": "f"}
     assert context.display_model("claude-sonnet-4-6") == "Sonnet 4.6"
-    # 没有别名时做保守瘦身：去 vendor 前缀 / 去 :free 之类后缀
-    assert context.display_model("openrouter/anthropic/claude-x:free") == "claude-x"
+    # 没有别名时：去 vendor 前缀 / 去 :free 之类后缀，再做确定性格式化（模型名而非 ID）
+    assert context.display_model("openrouter/anthropic/claude-x:free") == "Claude X"
     assert context.display_model("") == ""
 
     context.record_api_call(
@@ -4441,6 +4441,70 @@ def test_context_store_snapshot_and_aliases() -> None:
     context.reset()
     context.set_aliases({}, spec="")
     assert context.snapshot()["input_tokens"] is None
+
+def test_v4_62_footer_model_shows_display_name_not_id() -> None:
+    """页脚 `🤖` 后面是**模型名**，不是模型 ID（用户 2026-09-22 口径）。
+
+    原话：「显示现在的好像是模型 ID，我想要做成显示模型名」。这里只做**确定性的格式化**
+    （已知 token 表 + 版本号/参数量 + 尾部日期戳），语义名字仍由别名决定；别名优先级与
+    文件来源（`~/.hermes/model_aliases.json`，与 hermes-fry-cards 同源）一并钉住。
+    """
+    import json as _json
+    import os as _os
+    import pathlib as _pathlib
+    import tempfile as _tempfile
+
+    context.set_aliases({}, spec="")
+    cases = {
+        # 用户本机在用的几个（config.yaml 的 default / fallback）
+        "deepseek-flash": "DeepSeek Flash",
+        "deepseek-v4-flash": "DeepSeek V4 Flash",
+        "mimo-v2.5-free": "MiMo V2.5 Free",
+        "agnes-3.0-flash": "Agnes 3.0 Flash",
+        # provider/vendor 前缀 + 变体后缀
+        "opencode-go/deepseek-v4-pro": "DeepSeek V4 Pro",
+        "nvidia/moonshotai/kimi-k3": "Kimi K3",
+        "openrouter/anthropic/claude-x:free": "Claude X",
+        # 版本/日期/参数量
+        "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5",
+        "anthropic/claude-opus-4.8": "Claude Opus 4.8",
+        "qwen-2-5-72b": "Qwen 2.5 72B",
+        "hermes-3-405b": "Hermes 3 405B",
+        # 不认识的也至少有个人样，且不吞掉内容
+        "mystery-model-x": "Mystery Model X",
+    }
+    for raw, want in cases.items():
+        got = context.display_model(raw)
+        assert got == want, f"{raw!r} 应显示 {want!r}，实际 {got!r}"
+    assert context.display_model("") == ""
+
+    # ⓵ 显式配置的别名永远优先（用户说了算），即使它长得很怪
+    context.set_aliases({"nvidia/moonshotai/kimi-k3": "哈基米"}, spec="")
+    assert context.display_model("nvidia/moonshotai/kimi-k3") == "哈基米"
+    context.set_aliases({}, spec="")
+
+    # ⓶ `~/.hermes/model_aliases.json`：子串匹配 + 改文件即生效（坏 JSON 退化成格式化）
+    tmp = _pathlib.Path(_tempfile.mkdtemp()) / "model_aliases.json"
+    saved = context._ALIAS_FILE
+    context._ALIAS_FILE = tmp
+    context._ALIAS_FILE_CACHE.clear()
+    try:
+        tmp.write_text(_json.dumps({"longcat": "哈基米", "kimi": "Kimi 亲"},
+                                   ensure_ascii=False), encoding="utf-8")
+        assert context.display_model("nvidia/moonshotai/kimi-k3") == "Kimi 亲"
+        later = tmp.stat().st_mtime + 10
+        tmp.write_text(_json.dumps({"kimi": "月暗面"}, ensure_ascii=False), encoding="utf-8")
+        _os.utime(tmp, (later, later))          # 强制 mtime 变化 ⇒ 必须热更新
+        assert context.display_model("nvidia/moonshotai/kimi-k3") == "月暗面"
+        tmp.write_text("{ 坏 JSON", encoding="utf-8")
+        _os.utime(tmp, (later + 10, later + 10))
+        assert context.display_model("nvidia/moonshotai/kimi-k3") == "Kimi K3", \
+            "别名文件坏了只能退化成格式化，不许把页脚弄没"
+    finally:
+        context._ALIAS_FILE = saved
+        context._ALIAS_FILE_CACHE.clear()
+
+
 
 
 def test_markdown_hygiene_applies_to_finalize_only() -> None:

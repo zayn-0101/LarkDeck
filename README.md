@@ -223,7 +223,7 @@ plugins:
         text_profile: "compact"  # CardKit 设备字号：compact（默认：面板/页脚 12px notation、正文 normal）/ off / mobile_friendly / large
         theme: "ap_lite"         # 观感主题：neutral（原符号）/ ap_lite（默认，抽象 emoji）/ ap_bubble（AP 泡波风，含人物 emoji，可选）
         panel_color_tags: true   # 默认彩色（官方 Card 2.0 markdown 已确认 <font color>；真机视觉待截图）；不认则设 false 走纯文本降级
-        model_aliases: ""        # "真名=显示名, 真名2=显示名2"
+        model_aliases: ""        # "真名=显示名, 真名2=显示名2"；也可写 ~/.hermes/model_aliases.json（{"子串": "显示名"}，与 hermes-fry-cards 同源、改文件即生效）
         max_reasoning_chars: 1200   # 推理文本上限（超出截断并留痕；写 0 视为用默认值，不是不设限）
         max_tool_result_chars: 600  # 单条工具步骤行上限；面板显示的是参数预览，预览已被截到 80 字符，所以这项现实里几乎不会触发
         max_panel_steps: 30         # 面板最多保留多少步（超出保留最近的；写 0 视为用默认值）

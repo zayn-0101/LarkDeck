@@ -2691,6 +2691,18 @@ MUTATIONS = [
      '        node["icon"] = _icon_node(tok)\n',
      '        pass  # V4-59 mutated\n',
      'test_units'),
+    ('V4-62-页脚模型名退回原始 ID（用户 2026-09-22：要模型名不要 ID）', 'core/context.py',
+     '    short = _MODEL_DATE_RE.sub("", short)    # 尾部日期戳\n'
+     '    return _prettify_model(short) or short or name',
+     '    return short or name  # V4-62 mutated（退回模型 ID）',
+     'check_hooks'),
+    ('V4-63-模型别名不再优先（被格式化覆盖）', 'core/context.py',
+     '    with _LOCK:\n'
+     '        alias = _ALIASES.get(name)\n'
+     '    if alias:\n'
+     '        return alias\n',
+     '    # V4-63 mutated：显式别名不再优先，直接进格式化\n',
+     'test_units'),
     ('V4-55-工具行不再按名字精化 emoji（terminal 复用面板标题的区段符号 🛠️）', 'core/cardview.py',
      '    normalized = str(name or "").strip().lower().replace("-", "_")\n'
      '    if normalized:\n'
