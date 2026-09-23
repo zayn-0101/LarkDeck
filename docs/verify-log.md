@@ -346,3 +346,11 @@ A1（3 处 partial 少 `expanded`、entity `expanded` false→true）、C1（`tu
 * 用户真机终验三项全部通过：`/reset` 回复卡无 ✅/面板/状态头；`/new` 同样静默；普通真实回合页脚仍保留 `✅ 已完成`，工具/Error 字号不回归。
 * P3 证据：`full_audit_at=5b95374`、`full_audit_tree=340d88b10a65…`、539/539 red-assert、12/12 对照、墙钟 1398.9s、`tree_dirty=false`、`n_inh=0`；`~/.larkdeck-scratch/v0.7.4/evidence-5b95374/`。
 * 残余：未登记的命令回执仍可能带 `✅ 已完成`；上游 `EphemeralReply`/slash 派发结构信号未进 metadata，作为后续批次优先调研项。
+
+## 2026-09-23 · v0.7.5 P3 全量（冻结提交 3dce128）
+
+* 6 分片 rc 全 0；**577/577 red-assert**、12/12 对照绿；无 💥/🟢/❓/对照变红/归属漂移；
+* `full_audit_at=3dce128`、`full_audit_tree=70bbb6f442733d516fbccd2727bef7fd8b5ca13d`（== `3dce128^{tree}`）、`tree_dirty=false`、`n_inh=0`、墙钟 **1282.4s**（22:11:59→22:33:21）；
+* 证据：`~/.larkdeck-scratch/v0.7.5/evidence-3dce128/`（6 log + 6 seed + 6 inventory + `full-run-evidence.json` + `sha256.txt`）、`docs/audits/v0.7.5/p3-full-run-3dce128.md`；
+* 范围说明：V075 共 38 条，其中 V075-2/3 为 legacy/patch rollback/test-forced 车道；其余 36 条在生产 structured / 降级 / 防御路径上有判别力；
+* 待办：`.deploy` 到 stamp HEAD + 网关自检 + 用户真机终验后发布 v0.7.5。

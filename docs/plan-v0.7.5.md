@@ -232,7 +232,9 @@ P1 的“同轮多 finalize”仍需另外的证据；没有同轮证据前不�
 * ✅ 测试：`tests/test_units.py` **331/331**；新增 `test_v075_*` **30 条**；
   `mutate_check -k V075` **完整四门禁模式 38/38 red-assert**；`--preflight` **589/589**
   （变异 577 + 对照 12）；`run_fast.py --full` 8/8；黄金夹具 `--check` 一致。
-* ⏳ 6 分片全量盖章（在实现提交的干净树上跑，fresh ledger / 独立分片 / merge）。
+* ✅ 6 分片全量盖章：冻结 `3dce128`，**577/577 red-assert**、12/12 对照、🟢0/💥0/❓0、
+  `tree_dirty=false`、`n_inh=0`、墙钟 **1282.4s**；证据
+  `~/.larkdeck-scratch/v0.7.5/evidence-3dce128/`、`docs/audits/v0.7.5/p3-full-run-3dce128.md`。
 * ⏳ `.deploy` 到被测提交 + 网关有界自检。
 * ⏳ 真机：长任务心跳只进主卡面板、追问不闪旧、真实回合 ✅ 不变 → 用户终验。
 * ⏳ 发布 v0.7.5 + neat-freak 收尾。

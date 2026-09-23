@@ -51,7 +51,9 @@
 
 - 定向：`test_units 331/331`、`mutate_check -k V075` **完整四门禁 38/38 red-assert**、
   `--preflight 589/589`（变异 577 + 对照 12）；`run_fast --full` 8/8；golden `--check` 一致。
-- 全量 6 分片（冻结提交待回填）：待跑。
+- 全量 6 分片（冻结提交 `3dce128`）：**577/577 red-assert**、12/12 对照、🟢0/💥0/❓0、
+  `tree_dirty=false`、`n_inh=0`、墙钟 **1282.4s**（22:11:59→22:33:21）；证据
+  `~/.larkdeck-scratch/v0.7.5/evidence-3dce128/`、`docs/audits/v0.7.5/p3-full-run-3dce128.md`。
 
 ## [0.7.4] - 2026-09-23 系统/命令提示静默 + 长任务面板
 
