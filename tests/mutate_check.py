@@ -2692,10 +2692,10 @@ MUTATIONS = [
      '        "content": text,\n        "text_color": "grey",\n',
      'check_cardview'),
     ('V4-61-错误块 markdown 挂 text_color（服务端 200621 整卡被拒）', 'core/cardview.py',
-     '        "content": f"**{label}**\\n```\\n{block}\\n```",\n'
+     '        "content": f"**{label}**\\n{_inline_code_lines(block)}",\n'
      '        "text_size": "x-small",\n'
      '    }',
-     '        "content": f"**{label}**\\n```\\n{block}\\n```",\n'
+     '        "content": f"**{label}**\\n{_inline_code_lines(block)}",\n'
      '        "text_size": "x-small",\n'
      '        "text_color": "grey",\n'
      '    }',
@@ -2833,10 +2833,10 @@ MUTATIONS = [
      '                     "text_color": "grey", "text_size": "notation"},',
      'test_units'),
     ('V073-1c-Error/Result 块退回 notation（x-small 宿主失效）', 'core/cardview.py',
-     '        "content": f"**{label}**\\n```\\n{block}\\n```",\n'
+     '        "content": f"**{label}**\\n{_inline_code_lines(block)}",\n'
      '        "text_size": "x-small",\n'
      '    }',
-     '        "content": f"**{label}**\\n```\\n{block}\\n```",\n'
+     '        "content": f"**{label}**\\n{_inline_code_lines(block)}",\n'
      '        "text_size": "notation",\n'
      '    }',
      'test_units'),

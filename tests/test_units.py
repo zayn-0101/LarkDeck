@@ -13963,11 +13963,15 @@ def test_v073_detail_and_error_rows_x_small() -> None:
     assert line[2].get("tag") == "markdown", line[2]
     assert line[2].get("text_size") == "x-small", line[2]
     assert line[2].get("icon"), f"Error 块的组件级前缀图标不能丢：{line[2]}"
+    # 2026-09-23 用户选定形态 ③：逐行 inline code（`text_size` 对它生效），不再用 fenced block。
+    assert "```" not in str(line[2].get("content")), line[2]
+    assert "`boom" in str(line[2].get("content")), line[2]
     emoji = adapter._cardview.tool_step_elements(step, "emoji")
     assert len(emoji) >= 3, f"生产元素结构变了（emoji）：{emoji}"
     assert (emoji[1].get("text") or {}).get("text_size") == "x-small", emoji[1]
     assert emoji[2].get("tag") == "markdown", emoji[2]
     assert emoji[2].get("text_size") == "x-small", emoji[2]
+    assert "```" not in str(emoji[2].get("content")), emoji[2]
     assert adapter._cardview.PANEL_TEXT_SIZE == "notation"
 
 

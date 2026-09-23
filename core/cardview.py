@@ -523,15 +523,31 @@ def _tool_detail_div(text: str, icon_mode: str = "line") -> Dict[str, Any]:
     }
 
 
+def _inline_code_lines(block: str) -> str:
+    """把多行代码**逐行包成 inline code**（2026-09-23 用户选定形态 ③）。
+
+    为什么不用 fenced code block：飞书客户端把三反引号代码块的字号固定死，`text_size`
+    对整块无效（两个宿主都实测同大）；inline code 会跟随 markdown 的 `text_size` 变小。
+    代价是失去整块底色/横向滚动条，由用户目视确认接受。
+    """
+    lines = str(block or "").splitlines() or [""]
+    out = []
+    for line in lines:
+        text = " " if not line else line
+        # 行内含反引号时用双反引号定界，避免破坏 inline code 语法。
+        out.append(f"``{text}``" if "`" in text else f"`{text}`")
+    return "\n".join(out)
+
+
 def _tool_output_div(block: str, label: str, icon_mode: str = "line") -> Dict[str, Any]:
     node: Dict[str, Any] = {
-        # 2026-09-23 真机：`div.text=lark_md` 宿主对 `text_size` 的 `x-small` **客户端不生效**
-        # （候选 A/B 截图：两段同长代码块字号/行高完全一致）；换成 `markdown` 宿主后
-        # `x-small` 真机确认更小且代码栈仍可读（用户截图结论）。`markdown` 组件同样支持
-        # 组件级 `icon`（细节行宿主已在用），Error/Result 不拆元素、标签随整块一起变小。
+        # 2026-09-23 真机：`div.text=lark_md` 宿主对 `text_size` 的 `x-small` **客户端不生效**；
+        # 三反引号代码块（markdown 宿主）同样固定字号。按用户选定的形态 ③：`markdown` 宿主
+        # + **逐行 inline code** + `x-small` ⇒ `**Error**` 标签与每行代码都真正变小（真机候选卡确认）。
+        # `markdown` 组件支持组件级 `icon`（细节行宿主已在用），Error/Result 不拆整块语义。
         "tag": "markdown",
         "margin": TOOL_DETAIL_INDENT,
-        "content": f"**{label}**\n```\n{block}\n```",
+        "content": f"**{label}**\n{_inline_code_lines(block)}",
         "text_size": "x-small",
     }
     if str(icon_mode or "line").strip().lower() != "emoji":
