@@ -4940,12 +4940,14 @@ def test_code_spans_is_linear_not_quadratic_on_fence_heavy_input() -> None:
 
     判别力：变异 `R6a-17`（把行内代码的排除改回「对每个围栏做一次线性查找」）必须让这条红。
     """
-    def _best(text: str, rounds: int = 5) -> float:
+    def _best(text: str, rounds: int = 8) -> float:
+        """CPU 时间取最小值：`perf_counter` 在 6 分片并发下会把小/大输入按不同比例吹大
+        （2026-09-23 实测 ratio 9→49，把正确实现判红）；CPU 时间不随调度漂移。"""
         best = float("inf")
         for _ in range(rounds):
-            started = time.perf_counter()
+            started = time.process_time()
             cards._code_spans(text)
-            best = min(best, time.perf_counter() - started)
+            best = min(best, time.process_time() - started)
         return best
 
     def _fence_heavy(fences: int, per_fence: int = 40) -> str:
@@ -8417,14 +8419,15 @@ def test_args_preview_is_bounded_for_nested_and_long_inputs():
     huge_list = {"items": ["y"] * 2_000_000}
 
     def _cost_ms(payload) -> float:
-        """取多次测量的**最小值**：这条断言要判的是「有没有 O(参数规模) 的工作」，
-        而最小值最不受机器负载影响（2026-09-13 实测：并发跑别的重活时单次采样会
-        从 0.02ms 飘到 10ms，把一条正确的实现判成红的 —— 测量方式本身要有抗噪设计）。"""
+        """取多次测量的**最小值**，且量的是 **CPU 时间**（`process_time`）：
+        这条断言要判的是「有没有 O(参数规模) 的工作」，而墙钟在 6 分片并发下会按不同
+        比例漂移（2026-09-23 实测：同一实现单次墙钟可飘到十几 ms）；CPU 时间只算本进程
+        真实消耗，不受调度排队影响。"""
         best = float("inf")
-        for _ in range(5):
-            t0 = time.perf_counter()
+        for _ in range(8):
+            t0 = time.process_time()
             got = panel._args_preview(payload)
-            best = min(best, (time.perf_counter() - t0) * 1000)
+            best = min(best, (time.process_time() - t0) * 1000)
         return best, got
 
     for label, payload in (("嵌套", nested), ("深层", deep), ("超长列表", huge_list)):
@@ -8461,9 +8464,14 @@ def test_args_preview_is_bounded_for_nested_and_long_inputs():
     # 单次墙钟会从 ~10ms 飘到 17.4ms，把正确实现判红、进而污染变异基线
     # （2026-09-18 审计 C 实测；`_cost_ms` 上方那段取最小值的做法也拦不住整机饱和）。
     # 上限仍是 15ms，量的是一个纯正则/序列化路径的 CPU 成本，不随负载漂移。
-    _t0 = time.process_time()
-    panel._args_preview(_worst)
-    _cost = (time.process_time() - _t0) * 1000.0
+    def _cpu_ms_once() -> float:
+        t0 = time.process_time()
+        panel._args_preview(_worst)
+        return (time.process_time() - t0) * 1000.0
+
+    # 单次 CPU 采样在 6 分片并发下也会被缓存竞争吹大（2026-09-23 实测 24.5ms）；
+    # 取 8 次最小值，保留 15ms 上界与 `_seen` 的确定性扫描上限判据。
+    _cost = min(_cpu_ms_once() for _ in range(8))
     assert _cost < 15.0, f"最坏嵌套形状 CPU 耗时 {_cost:.1f}ms —— 扫描上限失效了"
     # 自引用结构不许无限递归
     cyc: dict = {}
