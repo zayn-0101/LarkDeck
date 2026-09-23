@@ -3296,17 +3296,18 @@ def _classify(script: str, proc: "subprocess.CompletedProcess") -> str:
 
 #: 单支门禁的硬超时（秒）。⚠️ 汇总串里的数字必须用它算，别写死（终审 A 实测曾写死 120）。
 #: 2026-09-22 由 45 → **90**：并行分片时（6 片 + 我自己的门禁/审计子代理同机）实测 `test_units`
-#: 墙钟被拖到 47–53s ⇒ 撞 45s 超时 ⇒ 那一批被判 **💥（只有崩溃、无断言文本）= 假坏**，
-#: 白跑一整轮还要补跑缺口。这是**上调**（把负载假坏消掉），不是下调 —— 下调会把真红变 💥
-#: （审计 B2 的明确警告）。真实断言红不受影响（它们远快于超时）。
-_GATE_TIMEOUT_S = 90.0
+#: 墙钟被拖到 47–53s ⇒ 撞 45s 超时 ⇒ 那一批被判 **💥（只有崩溃、无断言文本）= 假坏**。
+#: 2026-09-23 v0.7.4 由 90 → **180**：测试套件更重（301 用例 + 性能门禁取 8 次最小值）后，
+#: 6 片全量尾部仍偶发 `test_units` 超 90s ⇒ 同样假坏；上调只消负载假坏，真实断言红远快于超时
+#: （下调才会把真红变 💥，审计 B2 明确警告）。
+_GATE_TIMEOUT_S = 180.0
 
 GATE_ORDER = ["test_units.py", "check_override.py", "check_hooks.py",
               "check_clarify_e2e.py", "check_cardview.py", "check_cls_alignment.py"]
 
 
 def _run_one_gate(repo: Path, script: str) -> "tuple[int, str]":
-    """跑单支门禁（**有界**：`_GATE_TIMEOUT_S`（90s）硬超时 —— 与「禁 sleep、等待必须有界」同一条纪律）。"""
+    """跑单支门禁（**有界**：`_GATE_TIMEOUT_S`（180s）硬超时 —— 与「禁 sleep、等待必须有界」同一条纪律）。"""
     try:
         proc = subprocess.run([sys.executable, str(repo / "tests" / script)],
                               capture_output=True, text=True, cwd=str(repo.parent),
