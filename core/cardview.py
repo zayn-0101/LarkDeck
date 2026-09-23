@@ -525,14 +525,14 @@ def _tool_detail_div(text: str, icon_mode: str = "line") -> Dict[str, Any]:
 
 def _tool_output_div(block: str, label: str, icon_mode: str = "line") -> Dict[str, Any]:
     node: Dict[str, Any] = {
-        "tag": "div",
+        # 2026-09-23 真机：`div.text=lark_md` 宿主对 `text_size` 的 `x-small` **客户端不生效**
+        # （候选 A/B 截图：两段同长代码块字号/行高完全一致）；换成 `markdown` 宿主后
+        # `x-small` 真机确认更小且代码栈仍可读（用户截图结论）。`markdown` 组件同样支持
+        # 组件级 `icon`（细节行宿主已在用），Error/Result 不拆元素、标签随整块一起变小。
+        "tag": "markdown",
         "margin": TOOL_DETAIL_INDENT,
-        # ⚠️ Error/Result 块**退回 `notation`**（2026-09-23 真机目视）：`div.text=lark_md`
-        # 宿主对 `text_size` 的 `x-small` **服务端接受但客户端不生效**（截图对比两段同长
-        # 代码块，字号/行高完全一致）⇒ 按 §6.10.10 回退规则只让 Error 块保持 `notation`。
-        # 细节行的 markdown / plain_text 两宿主已验证确实更小，继续用 `x-small`。
-        "text": {"tag": "lark_md", "content": f"**{label}**\n```\n{block}\n```",
-                 "text_size": PANEL_TEXT_SIZE},
+        "content": f"**{label}**\n```\n{block}\n```",
+        "text_size": "x-small",
     }
     if str(icon_mode or "line").strip().lower() != "emoji":
         # 标题行加前缀图标：Error → 警告线性版；其它（Result 类）→ 代码块图标。都已查证存在。

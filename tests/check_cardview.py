@@ -196,8 +196,9 @@ def _assert_structured_builder() -> None:
     # 灰色**只能写进 content**：`markdown` 没有 `text_color` 字段（真机 200621 实测，整卡被拒）
     assert detail["content"] == "<font color='grey'>/tmp/a.txt</font>", detail
     assert "text_color" not in detail, detail
-    # v0.7.3 + 2026-09-23 真机回退：细节行（markdown）= x-small；Error 块（div.text=lark_md）
-    # 客户端不接受 text_size ⇒ 保持 notation；标题与生产常量也是 notation。
+    # v0.7.3 + 2026-09-23 真机换宿主：细节行（markdown）= x-small；Error 块改用
+    # `markdown` 宿主（`div.text=lark_md` 客户端忽略 text_size）后 x-small 确认生效；
+    # 标题与生产常量仍是 notation。
     assert detail["text_size"] == "x-small", detail
     err_step = cardview.ToolStepView(
         name="terminal", title="terminal", status="error",
@@ -206,7 +207,9 @@ def _assert_structured_builder() -> None:
     assert len(err_els) >= 3, err_els
     assert err_els[0].get("text_size") == "notation", err_els[0]
     assert err_els[1].get("text_size") == "x-small", err_els[1]
-    assert (err_els[2].get("text") or {}).get("text_size") == "notation", err_els[2]
+    assert err_els[2].get("tag") == "markdown", err_els[2]
+    assert err_els[2].get("text_size") == "x-small", err_els[2]
+    assert err_els[2].get("icon"), err_els[2]
     assert cardview.PANEL_TEXT_SIZE == "notation"
     panel_op = {"partial_element": cardview.panel_partial(view.panel)}
     assert "tag" not in panel_op["partial_element"], panel_op

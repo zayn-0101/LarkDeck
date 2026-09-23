@@ -218,9 +218,9 @@ _TEXT_PROFILE_STYLES: Dict[str, Dict[str, Dict[str, str]]] = {
         "notice": {"default": "notation", "pc": "notation", "mobile": "notation"},
     },
     # 整体紧凑：正文 normal(14px)，面板/脚注 notation(12px)。
-    # `x-small` 只用于**工具细节行**的 markdown / `plain_text` 两宿主：2026-09-23 真机目视
-    # 确认确实更小。Error/Result 块（`div.text=lark_md` 宿主）真机目视 x-small 与 notation
-    # **同大** ⇒ 已按 §6.10.10 回退规则改回 `notation`（服务端接受但客户端不生效）。
+    # `x-small` 用于**工具细节行**（markdown / `plain_text` 两宿主）与 **Error/Result 块**：
+    # 2026-09-23 真机对照确认前两者更小；Error 块原用 `div.text=lark_md` 宿主时客户端
+    # 忽略 `text_size`，换成 `markdown` 宿主后 x-small 确认生效且代码栈可读。
     # ⚠️ 这是**字面量**：没有运行时自动回退；若以后某宿主改版后失效，必须改代码并重跑
     # 断言/变异/夹具。其它位置继续只用官方文档列出的 `normal` / `notation`。
     "compact": {

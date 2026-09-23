@@ -18,7 +18,7 @@
 
 ### 变更（用户可见）
 
-- **工具细节行**：`markdown` / `plain_text` 两宿主 `text_size: x-small`（2026-09-23 真机目视确认更小；字面量，不随 `text_profile` 放大）。**Error/Result 块**（`div.text=lark_md` 宿主，Result 分支共用该元素、生产当前仅 Error 可达）：真机目视 `x-small` 与 `notation` 同大 ⇒ 按回退规则改回 `notation`。见 `docs/verify-log.md`；无运行时自动回退，宿主行为变化需改代码并重跑全量。
+- **工具细节行与 Error/Result 块**：`text_size: x-small`。细节行的 `markdown` / `plain_text` 两宿主2026-09-23 真机确认更小；Error/Result 块原用 `div.text=lark_md`（客户端忽略 `text_size`），**换成 `markdown` 宿主后真机确认更小且代码栈可读**（不拆元素，标签一起变小）。字面量，不随 `text_profile` 放大；无运行时自动回退，宿主行为变化需改代码并重跑全量。见 `docs/verify-log.md`。
 - **系统提示去状态词**：Gateway online/restarting、Session database、Hermes update、cron/后台完成等已知系统提示整卡不渲染面板/状态头/页脚（不再出现 `✅ 已完成`）；**真实回合卡一个字不动**。
 - 顺手修正历史口径注释（context/i18n/adapter/cards/mutate_check）。
 
