@@ -333,3 +333,9 @@ A1（3 处 partial 少 `expanded`、entity `expanded` false→true）、C1（`tu
   已知系统/命令前缀清单（reset/new、resume、reload-*、stop、reasoning 等）并补硬字面量
   测试 + 变异，真实回合 ✅ 保留回归。范围与审计见 `docs/plan-v0.7.4.md`。
 * 同时登记 v0.7.4：长任务/多卡中间卡面板空白、`show_reasoning=true` 嵌套面板真机探针。
+
+## 2026-09-23 · v0.7.4 P3 全量（冻结提交 5b95374）
+
+* 6 分片 rc 全 0；**539/539 red-assert**、12/12 对照绿；无 💥/🟢/❓/对照变红/归属漂移；
+* `full_audit_at=5b95374`、`full_audit_tree=340d88b10a6552ec084f63810c707bd672e9f062`（== `5b95374^{tree}`）、`tree_dirty=false`、`n_inh=0`、墙钟 **1398.9s**（17:38:59→18:02:18）；
+* 证据：`~/.larkdeck-scratch/v0.7.4/evidence-5b95374/`（6 log + 6 seed + 6 inventory + sha256.txt）、`docs/audits/v0.7.4/p3-full-run-5b95374.md`。

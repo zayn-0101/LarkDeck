@@ -133,6 +133,7 @@
 * 沿用 v0.7.3 的证据链纪律：v2 runner（先验片后 dry-run 再 `--write`、不带旧 fa allow-at）、
   release 读 `evidence-<fa>/`、artifact 全量 sha256、脚本 hash、git 锚定证据摘要。
 * 清场与注册项按 `docs/plan-v0.7.3.md` §7 与新发现滚动更新。
+* **P3 实测（5b95374）**：539/539 red-assert、12 对照、墙钟 **1398.9s**、`full_audit_tree=340d88b10a6552ec084f63810c707bd672e9f062`（== `5b95374^{tree}`）、`tree_dirty=false`、`n_inh=0`。
 
 ## 5. v0.7.3 §7「defer v0.7.4」书面承诺复核（2026-09-23）
 

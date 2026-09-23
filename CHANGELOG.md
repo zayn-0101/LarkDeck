@@ -32,7 +32,7 @@
 - 定向：`test_units 301/301`、`--preflight` 动态总数全可用、`-k V074` **8/8 red-assert**
   （前缀删除、notify 反转、startswith→in、整段相等放宽、approve/deny 删除、空 shell 回归、
   过度修正吞非空面板）；`V073-2*` 21/21 仍 red。
-- 全量 6 分片：待冻结提交后回填（未跑前不写数字）。
+- 全量 6 分片（冻结提交 `5b95374`）：**539/539 red-assert**、12/12 对照绿、🟢0/💥0/❓0、`tree_dirty=false`、`n_inh=0`、墙钟 **1398.9s**（17:38:59→18:02:18）；`--preflight 551/551`。证据：`~/.larkdeck-scratch/v0.7.4/evidence-5b95374/`、`docs/verify-log.md`。
 
 ### 探针与残余
 
