@@ -157,3 +157,5 @@
 | 图标③澄清卡/status/config/降级提示图标 | defer v0.7.5 | 每个新位置需断言+变异+重验 |
 | 无界等待/裸 join 全仓扫 | defer v0.7.5 | 需静态门禁设计（现存 3 处） |
 | E2 过程/正文交错结构 | defer v0.7.5 | 渲染器结构调整，独立批次 |
+
+* **发布结果（2026-09-23 18:57）**：`release-v0.7.4.py --go` 成功 —— tag `v0.7.4` = `5a68f2a`、GitHub Release https://github.com/zayn-0101/larkdeck/releases/tag/v0.7.4、`.deploy` = `5a68f2a`、网关自检通过 18:57:16；用户真机 `/reset`、`/new` 静默与真实回合 ✅ 三项全部通过。

@@ -339,3 +339,10 @@ A1（3 处 partial 少 `expanded`、entity `expanded` false→true）、C1（`tu
 * 6 分片 rc 全 0；**539/539 red-assert**、12/12 对照绿；无 💥/🟢/❓/对照变红/归属漂移；
 * `full_audit_at=5b95374`、`full_audit_tree=340d88b10a6552ec084f63810c707bd672e9f062`（== `5b95374^{tree}`）、`tree_dirty=false`、`n_inh=0`、墙钟 **1398.9s**（17:38:59→18:02:18）；
 * 证据：`~/.larkdeck-scratch/v0.7.4/evidence-5b95374/`（6 log + 6 seed + 6 inventory + sha256.txt）、`docs/audits/v0.7.4/p3-full-run-5b95374.md`。
+
+## 2026-09-23 · v0.7.4 发布与真机终验
+
+* `release-v0.7.4.py --go`：main 推送、tag **v0.7.4** = `5a68f2a`、GitHub Release https://github.com/zayn-0101/larkdeck/releases/tag/v0.7.4、`.deploy` = `5a68f2a`、网关重启自检通过 18:57:16。
+* 用户真机终验三项全部通过：`/reset` 回复卡无 ✅/面板/状态头；`/new` 同样静默；普通真实回合页脚仍保留 `✅ 已完成`，工具/Error 字号不回归。
+* P3 证据：`full_audit_at=5b95374`、`full_audit_tree=340d88b10a65…`、539/539 red-assert、12/12 对照、墙钟 1398.9s、`tree_dirty=false`、`n_inh=0`；`~/.larkdeck-scratch/v0.7.4/evidence-5b95374/`。
+* 残余：未登记的命令回执仍可能带 `✅ 已完成`；上游 `EphemeralReply`/slash 派发结构信号未进 metadata，作为后续批次优先调研项。
