@@ -9781,9 +9781,13 @@ def test_command_card_reports_version_transport_and_three_records():
                 continue
             assert line in text, f"少了自检行：{line!r}"
         assert "已运行" in text, f"卡片少了 uptime 那一行（只钉标签，不钉秒数）：{text!r}"
-        # 没参数与显式 `status` 必须**同一张卡**（不然 `help` 里写的默认值就是假的）
-        assert adapter._ld_command_card("status") == text
-        assert adapter._ld_command_card(" STATUS ") == text
+        # 没参数与显式 `status` 必须**同一张卡**（不然 `help` 里写的默认值就是假的）；
+        # 比较前剥掉 uptime 秒数 —— 两次渲染跨秒时它会不同（本用例的既有假红源）。
+        def _without_uptime(blob: str) -> str:
+            return re.sub(r"已运行：[^\n]*", "已运行：<t>", blob)
+
+        assert _without_uptime(adapter._ld_command_card("status")) == _without_uptime(text)
+        assert _without_uptime(adapter._ld_command_card(" STATUS ")) == _without_uptime(text)
     finally:
         adapter.HOOKS.clear()
         adapter.HOOKS.update(saved_hooks)
@@ -14669,6 +14673,7 @@ def test_v075_legacy_cardkit_seed_also_starts_empty():
         panel.record_tool_started("s-v075legacy", "t-old", "OLD_TOOL_V075",
                                   {"command": "old-cmd"}, tool_call_id="tc-old")
         assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        assert calls["entity"], f"legacy CardKit seed 未走 cardkit 传输（calls={calls}）"
         entity = _v075_entity(calls)
         blob = json.dumps(entity, ensure_ascii=False)
         assert "OLD TOOL V075" not in blob, blob
