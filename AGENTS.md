@@ -235,6 +235,10 @@ tests/        见「验证」
     block **不生效**（客户端固定字号），工具细节行用 `markdown`/`plain_text` 两宿主，Error/Result
     块用 `markdown` + 逐行 inline code（`_inline_code_lines`）；已知系统提示（Gateway online/
     restarting 等，`_LD_SYSTEM_NOTICE_PREFIXES`）整卡不渲染面板/状态头/页脚，真实回合卡不受影响。
+    ⚠️ **2026-09-23 真机补充（v0.7.4 待修）**：`notify=True` 是上游**所有最终回复**的通用标记，
+    真实模型 non-native 终稿也带它 ⇒ 不能据此判非回合；Hermes 本地化命令回复（`/reset`、`/new`、
+    `/resume`、`/reload-*`、`/stop`、`/reasoning` 等）必须以**内容前缀**登记，否则这些卡会重新
+    出现 `✅ 已完成`。清单与回归要求见 `docs/plan-v0.7.4.md`。
     ⚠️ **i18n 边界**：`markdown` element.content 不承载 `i18n_content` ⇒ 工具行动作词/
     状态词固定英文、分区小标题固定中文；完整句子提示仍走 `i18n.t()`。不要把它写成
     “动作词双语”。

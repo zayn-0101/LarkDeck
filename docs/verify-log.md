@@ -316,3 +316,20 @@ A1（3 处 partial 少 `expanded`、entity `expanded` false→true）、C1（`tu
 * 证据：`~/.larkdeck-scratch/v0.7.3/evidence-a2290da/`（6 log + 6 seed + 6 inventory + `sha256.txt`）；v2 runner 逐片校验 rc / 选中条数 / 红名集合 / 声明门禁 ∈ 断言红 / 对照绿灯 / seed verdict+at，全过才 merge，且不带旧 fa `--allow-at`；
 * **531/531 red-assert**、12/12 对照绿、无 💥/🟢/❓/对照变红/归属漂移；`full_audit_at=a2290da`、`full_audit_tree=869a68f64fa4e2b2d6572a751767afc926da113b`、`tree_dirty=false`、`n_inh=0`、墙钟 **1753.4s**（14:25:57→14:55:11）；`--preflight 543/543`、`-k V073` 32/32 red；
 * P3 事后三路对抗审计：反假绿（deepseek-flash）发现逐行契约/icon token 互换/margin/emoji 四个假绿，已用多行硬字面量 + V073-1d..1k 关闭；文档一致性（glm-5.3-flash）发现 README 版本状态、CHANGELOG/release notes 缺门禁与 inline code 措辞、verify-log `turn=True` 口径，已修；证据链（qwen3.8-flash）发现固定名覆盖、merge 先盖章后校验、`--allow-at` 自我扩白、归属漂移等，本轮用 v2 runner 加固；残余风险（账本自身被排除在漂移白名单外）由发布前人工 `git diff fa..HEAD -- tests/mutation-verdicts.json` 复核。
+
+## 2026-09-23 · v0.7.3 发布结果 + 用户真机反馈（v0.7.4 登记）
+
+* 发布：`release-v0.7.3.py --go` 成功 —— main 推送、tag **v0.7.3** = `1cc6ecc`、
+  GitHub Release https://github.com/zayn-0101/larkdeck/releases/tag/v0.7.3、
+  `.deploy` = `1cc6ecc`、网关重启自检通过 15:51:22；发布前 `--check` 全绿（run_fast 8/8、
+  preflight 543/543、531/531 red-assert、full_audit_at=a2290da、tree_dirty=false、n_inh=0）。
+* **用户真机反馈（15:59）**：`/reset` 回复卡仍显示页脚 `✅ 已完成`
+  （mid `om_x100b640c239740bcc2b83b679166f11`；内容 `✨ 会话已重置！重新开始。 ◆ Model: …`）。
+* 根因（日志实证）：`send 判定 turn=True guarded=False keys=['notify']` —— `/reset` 的最终回复
+  与真实模型 non-native 终稿**同样带 `notify=True`**；v0.7.3 只登记了部分系统提示前缀，
+  未覆盖 Hermes 本地化命令头（`✨ 会话已重置` / `✨ 新会话已启动` / `✨ Session reset` /
+  `✨ New session started` 等）⇒ 被当回合卡渲染。
+* 处置（用户 2026-09-23 拍板）：**并入 v0.7.4**，不挪 v0.7.3 tag、不单独热修；v0.7.4 扩展
+  已知系统/命令前缀清单（reset/new、resume、reload-*、stop、reasoning 等）并补硬字面量
+  测试 + 变异，真实回合 ✅ 保留回归。范围与审计见 `docs/plan-v0.7.4.md`。
+* 同时登记 v0.7.4：长任务/多卡中间卡面板空白、`show_reasoning=true` 嵌套面板真机探针。

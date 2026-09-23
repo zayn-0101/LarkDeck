@@ -158,7 +158,7 @@ the stream protocol's own limit」）。所以卡组自己切：**封掉当前�
 **升级**：Mac 上是软链安装 ⇒ `git -C <仓库> pull` 之后 **`hermes gateway restart`**
 （网关进程内加载的模块**不会热重载**，不重启就还在跑旧代码）。NAS 上是 `--copy` 安装 ⇒
 拉取后重跑 `install.sh --copy` 再重启。
-**回退**：`git checkout <tag>` 后重启。**已发布**：`v0.7.2`（最新版）、`v0.7.1`、`v0.6.4` … `v0.6.0`、`v0.5.0`、`v0.4.0`、`v0.3.0`、`v0.2.0`，`v0.1.0` 是内部基线 tag（未建 Release）；**v0.7.3** 为本批（发布说明 `docs/releases/v0.7.3.md`，tag 由发布脚本在用户终验后创建）。
+**回退**：`git checkout <tag>` 后重启。**已发布**：`v0.7.3`（最新版）、`v0.7.2`、`v0.7.1`、`v0.6.4` … `v0.6.0`、`v0.5.0`、`v0.4.0`、`v0.3.0`、`v0.2.0`，`v0.1.0` 是内部基线 tag（未建 Release）；**v0.7.4** 开发中（系统/命令提示静默 + 长任务空白面板，见 `docs/plan-v0.7.4.md`）。
 
 ---
 
@@ -419,6 +419,10 @@ LarkDeckFeishuAdapter → LarkDeckMixin → FeishuAdapter → BasePlatformAdapte
   会误杀真终稿；若 P4 真机日志显示它在飞书成为可见噪声，再单独设计（metadata 或专用前缀）。
 - **系统提示判定 = 默认回合 + 已知前缀负清单**（v0.7.3 Design D）：只有来源可枚举的已知提示（Gateway online/restarting、Session database、Hermes update、cron/后台任务、Goal 等，见 `core/adapter.py::_LD_SYSTEM_NOTICE_PREFIXES`）整卡不出面板/状态头/页脚；**未登记的新系统提示仍按回合卡渲染出 `✅ 已完成`**。发布前用 `send 判定 turn=` 日志复核**非原生/通知/命令车道**（真实回合走原生 CardKit streaming、不经过 `adapter.send()`，不会产生该日志；它的 `✅ 已完成` 由真机目视确认）；发现漏网先登记前缀再重跑全量变异。命令/控制回复（`/larkdeck`、澄清/审批提示）带 `notify` ⇒ **有意**保留状态词。
 - **长任务/多卡时中间卡执行详情面板可能空白**（v0.7.3 登记 v0.7.4）：原生流回退/多回合交错时，最终整卡可能拿到已被后续回合顶掉的 panel 快照，而空面板仍作为状态色载体保留。已登记专项（复现 + 「无过程数据时沿用本回合最后一次非空面板或不出面板」二选一），本批不修。
+- **Hermes 本地化系统/命令回复仍可能带 `✅ 已完成`（v0.7.4 修复）**：`/reset`、`/new` 等命令的
+  最终回复在上游同样带 `notify=True`，v0.7.3 的已知前缀清单未覆盖这些本地化命令头；
+  用户 2026-09-23 截图确认 `/reset` 回复仍显示页脚（根因与登记见 `docs/verify-log.md`、
+  `docs/plan-v0.7.4.md`）。**真实回合卡不受影响。
 - **必须和官方适配器同一进程**：官方 `feishu` 平台被禁用时，LarkDeck 无处附着。
 - **依赖官方适配器的内部方法**：发送/编辑路径 3 个必需（`_feishu_send_with_retry` 等，启动自检校验，缺了**拒绝覆盖**并保持内置行为）+ 1 个可选（`edit_message`，有则用、无则退回内置）；点击回调路径 5 个类属性 + 2 个实例属性（`_on_card_action_trigger`、`_card_response`、`_client` 等）；信号型 1 个（`interrupt_session_activity`，缺了「中止后卡片不变色」）；处理生命周期 1 个（`_reactions_enabled`，缺了 `reactions: false` 静默失效）；澄清网关内部结构（`_lock` / `_entries` / `entry.multi_select` / `mark_awaiting_text` / `resolve_gateway_clarify`）。全部集中登记在 `compat.py`（分七组 + 会话归属公开面）：`probe_adapter_class()` 守必需项，`probe_report()` 的完整快照在启动时打进日志（缺点击回调会提级 WARNING 并写明「澄清按钮会静默失灵」）—— 官方哪天改了名字，日志会直接说出来，而不是静默失效。
 - ~~**`i18n_content` 的元素级支持需真机确认**~~ → **已实测确认**（2026-09-12）：
