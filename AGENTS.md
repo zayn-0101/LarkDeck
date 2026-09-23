@@ -253,7 +253,7 @@ tests/        见「验证」
     没有 `text_color` 字段，写了整卡被拒），生产自 v0.6.2 起默认开（`panel_color_tags: true`）；
     ⚠️ 但这个开关**只作用 legacy 文本函数**（`core/cards.py::_colorize`），结构化卡（v0.7.1 起
     唯一在跑的引擎）**无条件**写 `<font>` ⇒ 关掉它不会去色，有的客户端反而会把字面标签显示出来
-    （v0.7.4 登记项，见 `docs/plan-v0.7.3.md` §7：要么让 cardview 吃这个开关，要么删键）。
+    （v0.7.4 未做，v0.7.5 登记项，见 `docs/plan-v0.7.4.md` §5：要么让 cardview 吃这个开关，要么删键）。
     每帧**元素写**预算 2 次（常量 `_CK_WRITES_PER_FRAME`；卡级上限 10 次/秒 × 帧窗口 0.25s）；
     R7 起再加一次**会话预览**写（`card.settings`，`_CK_SUMMARY_INTERVAL = 5s` 限频 ⇒ 平均
     ≈0.2 次/秒，且**不重试**）⇒ 折算 ≈8.2 逻辑写/秒 < 卡级上限 10 次/秒；
@@ -532,7 +532,7 @@ force-add 前先扫描敏感值，例如：
 「没有证据」（`V1-2` 实测踩到）—— 用 `_await_event(event, timeout, what)`（超时转断言）。
 存量还有 3 处无界 `await release.wait()`（`tests/test_units.py`，行号随重构漂移，用 grep 定位；
 都在带 `_await_event` 或 `finally: release.set()` 的同用例里，当前不会实际挂死），
-已登记 v0.7.4 全仓扫描 + 静态门禁（见 `docs/plan-v0.7.3.md` §7）。
+已登记 v0.7.5 全仓扫描 + 静态门禁（v0.7.4 §5 明确继续 defer）。
 
 **改了任何断言，都要跑 `tests/mutate_check.py`。** 它是本仓库「先写变异，再写断言」的落点：
 清单里每条变异 = 一处「把某条修复撤掉」的定向改动，判定标准是**至少一个门禁变红**。

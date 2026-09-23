@@ -55,7 +55,7 @@ config_schema:
   unified_panel:
     type: boolean
     default: true
-    description: "推理 + 工具合并为底部一个可折叠面板（数据来自官方钩子；v0.7.3 起已知系统提示等非回合消息不渲染面板与状态头）"
+    description: "推理 + 工具合并为底部一个可折叠面板（数据来自官方钩子；v0.7.3 起已知系统提示等非回合消息不渲染面板与状态头；v0.7.4 起 Hermes 本地化命令回复命中登记 header 同样静默）"
   panel_expanded:
     type: boolean
     default: false
@@ -99,7 +99,7 @@ config_schema:
   footer:
     type: boolean
     default: true
-    description: "页脚：状态 → 耗时 → 模型 → 上下文用量（v0.7.2 起**不再有短码**：短码只进日志自检行，用户可见处一律不出现；v0.7.3 起已知系统提示——Gateway online/restarting、Session DB、Hermes update、cron/后台完成等——整段不渲染页脚/面板/状态头）"
+    description: "页脚：状态 → 耗时 → 模型 → 上下文用量（v0.7.2 起**不再有短码**：短码只进日志自检行，用户可见处一律不出现；v0.7.3 起已知系统提示——Gateway online/restarting、Session DB、Hermes update、cron/后台完成等——整段不渲染页脚/面板/状态头；v0.7.4 起 /reset、/new、/reload-* 等本地化命令回复同样静默）"
   show_model:
     type: boolean
     default: true
