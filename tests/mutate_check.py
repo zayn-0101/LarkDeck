@@ -2691,9 +2691,14 @@ MUTATIONS = [
      '        "content": _grey(text),\n',
      '        "content": text,\n        "text_color": "grey",\n',
      'check_cardview'),
-    ('V4-61-错误块前缀图标挂进 div.text（服务端 200621 整卡被拒）', 'core/cardview.py',
-     '        node["icon"] = _icon_node(tok)\n',
-     '        node["text"]["icon"] = _icon_node(tok)\n',
+    ('V4-61-错误块 markdown 挂 text_color（服务端 200621 整卡被拒）', 'core/cardview.py',
+     '        "content": f"**{label}**\\n```\\n{block}\\n```",\n'
+     '        "text_size": "x-small",\n'
+     '    }',
+     '        "content": f"**{label}**\\n```\\n{block}\\n```",\n'
+     '        "text_size": "x-small",\n'
+     '        "text_color": "grey",\n'
+     '    }',
      'check_cardview'),
     ('V4-58-折叠提示丢掉前缀图标（长回合提示退回纯文字）', 'core/cardview.py',
      '        if icon_mode != "emoji":\n'
