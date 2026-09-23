@@ -219,8 +219,8 @@ _TEXT_PROFILE_STYLES: Dict[str, Dict[str, Dict[str, str]]] = {
     },
     # 整体紧凑：正文 normal(14px)，面板/脚注 notation(12px)。
     # `x-small` 用于**工具细节行**（markdown / `plain_text` 两宿主）与 **Error/Result 块**：
-    # 2026-09-23 真机对照确认前两者更小；Error 块原用 `div.text=lark_md` 宿主时客户端
-    # 忽略 `text_size`，换成 `markdown` 宿主后 x-small 确认生效且代码栈可读。
+    # 2026-09-23 真机确认前两者更小；Error 块的 fenced 代码块字号被客户端固定死，
+    # 改为 `markdown` + 逐行 inline code 后 x-small 确认生效且可读。
     # ⚠️ 这是**字面量**：没有运行时自动回退；若以后某宿主改版后失效，必须改代码并重跑
     # 断言/变异/夹具。其它位置继续只用官方文档列出的 `normal` / `notation`。
     "compact": {
