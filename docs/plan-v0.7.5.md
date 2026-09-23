@@ -175,6 +175,20 @@ P1 的“同轮多 finalize”仍需另外的证据；没有同轮证据前不�
 * 其余 live 帧、`/stop` 重绘、`send()`/`edit_message()` 降级路径、`_ld_ck_split` 全不动。
 * seed 只读不写：不调 `panel.reset()`、不改任何 panel 状态。
 
+### 3.2b 计划外加固：面板闸门（seed 后、begin_turn 前）
+
+* 审计 B/A 实测：seed 成功即启动 **3s 面板 tick**，而 `on_stream_start→begin_turn` 在首个 API
+  调用才 enqueue；真机时序（18:24:57 入站 → 18:25:08 首个 API call）足以让 tick 先读到上一
+  回合 snapshot，把旧工具画回新卡。仅修 seed 不够。
+* 最小安全修法（已实现）：只在 **tick 与上游心跳合卡** 两条装饰路径上加 `_ld_panel_is_stale`
+  闸门；seed 时记 snapshot 的 hook `turn_id` + 时间，同回合 boundary 重开（`_ld_seed_is_reseed`）
+  不开闸；turn_id 变化/清空或 TTL 30s fail-open。跳过一拍只损失耗时跳秒，不丢内容。
+* **live 帧不做 capture-only 闸门**：审计 B 指出若 `begin_turn` 发生在 seed 之前，capture-only
+  会把当前回合面板误判为旧数据、抑制到 TTL；无上游同命名空间 turn marker 前不做。首个 live
+  帧与 `on_stream_start` 的毫秒级队列竞态作为**已知限制**登记（tick 的秒级主因已消除）。
+* split / DEGRADE 直接读 snapshot 的路径不在闸门内；它们同样只在 live 帧/长首帧竞态下可能
+  闪旧，与上一条同一残余，不单独修。
+
 ### 3.3 测试/变异
 
 * 测试：
@@ -208,11 +222,11 @@ P1 的“同轮多 finalize”仍需另外的证据；没有同轮证据前不�
 
 ## 5. 流程与发布
 
-* ✅ ≥3 路对抗审计完成（见 §4）。
-* ✅ 实现完成（P0 心跳合卡、P2 seed 空壳；P1 证据否定不做）。
-* ✅ 测试：`tests/test_units.py` 311/311；新增 `test_v075_*` 10 条；
-  `mutate_check -k V075` **完整四门禁模式 15/15 red-assert**；`--preflight` 566/566；
-  黄金夹具已按预期重生成（首张 entity card 空壳 + 「执行详情」标题）。
+* ✅ ≥3 路对抗审计完成（见 §4）；审计发现的 F1–F9 已修，并补测试/变异。
+* ✅ 实现完成（P0 心跳合卡、P2 seed 空壳 + tick/心跳面板闸门；P1 证据否定不做）。
+* ✅ 测试：`tests/test_units.py` **327/327**；新增 `test_v075_*` **26 条**；
+  `mutate_check -k V075` **完整四门禁模式 34/34 red-assert**；`--preflight` **585/585**
+  （变异 573 + 对照 12）；`run_fast.py --full` 8/8；黄金夹具 `--check` 一致。
 * ⏳ 6 分片全量盖章（在实现提交的干净树上跑，fresh ledger / 独立分片 / merge）。
 * ⏳ `.deploy` 到被测提交 + 网关有界自检。
 * ⏳ 真机：长任务心跳只进主卡面板、追问不闪旧、真实回合 ✅ 不变 → 用户终验。

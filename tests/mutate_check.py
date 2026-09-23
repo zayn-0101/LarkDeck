@@ -3118,10 +3118,10 @@ MUTATIONS = [
      'test_units'),
     ('V075-5-seed 误清 panel 状态（旧卡恢复/stop 重绘被破坏）', 'core/adapter.py',
      '            display = ""\n'
-     '            # V075 P2：seed 与 `on_stream_start` 跨队列无序 ⇒ seed 绝不读面板快照，',
+     '            # V075 P2 加固：同回合 boundary 重开允许画当前 snapshot；新回合 seed 先关面板闸门，',
      '            _panel.reset()  # V075-5 mutated\n'
      '            display = ""\n'
-     '            # V075 P2：seed 与 `on_stream_start` 跨队列无序 ⇒ seed 绝不读面板快照，',
+     '            # V075 P2 加固：同回合 boundary 重开允许画当前 snapshot；新回合 seed 先关面板闸门，',
      'test_units'),
     ('V075-6-心跳分支被关掉（又出现中间 Working 卡）', 'core/adapter.py',
      '        if (_ld_is_working_heartbeat(content, metadata)\n'
@@ -3134,8 +3134,10 @@ MUTATIONS = [
      '        return SimpleNamespace(success=True, message_id="om_main", error=None)  # V075-7 mutated',
      'test_units'),
     ('V075-8-专用心跳卡不复用（每 180s 新建一张）', 'core/adapter.py',
-     '        if mid and self._ld_known(mid) is not None:',
-     '        if False and mid and self._ld_known(mid) is not None:  # V075-8 mutated',
+     '            if mid:\n'
+     '                # ⚠️ 不能再用 `_ld_known(mid) is not None` 作前置：`_ld_state` 满 512 时会按',
+     '            if False:  # V075-8 mutated\n'
+     '                # ⚠️ 不能再用 `_ld_known(mid) is not None` 作前置：`_ld_state` 满 512 时会按',
      'test_units'),
     ('V075-9-心跳标题不持久化（3s tick 擦回普通标题）', 'core/adapter.py',
      '                updated = {**state, "ck_seq": seq, "ck_panel_sig": signature,\n'
@@ -3179,6 +3181,99 @@ MUTATIONS = [
      '                    if False:  # V075-16 mutated\n'
      '                        # panel 元素不在卡里（配置/结构分叉）：只标死，不动车道、不 fail。\n'
      '                        updated["ck_panel_missing"] = True',
+     'test_units'),
+    ('V075-17-面板闸门失效（seed 后 3s tick 又画上一回合工具）', 'core/adapter.py',
+     '            if self._ld_panel_is_stale(chat, state):\n'
+     '                return "skip"               # V075 P2：seed 后、新回合清空前不画旧 snapshot',
+     '            if False:  # V075-17 mutated\n'
+     '                return "skip"               # V075 P2：seed 后、新回合清空前不画旧 snapshot',
+     'test_units'),
+    ('V075-18-心跳合卡不看面板闸门（seed 后又写旧 snapshot）', 'core/adapter.py',
+     '                if self._ld_panel_is_stale(chat, state):\n'
+     '                    self._ld_hb_log(chat, "seed 面板未清，心跳不写", mid=mid)\n'
+     '                    return self._ld_hb_result()',
+     '                if False:  # V075-18 mutated\n'
+     '                    self._ld_hb_log(chat, "seed 面板未清，心跳不写", mid=mid)\n'
+     '                    return self._ld_hb_result()',
+     'test_units'),
+    ('V075-20-edit 防御不看 cards/client（cards=false 时吞官方心跳 edit）', 'core/adapter.py',
+     '            if (_cfg("cards") and getattr(self, "_client", None)\n'
+     '                    and _hb_text.startswith(_LD_WORKING_PREFIX)',
+     '            if (_hb_text.startswith(_LD_WORKING_PREFIX)  # V075-20 mutated',
+     'test_units'),
+    ('V075-21-候选查找异常继续 dedicated（异常时新建中间卡）', 'core/adapter.py',
+     '        except Exception:\n'
+     '            logger.debug("[larkdeck] 心跳候选查找异常（抑制本拍）", exc_info=True)\n'
+     '            return self._ld_hb_result()',
+     '        except Exception:\n'
+     '            logger.debug("[larkdeck] 心跳候选查找异常（抑制本拍）", exc_info=True)\n'
+     '            keys = []  # V075-21 mutated',
+     'test_units'),
+    ('V075-22-有 active 但不可写时不再抑制（degraded 又建专用卡）', 'core/adapter.py',
+     '            return any(isinstance(state, dict)\n'
+     '                       and str(state.get("chat_id") or "") == chat\n'
+     '                       and state.get("message_id")\n'
+     '                       for state in streams.values())',
+     '            return False  # V075-22 mutated',
+     'test_units'),
+    ('V075-23-清心跳标题改回 raw text（工具进度帧擦掉 Working）', 'core/adapter.py',
+     '        if finalize or visible != str(state.get("last_rendered_body") or ""):',
+     '        if finalize or text != state.get("last"):  # V075-23 mutated',
+     'test_units'),
+    ('V075-24-专用卡复用又依赖 _ld_known（淘汰后重复建卡）', 'core/adapter.py',
+     '            if mid:\n'
+     '                # ⚠️ 不能再用 `_ld_known(mid) is not None` 作前置：`_ld_state` 满 512 时会按',
+     '            if mid and self._ld_known(mid) is not None:  # V075-24 mutated\n'
+     '                # ⚠️ 不能再用 `_ld_known(mid) is not None` 作前置：`_ld_state` 满 512 时会按',
+     'test_units'),
+    ('V075-25-专用卡并发锁失效（同 chat 两拍各建一张）', 'core/adapter.py',
+     '        async with self._ld_hb_chat_lock(chat):',
+     '        if True:  # V075-25 mutated',
+     'test_units'),
+    ('V075-26-普通终稿不记安静窗口（终态后又补专用卡）', 'core/adapter.py',
+     '                if turn_card and not _preview:\n'
+     '                    self._ld_hb_note_final(chat_id)   # V075：非预览终稿也进安静窗口',
+     '                if False:  # V075-26 mutated\n'
+     '                    self._ld_hb_note_final(chat_id)   # V075：非预览终稿也进安静窗口',
+     'test_units'),
+    ('V075-27-title_with_note 不合并 i18n（英文客户端看不到 Working）', 'core/cardview.py',
+     '        if isinstance(i18n, dict):',
+     '        if False:  # V075-27 mutated',
+     'test_units'),
+    ('V075-28-安静窗口从 90s 改成 1s（迟到心跳误补卡）', 'core/adapter.py',
+     '_LD_HB_FINAL_QUIET_S = 90.0',
+     '_LD_HB_FINAL_QUIET_S = 1.0  # V075-28 mutated',
+     'test_units'),
+    ('V075-29-切卡新状态继承 hb_title（续卡残留 Working）', 'core/adapter.py',
+     '            "ck_dead": set(), "ck_decor": {}, "hb_title": "",',
+     '            "ck_dead": set(), "ck_decor": {},  # V075-29 mutated',
+     'test_units'),
+    ('V075-30-同回合 boundary 重开识别失效（误关面板闸门）', 'core/adapter.py',
+     '            return bool(item and item[0] == key\n'
+     '                        and now - float(item[1] or 0.0) < _LD_HB_CARD_TTL_S)',
+     '            return False  # V075-30 mutated',
+     'test_units'),
+    ('V075-31-Working 前缀防御失效（未知卡 edit 回落 super）', 'core/adapter.py',
+     '                    and _hb_text.startswith(_LD_WORKING_PREFIX)',
+     '                    and False  # V075-31 mutated',
+     'test_units'),
+    ('V075-32-tick 300313 不标 missing（每拍重复写不存在元素）', 'core/adapter.py',
+     '                if int(res.code) == 300313:\n'
+     '                    # 元素不存在：标死即可，别把它当车道死法、也别每 3 秒重试同号。',
+     '                if False:  # V075-32 mutated\n'
+     '                    # 元素不存在：标死即可，别把它当车道死法、也别每 3 秒重试同号。',
+     'test_units'),
+    ('V075-33-专用卡表不再裁剪（无界增长）', 'core/adapter.py',
+     '            if chat not in cards and len(cards) >= _LD_HB_CARD_MAX:',
+     '            if False:  # V075-33 mutated',
+     'test_units'),
+    ('V075-34-seed key 表不再裁剪（无界增长）', 'core/adapter.py',
+     '            if key_chat not in seed_keys and len(seed_keys) >= _LD_HB_CARD_MAX:',
+     '            if False:  # V075-34 mutated',
+     'test_units'),
+    ('V075-35-per-chat 锁表不再裁剪（无界增长）', 'core/adapter.py',
+     '            if len(locks) >= _LD_HB_CARD_MAX * 2:',
+     '            if False:  # V075-35 mutated',
      'test_units'),
 
 

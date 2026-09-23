@@ -1058,28 +1058,26 @@ def _golden_trace() -> dict:
         # ⚠️ 必须**灌入非空面板数据**：否则夹具里 `panel_body` 的两次内容都是 `" "`，
         # 而「面板内容整条丢失」这种改动就抓不到（R1 审计 W6：把面板内容换成常量，全绿）。
         panel.reset()
-        panel.record_reasoning("oc_golden", "s-golden", "先想一下这个问题该怎么拆。")
-        # ⚠️ **seed 之前先有一个工具**：否则种子那一帧的 `panel_tools` 只是空占位，
-        #    「seed 漏传 `panel_tools_text`」这种改动在夹具里**看不出来**（R3 代码审计中-3
-        #    实测：掉参数四门禁全绿）。工具事件会 finalize 当前推理轮，所以下面还会再补一轮推理。
-        panel.record_tool_started("oc_golden", "s-golden", "terminal",
-                                  {"command": "ls"}, "tc-golden-0")
+        # V075 P2：seed **之前**故意灌旧回合数据，冻结「seed 不读旧快照」这条契约。
+        # seed 之后模拟真实的 on_stream_start：换 hook turn_id、清空旧数据，再灌当前回合数据；
+        # 随后所有 live 帧都必须在闸门打开后画当前回合。
+        panel.record_reasoning("oc_golden", "s-golden-old", "先想一下这个问题该怎么拆。")
+        panel.record_tool_started("oc_golden", "s-golden-old", "terminal",
+                                  {"command": "ls"}, "tc-golden-old")
         returns.append(_run(raw.send_stream_frame("", chat_id="oc_golden", turn_id="t-golden")))
+        panel.begin_turn("oc_golden", "s-golden-new")
+        panel.record_reasoning("oc_golden", "s-golden-new", "先想一下这个问题该怎么拆。")
         # ⚠️ **必须有工具事件**（R3 收窄版的夹具定义域）：面板拆成 `panel_body` + `panel_tools`
         # 两块之后，只灌推理的场景里 `panel_tools` 恒为空 ⇒ `entity_card` 与装饰 batch 在
         # 「工具块整条丢失/写错元素」这类改动下**逐字不变**，夹具对它们**零判别力**
         # （方案审计中-4④ 实测：那份场景一个工具步都没有）。工具事件本身也会 finalize 一轮推理，
         # 所以它同时把「轮次标题」这一路也带进了定义域。
-        # ⚠️ 两个位置参数是 `(session_id, turn_id)`，本场景上面写的是
-        # `record_reasoning("oc_golden", "s-golden", …)` ⇒ 这里必须是**同一对**
-        # （session=`oc_golden`、turn=`s-golden`）。我第一版把第二个参数写成 `"t-golden"`，
-        # 于是 `_touch_locked` 判成「换了回合」⇒ **清空 rounds**，夹具里 `panel_body` 写成空、
-        # 只有 `panel_tools` 有内容（门禁当时全绿 —— 是靠**读夹具 diff** 抓到的，
-        # 这也是为什么夹具改完必须逐字段看一眼再接受）。
-        panel.record_tool_started("oc_golden", "s-golden", "read_file",
+        panel.record_tool_started("oc_golden", "s-golden-new", "terminal",
+                                  {"command": "ls"}, "tc-golden-0")
+        panel.record_tool_started("oc_golden", "s-golden-new", "read_file",
                                   {"path": "/tmp/golden.txt"}, "tc-golden-1")
         returns.append(_run(raw.send_stream_frame("第一段", chat_id="oc_golden", turn_id="t-golden")))
-        panel.record_tool_finished("oc_golden", "s-golden", "read_file", status="ok",
+        panel.record_tool_finished("oc_golden", "s-golden-new", "read_file", status="ok",
                                    duration_ms=2300, tool_call_id="tc-golden-1")
         returns.append(_run(raw.send_stream_frame("第一段，第二段。", chat_id="oc_golden",
                                                   turn_id="t-golden")))
@@ -1088,7 +1086,7 @@ def _golden_trace() -> dict:
         context.record_api_call(model="test-model", provider="test",
                                 usage={"input_tokens": 21000, "prompt_tokens": 21000,
                                        "output_tokens": 5})
-        panel.record_turn_end("oc_golden", "s-golden", completed=True)
+        panel.record_turn_end("oc_golden", "s-golden-new", completed=True)
         finalized = []
 
         async def _record_update(chat_id, mid, card):
@@ -14543,6 +14541,8 @@ def test_v075_heartbeat_without_active_card_reuses_one_dedicated_card():
     try:
         first = _run(raw.send("oc_v075ded", _v075_heartbeat(3),
                               metadata={"_interim_send": True}))
+        # 模拟 `_ld_state` 满 512 被淘汰：追踪没了但飞书消息还在 ⇒ 仍必须 patch 同一张。
+        raw._ld_state.pop("om_hb_1", None)
         second = _run(raw.send("oc_v075ded", _v075_heartbeat(6),
                                metadata={"_interim_send": True}))
         assert getattr(first, "message_id", None) == ""
@@ -14818,6 +14818,371 @@ def test_v075_heartbeat_panel_300313_marks_missing_without_degrade():
         assert len(writes) == 1, f"marked missing 后仍在重复写 panel：{writes}"
     finally:
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v075_stale_panel_tick_is_gated_until_new_turn():
+    """V075 P2 加固：seed 后、begin_turn 前，3s tick/上游心跳都不得把旧 panel 画进新卡。"""
+    chat, turn = "oc_v075gate", "t-gate"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    key = f"{chat}:{turn}"
+    try:
+        panel.bind_chat_session(chat, "s-v075gate")
+        panel.record_tool_started("s-v075gate", "t-old", "OLD_TOOL_V075",
+                                  {"command": "old-cmd"}, tool_call_id="tc-old")
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        state = raw._ld_stream_get(key) or {}
+        assert state.get("panel_gate_turn") == "t-old", state
+        batch_before = len(calls["batch"])
+        content_before = len(calls["content"])
+        assert _run(raw._ld_heartbeat_tick(chat, key)) == "skip",\
+            "seed 后面板未清时 tick 必须跳过"
+        assert len(calls["batch"]) == batch_before and len(calls["content"]) == content_before,\
+            "闸门关闭时 tick 仍写了旧 panel"
+
+        # 上游 180s 心跳同样不能在这扇窗里写旧 panel（正常时它不会这么早到，防御）。
+        res = _run(raw.send(chat, _v075_heartbeat(3),
+                            metadata={"_interim_send": True}))
+        assert getattr(res, "message_id", None) == ""
+        assert len(calls["batch"]) == batch_before,\
+            "闸门关闭时上游心跳仍写了旧 panel"
+
+        # 真实新回合开始（hook turn_id 变化）⇒ 闸门打开，旧工具不得再出现。
+        panel.begin_turn("s-v075gate", "t-current")
+        state2 = raw._ld_stream_get(key) or {}
+        assert not raw._ld_panel_is_stale(chat, state2), state2
+        assert _run(raw._ld_heartbeat_tick(chat, key)) in ("unchanged", "wrote", "skip")
+        partials = _v075_panel_partials(calls)
+        if partials:
+            assert "OLD_TOOL_V075" not in json.dumps(partials[-1], ensure_ascii=False),\
+                partials[-1]
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v075_cards_off_heartbeat_edit_falls_back_to_super():
+    """V075：cards=false 时心跳与后续 Working edit 必须走官方实现，不能被空 mid 防御吞掉。"""
+    saved_config = dict(adapter._CONFIG)
+    raw = _make()
+    adapter.configure(cards=False)
+    try:
+        sent = _run(raw.send("oc_v075off", _v075_heartbeat(3),
+                             metadata={"_interim_send": True}))
+        mid = str(getattr(sent, "message_id", "") or "")
+        assert mid, sent
+        raw.calls.clear()
+        out = _run(raw.edit_message("oc_v075off", mid, _v075_heartbeat(6)))
+        assert getattr(out, "success", False) is True
+        assert any(call[0] == "SUPER.edit" for call in raw.calls), raw.calls
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_config)
+        adapter._apply_metrics_config()
+
+
+def test_v075_candidate_helper_exception_no_dedicated():
+    """V075：候选查找抛异常只抑制，不得落进 dedicated 新建专用卡。"""
+    saved_config = dict(adapter._CONFIG)
+    raw = _make()
+    adapter.configure(visual_engine="structured")
+
+    def _boom(_chat):
+        raise RuntimeError("candidate boom")
+
+    raw._ld_hb_candidates = _boom                 # type: ignore[assignment]
+    try:
+        res = _run(raw.send("oc_v075boom2", _v075_heartbeat(3),
+                            metadata={"_interim_send": True}))
+        assert getattr(res, "message_id", None) == ""
+        assert not raw._ld_hb_cards, raw._ld_hb_cards
+        assert not raw.calls, raw.calls
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_config)
+        adapter._apply_metrics_config()
+
+
+def test_v075_degraded_stream_suppresses_dedicated():
+    """V075：有 active 但不可写（DEGRADE/patch）时只抑制，不另建专用 Working 卡。"""
+    chat, turn = "oc_v075degr", "t-degr"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    key = f"{chat}:{turn}"
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        state = dict(raw._ld_stream_get(key) or {})
+        state["engine_stamp"] = "degraded"
+        raw._ld_stream_put(key, state)
+        create_before = int(calls["create"])
+        res = _run(raw.send(chat, _v075_heartbeat(3),
+                            metadata={"_interim_send": True}))
+        assert getattr(res, "message_id", None) == ""
+        assert not raw._ld_hb_cards, raw._ld_hb_cards
+        assert int(calls["create"]) == create_before, "降级 active 时又建了专用卡"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v075_progress_frame_keeps_hb_title():
+    """V075：own 模式下工具进度帧不能擦掉 Working 标题（判据按可见正文变化）。"""
+    chat, turn = "oc_v075prog", "t-prog"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    key = f"{chat}:{turn}"
+    try:
+        adapter.configure(body_source="own")
+        panel.bind_chat_session(chat, "s-v075prog")
+        panel.begin_turn("s-v075prog", "t-prog")
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        panel.note_answer_delta("s-v075prog", "t-prog", "正文")
+        assert _run(raw.send_stream_frame("正文", chat_id=chat, turn_id=turn))
+        assert _run(raw.send(chat, _v075_heartbeat(3),
+                             metadata={"_interim_send": True})).message_id == ""
+        state_hb = raw._ld_stream_get(key) or {}
+        assert str(state_hb.get("hb_title") or "").startswith("⏳ Working"), state_hb
+
+        # 只带工具进度的 raw 帧：own 可见正文没变，hb_title 必须保留。
+        assert _run(raw.send_stream_frame("⚙️ terminal: df -h",
+                                          chat_id=chat, turn_id=turn))
+        state2 = raw._ld_stream_get(key) or {}
+        assert str(state2.get("hb_title") or "").startswith("⏳ Working"), state2
+        assert _run(raw._ld_heartbeat_tick(chat, key)) == "unchanged",\
+            "进度帧后 tick 又擦回了普通标题"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v075_concurrent_heartbeats_create_one_card():
+    """V075：无 active 时同 chat 并发两拍心跳只能建一张专用卡。"""
+    saved_config = dict(adapter._CONFIG)
+    raw = _make()
+    adapter.configure(visual_engine="structured")
+    sent: list = []
+    updated: list = []
+
+    async def _send_card(chat_id, card, **kwargs):
+        await asyncio.sleep(0)                     # 让出一次，暴露 TOCTOU
+        sent.append(chat_id)
+        return _StubResult(True, "om_hb_once")
+
+    async def _update_card(chat_id, message_id, card):
+        updated.append(message_id)
+        return _StubResult(True, message_id)
+
+    raw._ld_send_card = _send_card                # type: ignore[assignment]
+    raw._ld_update_card = _update_card            # type: ignore[assignment]
+    try:
+        async def _two():
+            return await asyncio.gather(
+                raw.send("oc_v075conc", _v075_heartbeat(3),
+                         metadata={"_interim_send": True}),
+                raw.send("oc_v075conc", _v075_heartbeat(6),
+                         metadata={"_interim_send": True}),
+            )
+
+        _run(_two())
+        assert len(sent) == 1, f"并发两拍建了 {len(sent)} 张专用卡"
+        assert len(updated) <= 1, updated
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_config)
+        adapter._apply_metrics_config()
+
+
+def test_v075_tick_300313_marks_missing_without_repeat():
+    """V075：tick 写 panel 拿 300313 只标 missing，下一拍不再重复写同一空元素。"""
+    chat, turn = "oc_v075t300", "t-300"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    key = f"{chat}:{turn}"
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        panel.bind_chat_session(chat, "s-v075t300")
+        panel.record_tool_started("s-v075t300", turn, "T300_TOOL",
+                                  {"command": "x"}, tool_call_id="tc-300")
+        writes: list = []
+
+        async def _not_found(card_id, element_id, partial, seq):
+            writes.append(seq)
+            return adapter._CkResult(False, 300313,
+                                     "ErrMsg: not find elementID : panel; ")
+
+        raw._ld_ck_partial = _not_found           # type: ignore[assignment]
+        assert _run(raw._ld_heartbeat_tick(chat, key)) == "failed"
+        state = raw._ld_stream_get(key) or {}
+        assert state.get("ck_panel_missing") is True, state
+        assert len(writes) == 1, writes
+        assert _run(raw._ld_heartbeat_tick(chat, key)) == "unchanged"
+        assert len(writes) == 1, f"300313 后仍重复写：{writes}"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v075_plain_final_records_quiet_window():
+    """V075：普通 send() 非预览终稿也进安静窗口，之后的心跳不得再补专用卡。"""
+    saved_config = dict(adapter._CONFIG)
+    raw = _make()
+    adapter.configure(visual_engine="structured", unified_panel=True)
+    sent: list = []
+
+    async def _send_card(chat_id, card, **kwargs):
+        sent.append(chat_id)
+        return _StubResult(True, "om_final")
+
+    raw._ld_send_card = _send_card                # type: ignore[assignment]
+    try:
+        assert _run(raw.send("oc_v075quiet", "真实终稿", metadata={"notify": True}))
+        assert raw._ld_hb_recent_final("oc_v075quiet") is True
+        res = _run(raw.send("oc_v075quiet", _v075_heartbeat(3),
+                            metadata={"_interim_send": True}))
+        assert getattr(res, "message_id", None) == ""
+        assert len(sent) == 1, f"终态后仍补了专用卡：{sent}"
+        assert not raw._ld_hb_cards, raw._ld_hb_cards
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_config)
+        adapter._apply_metrics_config()
+
+
+def test_v075_title_with_note_merges_i18n():
+    """V075：Working note 必须逐语言合并进 panel header，不能只改默认 content。"""
+    node = adapter._cardview.title_with_note(
+        {"tag": "plain_text", "content": "摘要",
+         "i18n_content": {"zh_cn": "摘要", "en_us": "Summary"}},
+        _v075_heartbeat(3))
+    assert node["content"].startswith("⏳ Working"), node
+    assert node["i18n_content"]["en_us"].startswith("⏳ Working"), node
+    assert node["i18n_content"]["zh_cn"].startswith("⏳ Working"), node
+
+
+def test_v075_quiet_window_boundary_is_90s():
+    """V075：安静窗口是 90s（50s 内抑制、100s 外放行）。"""
+    saved_config = dict(adapter._CONFIG)
+    raw = _make()
+    try:
+        raw._ld_hb_note_final("oc_v075q")
+        assert raw._ld_hb_recent_final("oc_v075q") is True
+        raw._ld_recent_final["oc_v075q"] = time.monotonic() - 50.0
+        assert raw._ld_hb_recent_final("oc_v075q") is True
+        raw._ld_recent_final["oc_v075q"] = time.monotonic() - 100.0
+        assert raw._ld_hb_recent_final("oc_v075q") is False
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_config)
+        adapter._apply_metrics_config()
+
+
+def test_v075_split_does_not_inherit_hb_title():
+    """V075：卡链新 state 不继承旧 hb_title，续卡实体不得残留 Working。"""
+    chat, turn = "oc_v075split", "t-split"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    key = f"{chat}:{turn}"
+    old_cut = adapter._ck_split_point
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        state = dict(raw._ld_stream_get(key) or {})
+        state["hb_title"] = _v075_heartbeat(3)
+        raw._ld_stream_put(key, state)
+        adapter._ck_split_point = lambda *a, **k: 3   # type: ignore[assignment]
+        new_state = _run(raw._ld_ck_split(chat, "abcdef", state, 0, None,
+                                          time.monotonic()))
+        assert new_state is not None, "切卡失败（测试前提不成立）"
+        assert not str(new_state.get("hb_title") or ""), new_state
+        entity_blob = json.dumps(_v075_entity(calls, -1), ensure_ascii=False)
+        assert "Working" not in entity_blob, entity_blob
+    finally:
+        adapter._ck_split_point = old_cut
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v075_same_turn_reseed_has_no_panel_gate():
+    """V075：同一 consumer turn 的 boundary 重开不算 stale，不关面板闸门。"""
+    chat, turn = "oc_v075reseed", "t-reseed"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    key = f"{chat}:{turn}"
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        # 模拟 boundary seal：旧卡收尾后 state 被 pop，同一 consumer turn 再 seed。
+        raw._ld_stream_pop(key)
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        state = raw._ld_stream_get(key) or {}
+        assert state.get("panel_gate_turn") is None, state
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v075_working_edit_unknown_is_noop():
+    """V075：已不在追踪表的 Working edit 绝不回落 super，直接成功 no-op。"""
+    chat, turn = "oc_v075editdef", "t-editdef"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        called: list = []
+
+        async def _update(chat_id, message_id, card):
+            called.append(message_id)
+            return _StubResult(True, message_id)
+
+        raw._ld_update_card = _update            # type: ignore[assignment]
+        raw.calls.clear()
+        out = _run(raw.edit_message(chat, "om_unknown_hb", _v075_heartbeat(6),
+                                    finalize=False))
+        assert getattr(out, "message_id", None) == ""
+        assert called == [], called
+        assert not [c for c in raw.calls if c[0] == "SUPER.edit"], raw.calls
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v075_heartbeat_registries_are_bounded():
+    """V075：专用卡/seed key/per-chat 锁表都必须真的裁剪，不能名义 bounded 实则无界。"""
+    saved_config = dict(adapter._CONFIG)
+    raw = _make()
+    try:
+        for index in range(adapter._LD_HB_CARD_MAX * 2 + 40):
+            raw._ld_hb_card_set(f"oc_b{index}", f"om_b{index}")
+            raw._ld_seed_note(f"oc_s{index}", f"t{index}")
+            raw._ld_hb_chat_lock(f"oc_l{index}")
+        assert len(raw._ld_hb_cards) <= adapter._LD_HB_CARD_MAX, len(raw._ld_hb_cards)
+        assert len(raw._ld_seed_keys) <= adapter._LD_HB_CARD_MAX, len(raw._ld_seed_keys)
+        assert len(raw._ld_hb_locks) <= adapter._LD_HB_CARD_MAX * 2, len(raw._ld_hb_locks)
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_config)
+        adapter._apply_metrics_config()
+
+
+def test_v075_dedicated_heartbeat_card_terminal_residual_is_documented():
+    """V075 已知限制：无 active 长任务的专用 Working 卡在真实终稿后仍留在时间线（不删/不合并）。
+
+    没有 message_id 交回上游、插件也没有 delete_message；这里把当前行为钉住，README/release
+    notes 必须同步登记。若未来实现同卡收口，这个用例会红，提醒同步文档与迁移策略。
+    """
+    saved_config = dict(adapter._CONFIG)
+    raw = _make()
+    adapter.configure(visual_engine="structured", unified_panel=True)
+    sent: list = []
+    updated: list = []
+
+    async def _send_card(chat_id, card, **kwargs):
+        sent.append(chat_id)
+        return _StubResult(True, f"om_seen_{len(sent)}")
+
+    async def _update_card(chat_id, message_id, card):
+        updated.append(message_id)
+        return _StubResult(True, message_id)
+
+    raw._ld_send_card = _send_card                # type: ignore[assignment]
+    raw._ld_update_card = _update_card            # type: ignore[assignment]
+    try:
+        _run(raw.send("oc_v075resid", _v075_heartbeat(3),
+                      metadata={"_interim_send": True}))
+        mid = str((raw._ld_hb_cards.get("oc_v075resid") or ("", 0.0))[0] or "")
+        assert mid == "om_seen_1", raw._ld_hb_cards
+        _run(raw.send("oc_v075resid", "真实终稿", metadata={"notify": True}))
+        assert str((raw._ld_hb_cards.get("oc_v075resid") or ("", 0.0))[0] or "") == mid,\
+            "专用卡注册表不应在终稿时被误复用/误改"
+        assert updated == [], f"终稿不该 patch 专用心跳卡：{updated}"
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_config)
+        adapter._apply_metrics_config()
 
 
 def main() -> int:

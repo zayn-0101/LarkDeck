@@ -422,6 +422,22 @@ LarkDeckFeishuAdapter → LarkDeckMixin → FeishuAdapter → BasePlatformAdapte
   整卡静默；`notify=True` 不能单独判非回合（真实 non-native 终稿也带它）。**未登记的命令回执
   仍可能带 `✅ 已完成`**，见下方已知限制。
 - **长任务/多卡中间卡面板空白**（v0.7.4 修复）：终局帧快照无过程数据时不再渲染空 shell，状态色由页脚承载；真机长任务场景若仍出现空白，按 v0.7.5 专项复现处理。
+- **上游 `⏳ Working — …` 长任务心跳进主卡面板**（v0.7.5）：默认模式下每 180s 的心跳
+  合入当前结构化主卡的 `collapsible_panel` 标题（`⏳ Working … · 原摘要`），返回空
+  `message_id` 让上游不进入 `edit_message`；finalize 终卡会清掉 Working。无 active 主卡时
+  只建**一张**专用静默卡并复用；多条 active、degraded、`unified_panel: false`、刚 finalize
+  的安静窗口内一律抑制。**已知限制**：① 只识别默认字面量 `⏳ Working — `，
+  `long_running_notifications: generic` 的任意文案仍走 v0.7.4 静默卡；② 无 active 主卡时
+  的那张专用 Working 卡在真实终稿后不会被自动删除/合并（保留在时间线，行为有回归测试）；
+  ③ 面板闸门只覆盖 seed 后的 3s tick 与上游心跳，首个 live 帧抢在 `on_stream_start` 前
+  到达的毫秒级竞态仍属已知残余（详见下方「已知限制」条目）。
+- **追问不再先闪上一回合工具步骤**（v0.7.5）：新 consumer 回合 seed 帧不再读上一回合
+  panel 快照，只建空面板壳；seed 后、`on_stream_start` 清空前，3s 面板 tick 与上游心跳
+  也被闸门挡住；`on_stream_start` 后的首帧起画当前回合数据。
+- **不同入站回合各自一张卡**：v0.7.5 明确不做跨回合答案卡合并/抑制。后台进程完成通知
+  （`Watch pattern notification`）等自动注入也是独立新回合，合并会吞掉它的真实回答；
+  同轮 native finalize 失败 / boundary 多卡需上游 `_stream_turn_id` /
+  `get_stream_message_id` 接口后再评估。
 - **Hermes 本地化系统/命令回复仍有未登记项可能带 `✅ 已完成`（v0.7.4 起覆盖已登记 header）**：`/reset`、`/new` 等命令的
   最终回复在上游同样带 `notify=True`，v0.7.3 的已知前缀清单未覆盖这些本地化命令头；
   用户 2026-09-23 截图确认 `/reset` 回复仍显示页脚（根因与登记见 `docs/verify-log.md`、

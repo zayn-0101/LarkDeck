@@ -14,6 +14,45 @@
 > 已知待验：`text_profile` / `ap_lite` 真机视觉、无网关 cron 真机投递。
 
 
+## [Unreleased] - v0.7.5 心跳进面板 + seed 防闪旧
+
+### 修复（用户可见）
+
+- **长任务 `⏳ Working — N min…` 不再新建中间卡**：默认模式下，上游每 180s 的
+  `_interim_send` 心跳被 `send()` 吸收进当前结构化主卡的 `collapsible_panel` 标题
+  （`⏳ Working … · 原摘要`），并返回空 `message_id`，让上游永不进入 `edit_message`
+  整卡 patch 路径（避免关闭 CardKit 流式会话/清空答案）。后续 3s 面板心跳和结构化帧
+  都保留这条标题；finalize 终卡会清掉它。无 active 主卡时只建**一张**专用静默卡并复用；
+  多条 active、degraded、面板关闭、终态安静窗口内一律抑制，不新建卡、不碰 answer。
+- **追问不再先闪上一回合工具步骤**：新 consumer 回合的 seed 帧不再读 `_panel.snapshot()`
+  的上一回合过程数据（结构化 / legacy CardKit / patch 三个 seed 分支统一空面板壳）；
+  seed 后、`on_stream_start` 清空前，插件 3s 面板心跳和上游心跳合卡也被面板闸门挡住
+  （只跳过装饰，不写旧 panel）；`on_stream_start` 后的首帧起照常画当前回合数据。
+  CardKit 面板元素结构保留，golden 夹具按契约更新（首张实体卡为「执行详情」空壳）。
+- **声明不做**：不同入站回合各自一张卡；18:43 后台进程完成通知触发的自动回合是**独立
+  新回合**，插件侧不做跨回合合并/抑制（会吞掉真实回答）。同轮 native finalize 失败/
+  boundary 多卡需上游接口（`_stream_turn_id` / `get_stream_message_id`）后再评。
+
+### 已知限制
+
+- 只识别默认心跳字面量 `⏳ Working — `（`_interim_send=True`）。`long_running_notifications:
+  generic` 的任意文案仍走 v0.7.4 的静默卡，不进面板；等上游独立 metadata 标记后再收口。
+- **首个 live 帧抢跑**：面板闸门只覆盖 seed 后的 3s tick 与上游心跳（秒级主因）；若首个
+  带正文的 live 帧在 `on_stream_start` 派发前到达（跨钩子队列无顺序保证），它仍可能读到
+  上一回合 panel。无上游同命名空间 turn marker 前不做 live 帧 capture-only 闸门（会把
+  “seed 晚于 begin_turn”的当前面板误判成旧数据）。真机若复现，按上游接口项推进。
+- **无 active 长任务的专用心跳卡**：native/结构化主卡不可用时只建一张静默 Working 卡并
+  复用；真实终稿走另发的答案卡，专用卡不会被自动删除/合并（上游拿不到它的 mid，插件也
+  没有 delete_message）。属已知观感取舍，行为有回归测试钉住。
+- 上游 `edit_message` 心跳在本设计下不应发生；插件对已不在追踪表里的 `⏳ Working — …`
+  非 finalize 编辑做 no-op 防御，绝不回落官方 update。
+
+### 门禁与证据（全量跑后回填）
+
+- 定向：`test_units 327/327`、`mutate_check -k V075` **完整四门禁 34/34 red-assert**、
+  `--preflight 585/585`（变异 573 + 对照 12）；`run_fast --full` 8/8；golden `--check` 一致。
+- 全量 6 分片（冻结提交待回填）：待跑。
+
 ## [0.7.4] - 2026-09-23 系统/命令提示静默 + 长任务面板
 
 ### 修复（用户可见）
