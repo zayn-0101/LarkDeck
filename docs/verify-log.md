@@ -262,9 +262,9 @@ A1（3 处 partial 少 `expanded`、entity `expanded` false→true）、C1（`tu
 * **真机目视结论（2026-09-23 用户截图 + 像素测量）**：A `markdown` 23→19px、B `div.text=plain_text` 21→17px ⇒ **确实更小**；C `div.text=lark_md` 26→26px（行距同为 44px） ⇒ **客户端忽略 `text_size`**。
 * **处置**：C 宿主对应的 Error/Result 块按回退规则改回 `notation`（commit `db58dc5`）；细节行两宿主继续 `x-small`。
 * 回退规则：若某 host 被拒或不变小 ⇒ **该 host 退回 `notation`**（改代码 + 断言/变异/夹具 + 重跑 P3）；当前代码**没有运行时自动回退**。
-* `send 判定 turn=` 日志复核：`.deploy=db58dc5` + 网关重启后已确认一条 `turn=False` 系统提示；真实用户消息的 `turn=True` 由发布前终验消息回填。
+* `send 判定 turn=` 日志复核：`.deploy=8474418`（代码即 `db58dc5`）+ 网关重启（09:49:29 自检通过）后，已确认系统提示 `turn=False`（09:49:22/09:49:39）与中途播报 `turn=False keys=['_interim_send']`（10:28:46）；真实用户消息的 `turn=True` 由发布前终验消息回填。
 
-## 2026-09-23 02:51 · v0.7.3 P3 全量变异（冻结提交 `65c1c5f`）
+## 2026-09-23 02:51 · v0.7.3 P3 全量变异（冻结提交 `65c1c5f`；⚠️ 已被 09:16 的 `db58dc5` 重跑取代，见文末）
 
 * 6 分片并行、独立账本/日志、坏 0（无 💥/🟢/❓）；合并 `tools/merge_ledger4.py --write`：
   **523/523 red-assert**、`full_audit_at=65c1c5f`、
@@ -283,3 +283,13 @@ A1（3 处 partial 少 `expanded`、entity `expanded` false→true）、C1（`tu
 * 3/3 新版真实回合：`om_x100b640616c6d8b0de2c17b37ce9714`，页脚 `✅ 已完成 · Test Model · ctx…` 保留。
 * 字号焦点卡：`om_x100b64062dbdfca8c4297b234ace9ca`（B/C 两组上下对照）；合并验证卡：`om_x100b64060aedaca8c4c3b8cbce81bca`（A/B/C 三组）。
 * 回退决定与像素测量见 `docs/audits/v0.7.3/p4-real-device-fallback.md`。
+
+## 2026-09-23 09:40 · v0.7.3 P3 重跑（db58dc5，真机回退后）
+
+* 6 分片并行、独立账本/日志、坏 0；合并 `tools/merge_ledger4.py --write`：**523/523 red-assert**、
+  `full_audit_at=db58dc5`、`full_audit_tree=b15070a29fe84247849f3ce0ee6b0d5e503a1dbb`
+  （== `db58dc5^{tree}`）、`tree_dirty=false`、继承 0；
+* **实测墙钟 1443.9s**（09:16:00→09:40:04）；`--preflight 535/535`；`-k V073` 24/24 red；
+* 合并备注：刷新后的 base 账本仍带 `V073-1c` 旧名 ⇒ 自带 merge 先因「名字集合多 1」拒绝；
+  剔除旧键后用**同一** `tools/merge_ledger4.py --write` 合并通过（只名字集合问题，无缺条/指纹失败）；
+* P3 事后三路审计（证据链 / 反假绿 / 发布诚实性）全部 PASS；详见 `docs/audits/v0.7.3/p3b-post-fallback.md`。

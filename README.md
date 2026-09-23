@@ -221,7 +221,7 @@ plugins:
         footer: true             # 页脚：状态 → 耗时 → 模型 → 上下文用量（v0.7.2 起无段前缀 emoji/短码；v0.7.3 起已知系统提示整段不渲染）
         show_model: true         # 页脚里显示模型名（面板标题只放「💭 思考 / 🛠️ 工具执行」摘要）
         context_style: text      # 上下文用量样式：text | bar | both
-        text_profile: "compact"  # CardKit 设备字号：compact/off/mobile_friendly/large；细节行与 Error 块为字面量 x-small，不随档位放大
+        text_profile: "compact"  # CardKit 设备字号：compact/off/mobile_friendly/large；细节行（markdown/plain_text）为字面量 x-small，不随档位放大；Error 块 2026-09-23 真机回退 notation
         theme: "ap_lite"         # 观感主题：neutral（原符号）/ ap_lite（默认，抽象 emoji）/ ap_bubble（AP 泡波风，含人物 emoji，可选）
         panel_color_tags: true   # 默认彩色（官方 Card 2.0 markdown 已确认 <font color>；真机视觉待截图）；不认则设 false 走纯文本降级
         model_aliases: ""        # "真名=显示名, 真名2=显示名2"；也可写 ~/.hermes/model_aliases.json（{"子串": "显示名"}，与 hermes-fry-cards 同源、改文件即生效）。都没有时页脚用 models.dev 真名（如 deepseek-flash ⇒ DeepSeek V4.1 Flash），查不到才格式化
