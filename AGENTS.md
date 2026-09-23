@@ -229,6 +229,12 @@ tests/        见「验证」
     `<font color='grey'>…</font>`，见 `cardview._grey`），`div` 的前缀 `icon` 在**组件级**
     （`div.text` 里没有这个字段）。新增/改元素前先核官方 2.0 字段表，并登记进
     `check_cardview._assert_panel_element_fields()` 的白名单（未登记 tag 直接红）。
+    ⚠️ **v0.7.3 注册项**：`text_weight` 写在 `plain_text` 上会被服务端回 `200621` **整卡拒**
+    （真机探针；不要试图加粗工具名）；十六进制颜色（`#B0B0B0` / `#C8C8C8`）服务端接受但
+    **客户端忽略**，灰色统一写 `color:"grey"`；`text_size` 对 `div.text=lark_md` 与 fenced code
+    block **不生效**（客户端固定字号），工具细节行用 `markdown`/`plain_text` 两宿主，Error/Result
+    块用 `markdown` + 逐行 inline code（`_inline_code_lines`）；已知系统提示（Gateway online/
+    restarting 等，`_LD_SYSTEM_NOTICE_PREFIXES`）整卡不渲染面板/状态头/页脚，真实回合卡不受影响。
     ⚠️ **i18n 边界**：`markdown` element.content 不承载 `i18n_content` ⇒ 工具行动作词/
     状态词固定英文、分区小标题固定中文；完整句子提示仍走 `i18n.t()`。不要把它写成
     “动作词双语”。

@@ -249,7 +249,7 @@ A1（3 处 partial 少 `expanded`、entity `expanded` false→true）、C1（`tu
 * 追加决定：**A1 展开时序保持不变**（用户复确认；理由与代价见
   `docs/audits/v0.7.2/p6-live-verification.md` 的「追加决定」一节）。
 
-## 2026-09-23 · v0.7.3 宿主矩阵探针（真机目视完成：A/B 通过，C 换 markdown 宿主）
+## 2026-09-23 · v0.7.3 宿主矩阵探针（真机目视完成：A/B 通过，C 选定形态③）
 
 * `tests/probe_text_size_hosts.py --send`（生产代码渲染，直接 SDK 发到 `FEISHU_HOME_CHANNEL`）：
   **11 张卡全部 `code=0`**。
@@ -260,9 +260,9 @@ A1（3 处 partial 少 `expanded`、entity `expanded` false→true）、C1（`tu
   - N2 真实回合卡：`om_x100b641fbaa8a8a0c2ecd6c33ddac0e`（本地断言必须有 `✅ 已完成`）。
 * **服务端结论**：三宿主都接受 `x-small`，未出现 `200621`/拒收。
 * **真机目视结论（2026-09-23 用户截图 + 像素测量）**：A `markdown` 23→19px、B `div.text=plain_text` 21→17px ⇒ **确实更小**；C `div.text=lark_md` 26→26px（行距同为 44px） ⇒ **客户端忽略 `text_size`**。
-* **处置（最终）**：C 旧宿主 `div.text=lark_md` 确认客户端忽略 `text_size`；Error/Result 块改用 **`markdown` 宿主**后 x-small 真机确认更小且代码栈可读（候选卡 `om_x100b6407fb0468a0df9a8617dab7f93`，用户结论「红框字号变小了，绿框没变」）⇒ commit `732cf88` 换宿主，不拆元素、标签一起变小；细节行两宿主继续 `x-small`。
+* **处置（最终）**：C 旧宿主 `div.text=lark_md` 与 fenced 代码块都确认客户端固定/忽略字号；按用户选定形态③改用 **`markdown` + 逐行 inline code + `x-small`**（候选卡 `om_x100b6400934d8900c16c222e85b90e7`，用户确认「明显更小且可读」）⇒ 最终冻结提交 `a2290da`，`**Error**` 标签与每行代码一起变小；细节行两宿主继续 `x-small`。
 * 回退规则：若某 host 被拒或不变小 ⇒ **该 host 退回 `notation`**（改代码 + 断言/变异/夹具 + 重跑 P3）；当前代码**没有运行时自动回退**。
-* `send 判定 turn=` 日志复核：`.deploy=8474418`（代码即 `db58dc5`）+ 网关重启（09:49:29 自检通过）后，已确认系统提示 `turn=False`（09:49:22/09:49:39）与中途播报 `turn=False keys=['_interim_send']`（10:28:46）；真实用户消息的 `turn=True` 由发布前终验消息回填。
+* `send 判定 turn=` 日志复核：`.deploy=8474418`（代码即 `db58dc5`）+ 网关重启（09:49:29 自检通过）后，已确认系统提示 `turn=False`（09:49:22/09:49:39）与中途播报 `turn=False keys=['_interim_send']`（10:28:46）；真实用户消息走**原生 CardKit streaming**、不经过 `adapter.send()`，因此不会产生 `send 判定 turn=True` 日志；该分类日志只覆盖非原生/通知/命令通道。真实回合的 `✅ 已完成` 由真机目视确认（见上文 before/after 卡）。
 
 ## 2026-09-23 02:51 · v0.7.3 P3 全量变异（冻结提交 `65c1c5f`；⚠️ 已被 09:16 的 `db58dc5` 重跑取代，见文末）
 
@@ -299,6 +299,7 @@ A1（3 处 partial 少 `expanded`、entity `expanded` false→true）、C1（`tu
 * 候选 A `markdown`+notation vs 候选 B `markdown`+x-small：用户截图确认 B 代码块与 `**Error**` 标签一起变小、11–19 行栈可读；旧 `div.text=lark_md`+x-small 与 notation 同大。
 * 候选卡 `om_x100b6407fb0468a0df9a8617dab7f93`（2026-09-23 10:37 用户回话）。
 * 代码 commit `732cf88`：`_tool_output_div` 改返回 `markdown` 组件（组件级 warning 图标、fenced content、`text_size=x-small`）；断言/变异同步；P3 六分片在该提交重跑。
+* ⚠️ 该中间形态已被取代：真机复核发现飞书 fenced 代码块字号固定，最终改为 `markdown` + **逐行 inline code** + `x-small`（形态③，冻结提交 `a2290da`），见本文件「Error 形态③」一节。
 
 ## 2026-09-23 · v0.7.3 已知问题登记（v0.7.4）
 
@@ -306,3 +307,12 @@ A1（3 处 partial 少 `expanded`、entity `expanded` false→true）、C1（`tu
   用户消息 `om_x100b6407c4b7b4a0b18b539eee9f04a`（10:25:43）后卡片 1 `om_x100b6407c47450a4c2486c55ca4e9ff`（10:25:48）面板展开空白，Working 卡 `om_x100b6407db3f98b4c1198e72899932d`（10:28:47），最终答案卡 `om_x100b6407d5fc2ca8c125c5be7c07dd3`（10:30:11）；日志有 `卡片正文世代漂移` 与 `finalize 分叉`。
 * 初步判定：原生流回退/多回合交错时最终整卡拿到的 panel 快照被后续回合顶掉，空面板仍作为状态色载体保留；与本批 x-small/系统提示改动无直接因果。
 * 处置：登记 v0.7.4，本批不修、不阻塞发布；详情见 `docs/audits/v0.7.3/p4-long-task-blank-panel.md`。
+
+## 2026-09-23 · v0.7.3 Error 形态③（逐行 inline code）
+
+* 真机事实：`div.text=lark_md` 与 markdown fenced code 两种宿主的 `text_size` 对代码块都不生效；
+* 用户选定候选 ③：`markdown` + 每行一个 inline code span + `x-small`；候选卡 `om_x100b6400934d8900c16c222e85b90e7`（用户确认「② 明显更小且可读」）；
+* 代码链：`4350ace` 实现 → `9a1c0be` 注释/描述对齐 → `b9c01e5`/`821a17d`/`a2290da` 审计收口；最终冻结提交 `a2290da`、P3 六分片在该提交重跑；
+* 证据：`~/.larkdeck-scratch/v0.7.3/evidence-a2290da/`（6 log + 6 seed + 6 inventory + `sha256.txt`）；v2 runner 逐片校验 rc / 选中条数 / 红名集合 / 声明门禁 ∈ 断言红 / 对照绿灯 / seed verdict+at，全过才 merge，且不带旧 fa `--allow-at`；
+* **531/531 red-assert**、12/12 对照绿、无 💥/🟢/❓/对照变红/归属漂移；`full_audit_at=a2290da`、`full_audit_tree=869a68f64fa4e2b2d6572a751767afc926da113b`、`tree_dirty=false`、`n_inh=0`、墙钟 **1753.4s**（14:25:57→14:55:11）；`--preflight 543/543`、`-k V073` 32/32 red；
+* P3 事后三路对抗审计：反假绿（deepseek-flash）发现逐行契约/icon token 互换/margin/emoji 四个假绿，已用多行硬字面量 + V073-1d..1k 关闭；文档一致性（glm-5.3-flash）发现 README 版本状态、CHANGELOG/release notes 缺门禁与 inline code 措辞、verify-log `turn=True` 口径，已修；证据链（qwen3.8-flash）发现固定名覆盖、merge 先盖章后校验、`--allow-at` 自我扩白、归属漂移等，本轮用 v2 runner 加固；残余风险（账本自身被排除在漂移白名单外）由发布前人工 `git diff fa..HEAD -- tests/mutation-verdicts.json` 复核。

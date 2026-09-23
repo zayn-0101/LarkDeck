@@ -4,6 +4,8 @@
 > 老规矩：**先出计划 → ≥3 路子代理对抗审计 → 收敛后才动手**；每阶段结束再过审计；
 > 用户真机确认后才发布。
 
+> ⚠️ **终态注记（2026-09-23，冻结提交 `a2290da`）**：本文件中「Error 块回退 `notation`」「换 `markdown` 宿主 + fenced code」都是中间态，**已被用户选定的形态③取代**：`markdown` + 逐行 inline code + `x-small` + 组件级 icon，不拆元素；P3 六分片已在 `a2290da` 重跑并重新盖章（`531/531` red-assert、12 对照、`tree_dirty=false`、`n_inh=0`）。详见 §6.16/§6.17、`docs/audits/v0.7.3/p4-error-inline-code.md`、`p3d-inline-code.md`。
+
 ## 0. 用户 2026-09-22 拍板（原话 + 探针证据）
 
 | 诉求 | 结论 | 证据 |
@@ -25,7 +27,7 @@
 | `core/adapter.py` | **Design D**（§6.12）：`_ld_footer` 纯格式器（显式 status，缺省 fail-closed）；`send()` 默认回合 + `_ld_is_system_notice` 负清单（interim/已知系统提示 ⇒ 非回合）；预览 `status_locked`；非回合 panel/header/footer 全关；帧入口显式注入状态（structured `state["status"]` + legacy `frame_status`，`default_status` 只给 DEGRADE 收尾兜底）；非回合卡 `turn_card=False` 且 `/stop` 跳过 | 每个调用点逐一给结论（含 4039/SEQ3/R3-7/Y20）；判定打限流日志（P4 复核）；未登记前缀的新系统提示漏网要补清单并重跑 P3 |
 | `core/cards.py` | 注释口径：`x-small` 从「不在文档、别赌」改为「markdown 真机已验 + 其它宿主见宿主矩阵；未过退回 notation」 | 不改 `text_profile` 档位表 |
 | `tests/test_units.py` | 三条新用例（名字见 §6.10.6）；**并**修 §6.10.6 全表旧调用点（1533/1537…5306/5312、6860/6901、10914/10918 等） | **只新增用例名**；旧用例只改函数体，不许改名/删名；失败必须 red-assert 不 crash |
-| `tests/mutate_check.py` | 新增 24 条 V073（§6.12.3 + §6.14 + §6.15）；同步重写 8 条旧锚点（G2-3/V4-7/V4-10/V4-17B/V4-57/SEQ3/R3-7/Y20）；`_is_full_run` 加 `if getattr(args,"shard",""): return False`；45s→90s 注释 | 每条 `-k` 完整模式实红；post-change 锚点唯一性 grep = 1 |
+| `tests/mutate_check.py` | 新增 24 条 V073（§6.12.3 + §6.14 + §6.15；终态 32 条，见 §6.17）；同步重写 8 条旧锚点（G2-3/V4-7/V4-10/V4-17B/V4-57/SEQ3/R3-7/Y20）；`_is_full_run` 加 `if getattr(args,"shard",""): return False`；45s→90s 注释 | 每条 `-k` 完整模式实红；post-change 锚点唯一性 grep = 1 |
 | `tests/check_cardview.py` | 加 Error 块夹具 + `detail text_size=="x-small"` / `error text_size=="notation"` 断言 + `PANEL_TEXT_SIZE=="notation"` | 字段白名单分档不变（`div.icon` 可带 size、`markdown.icon` 不可） |
 | `tests/write_golden_trace.py` | **不改场景**（§6.10.8：扩 Error 涟漪大、收益低） | Error 由单测 + check_cardview 双覆盖 |
 | `tests/golden_cardkit_trace.json` | 重生成：实测 **8 叶** detail `notation→x-small`（以实现后逐叶解释为准）；**item2 = 0 叶**（footer 叶 `✅ 已完成 · Test Model` 不变） | `--check` 必先一致；item2 出 diff 即判分类器误伤真回合 |
@@ -107,7 +109,7 @@
 | --- | --- | --- | --- |
 | **P0 规划** | 本文件冻结（范围 = §1 + §4 + 旧登记项处置 §7；含用户逐字确认 §4.1） | 文件入库 + 用户无异议 + 三路全量（§6.7-6.9）+ 两轮快速复核（§6.11/§6.13）逐条处置 + **Design D 沙箱全绿（§6.12.5）** | **≥3 路**×3 轮（技术可行性 / 用户可见效果与证据 / 流程与诚实性；第二轮 A2/B2/C2、第三轮 A3/B3/C3） |
 | **P1 实现** | 按 §6.12 Design D 落地：cardview 三处 `x-small`；adapter 默认回合 + 系统提示负清单 + 显式 status；6 处注释口径（§6.7.1）；按 scratch 三脚本执行并人审 diff | `py_compile`（venv）全绿；`run_fast --full` 8/8；`--preflight` 535/535；调用点表（含 4039/SEQ3/R3-7/Y20）逐条结论 | **≥3 路**（判别力 / 协议不破坏 / 文档诚实） |
-| **P2 断言与变异** | 8 条 v0.7.3 硬字面量用例 + 24 条 V073 变异（`-k` 全模式实红）+ 8 条旧锚点重写 + `check_cardview` Error 夹具/常量断言 + 黄金夹具重生成（8 叶 + item2 0 叶）+ 宿主×主题探针（切客户端主题复跑，§6.10.10 修正） | 每条新变异**实红且红在 `test_units`**；夹具 diff 逐叶解释；宿主矩阵逐张 `code` + 用户二值判读 | **≥3 路**（变异判别力 / 夹具覆盖 / 无自证循环） |
+| **P2 断言与变异** | 8 条 v0.7.3 硬字面量用例 + 24 条 V073 变异（`-k` 全模式实红；终态 32 条，见 §6.17）+ 8 条旧锚点重写 + `check_cardview` Error 夹具/常量断言 + 黄金夹具重生成（8 叶 + item2 0 叶）+ 宿主×主题探针（切客户端主题复跑，§6.10.10 修正） | 每条新变异**实红且红在 `test_units`**；夹具 diff 逐叶解释；宿主矩阵逐张 `code` + 用户二值判读 | **≥3 路**（变异判别力 / 夹具覆盖 / 无自证循环） |
 | **P3 全量重验** | 6 分片完整模式（独立账本、`-u` 不缓冲、起跑前清陈旧证据 + 校验工作树干净） | 每片坏 0、合并 `✅ N 条通过`（**N = 实际 `len(MUTATIONS)`**）、`full_audit_at` = 被测提交短码且其 tree == `full_audit_tree`、指纹路径自 fa 起未被改（允许其后只提交 docs/账本/新增探针）、`n_inh == 0`、`--ledger-status` N/N 待跑 0、**实测墙钟写回本文件** | **≥3 路**（证据链 / 时间与隔离 / 反假绿） |
 | **P4 部署与真机探针** | `.deploy` 指被测提交 + 网关重启（有界等「启动自检通过」）+ 探针卡 4 项：细节行改前/改后、Error 块可读性、系统提示卡（无 ✅/无空 footer 行）、真实回合收尾卡（✅ 一字不动）；另 grep `turn=…` 日志复核分类 | 自检通过；用户目视回话；`turn` 日志证据、探针卡 id 写进 `docs/verify-log.md` | **≥3 路**（探针可判读 / 两侧覆盖 / 无误导） |
 | **P5 发布** | 用户终验后 push + tag **v0.7.3** + `gh release` + `.deploy` 指 tag + 网关重启 | 发布脚本 `--check` 全绿后 `--go`；tag/`.deploy`/自检三处留痕 | **≥3 路**（发布完整性 / 坐标一致 / 文档与证据一致） |
@@ -362,7 +364,7 @@
 > ⚠️ **第四轮修订**：以上第二轮结论里的 Design C 又被 A3/B3/C3 否掉（命令标记误杀真回合、
 > 默认非回合让非 native 真终稿丢 ✅）。**最终定版 = §6.12 Design D**，其沙箱证据见 §6.12.5
 > （历史第二轮沙箱：run_fast 8/8、test_units 294/294、preflight 523/523、12 条 V073 全 red；
-> 最终数字见 §6.15：test_units 298/298、preflight 535/535、24 条 V073 全 red）。
+> 终态数字见 §6.17：test_units 299/299、preflight 543/543、V073 系列 32 条全 red）。
 > ⚠️ **修订（2026-09-22 深夜）**：A/B/C 全量报告回来后又跑了第二轮只读复核（A2 `68f8f2f1` /
 > B2 `4ec4599b` / C2 `b72bf8d0`）。三路一致指出 **Design B 的 `send()` 分型不可实现**
 > （`notify` 不是回合专属、存在无标记真终稿、命令回复也带 `notify`）。设计随后改版为 Design C，
@@ -658,7 +660,7 @@ CardKit **seed 建卡**不受影响（结构建卡定死、之后还要写元素
 #### 6.12.5 沙箱验证（定版 + D 收口证据）
 
 干净 clone + 脚本：`run_fast --full` **8/8**、`test_units` **≥294/294**、
-`--preflight` **535/535**、`-k V073` **24 条全 red-assert（test_units）**、8 条重写锚点 `-k` 全 red、
+`--preflight` **535/535**（终态 543/543，见 §6.17）、`-k V073` **24 条全 red-assert（test_units；终态 32 条）**、8 条重写锚点 `-k` 全 red、
 golden 顶层 8 叶变化且 footer 叶不变；新增 `/stop` 行为断言与 structured/legacy 收尾状态注入用例。
 （D1/D2/D3 收口后的精确数字以 §6.15 为准，P3 全量按最终 523 条跑。）
 
@@ -723,7 +725,7 @@ golden 顶层 8 叶变化且 footer 叶不变；新增 `/stop` 行为断言与 s
 
 * §6.14 收口时 `MUTATIONS` = 499 + 21 = **520**；随后 P1 第二轮审计（A 路）再补 3 条 ⇒ **523**；
   对照 12 ⇒ preflight **535/535**；账本/merge **523/523**（§6.15 实测）；
-* 24 条 V073 = 1a/1b/1c + 2a…2f,2i,2j,2o…2x + **2y/2z/2aa**；全部 `test_units` red-assert；
+* 24 条 V073 = 1a/1b/1c + 2a…2f,2i,2j,2o…2x + **2y/2z/2aa**；全部 `test_units` red-assert（终态 32 条，见 §6.17）；
 * golden 顶层 8 叶变化（9 处 detail 元素）+ footer 叶不变；P3 必须用最终 523 条重跑 6 分片。
 
 ---
@@ -739,7 +741,7 @@ golden 顶层 8 叶变化且 footer 叶不变；新增 `/stop` 行为断言与 s
 * B 路高：`docs/verify-log.md` 补齐宿主矩阵证据（11 张卡全 `code=0`；真机目视待用户回话），
   README/plugin.yaml/cards 注释去除「未过宿主自动退回 notation」的暗示（写明无运行时自动回退）；
 * C 路：release 脚本 `.deploy` dirty 改为 `--check` 也硬失败，补 CHANGELOG 收口断言；
-  本计划旧计数在 commit D 收口到 **523 变异 / 535 锚点 / 24 条 V073**。
+  本计划旧计数在 commit D 收口到 **523 变异 / 535 锚点 / 24 条 V073**；发布终态为 **531 变异 / 543 锚点 / 32 条 V073**（§6.17）。
 
 **P3 六分片全量（冻结提交 `db58dc5`；`65c1c5f` 为回退前一轮）**
 
@@ -756,28 +758,28 @@ golden 顶层 8 叶变化且 footer 叶不变；新增 `/stop` 行为断言与 s
 
 ---
 
-### 6.16 P4 真机验证与 Error 块宿主切换（markdown + x-small）
+### 6.16 P4 真机验证与 Error 块形态③（markdown + 逐行 inline code + x-small）
 
 * 系统提示对照（用户截图确认）：1/3 旧版卡（`6fd68f3` 提取代码）有状态头+面板+页脚 `✅ 已完成`；2/3 新版系统提示卡无状态头/面板/页脚/✅；3/3 新版真实回合卡保留 `✅ 已完成`。目标 ② 成立。
 * x-small 宿主矩阵（用户目视 + 截图行高测量）：A `markdown` 23→19px、B `div.text=plain_text` 21→17px ⇒ 确实更小；C `div.text=lark_md` 26→26px（行距同为 44px） ⇒ 客户端忽略 `text_size`。
-* 处置（最终）：`div.text=lark_md` 宿主确认客户端忽略 `text_size`；改用 **`markdown` 宿主**后
-  x-small 真机确认更小且代码栈可读（候选卡 `om_x100b6407fb0468a0df9a8617dab7f93`，用户截图
-  「红框变小、绿框没变」）⇒ Error/Result 块换宿主为 `markdown` + `x-small`（commit `732cf88`），
-  不拆元素、标签与代码一起变小；细节行两宿主继续 `x-small`。
+* 处置（最终）：`div.text=lark_md` 与 fenced 代码块都确认客户端固定/忽略字号；按用户截图
+  选定 **形态③ = `markdown` + 逐行 inline code + `x-small`**（候选卡 `om_x100b6400934d8900c16c222e85b90e7`，用户确认「明显更小且可读」）⇒ commit `a2290da`，
+  `**Error**` 标签与每行代码一起变小，长行可折行、不再依赖 fenced 代码块。
 * 证据：`docs/audits/v0.7.3/p4-error-host-switch.md`、`docs/audits/v0.7.3/p4-real-device-fallback.md`
   （历史回退轮）、`docs/verify-log.md` 的 2026-09-23 宿主矩阵/P4 条目。
 
 ---
 
-### 6.17 Error 宿主切换后的 P3 重验 + 长任务空白面板登记
+### 6.17 Error 形态③ 的 P3 重验 + 长任务空白面板登记
 
-**P3 六分片（冻结提交 `10914b6`，Error 块换 markdown 宿主）**
+**P3 六分片（冻结提交 `a2290da`，Error 块形态③ inline code）**
 
-* 6 分片并行、独立账本/日志、坏 0；合并 `tools/merge_ledger4.py --write`：
-  **523/523 red-assert**、`full_audit_at=10914b6`、`full_audit_tree=eae2f0809e627cb1155b03b3114a970858ad79e6`
-  （== `10914b6^{tree}`）、`tree_dirty=false`、继承 0；
-* **实测墙钟 1228.5s**（11:18:20→11:38:48）；`--preflight 535/535`；`-k V073` 24/24 red；
-* 证据：`~/.larkdeck-scratch/v0.7.3/full-run-evidence.json`、`docs/audits/v0.7.3/p3c-host-switch.md`。
+* 6 分片并行、独立账本/日志、坏 0；v2 runner 先验片后合并、不带旧 fa `--allow-at`：
+  **531/531 red-assert**、`full_audit_at=a2290da`、`full_audit_tree=869a68f64fa4e2b2d6572a751767afc926da113b`
+  （== `a2290da^{tree}`）、`tree_dirty=false`、继承 0；
+* **实测墙钟 1753.4s**（14:25:57→14:55:11）；`--preflight 543/543`；`-k V073` 32/32 red；
+* 证据：`~/.larkdeck-scratch/v0.7.3/evidence-a2290da/`（6 log + 6 seed + 6 inventory + sha256）、
+  `full-run-evidence.json`、`docs/audits/v0.7.3/p3d-inline-code.md`。
 
 **长任务/多卡时中间卡执行详情面板空白（登记 v0.7.4）**
 
