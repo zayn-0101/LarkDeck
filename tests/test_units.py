@@ -14012,7 +14012,11 @@ def test_v073_inline_code_lines_split_per_line() -> None:
     result = cv._tool_output_div("ok", "Result", "line")
     assert result["icon"] == {"tag": "standard_icon", "token": "codeblock_outlined",
                               "color": "grey"}, result
-    assert cv._tool_output_div("boom", "Error", "emoji").get("icon") is None
+    emoji_out = cv._tool_output_div("l1\nl2", "Error", "emoji")
+    assert emoji_out.get("icon") is None, emoji_out
+    # emoji 分支自己的逐行/缩进契约：将来若按 icon_mode 分叉，line 路径的断言帮不了它。
+    assert emoji_out.get("content") == "**Error**\n`l1`\n`l2`", emoji_out
+    assert emoji_out.get("margin") == "0px 0px 0px 22px", emoji_out
     hint_line = cv.panel_elements(cv.PanelView(title="t", collapsed_hint="还有 12 步"))[0]
     hint_emoji = cv.panel_elements(cv.PanelView(
         title="t", collapsed_hint="还有 12 步", tool_icon_mode="emoji"))[0]

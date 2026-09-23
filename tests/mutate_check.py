@@ -2871,6 +2871,13 @@ MUTATIONS = [
      '        "content": f"**{label}**\\n{_inline_code_lines(block)}",\n'
      '    }',
      'test_units'),
+    ('V073-1j-emoji 分支独立退化（不逐行/丢缩进，line 路径不受影响）', 'core/cardview.py',
+     '    if str(icon_mode or "line").strip().lower() != "emoji":',
+     '    if str(icon_mode or "line").strip().lower() == "emoji":  # V073-1j mutated\n'
+     '        node["content"] = f"**{label}**\\n`{block}`"\n'
+     '        node.pop("margin", None)\n'
+     '    if str(icon_mode or "line").strip().lower() != "emoji":',
+     'test_units'),
     ('V073-2a-页脚把 panel 快照兜底加回来（turn 侧偷状态）', 'core/adapter.py',
      '            ctx_snap = _context.snapshot() or {}\n'
      '            # 纯格式器：**不读 panel 快照**（Design D）。回合状态由调用方显式传入；\n'
