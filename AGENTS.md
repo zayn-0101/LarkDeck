@@ -234,11 +234,14 @@ tests/        见「验证」
     **客户端忽略**，灰色统一写 `color:"grey"`；`text_size` 对 `div.text=lark_md` 与 fenced code
     block **不生效**（客户端固定字号），工具细节行用 `markdown`/`plain_text` 两宿主，Error/Result
     块用 `markdown` + 逐行 inline code（`_inline_code_lines`）；已知系统提示（Gateway online/
-    restarting 等，`_LD_SYSTEM_NOTICE_PREFIXES`）整卡不渲染面板/状态头/页脚，真实回合卡不受影响。
-    ⚠️ **2026-09-23 真机补充（v0.7.4 待修）**：`notify=True` 是上游**所有最终回复**的通用标记，
-    真实模型 non-native 终稿也带它 ⇒ 不能据此判非回合；Hermes 本地化命令回复（`/reset`、`/new`、
-    `/resume`、`/reload-*`、`/stop`、`/reasoning` 等）必须以**内容前缀**登记，否则这些卡会重新
-    出现 `✅ 已完成`。清单与回归要求见 `docs/plan-v0.7.4.md`。
+    restarting 等，`_LD_SYSTEM_NOTICE_PREFIXES`/`_LD_SYSTEM_NOTICE_LINES`）整卡不渲染面板/
+    状态头/页脚，真实回合卡不受影响。**v0.7.4** 起还覆盖 Hermes 本地化命令回复（`/reset`、`/new`、
+    `/reload-*`、`/stop`、`/reasoning`、title/footer/model/approve-deny）与 `/larkdeck` 自诊卡；
+    纯词模板（如「没有可停止的活跃任务。」）只允许**整段完全相等**。负清单仍有漏网：未登记命令
+    回执可能带 `✅ 已完成`，发现即登记并重跑全量。
+    ⚠️ **notify 边界**：`notify=True` 是上游**所有最终回复**的通用标记，真实模型 non-native 终稿
+    也带它 ⇒ 不能据此判非回合；命令回复只能按内容 header/整段相等登记，误杀（真实回答首行命中
+    已登记 header）是**终态不可逆**的残余风险，靠 `send 判定 turn=` 日志发现并重跑全量收紧。
     ⚠️ **i18n 边界**：`markdown` element.content 不承载 `i18n_content` ⇒ 工具行动作词/
     状态词固定英文、分区小标题固定中文；完整句子提示仍走 `i18n.t()`。不要把它写成
     “动作词双语”。

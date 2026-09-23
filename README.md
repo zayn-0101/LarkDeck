@@ -417,7 +417,10 @@ LarkDeckFeishuAdapter → LarkDeckMixin → FeishuAdapter → BasePlatformAdapte
 
 - **更新流的 fenced 代码块（``` 开头）故意不登记为系统提示**：真实答案也常以代码块开头，按内容前缀
   会误杀真终稿；若 P4 真机日志显示它在飞书成为可见噪声，再单独设计（metadata 或专用前缀）。
-- **系统提示判定 = 默认回合 + 已知前缀负清单**（v0.7.3 Design D）：只有来源可枚举的已知提示（Gateway online/restarting、Session database、Hermes update、cron/后台任务、Goal 等，见 `core/adapter.py::_LD_SYSTEM_NOTICE_PREFIXES`）整卡不出面板/状态头/页脚；**未登记的新系统提示仍按回合卡渲染出 `✅ 已完成`**。发布前用 `send 判定 turn=` 日志复核**非原生/通知/命令车道**（真实回合走原生 CardKit streaming、不经过 `adapter.send()`，不会产生该日志；它的 `✅ 已完成` 由真机目视确认）；发现漏网先登记前缀再重跑全量变异。命令/控制回复（`/larkdeck`、澄清/审批提示）带 `notify` ⇒ **有意**保留状态词。
+- **系统提示判定 = 默认回合 + 已知前缀负清单**（v0.7.3 Design D）：只有来源可枚举的已知提示（Gateway online/restarting、Session database、Hermes update、cron/后台任务、Goal 等，见 `core/adapter.py::_LD_SYSTEM_NOTICE_PREFIXES`）整卡不出面板/状态头/页脚；**未登记的新系统提示仍按回合卡渲染出 `✅ 已完成`**。发布前用 `send 判定 turn=` 日志复核**非原生/通知/命令车道**（真实回合走原生 CardKit streaming、不经过 `adapter.send()`，不会产生该日志；它的 `✅ 已完成` 由真机目视确认）；发现漏网先登记前缀再重跑全量变异。**v0.7.4 起**：Hermes 本地化系统/命令回复（`/reset`、`/new`、`/reload-*`、`/stop`、
+  `/reasoning`、title/footer/model/approve-deny 等）与 `/larkdeck` 自诊卡命中登记 header 时
+  整卡静默；`notify=True` 不能单独判非回合（真实 non-native 终稿也带它）。**未登记的命令回执
+  仍可能带 `✅ 已完成`**，见下方已知限制。
 - **长任务/多卡时中间卡执行详情面板可能空白**（v0.7.3 登记 v0.7.4）：原生流回退/多回合交错时，最终整卡可能拿到已被后续回合顶掉的 panel 快照，而空面板仍作为状态色载体保留。已登记专项（复现 + 「无过程数据时沿用本回合最后一次非空面板或不出面板」二选一），本批不修。
 - **Hermes 本地化系统/命令回复仍可能带 `✅ 已完成`（v0.7.4 修复）**：`/reset`、`/new` 等命令的
   最终回复在上游同样带 `notify=True`，v0.7.3 的已知前缀清单未覆盖这些本地化命令头；

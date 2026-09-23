@@ -2883,6 +2883,50 @@ MUTATIONS = [
      '    __import__("time").sleep(0.02)  # V073-1k mutated：墙钟延迟回归\n'
      '    if args is None or args == {}:\n        return ""',
      'test_units'),
+    # ---- v0.7.4：Hermes 本地化命令回复静默（真实回合 ✅ 必须保留） -------------
+    ('V074-2ab-删掉 reset 命令前缀（/reset 又出 ✅）', 'core/adapter.py',
+     '    "✨ 会话已重置", "✨ 新会话已启动", "✨ Session reset", "✨ New session started",',
+     '    "✨ 新会话已启动", "✨ Session reset", "✨ New session started",',
+     'test_units'),
+    ('V074-2ac-notify=True 一律判非回合（真实回合丢 ✅）', 'core/adapter.py',
+     '        if md.get("_interim_send") is True:\n'
+     '            return False\n'
+     '        return not _ld_is_system_notice(content)',
+     '        if md.get("_interim_send") is True:\n'
+     '            return False\n'
+     '        return not bool(md.get("notify"))  # V074-2ac mutated',
+     'test_units'),
+    ('V074-2ad-前缀匹配从 startswith 放宽成 in（正文内嵌也静默）', 'core/adapter.py',
+     '    return text.startswith(tuple(p.replace("\\ufe0f", "") for p in _LD_SYSTEM_NOTICE_PREFIXES))',
+     '    return any(p.replace("\\ufe0f", "") in text for p in _LD_SYSTEM_NOTICE_PREFIXES)  # V074-2ad mutated',
+     'test_units'),
+    ('V074-2ae-删掉整段相等表（纯词命令回复又出 ✅）', 'core/adapter.py',
+     '    lines_norm = tuple(p.replace("\\ufe0f", "") for p in _LD_SYSTEM_NOTICE_LINES)\n'
+     '    if text.strip() in lines_norm:\n'
+     '        return True',
+     '    pass  # V074-2ae mutated：整段相等表被删',
+     'test_units'),
+    ('V074-2af-删掉 approve/deny 命令前缀（命令回执又出 ✅）', 'core/adapter.py',
+     '    "✅ 命令已批准", "✅ Command approved",\n'
+     '    "❌ 命令已拒绝", "❌ Command denied",',
+     '',
+     'test_units'),
+    ('V074-2ag-整段相等放宽成 startswith（同词开头真实回答被静默）', 'core/adapter.py',
+     '    if text.strip() in lines_norm:',
+     '    if text.strip().startswith(lines_norm):  # V074-2ag mutated',
+     'test_units'),
+    ('V074-2ah-终局空面板仍渲染空 shell（长任务空白回归）', 'core/adapter.py',
+     '            _has_process = bool(snap.get("tools") or snap.get("rounds")\n'
+     '                                or str(snap.get("reasoning") or "").strip())\n'
+     '            if not _has_process and report_empty:\n'
+     '                _log_empty_panel_once(chat_id)\n'
+     '                return None',
+     '            pass  # V074-2ah mutated：空 shell 又渲染',
+     'test_units'),
+    ('V074-2ai-终局非空面板也被吞（过度修正丢过程内容）', 'core/adapter.py',
+     '            if not _has_process and report_empty:',
+     '            if report_empty:  # V074-2ai mutated：非空也吞',
+     'test_units'),
     ('V073-2a-页脚把 panel 快照兜底加回来（turn 侧偷状态）', 'core/adapter.py',
      '            ctx_snap = _context.snapshot() or {}\n'
      '            # 纯格式器：**不读 panel 快照**（Design D）。回合状态由调用方显式传入；\n'
@@ -3031,9 +3075,9 @@ MUTATIONS = [
      'test_units'),
     ('V073-2x-系统提示匹配不剥 VS16（♻️ 漏网）', 'core/adapter.py',
      '    text = str(content or "").lstrip().replace("\\ufe0f", "")\n'
-     '    return text.startswith(tuple(p.replace("\\ufe0f", "") for p in _LD_SYSTEM_NOTICE_PREFIXES))',
+     '    lines_norm = tuple(p.replace("\\ufe0f", "") for p in _LD_SYSTEM_NOTICE_LINES)',
      '    text = str(content or "").lstrip()\n'
-     '    return text.startswith(tuple(p.replace("\\ufe0f", "") for p in _LD_SYSTEM_NOTICE_PREFIXES))',
+     '    lines_norm = tuple(p.replace("\\ufe0f", "") for p in _LD_SYSTEM_NOTICE_LINES)',
      'test_units'),
     ('V073-2y-结构化 footer 元素写不注入本帧 status（丢 ✅）', 'core/adapter.py',
      '        footer_text = self._ld_frame_footer({**state, "status": status}) or " "',

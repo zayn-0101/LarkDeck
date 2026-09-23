@@ -14178,6 +14178,111 @@ def test_v073_non_turn_send_has_no_footer_element() -> None:
         adapter._apply_metrics_config()
 
 
+def test_v074_command_reply_notices_are_silent_but_real_turns_keep_status() -> None:
+    """v0.7.4：Hermes 本地化命令回复（/reset、/new、reload-* 等）整卡静默；
+    真实 non-native 终稿（同样带 notify=True）必须保留 ✅ 已完成。"""
+    defaults = dict(adapter._DEFAULTS)
+    panel.reset()
+    context.reset()
+    try:
+        adapter.configure(visual_engine="structured", unified_panel=True, footer=True,
+                          show_model=True, model_aliases="test-model=Test Model")
+        prefixes = (
+            "✨ 会话已重置", "✨ 新会话已启动", "✨ Session reset", "✨ New session started",
+            "🔄 **技能已重新加载**", "🔄 **Skills Reloaded**",
+            "❌ 技能重新加载失败", "❌ Skills reload failed",
+            "🔄 **MCP 服务器已重新加载**", "🔄 **MCP Servers Reloaded**",
+            "🟡 已取消 /reload-mcp", "🟡 /reload-mcp cancelled",
+            "⚠️ **确认 /reload-mcp**", "⚠️ **Confirm /reload-mcp**",
+            "❌ MCP 重新加载失败", "❌ MCP reload failed",
+            "📋 **已命名会话**", "📋 **Named Sessions**", "⚠️ /resume blocked",
+            "🧠 **推理设置**", "🧠 **Reasoning Settings**",
+            "🧠 ✓ 推理强度已设置", "🧠 ✓ Reasoning effort set to",
+            "🧠 ✓ 已清除本会话的推理覆盖", "🧠 ✓ Session reasoning override cleared",
+            "⚡ 已停止。", "⚡ Stopped.",
+            "♻ 正在重启网关", "♻ Restarting gateway",
+            "🃏 larkdeck v", "🃏 LarkDeck v",
+            "🧠 ✓ 推理显示：", "🧠 ✓ Reasoning display:",
+            "⚠️ 未知参数：`", "⚠️ Unknown argument: `",
+            "⚠️ 不支持 `/reasoning", "⚠️ `/reasoning reset --global`",
+            "⏳ 正在等待", "⏳ Draining", "⏳ 网关重启", "⏳ Gateway restart",
+            "✏️ 已设置会话标题", "✏️ Session title set",
+            "📎 运行时页脚：", "📎 Runtime footer:",
+            "已切换模型为 `", "Model switched to `",
+            "当前：`", "Current: `",
+            "✅ 命令已批准", "✅ Command approved",
+            "❌ 命令已拒绝", "❌ Command denied",
+        )
+        lines_only = (
+            "会话数据库不可用。", "Session database not available.",
+            "没有可停止的活跃任务。", "No active task to stop.",
+        )
+        for pfx in prefixes:
+            assert adapter._ld_is_system_notice(pfx + " 其余命令字面量"), pfx
+        for line in lines_only:
+            assert adapter._ld_is_system_notice(line), line
+            assert not adapter._ld_is_system_notice(line + " 这是模型继续写的正文"), line
+        raw = _make()
+        for pfx in prefixes:
+            assert raw._ld_send_is_turn(
+                "oc_v074", pfx + "（命令回复其余字面量）", {"notify": True}, False) is False, pfx
+        assert raw._ld_send_is_turn("oc_v074", "普通回答", {"notify": True}, False) is True
+        assert raw._ld_send_is_turn(
+            "oc_v074", "普通回答\n" + prefixes[0], {"notify": True}, False) is True
+
+        raw2 = _make()
+        res2 = _run(raw2.send("oc_v074", prefixes[0] + "！重新开始。",
+                              metadata={"notify": True}))
+        p2 = json.loads(raw2.calls[0][2])
+        assert [e.get("element_id") for e in p2["body"]["elements"]] == ["answer"], p2
+        blob2 = json.dumps(p2, ensure_ascii=False)
+        assert "✅ 已完成" not in blob2 and "footer" not in blob2, blob2
+        assert "collapsible_panel" not in blob2 and "header" not in p2, p2
+        entry2 = raw2._ld_known(getattr(res2, "message_id", "") or "") or {}
+        assert entry2.get("turn_card") is False, entry2
+
+        raw3 = _make()
+        _run(raw3.send("oc_v074", "真实终稿正文", metadata={"notify": True}))
+        p3 = json.loads(raw3.calls[0][2])
+        foot3 = [e for e in p3["body"]["elements"] if e.get("element_id") == "footer"]
+        assert foot3 and "✅ 已完成" in json.dumps(foot3, ensure_ascii=False), p3
+    finally:
+        panel.reset()
+        context.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
+def test_v074_finalize_empty_panel_is_omitted_not_blank() -> None:
+    """v0.7.4 P1：终局帧快照无过程数据时，不许再渲染「展开空白」的空面板 shell；
+    非空面板必须照常渲染（防过度修正）。"""
+    defaults = dict(adapter._DEFAULTS)
+    panel.reset()
+    try:
+        adapter.configure(visual_engine="structured", unified_panel=True, footer=True)
+        panel.begin_turn("s-v074-empty", "t-v074-empty")
+        panel.record_turn_end("s-v074-empty", "t-v074-empty", completed=True)
+        panel.bind_chat_session("oc_v074_empty", "s-v074-empty")
+        snap = panel.snapshot("oc_v074_empty")
+        assert snap and snap.get("status") and not snap.get("tools"), snap
+        assert adapter.LarkDeckMixin._ld_panel("oc_v074_empty", report_empty=True) is None
+
+        panel.begin_turn("s-v074-full", "t-v074-full")
+        panel.record_tool_started("s-v074-full", "t-v074-full", "terminal",
+                                  args={"command": "ls"})
+        panel.bind_chat_session("oc_v074_full", "s-v074-full")
+        node = adapter.LarkDeckMixin._ld_panel("oc_v074_full", report_empty=True)
+        assert node is not None, "非空面板被误吞"
+        blob = json.dumps(node, ensure_ascii=False)
+        assert "ls" in blob and node.get("elements"), node
+    finally:
+        panel.reset()
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(defaults)
+        adapter._apply_metrics_config()
+
+
 def test_v073_edit_message_finalize_keeps_status_and_preview_never_completes() -> None:
     """v0.7.3 Design D 生产路径：edit_message(finalize=True) 在 panel 快照为空/processing 的
     竞态下仍要有状态词；edit_message(finalize=False) 面对陈旧 completed 快照也不许提前 ✅。"""

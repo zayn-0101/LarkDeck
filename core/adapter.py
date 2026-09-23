@@ -1951,6 +1951,43 @@ _LD_SYSTEM_NOTICE_PREFIXES: Tuple[str, ...] = (
     # gateway/run_busy.py:600-631 的「忙碌提示」：没有 _interim_send 标记，靠字面前缀。
     "⏩ Steered", "↪ Redirected", "⏳ Subagent working",
     "⏳ Compressing context", "⏳ Queued for the next turn", "⚡ Interrupting current task",
+    # v0.7.4：Hermes 本地化**命令回复**头。上游 notify=True 也是真实终稿的通用标记，
+    # 不能据此判非回合，只能登记可枚举的 header 字面量（中英逐条对照 locales）。
+    # ⚠️ 只登记「emoji/标记 + 具体短语」；裸词走 _LD_SYSTEM_NOTICE_LINES 整行相等。
+    "✨ 会话已重置", "✨ 新会话已启动", "✨ Session reset", "✨ New session started",
+    "🔄 **技能已重新加载**", "🔄 **Skills Reloaded**",
+    "❌ 技能重新加载失败", "❌ Skills reload failed",
+    "🔄 **MCP 服务器已重新加载**", "🔄 **MCP Servers Reloaded**",
+    "🟡 已取消 /reload-mcp", "🟡 /reload-mcp cancelled",
+    "⚠️ **确认 /reload-mcp**", "⚠️ **Confirm /reload-mcp**",
+    "❌ MCP 重新加载失败", "❌ MCP reload failed",
+    "📋 **已命名会话**", "📋 **Named Sessions**", "⚠️ /resume blocked",
+    "🧠 **推理设置**", "🧠 **Reasoning Settings**",
+    "🧠 ✓ 推理强度已设置", "🧠 ✓ Reasoning effort set to",
+    "🧠 ✓ 已清除本会话的推理覆盖", "🧠 ✓ Session reasoning override cleared",
+    "⚡ 已停止。", "⚡ Stopped.",
+    "♻ 正在重启网关", "♻ Restarting gateway",
+    "🃏 larkdeck v", "🃏 LarkDeck v",
+    # 审计 A 2026-09-23：同族高置信 header（均带 emoji/标记或命令专有词，非裸词）。
+    "🧠 ✓ 推理显示：", "🧠 ✓ Reasoning display:",
+    "⚠️ 未知参数：`", "⚠️ Unknown argument: `",
+    "⚠️ 不支持 `/reasoning", "⚠️ `/reasoning reset --global`",
+    "⏳ 正在等待", "⏳ Draining", "⏳ 网关重启", "⏳ Gateway restart",
+    "✏️ 已设置会话标题", "✏️ Session title set",
+    "📎 运行时页脚：", "📎 Runtime footer:",
+    "已切换模型为 `", "Model switched to `",
+    "当前：`", "Current: `",
+    "✅ 命令已批准", "✅ Command approved",
+    "❌ 命令已拒绝", "❌ Command denied",
+)
+
+#: v0.7.4：纯词命令回复（没有 emoji 标记）只允许**整段文本完全相等**（trim 后），避免把
+#: 以相同词开头、后面还有正文的真实模型终稿误判成非回合（真终稿误判后 edit_message 会沿用
+#: turn_card=False，不可逆）。多行模板（如 resume 的「未找到已命名的会话。\n使用 …」）不在此表，
+#: 如实登记为残余漏网，等结构信号或后续批次。
+_LD_SYSTEM_NOTICE_LINES: Tuple[str, ...] = (
+    "会话数据库不可用。", "Session database not available.",
+    "没有可停止的活跃任务。", "No active task to stop.",
 )
 
 #: ⚠️ `gateway/run_notifications.py::_send_update_output` 的更新块以 ``` 开头；**故意不登记**：
@@ -1959,8 +1996,17 @@ _LD_SYSTEM_NOTICE_PREFIXES: Tuple[str, ...] = (
 
 
 def _ld_is_system_notice(content: str) -> bool:
-    """内容是否命中已知系统提示前缀（只看行首；VS16 归一后匹配）。"""
+    """内容是否命中已知系统/命令提示（只看首行；VS16 归一后匹配）。
+
+    两类判据（v0.7.4）：
+      * ``_LD_SYSTEM_NOTICE_PREFIXES``：header 前缀，``startswith``；
+      * ``_LD_SYSTEM_NOTICE_LINES``：无 emoji 的纯词回复，首行**完全相等**才命中
+        （避免真实终稿以相同词开头被误杀）。
+    """
     text = str(content or "").lstrip().replace("\ufe0f", "")
+    lines_norm = tuple(p.replace("\ufe0f", "") for p in _LD_SYSTEM_NOTICE_LINES)
+    if text.strip() in lines_norm:
+        return True
     return text.startswith(tuple(p.replace("\ufe0f", "") for p in _LD_SYSTEM_NOTICE_PREFIXES))
 
 
@@ -2514,6 +2560,13 @@ class LarkDeckMixin:
                 if report_empty:
                     # 同上：只在终局帧报（seed / 中间帧的面板为空是**正常**的）
                     _log_empty_panel_once(chat_id)
+                return None
+            # v0.7.4 P1：终局帧若快照已无过程数据（长任务多回合交错被顶掉），
+            # 不再渲染「有标题、展开却空白」的空 shell；状态色由页脚承载。
+            _has_process = bool(snap.get("tools") or snap.get("rounds")
+                                or str(snap.get("reasoning") or "").strip())
+            if not _has_process and report_empty:
+                _log_empty_panel_once(chat_id)
                 return None
             steps = [
                 _cards.tool_step(
