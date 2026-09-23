@@ -21,12 +21,12 @@
 | 文件 | 改动 | 约束 |
 | --- | --- | --- |
 | `core/cardview.py` | `_tool_detail_div` **line 分支**的 `text_size`：`PANEL_TEXT_SIZE` → `"x-small"`（emoji 分支的 `plain_text` 同步改） | 细节行是**独立元素** ⇒ 只影响它；`PANEL_TEXT_SIZE` 本身保持 `"notation"`（其它元素继续用） |
-| `core/cardview.py` | `_tool_output_div`（Error / Result 代码块）：`text_size` → `"x-small"` | ⚠️ 该元素里 `**Error**` 标签与代码文本**同属一个元素** ⇒ 标签一起变小（用户已确认不拆元素） |
+| `core/cardview.py` | `_tool_output_div`（Error / Result 代码块）：~~`text_size` → `"x-small"`~~ **2026-09-23 真机回退为 `notation`**（C 宿主不生效，见 §6.16） | ⚠️ 该元素里 `**Error**` 标签与代码文本**同属一个元素**（不拆元素）；回退后标签与原字号一致 |
 | `core/adapter.py` | **Design D**（§6.12）：`_ld_footer` 纯格式器（显式 status，缺省 fail-closed）；`send()` 默认回合 + `_ld_is_system_notice` 负清单（interim/已知系统提示 ⇒ 非回合）；预览 `status_locked`；非回合 panel/header/footer 全关；帧入口显式注入状态（structured `state["status"]` + legacy `frame_status`，`default_status` 只给 DEGRADE 收尾兜底）；非回合卡 `turn_card=False` 且 `/stop` 跳过 | 每个调用点逐一给结论（含 4039/SEQ3/R3-7/Y20）；判定打限流日志（P4 复核）；未登记前缀的新系统提示漏网要补清单并重跑 P3 |
 | `core/cards.py` | 注释口径：`x-small` 从「不在文档、别赌」改为「markdown 真机已验 + 其它宿主见宿主矩阵；未过退回 notation」 | 不改 `text_profile` 档位表 |
 | `tests/test_units.py` | 三条新用例（名字见 §6.10.6）；**并**修 §6.10.6 全表旧调用点（1533/1537…5306/5312、6860/6901、10914/10918 等） | **只新增用例名**；旧用例只改函数体，不许改名/删名；失败必须 red-assert 不 crash |
 | `tests/mutate_check.py` | 新增 24 条 V073（§6.12.3 + §6.14 + §6.15）；同步重写 8 条旧锚点（G2-3/V4-7/V4-10/V4-17B/V4-57/SEQ3/R3-7/Y20）；`_is_full_run` 加 `if getattr(args,"shard",""): return False`；45s→90s 注释 | 每条 `-k` 完整模式实红；post-change 锚点唯一性 grep = 1 |
-| `tests/check_cardview.py` | 加 Error 块夹具 + `detail/error text_size=="x-small"` 断言 + `PANEL_TEXT_SIZE=="notation"` | 字段白名单分档不变（`div.icon` 可带 size、`markdown.icon` 不可） |
+| `tests/check_cardview.py` | 加 Error 块夹具 + `detail text_size=="x-small"` / `error text_size=="notation"` 断言 + `PANEL_TEXT_SIZE=="notation"` | 字段白名单分档不变（`div.icon` 可带 size、`markdown.icon` 不可） |
 | `tests/write_golden_trace.py` | **不改场景**（§6.10.8：扩 Error 涟漪大、收益低） | Error 由单测 + check_cardview 双覆盖 |
 | `tests/golden_cardkit_trace.json` | 重生成：实测 **8 叶** detail `notation→x-small`（以实现后逐叶解释为准）；**item2 = 0 叶**（footer 叶 `✅ 已完成 · Test Model` 不变） | `--check` 必先一致；item2 出 diff 即判分类器误伤真回合 |
 | `tests/probe_text_size_hosts.py` | **新增**宿主矩阵探针：`markdown` / `div.text=lark_md` / `div.text=plain_text`，各含同卡 notation 对照；**三主题各复跑**；Error 用真实长栈 | 单 host 被拒/不变小 ⇒ 该 host 退回 `notation`；Error 不可读 ⇒ 只 Error 块退回；结论写 verify-log |
@@ -197,7 +197,7 @@
 
 | # | 语义 | 硬字面量断言（文件/用例） | 新变异（old → new） |
 | --- | --- | --- | --- |
-| 1 | 细节行（line）`x-small` | `test_v073_detail_and_error_text_sizes_are_x_small`：`tool_step_elements(step,"line")[0]["text_size"]=="notation"`（标题不动）、`[1]["text_size"]=="x-small"` | **V073-1a**：detail-line 块 `"text_size": "x-small"` → `"notation"`（与 V4-57 同锚点，V4-57 两侧同步改） |
+| 1 | 细节行（line）`x-small` | `test_v073_detail_rows_x_small_error_falls_back_to_notation`：`tool_step_elements(step,"line")[0]["text_size"]=="notation"`（标题不动）、`[1]["text_size"]=="x-small"` | **V073-1a**：detail-line 块 `"text_size": "x-small"` → `"notation"`（与 V4-57 同锚点，V4-57 两侧同步改） |
 | 2 | 细节行（emoji）`x-small` | 同用例：`tool_step_elements(step,"emoji")[1]["text"]["text_size"]=="x-small"` | **V073-1b**：plain_text detail 块的 `"text_size": "x-small"` → `"notation"` |
 | 3 | Error/Result 块 `x-small` | 同用例：`els[2]["text"]["text_size"]=="x-small"`（`ToolStepView(error_block="boom")`） | **V073-1c**：lark_md 错误块的 `"text_size": "x-small"` → `"notation"` |
 | 4 | `_ld_footer` 是纯格式器（回合侧也不许偷快照） | `test_v073_footer_turn_scope_and_status_is_explicit`：完成快照 + model/ctx、**不传 status** ⇒ `_ld_footer(chat_id="oc_v073", turn_card=True) == "Test Model · ctx 1k/10k · 10%"`（**无 ✅**）；`turn_card=False is None`；`(_ld_footer(..., started=…, status="completed", turn_card=True) or "").startswith("✅ 已完成 · ")` | **V073-2a**：guard 后加回 `status or (panel_snap.get("status") …)`（必须用 `turn_card=True` 的断言钉住，否则被早退遮蔽 ⇒ 假绿，B-1） |
@@ -205,7 +205,7 @@
 | 6 | 真实回合必须保留 `✅ 已完成` | 收尾帧/`edit_message(finalize=True)`/`send_stream_frame(finalize=True)` 页脚 `startswith("✅ 已完成 · ")`（assertion 带 `or ""` 防 None 崩溃） | **V073-2c**：guard 取反 `if turn_card: return None` |
 | 7 | 非回合静态卡不能留空 footer 元素 | 同用例 5（B-2 实测：只让文本为 None 仍会写 `{"element_id":"footer","content":" "}`） | **V073-2d**：删掉 `_ld_render_card` 非回合分支的 `view.footer_enabled = False` |
 
-> 三条新单测名（B 路 Q1，全部**只新增**）：`test_v073_detail_and_error_text_sizes_are_x_small` /
+> 三条新单测名（B 路 Q1，全部**只新增**）：`test_v073_detail_rows_x_small_error_falls_back_to_notation` /
 > `test_v073_footer_turn_scope_and_status_is_explicit` / `test_v073_non_turn_send_has_no_footer_element`；
 > 可选 `check_cardview` 加固：`assert detail["text_size"] == "x-small"` + Error 夹具 +
 > 生产常量 `PANEL_TEXT_SIZE == "notation"`（A-4：现有白名单只放行任意 `text_size`，抓不住悄悄退回）。
@@ -346,7 +346,7 @@
 | 2 | 文本返 None ≠ 无 footer 元素（`view.footer or " "` 空行） | **采纳** | §6.1 条 2：非回合 `footer_enabled=False` + 单测断言 `element_id=="footer"` 不存在；**CardKit seed 例外**（结构定死保留槽位） |
 | 3 | 锚点连带失效：V4-57、V4-7、V4-17B、G2-3；6 处单测可能 red-crash | **采纳** | §6.3 锚点连带失效条 + §6.1 条 6；改完 preflight 全数绿，单测修到 red-assert（不 crash） |
 | 4 | 全量 `send()` 判非回合会误伤非 native 真终稿与 `/larkdeck` 回复 | **采纳（区分 + 文档）** | §6.1 条 3/8：非 native 终稿带 `notify`/`expect_edits` ⇒ 仍保留；`/larkdeck` 命令回复**有意**无页脚并写进 README/plugin.yaml；P4 grep 日志复核 |
-| 5 | Q1 三条最小硬字面量断言（给出精确用例名/断言） | **采纳** | §6.2 行 1-5 + 注：`test_v073_detail_and_error_text_sizes_are_x_small` / `test_v073_footer_turn_scope_and_status_is_explicit` / `test_v073_non_turn_send_has_no_footer_element` |
+| 5 | Q1 三条最小硬字面量断言（给出精确用例名/断言） | **采纳** | §6.2 行 1-5 + 注：`test_v073_detail_rows_x_small_error_falls_back_to_notation` / `test_v073_footer_turn_scope_and_status_is_explicit` / `test_v073_non_turn_send_has_no_footer_element` |
 | 6 | Q2 变异表 M1-M7（old 锚点 count=1、M4 必须走 turn 侧） | **采纳** | §6.2 的 V073-1a/1b/1c/2a/2b/2c/2d；P1 完成后重新 grep 保证 post-unique = 1 |
 | 7 | Q3 golden：item1 恰好 9 叶 `notation→x-small`；无 Error 覆盖；item2 应 0 叶变化 | **采纳 + 加强** | 9 叶清单逐条解释；item2 若有 diff 即判 turn_card 误分类；Error 覆盖按 §6.3/A-4 决定（扩夹具或写明 + 双覆盖） |
 | 8 | Q4 用户可见：host×theme 探针、Error 可读性、`text_profile=large` 不放大 x-small、澄清卡不受影响 | **采纳** | §2 3b + §6.5 + P4 探针清单；`large` 限制写进 README |
@@ -465,7 +465,7 @@ CardKit **seed 建卡**不受影响（结构建卡定死、之后还要写元素
   `check_hooks.py:772` 显式 `status="completed", turn_card=True`；
   `probe_render.py:228/994` 的无参 `_ld_footer()` 同步补 `turn_card=True`。
 * `send()` 驱动真实回合的旧用例补 `metadata={"notify": True}`（`test_units.py` 7 处 + `raw2` 1 处）。
-* 新用例 3 条（B2 命名建议，采纳）：`test_v073_detail_and_error_text_sizes_are_x_small` /
+* 新用例 3 条（B2 命名建议，采纳）：`test_v073_detail_rows_x_small_error_falls_back_to_notation` /
   `test_v073_footer_turn_scope_and_status_is_explicit` /
   `test_v073_non_turn_send_has_no_footer_element`（覆盖：stale panel+header 静默、命令回复静默、
   notify 终稿 ✅、expect_edits 预览无 ✅、最近帧内容认领、interim 无 footer、finalize 竞态兜底）。
@@ -493,7 +493,7 @@ CardKit **seed 建卡**不受影响（结构建卡定死、之后还要写元素
 
 **保留现有场景、不扩 Error 步骤**：扩 Error 会改 header 步数（2→3）并新增/重排多批 decor/final
 叶，远超「9+1」，整体重冻结成本高于收益；Error 改由
-`test_v073_detail_and_error_text_sizes_are_x_small`（硬字面量三层）+ `check_cardview` Error 夹具
+`test_v073_detail_rows_x_small_error_falls_back_to_notation`（硬字面量三层）+ `check_cardview` Error 夹具
 双覆盖，并在本文件写明「golden 不覆盖 Error」这一事实。
 实测 item1 diff = 8 个叶（detail 行 notation→x-small；B 报的 9 恰是上一版场景计数，以实现后
 实际 diff 为准逐叶解释）；**item2 = 0 叶变化**（footer 叶仍是 `✅ 已完成 · Test Model`）。
@@ -517,7 +517,8 @@ CardKit **seed 建卡**不受影响（结构建卡定死、之后还要写元素
 ② `div.text=plain_text` emoji detail；③ `div.text=lark_md` **真实 Error**（`**Error**` + 20–30 行
 栈 + 一条超长行）。用户看三件事：`code==0`、x-small 确实更小且不换行溢出、Error 仍可读（二值）。
 回退规则：单 host 被拒/不变小 ⇒ **该 host 全部退回 `notation`**；Error 能发但不可读 ⇒ **只 Error
-块**退回 `notation`；两者都要同步改断言/变异/夹具再重验。设备/客户端/主题写进 `docs/verify-log.md`。
+块**退回 `notation`；两者都要同步改断言/变异/夹具再重验。**2026-09-23 已执行：C（`div.text=lark_md`）
+真机目视与 `notation` 同大 ⇒ Error 块回退，commit `db58dc5`，见 §6.16。**设备/客户端/主题写进 `docs/verify-log.md`。
 
 #### 6.10.11 文档与措辞（B2-6/9）
 
@@ -637,7 +638,7 @@ CardKit **seed 建卡**不受影响（结构建卡定死、之后还要写元素
 
 #### 6.12.4 测试与夹具
 
-* 新增/强化：`test_v073_detail_and_error_text_sizes_are_x_small`、
+* 新增/强化：`test_v073_detail_rows_x_small_error_falls_back_to_notation`、
   `test_v073_footer_turn_scope_and_status_is_explicit`（含收尾 default_status 竞态）、
   `test_v073_non_turn_send_has_no_footer_element`（两条真实系统提示静默 + 默认回合 ✅ +
   expect_edits 无 ✅ + interim 静默 + `turn_card=False` 标记）、
@@ -740,18 +741,27 @@ golden 顶层 8 叶变化且 footer 叶不变；新增 `/stop` 行为断言与 s
 * C 路：release 脚本 `.deploy` dirty 改为 `--check` 也硬失败，补 CHANGELOG 收口断言；
   本计划旧计数在 commit D 收口到 **523 变异 / 535 锚点 / 24 条 V073**。
 
-**P3 六分片全量（冻结提交 `65c1c5f`）**
+**P3 六分片全量（冻结提交 `db58dc5`；`65c1c5f` 为回退前一轮）**
 
 * 6 分片并行、独立账本/日志、`--update-ledger`，坏 0（无 💥/🟢/❓）；合并
-  `tools/merge_ledger4.py --write`：**523/523 red-assert**、`full_audit_at=65c1c5f`、
-  `full_audit_tree=779d67eb05492809db1946e51e03097cac57e22f`（== `65c1c5f^{tree}`）、
+  `tools/merge_ledger4.py --write`：**523/523 red-assert**、`full_audit_at=db58dc5`、
+  `full_audit_tree=b15070a29fe84247849f3ce0ee6b0d5e503a1dbb`（== `db58dc5^{tree}`）、
   `tree_dirty=false`、继承 0；
-* **实测墙钟 886.1s**（02:36:17→02:51:09）；`--preflight 535/535`；`-k V073` 24/24 red；
+* **实测墙钟 1443.9s**（09:16:00→09:40:04）；`--preflight 535/535`；`-k V073` 24/24 red；
 * 证据：`~/.larkdeck-scratch/v0.7.3/full-run-evidence.json`、`seed{1..6}.json`、`shard{1..6}.log`、
   `docs/audits/v0.7.3/README.md`；
 * 发布机制（生效）：`tree_dirty is False`、`full_audit_tree == git rev-parse <fa>^{tree}`、
   每条 `verdict=red-assert` 且 `at=fa`、`len(entries)==len(MUTATIONS)`、`.deploy==HEAD`（`--check`
   同样硬失败）、150s 有界自检。
+
+---
+
+### 6.16 P4 真机回退（Error/Result 块 → notation）与最终宿主矩阵
+
+* 系统提示对照（用户截图确认）：1/3 旧版卡（`6fd68f3` 提取代码）有状态头+面板+页脚 `✅ 已完成`；2/3 新版系统提示卡无状态头/面板/页脚/✅；3/3 新版真实回合卡保留 `✅ 已完成`。目标 ② 成立。
+* x-small 宿主矩阵（用户目视 + 截图行高测量）：A `markdown` 23→19px、B `div.text=plain_text` 21→17px ⇒ 确实更小；C `div.text=lark_md` 26→26px（行距同为 44px） ⇒ 客户端忽略 `text_size`。
+* 处置（按 §6.10.10 回退规则）：Error/Result 块 `text_size` 改回 `notation`（commit `db58dc5`），细节行两宿主继续 `x-small`；断言/变异/文档同步，P3 六分片在该提交重跑并重新盖章。
+* 证据：`docs/audits/v0.7.3/p4-real-device-fallback.md`、`docs/verify-log.md` 的 2026-09-23 宿主矩阵/P4 条目。
 
 ---
 

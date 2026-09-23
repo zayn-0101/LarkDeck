@@ -249,7 +249,7 @@ A1（3 处 partial 少 `expanded`、entity `expanded` false→true）、C1（`tu
 * 追加决定：**A1 展开时序保持不变**（用户复确认；理由与代价见
   `docs/audits/v0.7.2/p6-live-verification.md` 的「追加决定」一节）。
 
-## 2026-09-23 · v0.7.3 宿主矩阵探针（服务端结果；真机目视待用户）
+## 2026-09-23 · v0.7.3 宿主矩阵探针（真机目视完成：A/B 通过，C 回退 notation）
 
 * `tests/probe_text_size_hosts.py --send`（生产代码渲染，直接 SDK 发到 `FEISHU_HOME_CHANNEL`）：
   **11 张卡全部 `code=0`**。
@@ -259,9 +259,10 @@ A1（3 处 partial 少 `expanded`、entity `expanded` false→true）、C1（`tu
   - N1 已知系统提示静默卡：`om_x100b641fba9664a4c3f303c401a41bb`（本地断言无 header/panel/footer）；
   - N2 真实回合卡：`om_x100b641fbaa8a8a0c2ecd6c33ddac0e`（本地断言必须有 `✅ 已完成`）。
 * **服务端结论**：三宿主都接受 `x-small`，未出现 `200621`/拒收。
-* **真机目视结论（待用户回话，未回话前不得写成已验证）**：x-small 是否确实更小、以及 C 的 20+ 行 Error 栈是否仍可读；三主题/客户端差异同样待目视。
+* **真机目视结论（2026-09-23 用户截图 + 像素测量）**：A `markdown` 23→19px、B `div.text=plain_text` 21→17px ⇒ **确实更小**；C `div.text=lark_md` 26→26px（行距同为 44px） ⇒ **客户端忽略 `text_size`**。
+* **处置**：C 宿主对应的 Error/Result 块按回退规则改回 `notation`（commit `db58dc5`）；细节行两宿主继续 `x-small`。
 * 回退规则：若某 host 被拒或不变小 ⇒ **该 host 退回 `notation`**（改代码 + 断言/变异/夹具 + 重跑 P3）；当前代码**没有运行时自动回退**。
-* `send 判定 turn=` 日志复核：待 `.deploy=C` + 网关重启后执行并回填。
+* `send 判定 turn=` 日志复核：`.deploy=db58dc5` + 网关重启后已确认一条 `turn=False` 系统提示；真实用户消息的 `turn=True` 由发布前终验消息回填。
 
 ## 2026-09-23 02:51 · v0.7.3 P3 全量变异（冻结提交 `65c1c5f`）
 
@@ -274,3 +275,11 @@ A1（3 处 partial 少 `expanded`、entity `expanded` false→true）、C1（`tu
   `docs/audits/v0.7.3/README.md`；
 * P3 事后三路审计：证据链（deepseek-flash）/ 反假绿（glm-5.3-flash）/ 发布诚实性（qwen3.8-flash）
   全部 PASS，无 false green；`.deploy` 仍为 `6fd68f3`，P4 部署与真机目视待执行。
+
+## 2026-09-23 · v0.7.3 P4 改前/改后真机对照
+
+* 1/3 旧版（`6fd68f3` 提取代码生产渲染）系统提示：`om_x100b6406193fcca4ddcfdfb9970db9f`，有状态头 + 面板 + 页脚 `✅ 已完成 · Test Model · ctx…`（用户截图）。
+* 2/3 新版系统提示：`om_x100b640619337ca8dfa85d019ef2229`，无状态头/面板/页脚/✅（用户截图）。
+* 3/3 新版真实回合：`om_x100b640616c6d8b0de2c17b37ce9714`，页脚 `✅ 已完成 · Test Model · ctx…` 保留。
+* 字号焦点卡：`om_x100b64062dbdfca8c4297b234ace9ca`（B/C 两组上下对照）；合并验证卡：`om_x100b64060aedaca8c4c3b8cbce81bca`（A/B/C 三组）。
+* 回退决定与像素测量见 `docs/audits/v0.7.3/p4-real-device-fallback.md`。
