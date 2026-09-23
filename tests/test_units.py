@@ -14783,6 +14783,43 @@ def test_v075_upstream_heartbeat_loop_never_gets_message_id():
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
 
+def test_v075_heartbeat_panel_300313_marks_missing_without_degrade():
+    """V075 P0：panel 写拿 300313（元素不在卡里）只标 missing，不动车道、不重复写。"""
+    chat, turn = "oc_v075missing", "t-miss"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    key = f"{chat}:{turn}"
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        state0 = raw._ld_stream_get(key) or {}
+        patch_before = int(calls["patch"])
+        writes: list = []
+
+        async def _not_found(card_id, element_id, partial, seq):
+            writes.append((card_id, element_id, seq))
+            return adapter._CkResult(False, 300313,
+                                     "ErrMsg: not find elementID : panel; ")
+
+        raw._ld_ck_partial = _not_found           # type: ignore[assignment]
+        first = _run(raw.send(chat, _v075_heartbeat(3),
+                              metadata={"_interim_send": True}))
+        assert getattr(first, "success", False) is True
+        assert getattr(first, "message_id", None) == ""
+        assert len(writes) == 1, writes
+        state1 = raw._ld_stream_get(key) or {}
+        assert state1.get("ck_panel_missing") is True, state1
+        assert state1.get("card_id") == state0.get("card_id"),\
+            f"300313 不得把整条主卡车道降级：{state1}"
+        assert state1.get("engine") == "structured" and state1.get("engine_stamp") != "degraded"
+        assert int(calls["patch"]) == patch_before, "300313 后不该整卡 patch 主卡"
+
+        second = _run(raw.send(chat, _v075_heartbeat(6),
+                               metadata={"_interim_send": True}))
+        assert getattr(second, "message_id", None) == ""
+        assert len(writes) == 1, f"marked missing 后仍在重复写 panel：{writes}"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
 def main() -> int:
     # `--only <子串>`：只跑名字里含该子串的用例。**专供变异判读**（审计 A：单条变异 idle 28s、
     # 重载 89s，秒级判读只能靠「preflight + 只跑受影响的那几条用例」）。不是发布门禁 ——

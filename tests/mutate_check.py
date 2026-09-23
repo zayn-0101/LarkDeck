@@ -3172,6 +3172,14 @@ MUTATIONS = [
      '            if False:  # V075-15 mutated\n'
      '                return "unchanged"          # V075：没有 panel 元素，心跳没有可写的东西',
      'test_units'),
+    ('V075-16-panel 300313 不标 missing（每拍重复写不存在元素）', 'core/adapter.py',
+     '                    if int(res.code) == 300313:\n'
+     '                        # panel 元素不在卡里（配置/结构分叉）：只标死，不动车道、不 fail。\n'
+     '                        updated["ck_panel_missing"] = True',
+     '                    if False:  # V075-16 mutated\n'
+     '                        # panel 元素不在卡里（配置/结构分叉）：只标死，不动车道、不 fail。\n'
+     '                        updated["ck_panel_missing"] = True',
+     'test_units'),
 
 
 ]
