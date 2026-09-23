@@ -2840,6 +2840,37 @@ MUTATIONS = [
      '        "text_size": "notation",\n'
      '    }',
      'test_units'),
+    ('V073-1d-逐行 inline code 退化成整块单 span（多行/空行契约失效）', 'core/cardview.py',
+     '    lines = str(block or "").splitlines() or [""]',
+     '    return f"`{block}`"  # V073-1d mutated：整块一个 span\n'
+     '    lines = str(block or "").splitlines() or [""]',
+     'test_units'),
+    ('V073-1e-生产常量 PANEL_TEXT_SIZE 漂移为 x-small（整块面板一起变大）', 'core/cardview.py',
+     'PANEL_TEXT_SIZE = "notation"',
+     'PANEL_TEXT_SIZE = "x-small"  # V073-1e mutated',
+     'test_units'),
+    ('V073-1f-Error/Result 图标 token 互换（warning 与 codeblock 语义颠倒）', 'core/cardview.py',
+     'ICON_RESULT = "codeblock_outlined"\n'
+     'ICON_ERROR = "warning_outlined"',
+     'ICON_RESULT = "warning_outlined"\n'
+     'ICON_ERROR = "codeblock_outlined"',
+     'test_units'),
+    ('V073-1g-Error/Result 块 margin 缩进被删（与细节行不再对齐）', 'core/cardview.py',
+     '        "margin": TOOL_DETAIL_INDENT,\n'
+     '        "content": f"**{label}**\\n{_inline_code_lines(block)}",',
+     '        "content": f"**{label}**\\n{_inline_code_lines(block)}",',
+     'test_units'),
+    ('V073-1h-emoji 模式仍挂 Error 前缀图标（回退开关失效）', 'core/cardview.py',
+     '    if str(icon_mode or "line").strip().lower() != "emoji":',
+     '    if True:  # V073-1h mutated：emoji 也挂图标',
+     'test_units'),
+    ('V073-1i-Error/Result 块删掉 text_size（字号契约整个消失）', 'core/cardview.py',
+     '        "content": f"**{label}**\\n{_inline_code_lines(block)}",\n'
+     '        "text_size": "x-small",\n'
+     '    }',
+     '        "content": f"**{label}**\\n{_inline_code_lines(block)}",\n'
+     '    }',
+     'test_units'),
     ('V073-2a-页脚把 panel 快照兜底加回来（turn 侧偷状态）', 'core/adapter.py',
      '            ctx_snap = _context.snapshot() or {}\n'
      '            # 纯格式器：**不读 panel 快照**（Design D）。回合状态由调用方显式传入；\n'

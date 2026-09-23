@@ -209,9 +209,17 @@ def _assert_structured_builder() -> None:
     assert err_els[1].get("text_size") == "x-small", err_els[1]
     assert err_els[2].get("tag") == "markdown", err_els[2]
     assert err_els[2].get("text_size") == "x-small", err_els[2]
-    assert err_els[2].get("icon"), err_els[2]
+    assert err_els[2].get("icon") == {"tag": "standard_icon", "token": "warning_outlined",
+                                      "color": "grey"}, err_els[2]
+    assert err_els[2].get("margin") == "0px 0px 0px 22px", err_els[2]
+    assert "text_color" not in err_els[2] and "text_weight" not in err_els[2], err_els[2]
     assert "```" not in str(err_els[2].get("content")), err_els[2]
     assert "`boom" in str(err_els[2].get("content")), err_els[2]
+    assert str(err_els[2].get("content")) == "**Error**\n`boom`", err_els[2]
+    res_els = cardview._tool_output_div("out", "Result", "line")
+    assert res_els.get("icon") == {"tag": "standard_icon", "token": "codeblock_outlined",
+                                   "color": "grey"}, res_els
+    assert "text_color" not in res_els and "text_weight" not in res_els, res_els
     assert cardview.PANEL_TEXT_SIZE == "notation"
     panel_op = {"partial_element": cardview.panel_partial(view.panel)}
     assert "tag" not in panel_op["partial_element"], panel_op

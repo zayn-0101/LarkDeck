@@ -13278,18 +13278,34 @@ def test_v4_57_line_icons_cover_detail_error_and_folded_hint():
                                 "color": "grey"}, hint
     assert hint.get("content") == "<font color='grey'>还有 12 步未显示</font>", hint
     assert "text_color" not in hint, hint
-    # 全树兜底：**任何** markdown 元素都不许带 text_color（本地门禁 check_cardview 也钉了这条）
+    # 全树兜底：**任何** markdown 元素都不许带 text_color（本地门禁 check_cardview 也钉了这条）。
+    # ⚠️ 2026-09-23 审计 A：循环必须真的设置 `tool_icon_mode`，否则两轮都在跑 line（emoji 假覆盖）。
     for mode in ("line", "emoji"):
-        tree = (cv.panel_elements(cv.PanelView(title="t", tools=[step, bad], collapsed_hint="h"))
-                + [cv.panel_shell(cv.PanelView(title="t", tools=[step]))])
+        view = cv.PanelView(title="t", tools=[step, bad], collapsed_hint="h",
+                            tool_icon_mode=mode)
+        tree = cv.panel_elements(view) + [cv.panel_shell(view)]
         for node in tree:
             for sub in (node, *node.get("elements", [])):
                 if sub.get("tag") == "markdown":
                     assert "text_color" not in sub, (mode, sub)
-    # emoji 模式：老形状（文字箭头 / 无图标）—— 两条路都可切，不能静默变成同一种
+    # emoji 模式：老形状（文字箭头 / 无图标）—— 两条路都可切，不能静默变成同一种。
+    # Error/折叠提示的 emoji 分支同样不许挂组件级 icon（V073-1h 的负向保护）。
     els_e = cv.tool_step_elements(step, "emoji")
     assert els_e[1].get("tag") == "div" and "↳" in str((els_e[1].get("text") or {}).get("content")), els_e[1]
     assert "icon" not in els_e[1], els_e[1]
+    err_e = [e for e in cv.tool_step_elements(bad, "emoji")
+             if str(e.get("content", "")).startswith("**Error**")]
+    assert len(err_e) == 1 and "icon" not in err_e[0], err_e
+    hint_e = cv.panel_elements(cv.PanelView(title="t", collapsed_hint="h",
+                                            tool_icon_mode="emoji"))[0]
+    assert "icon" not in hint_e, hint_e
+    # 字面量钉 token 值：自比 `cv.ICON_ERROR` 抓不住两个 token 互换（都在白名单里）——V073-1f。
+    assert detail[0]["icon"] == {"tag": "standard_icon", "token": "tool-indent_outlined",
+                                 "color": "grey"}, detail[0]
+    assert err[0]["icon"] == {"tag": "standard_icon", "token": "warning_outlined",
+                              "color": "grey"}, err[0]
+    assert hint["icon"] == {"tag": "standard_icon", "token": "more_outlined",
+                            "color": "grey"}, hint
     used = {tok for _, tok in cv.TOOL_ICON_BY_ALIAS} | {
         cv.ICON_DETAIL, cv.ICON_HINT_MORE, cv.ICON_RESULT, cv.ICON_ERROR}
     unknown = sorted(used - set(_VERIFIED_LINEAR_TOKENS))
@@ -13951,8 +13967,8 @@ def test_v072_is_full_run_only_stamps_a_whole_clean_matrix():
 
 def test_v073_detail_and_error_rows_x_small() -> None:
     """v0.7.3：工具细节行（markdown/plain_text 两宿主）与 Error/Result 块（2026-09-23 起
-    换用 `markdown` 宿主，x-small 真机确认更小且可读）= ``x-small``；工具标题与生产常量
-    ``PANEL_TEXT_SIZE`` 保持 ``notation``（不许整表漂移）。"""
+    用 `markdown` + 逐行 inline code，x-small 真机确认更小且可读）= ``x-small``；工具标题与
+    生产常量 ``PANEL_TEXT_SIZE`` 保持 ``notation``（不许整表漂移）。"""
     step = adapter._cardview.ToolStepView(
         name="terminal", title="terminal", status="ok",
         detail='{"command": "df -h"}', error_block="boom")
@@ -13973,6 +13989,38 @@ def test_v073_detail_and_error_rows_x_small() -> None:
     assert emoji[2].get("text_size") == "x-small", emoji[2]
     assert "```" not in str(emoji[2].get("content")), emoji[2]
     assert adapter._cardview.PANEL_TEXT_SIZE == "notation"
+
+
+def test_v073_inline_code_lines_split_per_line() -> None:
+    """形态③ 的硬契约（2026-09-23 审计 A 最深漏洞）：`_inline_code_lines` 必须**逐行**包
+    inline code —— 单行 fixture 区分不了「逐行」与「整块一个 span」；这里用多行 + 空行 +
+    行内反引号钉死，并顺带用字面量钉 icon token / margin / emoji 反向条件。"""
+    cv = adapter._cardview
+    assert cv._inline_code_lines("a\nb") == "`a`\n`b`"
+    assert cv._inline_code_lines("a\n\nb") == "`a`\n` `\n`b`"
+    assert cv._inline_code_lines("") == "` `"
+    assert cv._inline_code_lines("has ` tick") == "``has ` tick``"
+    step = cv.ToolStepView(name="terminal", title="terminal", status="error",
+                           detail="d", error_block="line1\nline2")
+    err = [e for e in cv.tool_step_elements(step, "line")
+           if str(e.get("content", "")).startswith("**Error**")]
+    assert len(err) == 1, err
+    assert err[0]["content"] == "**Error**\n`line1`\n`line2`", err[0]
+    assert err[0]["icon"] == {"tag": "standard_icon", "token": "warning_outlined",
+                              "color": "grey"}, err[0]
+    assert err[0].get("margin") == "0px 0px 0px 22px", err[0]
+    result = cv._tool_output_div("ok", "Result", "line")
+    assert result["icon"] == {"tag": "standard_icon", "token": "codeblock_outlined",
+                              "color": "grey"}, result
+    assert cv._tool_output_div("boom", "Error", "emoji").get("icon") is None
+    hint_line = cv.panel_elements(cv.PanelView(title="t", collapsed_hint="还有 12 步"))[0]
+    hint_emoji = cv.panel_elements(cv.PanelView(
+        title="t", collapsed_hint="还有 12 步", tool_icon_mode="emoji"))[0]
+    assert hint_line["icon"] == {"tag": "standard_icon", "token": "more_outlined",
+                                 "color": "grey"}, hint_line
+    assert hint_emoji.get("icon") is None, hint_emoji
+    assert cv.ICON_ERROR == "warning_outlined" and cv.ICON_RESULT == "codeblock_outlined"
+    assert cv.ICON_HINT_MORE == "more_outlined" and cv.ICON_DETAIL == "tool-indent_outlined"
 
 
 def test_v073_footer_turn_scope_and_status_is_explicit() -> None:
