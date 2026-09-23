@@ -2878,6 +2878,11 @@ MUTATIONS = [
      '        node.pop("margin", None)\n'
      '    if str(icon_mode or "line").strip().lower() != "emoji":',
      'test_units'),
+    ('V073-1k-参数预览被 sleep 拖慢（fail-closed 回调墙钟回归）', 'core/panel.py',
+     '    if args is None or args == {}:\n        return ""',
+     '    __import__("time").sleep(0.02)  # V073-1k mutated：墙钟延迟回归\n'
+     '    if args is None or args == {}:\n        return ""',
+     'test_units'),
     ('V073-2a-页脚把 panel 快照兜底加回来（turn 侧偷状态）', 'core/adapter.py',
      '            ctx_snap = _context.snapshot() or {}\n'
      '            # 纯格式器：**不读 panel 快照**（Design D）。回合状态由调用方显式传入；\n'

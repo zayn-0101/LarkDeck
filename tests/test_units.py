@@ -8419,15 +8419,15 @@ def test_args_preview_is_bounded_for_nested_and_long_inputs():
     huge_list = {"items": ["y"] * 2_000_000}
 
     def _cost_ms(payload) -> float:
-        """取多次测量的**最小值**，且量的是 **CPU 时间**（`process_time`）：
-        这条断言要判的是「有没有 O(参数规模) 的工作」，而墙钟在 6 分片并发下会按不同
-        比例漂移（2026-09-23 实测：同一实现单次墙钟可飘到十几 ms）；CPU 时间只算本进程
-        真实消耗，不受调度排队影响。"""
+        """取多次测量的**最小值**：这条断言判的是「有没有 O(参数规模) 的工作」，
+        而最小值最不受机器负载影响。⚠️ 这里刻意保留**墙钟**：`_args_preview` 是
+        fail-closed 回调，真正会拖住工具执行的是墙钟延迟（sleep/IO/锁等待都会被
+        CPU 时间漏掉，审计 A 2026-09-23 指出）；min-of-8 负责过滤调度排队噪声。"""
         best = float("inf")
         for _ in range(8):
-            t0 = time.process_time()
+            t0 = time.perf_counter()
             got = panel._args_preview(payload)
-            best = min(best, (time.process_time() - t0) * 1000)
+            best = min(best, (time.perf_counter() - t0) * 1000)
         return best, got
 
     for label, payload in (("嵌套", nested), ("深层", deep), ("超长列表", huge_list)):
