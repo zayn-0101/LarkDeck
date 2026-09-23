@@ -406,6 +406,17 @@ _STREAM_LEAK_SECONDS = 3600.0
 #: 硬上限倍数：软上限只告警、不淘汰活跃流；到这个倍数才被迫淘汰（防内存）。
 _STREAM_HARD_CAP_FACTOR = 4
 
+#: V075 心跳合卡：
+#: 专用心跳卡（无 active 主卡时的唯一一张）复用表 TTL / 容量上限；真实终态后的安静窗口，
+#: 窗口内的在飞心跳不再补中间卡；心跳日志限流窗口。
+_LD_HB_CARD_TTL_S = 6 * 3600.0
+_LD_HB_CARD_MAX = 128
+_LD_HB_FINAL_QUIET_S = 90.0
+_LD_HB_LOG_INTERVAL_S = 30.0
+
+#: V075 心跳日志限流戳（`chat|reason` -> monotonic，有界清理）。
+_LD_HB_LOGGED: Dict[str, float] = {}
+
 #: ⚠️ 这里曾经有一个**猜**着做的「工具进度块不进正文 / 叙述归档」实现，**已作为安全修复移除**。
 #:
 #: 旧版用裸分隔符 ``"\n\n---\n"`` 判断核心有没有往帧里拼工具进度块，但核心的合成式是
@@ -1273,6 +1284,26 @@ def _ck_elems_from_card(card: Dict[str, Any]) -> List[str]:
     return out
 
 
+def _ck_has_panel_from_card(card: Dict[str, Any]) -> bool:
+    """V075：这张实体卡里有没有外层 `panel` 元素。
+
+    `_ck_elems_from_card` 只抽 `CARDKIT_STREAM_IDS`（answer / panel_body / panel_tools / footer），
+    外层 `CARDKIT_PANEL_ID` **不在其中** ⇒ 不能拿 `"panel" in ck_elems` 判断。
+    心跳合卡写 panel 前必须知道它真的存在，否则会每拍撞 300313。
+    """
+    target = str(getattr(_cards, "CARDKIT_PANEL_ID", "panel") or "panel")
+    stack: List[Any] = [card]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if node.get("element_id") == target:
+                return True
+            stack.extend(node.values())
+        elif isinstance(node, (list, tuple)):
+            stack.extend(node)
+    return False
+
+
 class _CkResult(NamedTuple):
     """一次 CardKit 写的**结果三件套**：成功与否 + 返回码 + 原始 msg。
 
@@ -2010,6 +2041,27 @@ def _ld_is_system_notice(content: str) -> bool:
     return text.startswith(tuple(p.replace("\ufe0f", "") for p in _LD_SYSTEM_NOTICE_PREFIXES))
 
 
+#: V075：上游长任务心跳的稳定字面量（`gateway/run_turn.py:3757`，默认 mode）。
+#: generic 模式的文案来自 `_generic_status_phrase`，没有可枚举前缀，本批次不识别；
+#: 这条限制写进 README「已知限制」，等上游给独立 metadata 标记后再收口。
+_LD_WORKING_PREFIX = "⏳ Working — "
+
+
+def _ld_is_working_heartbeat(content: str,
+                            metadata: Optional[Dict[str, Any]] = None) -> bool:
+    """V075：上游长任务心跳（`_run_agent_notify_long_running`）的精确指纹。
+
+    只认 ``_interim_send=True`` + ``_LD_WORKING_PREFIX``；**绝不**用 ``notify``、
+    也绝不把全部 ``_interim_send`` 一刀切 —— inactivity warning、commentary、审批提示
+    都带同一标记，必须保持 v0.7.4 行为。
+    """
+    md = metadata if isinstance(metadata, dict) else {}
+    if md.get("_interim_send") is not True:
+        return False
+    text = str(content or "").lstrip().replace("\ufe0f", "")
+    return text.startswith(_LD_WORKING_PREFIX)
+
+
 def _ld_view_status(chat_id: str, *, default: str = "processing") -> str:
     """面板快照的结局词汇（``ok``/``error``/``stopped``）→ **卡级状态词汇**。
 
@@ -2070,6 +2122,12 @@ class LarkDeckMixin:
         #: 是 `_compose_frame_content()` 合成文本（可能含 terminal 命令/args）。own 模式
         #: 必须在 `send()` 里识别这个窗口并拒绝把它当正文。
         self._ld_seed_failures: Dict[str, Any] = {}
+        #: V075：每个 chat 的专用心跳卡（chat -> (message_id, 创建时刻)）。
+        #: 上游心跳 send 永远拿不到 message_id，所以复用只能由插件自己做；有界 + TTL。
+        self._ld_hb_cards: Dict[str, Any] = {}
+        #: V075：最近一次真实终态/`/stop` 时刻（chat -> monotonic），用于心跳安静窗口：
+        #: finalize 之后仍在飞的 180s 心跳不得再补一张中间卡。
+        self._ld_recent_final: Dict[str, float] = {}
         self._ld_lock = threading.Lock()
 
     def _ld_track(self, message_id: str, chat_id: str,
@@ -2804,12 +2862,254 @@ class LarkDeckMixin:
             return False
         return not _ld_is_system_notice(content)
 
+    # ------------------------------------------------------ V075 心跳合卡（P0）
+    @staticmethod
+    def _ld_hb_result() -> Any:
+        """心跳 send 的返回：成功但**故意不带 message_id**。
+
+        上游 `_run_agent_notify_long_running` 只有拿到非空 message_id 才会在下一拍走
+        `edit_message()`；而不带 metadata 的 edit 会让插件只能靠文本猜，最终可能对主卡
+        做整卡 patch（关闭 CardKit 流式会话 / 清空答案 / 把终态卡翻回 processing）。
+        返回空 id ⇒ 上游每 180s 只会继续调 `send()`，效果全部由本函数内部完成。
+        """
+        return SimpleNamespace(success=True, message_id="", error=None)
+
+    def _ld_hb_log(self, chat: str, reason: str, *, mid: str = "",
+                   code: int = 0) -> None:
+        """心跳路径的 30s 限流日志（chat + reason）；有界，不每拍刷屏。"""
+        now = time.monotonic()
+        key = f"{str(chat)}|{reason}|{int(code)}"
+        if now - float(_LD_HB_LOGGED.get(key) or 0.0) < _LD_HB_LOG_INTERVAL_S:
+            return
+        _LD_HB_LOGGED[key] = now
+        for stale, stamp in list(_LD_HB_LOGGED.items()):
+            if now - float(stamp or 0.0) > _LD_HB_LOG_INTERVAL_S * 4:
+                _LD_HB_LOGGED.pop(stale, None)
+        logger.info("[larkdeck] 心跳 %s chat=%s mid=%s code=%s",
+                    reason, chat, (mid[-6:] if mid else ""), code)
+
+    def _ld_hb_candidates(self, chat: str) -> List[str]:
+        """该 chat 当前**唯一**可写面板的 structured 主卡 key 列表。
+
+        只从 `_ld_streams` 取（finalize/`/stop` 会 pop）；`_ld_state` 里 turn_card=True 的卡
+        在非 native 终稿后不会自动清，不能作为「active」判据。返回多于一个时调用方 fail-closed。
+        """
+        chat = str(chat or "").strip()
+        if not chat:
+            return []
+        lock = getattr(self, "_ld_lock", None)
+        streams = getattr(self, "_ld_streams", None)
+        if lock is None or not isinstance(streams, dict):
+            return []
+        with lock:
+            keys: List[str] = []
+            for key, state in list(streams.items()):
+                if not isinstance(state, dict):
+                    continue
+                if str(state.get("chat_id") or "") != chat:
+                    continue
+                if state.get("engine") != "structured":
+                    continue
+                if state.get("engine_stamp") == "degraded":
+                    continue
+                if not state.get("card_id") or not state.get("message_id"):
+                    continue
+                keys.append(str(key))
+            return keys
+
+    def _ld_hb_note_final(self, chat: str) -> None:
+        """记录一次真实终态/`/stop`：在安静窗口内，在飞心跳不再补中间卡。"""
+        chat = str(chat or "").strip()
+        if not chat:
+            return
+        now = time.monotonic()
+        lock = getattr(self, "_ld_lock", None)
+        if lock is None:
+            return
+        with lock:
+            recent = getattr(self, "_ld_recent_final", None)
+            if not isinstance(recent, dict):
+                return
+            recent[chat] = now
+            if len(recent) > _LD_HB_CARD_MAX * 2:
+                cutoff = now - _LD_HB_FINAL_QUIET_S
+                for stale in [k for k, v in recent.items() if float(v or 0.0) < cutoff]:
+                    recent.pop(stale, None)
+
+    def _ld_hb_recent_final(self, chat: str) -> bool:
+        chat = str(chat or "").strip()
+        lock = getattr(self, "_ld_lock", None)
+        recent = getattr(self, "_ld_recent_final", None)
+        if not chat or lock is None or not isinstance(recent, dict):
+            return False
+        with lock:
+            stamp = float(recent.get(chat) or 0.0)
+        return bool(stamp and (time.monotonic() - stamp) < _LD_HB_FINAL_QUIET_S)
+
+    def _ld_hb_card_entry(self, chat: str) -> Any:
+        """读取/淘汰专用心跳卡表项；返回 (mid, 时刻) 或 None。"""
+        chat = str(chat or "").strip()
+        lock = getattr(self, "_ld_lock", None)
+        cards = getattr(self, "_ld_hb_cards", None)
+        if not chat or lock is None or not isinstance(cards, dict):
+            return None
+        now = time.monotonic()
+        with lock:
+            if len(cards) > _LD_HB_CARD_MAX:
+                for stale, value in list(cards.items()):
+                    if now - float((value or ("", 0.0))[1] or 0.0) > _LD_HB_CARD_TTL_S:
+                        cards.pop(stale, None)
+            item = cards.get(chat)
+            if item and now - float(item[1] or 0.0) > _LD_HB_CARD_TTL_S:
+                cards.pop(chat, None)
+                return None
+            return item
+
+    def _ld_hb_card_set(self, chat: str, message_id: str) -> None:
+        chat = str(chat or "").strip()
+        lock = getattr(self, "_ld_lock", None)
+        cards = getattr(self, "_ld_hb_cards", None)
+        if not chat or not message_id or lock is None or not isinstance(cards, dict):
+            return
+        with lock:
+            cards[chat] = (str(message_id), time.monotonic())
+
+    def _ld_hb_card_drop(self, chat: str) -> None:
+        lock = getattr(self, "_ld_lock", None)
+        cards = getattr(self, "_ld_hb_cards", None)
+        if lock is None or not isinstance(cards, dict):
+            return
+        with lock:
+            cards.pop(str(chat or "").strip(), None)
+
+    async def _ld_hb_dedicated(self, chat: str, content: str) -> Any:
+        """无 active 主卡时：**只建一张**专用静默卡，后续每拍复用同一张。"""
+        entry = self._ld_hb_card_entry(chat)
+        mid = str((entry or ("", 0.0))[0] or "")
+        card = self._ld_render_card(
+            chat, content, streaming=False, status="completed", panel=None,
+            footer=None, turn_card=False, status_locked=True)
+        if mid and self._ld_known(mid) is not None:
+            res = await self._ld_update_card(chat, mid, card)
+            if res is not None and getattr(res, "success", False):
+                self._ld_hb_card_set(chat, mid)
+                self._ld_hb_log(chat, "专用卡更新", mid=mid)
+                return self._ld_hb_result()
+            if self._ld_known(mid) is None:
+                self._ld_hb_card_drop(chat)   # 被撤回/删除：下一拍允许重建一张
+            self._ld_hb_log(chat, "专用卡更新失败", mid=mid,
+                            code=int(getattr(res, "code", 0) or 0))
+            return self._ld_hb_result()
+        res = await self._ld_send_card(chat, card)
+        new_mid = str(getattr(res, "message_id", "") or "") if res is not None else ""
+        if res is not None and getattr(res, "success", False) and new_mid:
+            self._ld_track(new_mid, chat, turn_card=False)
+            self._ld_hb_card_set(chat, new_mid)
+            self._ld_hb_log(chat, "专用卡新建", mid=new_mid)
+            _log_outbound("card", chat, content, new_mid)
+            return self._ld_hb_result()
+        self._ld_hb_log(chat, "专用卡新建失败",
+                        code=int(getattr(res, "code", 0) or 0))
+        return self._ld_hb_result()
+
+    async def _ld_hb_merge_stream(self, chat: str, content: str) -> Any:
+        """把心跳写进 active structured 主卡的 panel header；绝不碰 answer。"""
+        keys = self._ld_hb_candidates(chat)
+        if len(keys) != 1:
+            self._ld_hb_log(chat, "无/多 active 主卡抑制")
+            return self._ld_hb_result()
+        key = keys[0]
+        lock = self._ld_card_lock(key)
+        if lock.locked():
+            self._ld_hb_log(chat, "帧锁忙，本拍跳过")
+            return self._ld_hb_result()
+        try:
+            async with lock:
+                state = self._ld_stream_get(key)   # 锁内重读，绝不用锁外副本
+                if not isinstance(state, dict) or str(state.get("chat_id") or "") != chat:
+                    return self._ld_hb_result()
+                engine = str(state.get("engine") or "")
+                card_id = str(state.get("card_id") or "")
+                mid = str(state.get("message_id") or "")
+                if (engine != "structured" or state.get("engine_stamp") == "degraded"
+                        or not card_id or not mid):
+                    self._ld_hb_log(chat, "主卡通道不可用抑制", mid=mid)
+                    return self._ld_hb_result()
+                if not _cfg("unified_panel"):
+                    self._ld_hb_log(chat, "面板已关，心跳不写", mid=mid)
+                    return self._ld_hb_result()
+                if state.get("ck_panel_missing") or not state.get("ck_has_panel"):
+                    self._ld_hb_log(chat, "主卡无面板元素，心跳不写", mid=mid)
+                    return self._ld_hb_result()
+                view = self._ld_cardview(
+                    chat, str(state.get("last_rendered_body") or ""),
+                    status="processing", started=state.get("t0"), message_id=mid)
+                if not getattr(view, "panel_enabled", False):
+                    return self._ld_hb_result()
+                view.panel.title = _cardview.title_with_note(view.panel.title, content)
+                partial = _cardview.panel_partial(view.panel)
+                signature = json.dumps(partial, sort_keys=True, ensure_ascii=False)
+                note = str(content)
+                if signature == state.get("ck_panel_sig"):
+                    self._ld_stream_put(key, {**state, "hb_title": note})
+                    self._ld_hb_log(chat, "面板未变", mid=mid)
+                    return self._ld_hb_result()
+                seq = int(_ck_seq(state)) + 1
+                res = await self._ld_ck_partial(card_id, "panel", partial, seq)
+                if not res.ok:
+                    updated = dict(state)
+                    if int(res.code) == 300313:
+                        # panel 元素不在卡里（配置/结构分叉）：只标死，不动车道、不 fail。
+                        updated["ck_panel_missing"] = True
+                    elif int(res.code) in _CARD_DEATH_DECOR_CODES:
+                        updated["ck_panel_dead"] = int(res.code)
+                    self._ld_stream_put(key, updated)
+                    self._ld_hb_log(chat, "面板写失败", mid=mid, code=int(res.code))
+                    return self._ld_hb_result()
+                updated = {**state, "ck_seq": seq, "ck_panel_sig": signature,
+                           "hb_title": note}
+                _ck_window_note(updated, time.monotonic())
+                self._ld_stream_put(key, updated)
+                self._ld_hb_log(chat, "面板已写", mid=mid)
+        except Exception:
+            logger.debug("[larkdeck] 心跳合卡异常（抑制本拍）", exc_info=True)
+        return self._ld_hb_result()
+
+    async def _ld_hb_dispatch(self, chat: str, content: str) -> Any:
+        """心跳 send 的总入口；不抛、不回落 `super().send`、不新建中间卡（除唯一专用卡）。"""
+        chat = str(chat or "").strip()
+        try:
+            keys = self._ld_hb_candidates(chat)
+        except Exception:
+            logger.debug("[larkdeck] 心跳候选查找异常（抑制）", exc_info=True)
+            keys = []
+        if len(keys) == 1:
+            return await self._ld_hb_merge_stream(chat, content)
+        if len(keys) > 1:
+            self._ld_hb_log(chat, "多 active 主卡抑制")
+            return self._ld_hb_result()
+        if self._ld_hb_recent_final(chat):
+            self._ld_hb_log(chat, "终态安静窗口抑制")
+            return self._ld_hb_result()
+        return await self._ld_hb_dedicated(chat, content)
+
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None, **kwargs: Any):
         """把回复渲染成卡片；任何一步出问题都回落到内置的纯文本发送。"""
         _ld_visual_engine()
         _ld_card_status_header_enabled()
         _ld_show_reasoning()
+        # V075 P0：上游长任务心跳（默认 `⏳ Working — …` + `_interim_send=True`）在
+        # 任何 guarded/内容改写之前处理；返回空 message_id，上游永不进入 edit 路径。
+        # 这里只处理默认模式；generic 模式、非心跳 interim（告警/commentary）保持原行为。
+        if (_ld_is_working_heartbeat(content, metadata)
+                and _cfg("cards") and getattr(self, "_client", None)):
+            try:
+                return await self._ld_hb_dispatch(str(chat_id or "").strip(), content)
+            except Exception:
+                # 心跳不是用户消息正文：任何异常都只抑制本拍，绝不落 fallback 新建中间卡。
+                logger.debug("[larkdeck] 心跳处理异常（抑制本拍）", exc_info=True)
+                return self._ld_hb_result()
         # v0.7.0 P1：native seed 失败后的短窗口里，core 的 `_first_send` 传进来的
         # `content` 可能是 `_compose_frame_content()` 合成文本（含 terminal 命令/args）。
         # own 模式在这个窗口内只允许渲染 own 累积；空则渲染干净的流式占位卡，绝不把
@@ -2884,6 +3184,16 @@ class LarkDeckMixin:
         _ld_visual_engine()
         _ld_card_status_header_enabled()
         _ld_show_reasoning()
+        # V075 防御：新设计下上游永远拿不到心跳 mid，正常不会走到这里；若旧缓存/异常路径
+        # 把 `⏳ Working — …` 当普通 edit 发来，且目标卡已不在我们的追踪表里（finalize 已清），
+        # 一律成功 no-op，绝不回落 `super().edit_message()` 覆盖终稿。仍在追踪的卡
+        # （真实流式正文恰好以该前缀开头）按原逻辑处理，不能误吞。
+        if not finalize:
+            _hb_text = str(content or "").lstrip().replace("\ufe0f", "")
+            if (_hb_text.startswith(_LD_WORKING_PREFIX)
+                    and self._ld_known(message_id) is None
+                    and self._ld_stream_for_message(message_id) is None):
+                return self._ld_hb_result()
         state = self._ld_known(message_id)
         stream_state = (self._ld_stream_for_message(message_id)
                         if self._ld_body_source() == "own" else None)
@@ -3497,6 +3807,7 @@ class LarkDeckMixin:
         structured = _ld_visual_engine() == "structured"
         if structured:
             new_view = self._ld_cardview(chat, text[cut:])
+            self._ld_apply_hb_title(new_view, state)   # V075：心跳标题跟着新卡走
             # A1：封旧卡之后开的新卡同样是**运行中** ⇒ 与 seed 建卡同一条配置（旧卡在上一行
             # 按 `status="completed"` 建，保持终态语义 = 折叠，两者不能混用）。
             new_view.panel.expanded = bool(_cfg("streaming_panel_expanded"))
@@ -3518,12 +3829,16 @@ class LarkDeckMixin:
         self._ld_track(new_message_id, chat)
         logger.info("[larkdeck] 卡链：封 %s（%d 字）→ 新卡 %s（余 %d 字）",
                     old_message_id[-8:], len(sealed), new_message_id[-8:], len(text) - cut)
+        _new_has_panel = _ck_has_panel_from_card(new_card_json)
         new_state = {
             **state,
             "message_id": new_message_id, "chat_id": chat, "t0": state.get("t0") or now,
             "last": text, "last_at": now, "frames": 0, "skipped": 0,
             "card_id": new_card_id, "ck_seq": 0,
             "ck_elems": _ck_elems_from_card(new_card_json),
+            # V075：新卡重新扫 panel 存在性；不继承旧卡的元素级 missing/dead 标记。
+            "ck_has_panel": _new_has_panel,
+            "ck_panel_missing": not _new_has_panel,
             "ck_summary_at": now, "ck_summary": _cards.summary_text(text),
             # 新卡的正文从 cut 开始 ⇒ 之后每一帧都按 `text[ck_offset:]` 渲染
             "ck_offset": cut,
@@ -3840,9 +4155,12 @@ class LarkDeckMixin:
                 return "stop"
             if state.get("engine_stamp") == "degraded" or not state.get("card_id"):
                 return "stop"
+            if state.get("ck_panel_missing") or not state.get("ck_has_panel"):
+                return "unchanged"          # V075：没有 panel 元素，心跳没有可写的东西
             view = self._ld_cardview(
                 chat, str(state.get("last_rendered_body") or ""), status="processing",
                 started=state.get("t0"), message_id=state.get("message_id"))
+            self._ld_apply_hb_title(view, state)
             # ⚠️ **不许**在这里自己拼标题：帧路径的标题由 `_ld_cardview` 按「回合墙钟 +
             # 真实步数」统一算（V4.5）。曾经这里用墙钟 + **trim 后**的步数另算一份，
             # 结果同一张卡的两帧在 30.0s/0 步 与 2.0s/0 步 之间互跳（审计 B 实测）。
@@ -3898,7 +4216,8 @@ class LarkDeckMixin:
 
     def _ld_cardview(self, chat: str, answer: str, *, status: str = "processing",
                      finalize: bool = False, started: Optional[float] = None,
-                     message_id: Optional[str] = None) -> "_cardview.CardView":
+                     message_id: Optional[str] = None,
+                     include_process: bool = True) -> "_cardview.CardView":
         """从面板快照构造结构化视图（V1 canary）。
 
         ``started`` 喂**页脚**：用户 2026-09-17 指定的页脚阅读顺序是「状态 → 时长 → 模型 →
@@ -3909,8 +4228,13 @@ class LarkDeckMixin:
         ⚠️ ``message_id`` **形参保留**（v0.7.2 起页脚不再用它）：它是「有 message_id 也
         不许把短码挂上去」这条反向守卫的入口（`test_v4_17b` 按状态 × 有无 mid 全枚举扫整卡），
         删掉它等于把那条守卫的**输入**一并删掉。
+
+        ``include_process=False``（V075 seed 专用）：**不读** `_panel.snapshot(chat)`，
+        只建空面板壳。seed 与 `on_stream_start` 跨钩子队列无序，seed 时刻没有合法键
+        判定“当前回合归属”；不读旧快照是唯一 fail-closed 语义。面板元素照建，后续帧
+        再按正常逻辑填入当前数据。
         """
-        snap = _panel.snapshot(chat) or {}
+        snap = (_panel.snapshot(chat) or {}) if include_process else {}
         rounds: List["_cardview.ReasoningRoundView"] = []
         for index, item in enumerate(snap.get("rounds") or []):
             if not isinstance(item, dict):
@@ -4013,6 +4337,19 @@ class LarkDeckMixin:
                 {"processing": "card.status_processing", "completed": "panel.status_ok",
                  "stopped": "panel.status_stopped", "error": "panel.status_error"}.get(
                      status, "card.status_processing")))
+
+    @staticmethod
+    def _ld_apply_hb_title(view: Any, state: Optional[Dict[str, Any]]) -> Any:
+        """把流状态里的 `hb_title` 合并进 view 的 panel header（V075）。
+
+        所有会重建 view 的路径（结构化帧、插件 3s tick、心跳合卡）都必须走这里，
+        否则 3s tick 会把上游 Working 标题擦回普通摘要，用户只能看到一闪。
+        """
+        note = str((state or {}).get("hb_title") or "").strip() if isinstance(state, dict) else ""
+        panel = getattr(view, "panel", None)
+        if note and panel is not None:
+            panel.title = _cardview.title_with_note(getattr(panel, "title", ""), note)
+        return view
 
     async def _ld_ck_delete(self, card_id: str, element_ids: List[str],
                            seq: int) -> "_CkResult":
@@ -4138,7 +4475,9 @@ class LarkDeckMixin:
             # 「新卡上先显示上一条回复的内容，随后再被改写」（2026-09-21 真机反馈 #9）。
             # 空正文 + 预加载提示正是我们要的形态，第一个 delta 到了自然长出来。
             display = ""
-            view = self._ld_cardview(chat, display, started=now)
+            # V075 P2：seed 与 `on_stream_start` 跨队列无序 ⇒ seed 绝不读面板快照，
+            # 只建空面板壳（元素必须保留，后续帧才有地方写过程数据）。
+            view = self._ld_cardview(chat, display, started=now, include_process=False)
             # A1：这一份是**运行中**的建卡实体 ⇒ 展开态取 `streaming_panel_expanded`
             # （`_ld_cardview` 的默认值仍是终态语义 `panel_expanded`，收尾整卡才用它）。
             view.panel.expanded = bool(_cfg("streaming_panel_expanded"))
@@ -4158,6 +4497,9 @@ class LarkDeckMixin:
                 "last_at": now, "frames": 0, "skipped": 0, "strips": 0,
                 "card_id": card_id, "ck_seq": 0, "engine": "structured",
                 "ck_elems": _ck_elems_from_card(card_json),
+                # V075：外层 `panel` 不在 `ck_elems` 白名单里，必须显式扫卡记录，
+                # 心跳合卡才有可靠的存在性判据（`"panel" in ck_elems` 恒假）。
+                "ck_has_panel": _ck_has_panel_from_card(card_json),
                 # ⚠️ 提示元素**不在** `ck_elems` 白名单里（那张表只收流式三件套），
                 # 「有没有提示」必须靠这个显式标志判断 —— 2026-09-21 实测：
                 # 建卡 JSON 里明明有 loading_hint，成员判断却是 False。
@@ -4199,9 +4541,15 @@ class LarkDeckMixin:
             offset = int(state.get("ck_offset") or 0)
             visible = display[offset:]
         status = _ld_view_status(chat, default="processing" if not finalize else "completed")
+        # V075：finalize 或真实新正文到达 ⇒ 清心跳标题；否则把 hb_title 合并进 panel。
+        if finalize or text != state.get("last"):
+            if state.get("hb_title"):
+                state = {**state, "hb_title": ""}
+                self._ld_stream_put(key, state)
         view = self._ld_cardview(chat, visible, status=status, finalize=finalize,
                                  started=state.get("t0"),
                                  message_id=state.get("message_id"))
+        self._ld_apply_hb_title(view, state)
         card_id = str(state.get("card_id") or "")
         if not card_id:
             return self._ld_stream_fail("structured 状态缺 card_id")
@@ -4305,6 +4653,7 @@ class LarkDeckMixin:
                 return self._ld_stream_fail("structured 收尾整卡 patch 失败")
             self._ld_stream_pop(key)
             self._ld_forget(str(state.get("message_id") or ""))
+            self._ld_hb_note_final(chat)
             _context.note_frame_ok()
             return True
         if self._ld_stream_get(key) is None:
@@ -4394,9 +4743,11 @@ class LarkDeckMixin:
                 return False
             if self._ld_transport() == "cardkit":
                 # ---- CardKit 实体卡（真打字机）：结构建实体时定死，之后只按 id 写元素 ----
-                # R3 收窄版：面板是**两块**（推理 / 工具），建实体时都定死，之后只改内容
-                panel_text, panel_tools_text = self._ld_panel_parts(
-                    chat, report_empty=bool(finalize))
+                # R3 收窄版：面板是**两块**（推理 / 工具），建实体时都定死，之后只改内容。
+                # V075 P2：seed 帧不读面板快照（跨钩子队列无序，避免闪上一回合工具行）；
+                # 空串仍会在卡里建出 panel + panel_body + panel_tools 三个元素（结构不变），
+                # 后续帧按 id 填入当前回合数据。
+                panel_text, panel_tools_text = "", ""
                 # ⚠️ 这里**故意**用 `_ld_footer(..., turn_card=True)` 而不是
                 # `_ld_frame_footer(state)`：这一帧就是**建卡那一帧**，还没有
                 # state/message_id 可用；这里只要「耗时 → 模型 → ctx」的基数页脚
@@ -4453,8 +4804,9 @@ class LarkDeckMixin:
                 return True
             # ⚠️ 同理（见上面 CardKit 那处）：**建卡那一帧**还没有 id/state ⇒ 直接算
             # 基数页脚（v0.7.2 起页脚无短码；Design D 显式传 turn_card=True）。
+            # V075 P2：patch seed 不读面板快照（panel 结构可后加，首帧整卡时再画当前数据）。
             card = self._ld_build_card(display, streaming=True,
-                                       panel=self._ld_panel(chat, report_empty=bool(finalize)),
+                                       panel=None,
                                        footer=self._ld_footer(chat_id=chat, started=now, turn_card=True))
             result = await self._ld_send_card(chat, card, reply_to=reply_to)
             if result is None or not getattr(result, "success", False):
@@ -4508,6 +4860,7 @@ class LarkDeckMixin:
                     f"收尾帧失败（{getattr(result, 'error', 'unknown')}）")
             self._ld_stream_pop(key)
             self._ld_forget(message_id)
+            self._ld_hb_note_final(chat)
             # 能走到这一行 = 本回合 native 全程可用。这是**自证**：帧一旦失败，内核会
             # 关掉本回合的 native 并改走 send/edit，**不会再发 finalize 帧**（见
             # _TRANSIENT_CODES 的说明）—— 所以这行日志本身就是「native 还在工作」的证据，
@@ -5011,6 +5364,7 @@ class LarkDeckMixin:
                 # 内核按 fail-open 回落 edit（消息不会丢）。
                 self._ld_stream_pop(key)
         if redrawn:
+            self._ld_hb_note_final(chat)
             logger.info("[larkdeck] 已把中止态重绘到卡片（chat=%s）", chat)
         return redrawn
 

@@ -3048,10 +3048,8 @@ MUTATIONS = [
      '                    view.footer = None',
      'test_units'),
     ('V073-2u-结构化收尾状态写死 processing（收尾丢 ✅）', 'core/adapter.py',
-     '        status = _ld_view_status(chat, default="processing" if not finalize else "completed")\n'
-     '        view = self._ld_cardview(chat, visible, status=status, finalize=finalize,',
-     '        status = "processing"  # V073-2u mutated\n'
-     '        view = self._ld_cardview(chat, visible, status=status, finalize=finalize,',
+     '        status = _ld_view_status(chat, default="processing" if not finalize else "completed")',
+     '        status = "processing"  # V073-2u mutated',
      'test_units'),
     ('V073-2v-legacy 收尾 footer 不注入 frame_status（丢 ✅）', 'core/adapter.py',
      '            card = self._ld_build_card(tail_visible or " ", streaming=False,\n'
@@ -3094,6 +3092,85 @@ MUTATIONS = [
      '            if True:  # V073-2aa mutated\n'
      '                for other in self._ld_state.values():\n'
      '                    if other.get("chat_id") == chat_id:',
+     'test_units'),
+    # ---- v0.7.5：长任务心跳合卡 + seed 防闪旧 ---------------------------------
+    ('V075-1-结构化 seed 又读旧 panel 快照（追问先闪旧工具）', 'core/adapter.py',
+     '            view = self._ld_cardview(chat, display, started=now, include_process=False)',
+     '            view = self._ld_cardview(chat, display, started=now, include_process=True)  # V075-1 mutated',
+     'test_units'),
+    ('V075-2-legacy seed 又读旧 panel 快照', 'core/adapter.py',
+     '                panel_text, panel_tools_text = "", ""',
+     '                panel_text, panel_tools_text = self._ld_panel_parts(\n'
+     '                    chat, report_empty=bool(finalize))  # V075-2 mutated',
+     'test_units'),
+    ('V075-3-patch seed 又带上面板快照', 'core/adapter.py',
+     '            card = self._ld_build_card(display, streaming=True,\n'
+     '                                       panel=None,',
+     '            card = self._ld_build_card(display, streaming=True,\n'
+     '                                       panel=self._ld_panel(chat, report_empty=bool(finalize)),  # V075-3 mutated',
+     'test_units'),
+    ('V075-4-seed 把 panel 元素整个摘掉（CardKit 结构退化）', 'core/adapter.py',
+     '            view.panel.expanded = bool(_cfg("streaming_panel_expanded"))\n'
+     '            view.loading_hint = True      # 建卡即插入「正在加载上下文...」（首字到达后删）',
+     '            view.panel_enabled = False  # V075-4 mutated\n'
+     '            view.panel.expanded = bool(_cfg("streaming_panel_expanded"))\n'
+     '            view.loading_hint = True      # 建卡即插入「正在加载上下文...」（首字到达后删）',
+     'test_units'),
+    ('V075-5-seed 误清 panel 状态（旧卡恢复/stop 重绘被破坏）', 'core/adapter.py',
+     '            display = ""\n'
+     '            # V075 P2：seed 与 `on_stream_start` 跨队列无序 ⇒ seed 绝不读面板快照，',
+     '            _panel.reset()  # V075-5 mutated\n'
+     '            display = ""\n'
+     '            # V075 P2：seed 与 `on_stream_start` 跨队列无序 ⇒ seed 绝不读面板快照，',
+     'test_units'),
+    ('V075-6-心跳分支被关掉（又出现中间 Working 卡）', 'core/adapter.py',
+     '        if (_ld_is_working_heartbeat(content, metadata)\n'
+     '                and _cfg("cards") and getattr(self, "_client", None)):',
+     '        if (False and _ld_is_working_heartbeat(content, metadata)\n'
+     '                and _cfg("cards") and getattr(self, "_client", None)):  # V075-6 mutated',
+     'test_units'),
+    ('V075-7-心跳返回主卡 mid（上游下一拍会走 edit）', 'core/adapter.py',
+     '        return SimpleNamespace(success=True, message_id="", error=None)',
+     '        return SimpleNamespace(success=True, message_id="om_main", error=None)  # V075-7 mutated',
+     'test_units'),
+    ('V075-8-专用心跳卡不复用（每 180s 新建一张）', 'core/adapter.py',
+     '        if mid and self._ld_known(mid) is not None:',
+     '        if False and mid and self._ld_known(mid) is not None:  # V075-8 mutated',
+     'test_units'),
+    ('V075-9-心跳标题不持久化（3s tick 擦回普通标题）', 'core/adapter.py',
+     '                updated = {**state, "ck_seq": seq, "ck_panel_sig": signature,\n'
+     '                           "hb_title": note}',
+     '                updated = {**state, "ck_seq": seq, "ck_panel_sig": signature}  # V075-9 mutated',
+     'test_units'),
+    ('V075-10-finalize 不清心跳标题（终卡残留 Working）', 'core/adapter.py',
+     '            if state.get("hb_title"):\n'
+     '                state = {**state, "hb_title": ""}\n'
+     '                self._ld_stream_put(key, state)',
+     '            if False and state.get("hb_title"):  # V075-10 mutated\n'
+     '                state = {**state, "hb_title": ""}\n'
+     '                self._ld_stream_put(key, state)',
+     'test_units'),
+    ('V075-11-心跳标题合并函数失效（面板里看不到 Working）', 'core/adapter.py',
+     '            panel.title = _cardview.title_with_note(getattr(panel, "title", ""), note)',
+     '            pass  # V075-11 mutated',
+     'test_units'),
+    ('V075-12-所有 interim 都被当心跳（告警/commentary 被吞）', 'core/adapter.py',
+     '    return text.startswith(_LD_WORKING_PREFIX)',
+     '    return True  # V075-12 mutated',
+     'test_units'),
+    ('V075-13-终态安静窗口失效（finalize 后又补中间卡）', 'core/adapter.py',
+     '        return bool(stamp and (time.monotonic() - stamp) < _LD_HB_FINAL_QUIET_S)',
+     '        return False  # V075-13 mutated',
+     'test_units'),
+    ('V075-14-无 active 时抑制而不建唯一专用卡', 'core/adapter.py',
+     '        return await self._ld_hb_dedicated(chat, content)',
+     '        return self._ld_hb_result()  # V075-14 mutated',
+     'test_units'),
+    ('V075-15-心跳对无 panel 的卡仍写/误判（不 no-op）', 'core/adapter.py',
+     '            if state.get("ck_panel_missing") or not state.get("ck_has_panel"):\n'
+     '                return "unchanged"          # V075：没有 panel 元素，心跳没有可写的东西',
+     '            if False:  # V075-15 mutated\n'
+     '                return "unchanged"          # V075：没有 panel 元素，心跳没有可写的东西',
      'test_units'),
 
 

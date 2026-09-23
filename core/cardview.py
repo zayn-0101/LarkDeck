@@ -639,6 +639,36 @@ def panel_elements(view: PanelView) -> List[Dict[str, Any]]:
     return elements
 
 
+def title_with_note(title: Any, note: str) -> Any:
+    """把心跳/状态 note 合并进面板 header 标题（V075）。
+
+    标题可能是裸字符串或 ``i18n_text`` 节点（``content`` + ``i18n_content``）。
+    合并规则：``<note> · <原摘要>``，逐语言合并；空 note 或标题已含 note 时原样返回。
+    纯函数，不碰 IO；``panel_shell`` 的 ``_title_node`` 会把它变成 ``plain_text``。
+    """
+    text = str(note or "").strip()
+    if not text:
+        return title
+    if isinstance(title, dict):
+        out = dict(title)
+        base = str(out.get("content") or "")
+        if not base.startswith(text):
+            out["content"] = f"{text} · {base}" if base else text
+        i18n = out.get("i18n_content")
+        if isinstance(i18n, dict):
+            merged: Dict[str, Any] = {}
+            for lang, value in i18n.items():
+                seg = str(value or "")
+                merged[lang] = (f"{text} · {seg}" if seg and not seg.startswith(text)
+                                else (text if not seg else seg))
+            out["i18n_content"] = merged
+        return out
+    base = str(title or "")
+    if base.startswith(text):
+        return base
+    return f"{text} · {base}" if base else text
+
+
 def panel_shell(view: PanelView) -> Dict[str, Any]:
     """外层面板的 collapsible_panel 结构。
 

@@ -14435,6 +14435,354 @@ def test_v073_stop_redraw_survives_later_notice() -> None:
         adapter._apply_metrics_config()
 
 
+def _v075_panel_partials(calls: Dict[str, Any]) -> list:
+    """假 CardKit 账本里的 `partial_update_element("panel")` 载荷列表。"""
+    out: list = []
+    for item in calls.get("batch", []):
+        actions = item[0] if isinstance(item[0], list) else json.loads(item[0])
+        for action in actions if isinstance(actions, list) else [actions]:
+            if (action.get("action") == "partial_update_element"
+                    and action.get("params", {}).get("element_id") == "panel"):
+                out.append(action["params"]["partial_element"])
+    return out
+
+
+def _v075_entity(calls: Dict[str, Any], index: int = 0) -> Dict[str, Any]:
+    raw = calls["entity"][index]
+    return raw if isinstance(raw, dict) else json.loads(raw)
+
+
+def _v075_heartbeat(minutes: int = 3, detail: str = "iteration 11, terminal") -> str:
+    return f"⏳ Working — {minutes} min — {detail}"
+
+
+def test_v075_heartbeat_merges_into_active_panel_without_new_card():
+    """V075 P0：心跳 send 合入 active 主卡 panel，返回空 mid，不新建/不整卡 patch/不碰 answer。"""
+    chat, turn = "oc_v075hb", "t-hb"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    key = f"{chat}:{turn}"
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        assert _run(raw.send_stream_frame("正文", chat_id=chat, turn_id=turn))
+        state = raw._ld_stream_get(key) or {}
+        mid = str(state.get("message_id") or "")
+        assert mid, state
+        create_before = int(calls["create"])
+        patch_before = int(calls["patch"])
+        answer_before = [c for c in calls["content"] if c[0] == cards.CARDKIT_ANSWER_ID]
+        send_attempts: list = []
+
+        async def _forbidden(*_a: Any, **_k: Any):
+            send_attempts.append((_a, _k))
+            raise AssertionError("心跳不许调用 _ld_send_card 新建卡")
+
+        raw._ld_send_card = _forbidden          # type: ignore[assignment]
+        res = _run(raw.send(chat, _v075_heartbeat(3),
+                            metadata={"_interim_send": True}))
+        assert getattr(res, "success", False) is True, res
+        assert getattr(res, "message_id", None) == "",\
+            "心跳必须返回空 message_id，否则上游下一拍会走 edit_message"
+        assert int(calls["create"]) == create_before, "心跳新建了 CardKit 实体"
+        assert int(calls["patch"]) == patch_before, "心跳整卡 patch 了主卡"
+        assert [c for c in calls["content"] if c[0] == cards.CARDKIT_ANSWER_ID] == answer_before,\
+            "心跳写了 answer 元素"
+        partials = _v075_panel_partials(calls)
+        assert partials, calls["batch"]
+        panel_blob = json.dumps(partials[-1], ensure_ascii=False)
+        assert _v075_heartbeat(3) in panel_blob, panel_blob
+        state2 = raw._ld_stream_get(key) or {}
+        assert state2.get("message_id") == mid
+        assert str(state2.get("hb_title") or "").startswith("⏳ Working"), state2
+        assert _run(raw._ld_heartbeat_tick(chat, key)) == "unchanged",\
+            "插件 3s tick 必须保留心跳标题（不能擦回普通摘要）"
+
+        # 第二拍仍然只更新同卡 panel；上游拿不到 mid，所以只能继续 send。
+        res2 = _run(raw.send(chat, _v075_heartbeat(6),
+                             metadata={"_interim_send": True}))
+        assert getattr(res2, "message_id", None) == ""
+        assert int(calls["create"]) == create_before and int(calls["patch"]) == patch_before
+
+        # finalize 终卡绝不能残留 Working 标题；正文仍是真实回答。
+        assert _run(raw.send_stream_frame("正文完", finalize=True,
+                                          chat_id=chat, turn_id=turn))
+        final_blob = json.dumps(calls["patch_cards"][-1], ensure_ascii=False)
+        assert "⏳ Working" not in final_blob, final_blob
+        assert "正文完" in final_blob, final_blob
+
+        # finalize 后在飞心跳落进安静窗口：不得再补一张中间卡。
+        create_after = int(calls["create"])
+        res3 = _run(raw.send(chat, _v075_heartbeat(9),
+                             metadata={"_interim_send": True}))
+        assert getattr(res3, "success", False) is True
+        assert getattr(res3, "message_id", None) == ""
+        assert int(calls["create"]) == create_after,\
+            "终态安静窗口内不该再建心跳卡"
+        assert not send_attempts, "终态安静窗口内仍尝试了新建专用心跳卡"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v075_heartbeat_without_active_card_reuses_one_dedicated_card():
+    """V075 P0：无 active 主卡时只建一张专用静默卡，后续每拍复用；非 Working interim 不受影响。"""
+    saved_config = dict(adapter._CONFIG)
+    raw = _make()
+    sent: list = []
+    updated: list = []
+
+    async def _send_card(chat_id, card, **kwargs):
+        sent.append((chat_id, card))
+        return _StubResult(True, f"om_hb_{len(sent)}")
+
+    async def _update_card(chat_id, message_id, card):
+        updated.append((chat_id, message_id, card))
+        return _StubResult(True, message_id)
+
+    raw._ld_send_card = _send_card                # type: ignore[assignment]
+    raw._ld_update_card = _update_card            # type: ignore[assignment]
+    adapter.configure(visual_engine="structured", unified_panel=True)
+    try:
+        first = _run(raw.send("oc_v075ded", _v075_heartbeat(3),
+                              metadata={"_interim_send": True}))
+        second = _run(raw.send("oc_v075ded", _v075_heartbeat(6),
+                               metadata={"_interim_send": True}))
+        assert getattr(first, "message_id", None) == ""
+        assert getattr(second, "message_id", None) == ""
+        assert len(sent) == 1, f"无 active 时不应每拍新建卡：{len(sent)}"
+        assert len(updated) == 1 and updated[0][1] == "om_hb_1", updated
+        blob = json.dumps(sent[0][1], ensure_ascii=False)
+        assert "collapsible_panel" not in blob and "footer" not in blob and "header" not in blob,\
+            f"专用心跳卡必须静默：{blob}"
+
+        # 对照：非 Working 的 interim（告警/commentary）仍按 v0.7.4 发一张静默卡。
+        assert _run(raw.send("oc_v075ded", "⚠️ No activity for 3 min. Will time out soon.",
+                             metadata={"_interim_send": True}))
+        assert len(sent) == 2, "非 Working interim 被一刀切吞掉了"
+        entry = raw._ld_known("om_hb_2") or {}
+        assert entry.get("turn_card") is False, entry
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_config)
+        adapter._apply_metrics_config()
+
+
+def test_v075_heartbeat_ambiguous_streams_fail_closed():
+    """V075 P0：同 chat 多条 active 流（并发 session）⇒ 谁都不写、也不建卡。"""
+    chat = "oc_v075multi"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id="t-a"))
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id="t-b"))
+        create_before = int(calls["create"])
+        batch_before = len(calls["batch"])
+        content_before = len(calls["content"])
+        res = _run(raw.send(chat, _v075_heartbeat(3),
+                            metadata={"_interim_send": True}))
+        assert getattr(res, "success", False) is True
+        assert getattr(res, "message_id", None) == ""
+        assert int(calls["create"]) == create_before
+        assert len(calls["batch"]) == batch_before and len(calls["content"]) == content_before,\
+            "多 active 流时不许挑选最近一条写面板"
+        assert not raw._ld_hb_cards, raw._ld_hb_cards
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v075_heartbeat_panel_missing_is_noop_not_degrade():
+    """V075 P0：unified_panel=false（实体卡无 panel）⇒ 心跳 no-op，不写、不降级车道。"""
+    chat, turn = "oc_v075nopanel", "t-np"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    key = f"{chat}:{turn}"
+    try:
+        adapter.configure(unified_panel=False)
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        state = raw._ld_stream_get(key) or {}
+        assert state.get("ck_has_panel") is False, state
+        # 配置改回 true：心跳/3s tick 仍必须以 ck_has_panel=False 为判据 no-op；
+        # 否则会去写一个卡里根本不存在的 panel 元素（真机 300313）。
+        adapter.configure(unified_panel=True)
+        panel.bind_chat_session(chat, "s-v075nopanel")
+        panel.record_tool_started("s-v075nopanel", "t-np", "NEW_TOOL_V075",
+                                  {"command": "new-cmd"}, tool_call_id="tc-new")
+        batch_before = len(calls["batch"])
+        content_before = len(calls["content"])
+        res = _run(raw.send(chat, _v075_heartbeat(3),
+                            metadata={"_interim_send": True}))
+        assert getattr(res, "message_id", None) == ""
+        assert len(calls["batch"]) == batch_before and len(calls["content"]) == content_before,\
+            "面板不存在时心跳仍写了元素"
+        state2 = raw._ld_stream_get(key) or {}
+        assert state2.get("card_id") == state.get("card_id") and state2.get("engine") == "structured",\
+            f"心跳不得把无面板主卡降级：{state2}"
+        assert _run(raw._ld_heartbeat_tick(chat, key)) == "unchanged"
+        assert len(calls["batch"]) == batch_before, "tick 对无 panel 的卡仍发起了写"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v075_seed_does_not_paint_previous_turn_tools():
+    """V075 P2：新回合 seed 不读上一回合 panel 快照；结构仍在，状态不被清。"""
+    chat, turn = "oc_v075seed", "t-new"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    try:
+        panel.bind_chat_session(chat, "s-v075seed")
+        panel.record_reasoning("s-v075seed", "t-old", "OLD_REASONING_V075")
+        panel.record_tool_started("s-v075seed", "t-old", "OLD_TOOL_V075",
+                                  {"command": "old-cmd"}, tool_call_id="tc-old")
+        snap_before = panel.snapshot(chat) or {}
+        assert [t.get("name") for t in snap_before.get("tools") or []] == ["OLD_TOOL_V075"]
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        entity = _v075_entity(calls)
+        blob = json.dumps(entity, ensure_ascii=False)
+        assert "OLD_TOOL_V075" not in blob, blob
+        assert "OLD_REASONING_V075" not in blob, blob
+        assert "panel" in [e.get("element_id") for e in entity["body"]["elements"]],\
+            "seed 空面板不能把 panel 元素整个摘掉"
+        snap_after = panel.snapshot(chat) or {}
+        assert [t.get("name") for t in snap_after.get("tools") or []] == ["OLD_TOOL_V075"],\
+            "seed 只许只读，不能清 panel 状态"
+
+        # on_stream_start 后的 live 帧照常画当前回合数据；旧数据不再出现。
+        panel.begin_turn("s-v075seed", "t-current")
+        panel.record_tool_started("s-v075seed", "t-current", "NEW_TOOL_V075",
+                                  {"command": "new-cmd"}, tool_call_id="tc-new")
+        assert _run(raw.send_stream_frame("正文", chat_id=chat, turn_id=turn))
+        partials = _v075_panel_partials(calls)
+        assert partials, calls["batch"]
+        live_blob = json.dumps(partials[-1], ensure_ascii=False)
+        assert "NEW_TOOL_V075" in live_blob and "OLD_TOOL_V075" not in live_blob, live_blob
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v075_legacy_cardkit_seed_also_starts_empty():
+    """V075 P2：legacy CardKit seed 也不读旧快照，但 panel/panel_body/panel_tools 结构仍在。
+
+    v0.7.1 起 `visual_engine=legacy` 已退役（配置会被改写成 structured），所以这里直接
+    替换模块级 `_ld_visual_engine`，专门覆盖那条仍保留的 legacy 建卡代码路径。
+    """
+    chat, turn = "oc_v075legacy", "t-lg"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    old_engine = adapter._ld_visual_engine
+    try:
+        adapter._ld_visual_engine = lambda: "legacy"
+        panel.bind_chat_session(chat, "s-v075legacy")
+        panel.record_tool_started("s-v075legacy", "t-old", "OLD_TOOL_V075",
+                                  {"command": "old-cmd"}, tool_call_id="tc-old")
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        entity = _v075_entity(calls)
+        blob = json.dumps(entity, ensure_ascii=False)
+        assert "OLD TOOL V075" not in blob, blob
+        assert "old-cmd" not in blob, blob
+        ids = [e.get("element_id") for e in entity["body"]["elements"]]
+        assert "panel" in ids, ids
+        assert "panel_body" in blob and "panel_tools" in blob, blob
+    finally:
+        adapter._ld_visual_engine = old_engine
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v075_patch_seed_does_not_paint_previous_turn_tools():
+    """V075 P2：patch 车道 seed 也不带旧 panel（首帧整卡时才画当前数据）。
+
+    同 legacy 用例：强制模块级 visual engine 走 legacy/patch 代码路径。
+    """
+    saved_config = dict(adapter._CONFIG)
+    raw = _make(native_transport="patch")
+    adapter.configure(visual_engine="structured")
+    old_engine = adapter._ld_visual_engine
+    chat, turn = "oc_v075patch", "t-patch"
+    try:
+        adapter._ld_visual_engine = lambda: "legacy"
+        panel.bind_chat_session(chat, "s-v075patch")
+        panel.record_tool_started("s-v075patch", "t-old", "OLD_TOOL_V075",
+                                  {"command": "old-cmd"}, tool_call_id="tc-old")
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        payload = json.loads(raw.calls[0][2])
+        blob = json.dumps(payload, ensure_ascii=False)
+        assert "OLD_TOOL_V075" not in blob, blob
+        assert "collapsible_panel" not in blob, "patch seed 不该带旧/空面板"
+    finally:
+        adapter._ld_visual_engine = old_engine
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_config)
+        adapter._apply_metrics_config()
+        panel.reset()
+        context.reset()
+
+
+def test_v075_new_turn_after_finalize_creates_new_card():
+    """V075 P1 回归：不同入站回合各自一张卡，禁止复用上一回合终卡。"""
+    chat = "oc_v075cross"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id="t-1"))
+        mid1 = str((raw._ld_stream_get(f"{chat}:t-1") or {}).get("message_id") or "")
+        assert mid1
+        assert _run(raw.send_stream_frame("第一回合完", finalize=True,
+                                          chat_id=chat, turn_id="t-1"))
+        create_after_final = int(calls["create"])
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id="t-2"))
+        mid2 = str((raw._ld_stream_get(f"{chat}:t-2") or {}).get("message_id") or "")
+        assert int(calls["create"]) == create_after_final + 1, "新回合必须新建卡"
+        assert mid2, "新回合卡必须有 message_id"
+        patch_mids = [str(x) for x in calls.get("patch_mids") or []]
+        assert patch_mids.count(mid1) == 1, f"旧终卡只该有一次收尾 patch：{patch_mids}"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v075_heartbeat_exception_suppresses_without_fallback():
+    """V075 P0：心跳 helper 异常也只抑制本拍，绝不落 `super().send` 新建中间卡。"""
+    saved_config = dict(adapter._CONFIG)
+    raw = _make()
+    adapter.configure(visual_engine="structured", unified_panel=True)
+
+    async def _boom(*_a: Any, **_k: Any):
+        raise RuntimeError("heartbeat boom")
+
+    raw._ld_hb_dispatch = _boom                    # type: ignore[assignment]
+    try:
+        res = _run(raw.send("oc_v075boom", _v075_heartbeat(3),
+                            metadata={"_interim_send": True}))
+        assert getattr(res, "success", False) is True
+        assert getattr(res, "message_id", None) == ""
+        assert not [c for c in raw.calls if c[0] == "SUPER.send"],\
+            "异常落回了内置 send（会新建中间卡）"
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_config)
+        adapter._apply_metrics_config()
+
+
+def test_v075_upstream_heartbeat_loop_never_gets_message_id():
+    """V075 P0：复刻 `run_turn.py:3761-3775` 决策循环 —— 两拍只有两次 send，edit 哨兵零调用。"""
+    chat, turn = "oc_v075loop", "t-loop"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    edits: list = []
+
+    async def _edit_sentinel(chat_id, message_id, content, *, finalize=False):
+        edits.append((chat_id, message_id, content))
+        return _StubResult(True, message_id)
+
+    raw.edit_message = _edit_sentinel             # type: ignore[assignment]
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        heartbeat_msg_id = None
+        for minutes in (3, 6):
+            text = _v075_heartbeat(minutes)
+            if heartbeat_msg_id:
+                _run(raw.edit_message(chat, heartbeat_msg_id, text))
+            else:
+                res = _run(raw.send(chat, text, metadata={"_interim_send": True}))
+                if (getattr(res, "success", False)
+                        and getattr(res, "message_id", None)):
+                    heartbeat_msg_id = str(res.message_id)
+        assert heartbeat_msg_id is None, "上游拿到了心跳 mid，下一拍会走 edit"
+        assert edits == [], f"上游 edit 路径被触发：{edits}"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
 def main() -> int:
     # `--only <子串>`：只跑名字里含该子串的用例。**专供变异判读**（审计 A：单条变异 idle 28s、
     # 重载 89s，秒级判读只能靠「preflight + 只跑受影响的那几条用例」）。不是发布门禁 ——
