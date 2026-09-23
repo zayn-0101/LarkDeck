@@ -218,10 +218,11 @@ _TEXT_PROFILE_STYLES: Dict[str, Dict[str, Dict[str, str]]] = {
         "notice": {"default": "notation", "pc": "notation", "mobile": "notation"},
     },
     # 整体紧凑：正文 normal(14px)，面板/脚注 notation(12px)。
-    # `x-small`（v0.7.3 细节行/Error 块专用）：markdown 宿主已真机确认更小；
-    # `div.text=lark_md` / `plain_text` 宿主 2026-09-23 探针服务端均 `code=0`（目视待确认）。
-    # ⚠️ 这是**字面量**：没有运行时自动回退；若某宿主被拒/不变小，发布前必须把该宿主改回
-    # `notation` 并重跑断言/变异/夹具。其它位置继续只用官方文档列出的 `normal` / `notation`。
+    # `x-small` 只用于**工具细节行**的 markdown / `plain_text` 两宿主：2026-09-23 真机目视
+    # 确认确实更小。Error/Result 块（`div.text=lark_md` 宿主）真机目视 x-small 与 notation
+    # **同大** ⇒ 已按 §6.10.10 回退规则改回 `notation`（服务端接受但客户端不生效）。
+    # ⚠️ 这是**字面量**：没有运行时自动回退；若以后某宿主改版后失效，必须改代码并重跑
+    # 断言/变异/夹具。其它位置继续只用官方文档列出的 `normal` / `notation`。
     "compact": {
         "body": {"default": "normal", "pc": "normal", "mobile": "normal"},
         "panel": {"default": "notation", "pc": "notation", "mobile": "notation"},

@@ -2827,11 +2827,11 @@ MUTATIONS = [
      '            "text": {"tag": "plain_text", "content": f"↳ {text}",\n'
      '                     "text_color": "grey", "text_size": "notation"},',
      'test_units'),
-    ('V073-1c-Error/Result 块退回 notation', 'core/cardview.py',
+    ('V073-1c-Error/Result 块被错误放大成 x-small（回退规则失效）', 'core/cardview.py',
+     '        "text": {"tag": "lark_md", "content": f"**{label}**\\n```\\n{block}\\n```",\n'
+     '                 "text_size": PANEL_TEXT_SIZE},',
      '        "text": {"tag": "lark_md", "content": f"**{label}**\\n```\\n{block}\\n```",\n'
      '                 "text_size": "x-small"},',
-     '        "text": {"tag": "lark_md", "content": f"**{label}**\\n```\\n{block}\\n```",\n'
-     '                 "text_size": "notation"},',
      'test_units'),
     ('V073-2a-页脚把 panel 快照兜底加回来（turn 侧偷状态）', 'core/adapter.py',
      '            ctx_snap = _context.snapshot() or {}\n'

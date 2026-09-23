@@ -111,7 +111,7 @@ config_schema:
   text_profile:
     type: string
     default: "compact"
-    description: "CardKit 设备字号档位：compact（默认：面板/脚注 notation、正文 normal；真机视觉待确认）/ off（不缩放）/ mobile_friendly（PC 小、手机大）/ large（正文更大）。⚠️ 工具详情行与 Error/Result 块是**字面量 `x-small`**，不随本档位（含 large）放大；2026-09-23 宿主矩阵三宿主服务端均 `code=0`（真机目视待确认），若某宿主被拒/不变小需改回 `notation`（无运行时自动回退）"
+    description: "CardKit 设备字号档位：compact（默认：面板/脚注 notation、正文 normal；真机视觉待确认）/ off（不缩放）/ mobile_friendly（PC 小、手机大）/ large（正文更大）。⚠️ 工具细节行（markdown / plain_text 两宿主）是**字面量 `x-small`**，2026-09-23 真机确认更小、不随本档位（含 large）放大；Error/Result 块（`div.text=lark_md` 宿主）目视 `x-small` 与 `notation` **同大** ⇒ 已按回退规则改回 `notation`。无运行时自动回退，宿主行为变化需改代码并重跑全量变异"
   theme:
     type: string
     default: "ap_lite"

@@ -527,8 +527,12 @@ def _tool_output_div(block: str, label: str, icon_mode: str = "line") -> Dict[st
     node: Dict[str, Any] = {
         "tag": "div",
         "margin": TOOL_DETAIL_INDENT,
+        # ⚠️ Error/Result 块**退回 `notation`**（2026-09-23 真机目视）：`div.text=lark_md`
+        # 宿主对 `text_size` 的 `x-small` **服务端接受但客户端不生效**（截图对比两段同长
+        # 代码块，字号/行高完全一致）⇒ 按 §6.10.10 回退规则只让 Error 块保持 `notation`。
+        # 细节行的 markdown / plain_text 两宿主已验证确实更小，继续用 `x-small`。
         "text": {"tag": "lark_md", "content": f"**{label}**\n```\n{block}\n```",
-                 "text_size": "x-small"},
+                 "text_size": PANEL_TEXT_SIZE},
     }
     if str(icon_mode or "line").strip().lower() != "emoji":
         # 标题行加前缀图标：Error → 警告线性版；其它（Result 类）→ 代码块图标。都已查证存在。

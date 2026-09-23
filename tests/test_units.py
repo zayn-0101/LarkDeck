@@ -13947,8 +13947,9 @@ def test_v072_is_full_run_only_stamps_a_whole_clean_matrix():
 
 
 
-def test_v073_detail_and_error_text_sizes_are_x_small() -> None:
-    """v0.7.3：工具细节行（line/emoji 两宿主）与 Error/Result 块 = ``x-small``；
+def test_v073_detail_rows_x_small_error_falls_back_to_notation() -> None:
+    """v0.7.3 + 2026-09-23 真机回退：细节行的 markdown / plain_text 两宿主确认真机更小 = ``x-small``；
+    Error/Result 块（`div.text=lark_md`）真机目视与 notation 完全同大 ⇒ 按回退规则保持 ``notation``。
     工具标题继续 ``notation``（不许整表漂移）。"""
     step = adapter._cardview.ToolStepView(
         name="terminal", title="terminal", status="ok",
@@ -13957,10 +13958,11 @@ def test_v073_detail_and_error_text_sizes_are_x_small() -> None:
     assert len(line) >= 3, f"生产元素结构变了（line）：{line}"
     assert line[0].get("text_size") == "notation", line[0]
     assert line[1].get("text_size") == "x-small", line[1]
-    assert (line[2].get("text") or {}).get("text_size") == "x-small", line[2]
+    assert (line[2].get("text") or {}).get("text_size") == "notation", line[2]
     emoji = adapter._cardview.tool_step_elements(step, "emoji")
     assert len(emoji) >= 3, f"生产元素结构变了（emoji）：{emoji}"
     assert (emoji[1].get("text") or {}).get("text_size") == "x-small", emoji[1]
+    assert (emoji[2].get("text") or {}).get("text_size") == "notation", emoji[2]
     assert adapter._cardview.PANEL_TEXT_SIZE == "notation"
 
 
