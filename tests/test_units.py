@@ -12707,7 +12707,7 @@ def test_v4_14_loading_hint_is_inserted_then_deleted_on_first_token():
         # D1′ 落库后：生效 key 是**自研**那条（`SPINNER_TOOL_IMG_KEY`），不再是借来的回落 key。
         assert adapter._cardview.SPINNER_TOOL_IMG_KEY != adapter._cardview.SPINNER_IMG_KEY, \
             "自研资产已入库 ⇒ 两个常量不许再相等（P2 的验收条件之一）"
-        assert hint["icon"] == {"tag": "custom_icon",
+        assert hint.get("icon") == {"tag": "custom_icon",
                                 "img_key": adapter._cardview.spinner_img_key(),
                                 "size": "16px 16px"}, hint["icon"]
         assert hint["text"] == {"tag": "plain_text", "content": " "}, \
@@ -13310,9 +13310,9 @@ def test_v4_57_line_icons_cover_detail_error_and_folded_hint():
     # 字面量钉 token 值：自比 `cv.ICON_ERROR` 抓不住两个 token 互换（都在白名单里）——V073-1f。
     assert detail[0]["icon"] == {"tag": "standard_icon", "token": "tool-indent_outlined",
                                  "color": "grey"}, detail[0]
-    assert err[0]["icon"] == {"tag": "standard_icon", "token": "warning_outlined",
+    assert err[0].get("icon") == {"tag": "standard_icon", "token": "warning_outlined",
                               "color": "grey"}, err[0]
-    assert hint["icon"] == {"tag": "standard_icon", "token": "more_outlined",
+    assert hint.get("icon") == {"tag": "standard_icon", "token": "more_outlined",
                             "color": "grey"}, hint
     used = {tok for _, tok in cv.TOOL_ICON_BY_ALIAS} | {
         cv.ICON_DETAIL, cv.ICON_HINT_MORE, cv.ICON_RESULT, cv.ICON_ERROR}
@@ -14014,11 +14014,11 @@ def test_v073_inline_code_lines_split_per_line() -> None:
            if str(e.get("content", "")).startswith("**Error**")]
     assert len(err) == 1, err
     assert err[0]["content"] == "**Error**\n`line1`\n`line2`", err[0]
-    assert err[0]["icon"] == {"tag": "standard_icon", "token": "warning_outlined",
+    assert err[0].get("icon") == {"tag": "standard_icon", "token": "warning_outlined",
                               "color": "grey"}, err[0]
     assert err[0].get("margin") == "0px 0px 0px 22px", err[0]
     result = cv._tool_output_div("ok", "Result", "line")
-    assert result["icon"] == {"tag": "standard_icon", "token": "codeblock_outlined",
+    assert result.get("icon") == {"tag": "standard_icon", "token": "codeblock_outlined",
                               "color": "grey"}, result
     emoji_out = cv._tool_output_div("l1\nl2", "Error", "emoji")
     assert emoji_out.get("icon") is None, emoji_out
@@ -14028,7 +14028,7 @@ def test_v073_inline_code_lines_split_per_line() -> None:
     hint_line = cv.panel_elements(cv.PanelView(title="t", collapsed_hint="还有 12 步"))[0]
     hint_emoji = cv.panel_elements(cv.PanelView(
         title="t", collapsed_hint="还有 12 步", tool_icon_mode="emoji"))[0]
-    assert hint_line["icon"] == {"tag": "standard_icon", "token": "more_outlined",
+    assert hint_line.get("icon") == {"tag": "standard_icon", "token": "more_outlined",
                                  "color": "grey"}, hint_line
     assert hint_emoji.get("icon") is None, hint_emoji
     assert cv.ICON_ERROR == "warning_outlined" and cv.ICON_RESULT == "codeblock_outlined"
