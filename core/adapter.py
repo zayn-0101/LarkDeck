@@ -2926,22 +2926,25 @@ class LarkDeckMixin:
                 keys.append(str(key))
             return keys
 
-    def _ld_any_stream_for_chat(self, chat: str) -> bool:
-        """该 chat 是否还有任何 active native 流（含 degraded / patch 车道）。
+    def _ld_stream_count_for_chat(self, chat: str) -> int:
+        """该 chat 当前所有 active native 流的数量（含 degraded / patch 车道）。
 
-        P0 语义：有 active 流但面板通道不可写（degraded / 非 structured）时**只抑制**心跳，
-        绝不另建专用中间卡；只有彻底没有 active 流时才有「唯一专用卡」兜底。
+        P0 fail-closed 口径：总数 >1 时**一律抑制**心跳（没有 turn id 无法判断该标哪张）。
         """
         chat = str(chat or "").strip()
         lock = getattr(self, "_ld_lock", None)
         streams = getattr(self, "_ld_streams", None)
         if not chat or lock is None or not isinstance(streams, dict):
-            return False
+            return 0
         with lock:
-            return any(isinstance(state, dict)
+            return sum(1 for state in streams.values()
+                       if isinstance(state, dict)
                        and str(state.get("chat_id") or "") == chat
-                       and state.get("message_id")
-                       for state in streams.values())
+                       and state.get("message_id"))
+
+    def _ld_any_stream_for_chat(self, chat: str) -> bool:
+        """该 chat 是否还有任何 active native 流（含 degraded / patch 车道）。"""
+        return self._ld_stream_count_for_chat(chat) > 0
 
     def _ld_hb_note_final(self, chat: str) -> None:
         """记录一次真实终态/`/stop`：在安静窗口内，在飞心跳不再补中间卡。"""
@@ -3085,11 +3088,9 @@ class LarkDeckMixin:
         key = str(chat or "").strip()
         lock = locks.get(key)
         if lock is None:
-            if len(locks) >= _LD_HB_CARD_MAX * 2:
-                for other, other_lock in list(locks.items()):
-                    if not getattr(other_lock, "locked", lambda: False)():
-                        locks.pop(other, None)
-                        break
+            # ⚠️ 锁表**不做容量淘汰**：asyncio.Lock 没有“是否还有 waiter”的公开面，
+            # 摘掉一个已解锁但仍有 waiter 的锁会让同一 chat 同时出现两个持有者
+            # （审计 E 复现）。键是 chat，量级由会话数决定；宁可保留也不破坏互斥。
             lock = locks[key] = asyncio.Lock()
         return lock
 
@@ -3112,7 +3113,9 @@ class LarkDeckMixin:
                 res = await self._ld_update_card(chat, mid, card)
                 if res is not None and getattr(res, "success", False):
                     if self._ld_hb_recent_final(chat) or self._ld_any_stream_for_chat(chat):
-                        self._ld_hb_card_drop(chat)
+                        if self._ld_known(mid) is None:
+                            self._ld_track(mid, chat, turn_card=False)
+                        self._ld_hb_card_set(chat, mid)
                         self._ld_hb_log(chat, "专用卡更新落地时已终态/有 active，标记 orphan",
                                         mid=mid)
                         return self._ld_hb_result()
@@ -3129,12 +3132,12 @@ class LarkDeckMixin:
             res = await self._ld_send_card(chat, card)
             new_mid = str(getattr(res, "message_id", "") or "") if res is not None else ""
             if res is not None and getattr(res, "success", False) and new_mid:
+                self._ld_track(new_mid, chat, turn_card=False)
+                self._ld_hb_card_set(chat, new_mid)
                 if self._ld_hb_recent_final(chat) or self._ld_any_stream_for_chat(chat):
                     self._ld_hb_log(chat, "专用卡落地时已终态/有 active，标记 orphan",
                                     mid=new_mid)
                     return self._ld_hb_result()
-                self._ld_track(new_mid, chat, turn_card=False)
-                self._ld_hb_card_set(chat, new_mid)
                 self._ld_hb_log(chat, "专用卡新建", mid=new_mid)
                 _log_outbound("card", chat, content, new_mid)
                 return self._ld_hb_result()
@@ -3192,6 +3195,10 @@ class LarkDeckMixin:
                 res = await self._ld_ck_partial(card_id, "panel", partial, seq)
                 if not res.ok:
                     updated = dict(state)
+                    # ⚠️ 失败也必须推进序号（与 `_ld_ck_apply` 同纪律）：写请求可能已在
+                    # 服务端消费，只是响应丢了；不推进会在下一拍复用同 seq 撞 200770，
+                    # 甚至让随后的帧拿到 300317 被误判成整车道死法。
+                    updated["ck_seq"] = int(seq)
                     if int(res.code) == 300313:
                         # panel 元素不在卡里（配置/结构分叉）：只标死，不动车道、不 fail。
                         updated["ck_panel_missing"] = True
@@ -3206,6 +3213,13 @@ class LarkDeckMixin:
                 self._ld_stream_put(key, updated)
                 self._ld_hb_log(chat, "面板已写", mid=mid)
         except Exception:
+            # 异常同样推进一次序号（保守：可能死在写请求之后）。
+            try:
+                st = self._ld_stream_get(key)
+                if isinstance(st, dict):
+                    self._ld_stream_put(key, {**st, "ck_seq": _ck_seq(st) + 1})
+            except Exception:      # pragma: no cover - 守卫自身绝不抛
+                pass
             logger.debug("[larkdeck] 心跳合卡异常（抑制本拍）", exc_info=True)
         return self._ld_hb_result()
 
@@ -3217,12 +3231,17 @@ class LarkDeckMixin:
         except Exception:
             logger.debug("[larkdeck] 心跳候选查找异常（抑制本拍）", exc_info=True)
             return self._ld_hb_result()
+        total_streams = self._ld_stream_count_for_chat(chat)
+        if total_streams > 1:
+            # 同 chat 多条 active（并发 session）：心跳没有 turn id，绝不能挑一条写。
+            self._ld_hb_log(chat, "多 active 流抑制")
+            return self._ld_hb_result()
         if len(keys) == 1:
             return await self._ld_hb_merge_stream(chat, content)
         if len(keys) > 1:
             self._ld_hb_log(chat, "多 active 主卡抑制")
             return self._ld_hb_result()
-        if self._ld_any_stream_for_chat(chat):
+        if total_streams:
             self._ld_hb_log(chat, "有 active 但不可写，抑制")
             return self._ld_hb_result()
         if self._ld_hb_recent_final(chat):
@@ -3308,7 +3327,10 @@ class LarkDeckMixin:
             _context.note_plaintext_fallback(f"send 异常：{type(exc).__name__}")
             logger.warning("[larkdeck] 卡片发送异常，回落纯文本: %s", exc, exc_info=True)
         _log_outbound("text", chat_id, locals().get("content", ""))
-        return await fallback()
+        plain = await fallback()
+        if locals().get("turn_card") and not locals().get("_preview", False):
+            self._ld_hb_note_final(chat_id)   # V075：卡片失败回落纯文本也是终态
+        return plain
 
     # ------------------------------------------------------------ edit_message
     async def edit_message(self, chat_id: str, message_id: str, content: str, *,
@@ -3340,7 +3362,10 @@ class LarkDeckMixin:
         if not getattr(self, "_client", None):
             return await super().edit_message(chat_id, message_id, content, finalize=finalize)
         if state is None and stream_state is None:
-            return await super().edit_message(chat_id, message_id, content, finalize=finalize)
+            result = await super().edit_message(chat_id, message_id, content, finalize=finalize)
+            if finalize:
+                self._ld_hb_note_final(chat_id)   # V075：未知卡的终态 edit 也进安静窗口
+            return result
         if state is None:
             # 极端路径（追踪表被淘汰等）：卡片仍在我们自己的活跃 native 流上，
             # **绝不能**把可能含合成进度的 `content` 交给 super()。用流里的 t0
@@ -3417,7 +3442,10 @@ class LarkDeckMixin:
         except Exception as exc:
             logger.warning("[larkdeck] 卡片更新异常，回落内置编辑: %s", exc, exc_info=True)
         _log_outbound("text", chat_id, content, message_id)
-        return await super().edit_message(chat_id, message_id, content, finalize=finalize)
+        result = await super().edit_message(chat_id, message_id, content, finalize=finalize)
+        if finalize:
+            self._ld_hb_note_final(chat_id)   # V075：回落内置 edit 成功也是终态
+        return result
 
     # ------------------------------------------------- native 流式（官方契约）
     #: Hermes 官方 native streaming 协议（gateway/stream_consumer_transport.py 消费）：
@@ -3989,6 +4017,8 @@ class LarkDeckMixin:
             "ck_sealed_bytes": int(state.get("ck_sealed_bytes") or 0) + _card_body_bytes(sealed),
             # 新卡不能继承旧卡的元素级死法/去重记账（R5/A3），也不能继承 Working 标题。
             "ck_dead": set(), "ck_decor": {}, "hb_title": "",
+            # ⚠️ 元素级死法不能跨卡继承（审计 A/B）：旧卡 panel 判死，不代表新实体 panel 有问题。
+            "ck_panel_dead": 0,
         }
         if structured:
             new_state["engine"] = "structured"
@@ -5496,13 +5526,16 @@ class LarkDeckMixin:
                 if candidates:
                     fallback = max(candidates, key=lambda item: item[0])
         if keys:
-            return await self._ld_redraw_stopped_keys(chat, keys)
+            ok = await self._ld_redraw_stopped_keys(chat, keys)
+            self._ld_hb_note_final(chat)   # V075：/stop 无论重绘成败都进安静窗口
+            return ok
         if fallback is None:
             # 提到 INFO：这一行是「中止后卡片为什么没变色」的唯一线索。
             # 静默失败是本项目的头号失败模式，所以不留 debug。
             logger.info("[larkdeck] 中止：这个 chat 没有可重绘的卡"
                         "（`_ld_streams` 无本 chat 的流，且 `_ld_state` 里没有带正文的卡 —— "
                         "可能还没建卡，或正文太大没保留副本）")
+            self._ld_hb_note_final(chat)   # V075：没有卡可重绘也是终态，心跳不得再补卡
             return False
         _at, message_id, entry = fallback
         redrawn = await self._ld_redraw_one_stopped(

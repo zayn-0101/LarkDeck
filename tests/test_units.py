@@ -14911,11 +14911,19 @@ def test_v075_degraded_stream_suppresses_dedicated():
         state = dict(raw._ld_stream_get(key) or {})
         state["engine_stamp"] = "degraded"
         raw._ld_stream_put(key, state)
+        entered: list = []
+
+        async def _spy(chat_id, content):
+            entered.append(chat_id)
+            return raw._ld_hb_result()
+
+        raw._ld_hb_dedicated = _spy               # type: ignore[assignment]
         create_before = int(calls["create"])
         res = _run(raw.send(chat, _v075_heartbeat(3),
                             metadata={"_interim_send": True}))
         assert getattr(res, "message_id", None) == ""
         assert not raw._ld_hb_cards, raw._ld_hb_cards
+        assert entered == [], f"降级 active 时仍进入 dedicated：{entered}"
         assert int(calls["create"]) == create_before, "降级 active 时又建了专用卡"
     finally:
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
@@ -15078,12 +15086,14 @@ def test_v075_split_does_not_inherit_hb_title():
         assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
         state = dict(raw._ld_stream_get(key) or {})
         state["hb_title"] = _v075_heartbeat(3)
+        state["ck_panel_dead"] = 300309      # 旧卡元素级死法不得跨卡继承
         raw._ld_stream_put(key, state)
         adapter._ck_split_point = lambda *a, **k: 3   # type: ignore[assignment]
         new_state = _run(raw._ld_ck_split(chat, "abcdef", state, 0, None,
                                           time.monotonic()))
         assert new_state is not None, "切卡失败（测试前提不成立）"
         assert not str(new_state.get("hb_title") or ""), new_state
+        assert not new_state.get("ck_panel_dead"), new_state
         entity_blob = json.dumps(_v075_entity(calls, -1), ensure_ascii=False)
         assert "Working" not in entity_blob, entity_blob
     finally:
@@ -15138,10 +15148,10 @@ def test_v075_heartbeat_registries_are_bounded():
         for index in range(adapter._LD_HB_CARD_MAX * 2 + 40):
             raw._ld_hb_card_set(f"oc_b{index}", f"om_b{index}")
             raw._ld_seed_note(f"oc_s{index}", f"t{index}")
-            raw._ld_hb_chat_lock(f"oc_l{index}")
         assert len(raw._ld_hb_cards) <= adapter._LD_HB_CARD_MAX, len(raw._ld_hb_cards)
         assert len(raw._ld_seed_keys) <= adapter._LD_HB_CARD_MAX, len(raw._ld_seed_keys)
-        assert len(raw._ld_hb_locks) <= adapter._LD_HB_CARD_MAX * 2, len(raw._ld_hb_locks)
+        # 锁表不淘汰（审计 E：摘锁会破坏互斥）；同一 chat 必须始终拿到同一把。
+        assert raw._ld_hb_chat_lock("oc_same") is raw._ld_hb_chat_lock("oc_same")
     finally:
         adapter._CONFIG.clear()
         adapter._CONFIG.update(saved_config)
@@ -15179,6 +15189,113 @@ def test_v075_dedicated_heartbeat_card_terminal_residual_is_documented():
         assert str((raw._ld_hb_cards.get("oc_v075resid") or ("", 0.0))[0] or "") == mid,\
             "专用卡注册表不应在终稿时被误复用/误改"
         assert updated == [], f"终稿不该 patch 专用心跳卡：{updated}"
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_config)
+        adapter._apply_metrics_config()
+
+
+def test_v075_heartbeat_panel_failure_advances_seq():
+    """V075：心跳 panel 写失败也必须推进 ck_seq，避免下一拍复用同号 / 触发假 300317。"""
+    chat, turn = "oc_v075seq", "t-seq"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    key = f"{chat}:{turn}"
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        panel.bind_chat_session(chat, "s-v075seq")
+        panel.record_tool_started("s-v075seq", turn, "SEQ_TOOL",
+                                  {"command": "x"}, tool_call_id="tc-seq")
+        seqs: list = []
+
+        async def _fail(card_id, element_id, partial, seq):
+            seqs.append(int(seq))
+            return adapter._CkResult(False, 999, "response lost")
+
+        raw._ld_ck_partial = _fail             # type: ignore[assignment]
+        assert _run(raw.send(chat, _v075_heartbeat(3),
+                             metadata={"_interim_send": True})).message_id == ""
+        state = raw._ld_stream_get(key) or {}
+        assert int(state.get("ck_seq") or 0) == 1, state
+        assert state.get("engine_stamp") != "degraded", state
+        assert _run(raw.send(chat, _v075_heartbeat(6),
+                             metadata={"_interim_send": True})).message_id == ""
+        assert seqs == [1, 2], f"失败后复用了同序号：{seqs}"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v075_stop_without_card_records_quiet():
+    """V075：没有卡可重绘的 /stop 也是终态，之后心跳不得再补专用卡。"""
+    saved_config = dict(adapter._CONFIG)
+    raw = _make()
+    adapter.configure(visual_engine="structured")
+    chat = "oc_v075stopq"
+    try:
+        assert _run(raw._ld_redraw_stopped(chat)) is False
+        assert raw._ld_hb_recent_final(chat) is True
+        res = _run(raw.send(chat, _v075_heartbeat(3), metadata={"_interim_send": True}))
+        assert getattr(res, "message_id", None) == ""
+        assert not raw._ld_hb_cards, raw._ld_hb_cards
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_config)
+        adapter._apply_metrics_config()
+
+
+def test_v075_plain_send_fallback_records_quiet():
+    """V075：卡片发送失败、回落官方纯文本成功，也算真实终态。"""
+    saved_config = dict(adapter._CONFIG)
+    raw = _make()
+    adapter.configure(visual_engine="structured")
+
+    async def _boom(*_a: Any, **_k: Any):
+        raise RuntimeError("card send boom")
+
+    raw._ld_send_card = _boom                    # type: ignore[assignment]
+    chat = "oc_v075fbq"
+    try:
+        res = _run(raw.send(chat, "真实终稿", metadata={"notify": True}))
+        assert getattr(res, "success", False) is True, res
+        assert raw._ld_hb_recent_final(chat) is True
+    finally:
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_config)
+        adapter._apply_metrics_config()
+
+
+def test_v075_dedicated_orphan_is_registered_not_recreated():
+    """V075：专用卡在飞时落地终态 ⇒ 仍登记同一张，后续不得再建第二张。"""
+    saved_config = dict(adapter._CONFIG)
+    raw = _make()
+    adapter.configure(visual_engine="structured")
+    sent: list = []
+    updated: list = []
+    chat = "oc_v075orphan"
+
+    async def _send_card(chat_id, card, **kwargs):
+        raw._ld_hb_note_final(chat_id)           # final 在 HTTP 飞行中落地
+        sent.append(chat_id)
+        return _StubResult(True, "om_orphan")
+
+    async def _update_card(chat_id, message_id, card):
+        updated.append((chat_id, message_id))
+        return _StubResult(True, message_id)
+
+    raw._ld_send_card = _send_card                # type: ignore[assignment]
+    raw._ld_update_card = _update_card            # type: ignore[assignment]
+    try:
+        first = _run(raw.send(chat, _v075_heartbeat(3),
+                              metadata={"_interim_send": True}))
+        assert getattr(first, "message_id", None) == ""
+        assert len(sent) == 1 and raw._ld_hb_cards.get(chat, ("", 0))[0] == "om_orphan",\
+            raw._ld_hb_cards
+        # 模拟安静窗口过去、仍无 active：必须 patch 同一张，而不是再发一张。
+        raw._ld_recent_final[chat] = 0.0
+        second = _run(raw.send(chat, _v075_heartbeat(6),
+                               metadata={"_interim_send": True}))
+        assert getattr(second, "message_id", None) == ""
+        assert len(sent) == 1, f"orphan 之后又建了第二张：{sent}"
+        assert updated and updated[0][1] == "om_orphan", updated
     finally:
         adapter._CONFIG.clear()
         adapter._CONFIG.update(saved_config)

@@ -203,6 +203,10 @@ P1 的“同轮多 finalize”仍需另外的证据；没有同轮证据前不�
 * 变异：M1 结构化 seed `include_process=False→True`；M2 legacy seed 改回 `_ld_panel_parts`；
   M3 patch seed 改回 `_ld_panel`；M4 seed 把 panel 元素摘掉；M5 seed 分支插 `panel.reset()`；
   M7 split 第二张也清空。
+  ⚠️ **车道登记**：M2（legacy CardKit seed）/M3（patch seed）是 **rollback/test-forced 车道**
+  —— 生产 `_ld_visual_engine()` 恒为 structured（legacy 配置已退役），structured 下
+  `native_transport: patch` 也是 no-op；两条只在单测 monkeypatch/`_LD_ENGINE_OVERRIDE` 时可达。
+  其余 V075 变异落在生产 structured / 降级 / 防御路径上。
 * 黄金夹具：需要重生成（`python3 tests/write_golden_trace.py`）。预期 diff：首张 entity card
   不再含 seed 前的旧工具/旧标题，panel 头为空壳「执行详情」；首次 panel partial/loading_hint
   删除记录移到第一个正文帧；final patch 基本不变。diff 必须逐条写进 commit 说明
@@ -214,7 +218,8 @@ P1 的“同轮多 finalize”仍需另外的证据；没有同轮证据前不�
   收敛为返回空 mid、只在 `send()` 内合入 active structured panel；无 active 时两张方案
   （抑制 vs 唯一专用卡）中，用户目标明确选“只建一张并复用”，本批次按此实现并文档登记。
 * B 路（seed 防闪旧）：P0-only。三个 seed 分支一律空面板壳、不读旧快照、不摘元素、
-  不清状态；不引入 per-turn epoch 守卫；黄金夹具按预期重生成。
+  不清状态；**不引入全局 per-turn epoch 守卫**，只在 seed 后的 tick/上游心跳两条装饰路径加
+  窄闸门（§3.2b）；live 帧抢跑登记为已知限制；黄金夹具按预期重生成。
 * C 路（多卡合并）：证据否定 incident 的同轮多 finalize 说法；禁止插件侧跨回合合并；
   只加“新回合必须新建卡”回归测试并转上游接口建议。
 * 未决/转上游：上游加 `_stream_turn_id` 或 `get_stream_message_id` 后再评估同轮 fallback
@@ -222,11 +227,11 @@ P1 的“同轮多 finalize”仍需另外的证据；没有同轮证据前不�
 
 ## 5. 流程与发布
 
-* ✅ ≥3 路对抗审计完成（见 §4）；审计发现的 F1–F9 已修，并补测试/变异。
+* ✅ ≥3 路对抗审计完成（见 §4）；审计发现的 F1–F10 已修，并补测试/变异。
 * ✅ 实现完成（P0 心跳合卡、P2 seed 空壳 + tick/心跳面板闸门；P1 证据否定不做）。
-* ✅ 测试：`tests/test_units.py` **327/327**；新增 `test_v075_*` **26 条**；
-  `mutate_check -k V075` **完整四门禁模式 34/34 red-assert**；`--preflight` **585/585**
-  （变异 573 + 对照 12）；`run_fast.py --full` 8/8；黄金夹具 `--check` 一致。
+* ✅ 测试：`tests/test_units.py` **331/331**；新增 `test_v075_*` **30 条**；
+  `mutate_check -k V075` **完整四门禁模式 38/38 red-assert**；`--preflight` **589/589**
+  （变异 577 + 对照 12）；`run_fast.py --full` 8/8；黄金夹具 `--check` 一致。
 * ⏳ 6 分片全量盖章（在实现提交的干净树上跑，fresh ledger / 独立分片 / merge）。
 * ⏳ `.deploy` 到被测提交 + 网关有界自检。
 * ⏳ 真机：长任务心跳只进主卡面板、追问不闪旧、真实回合 ✅ 不变 → 用户终验。

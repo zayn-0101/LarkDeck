@@ -3210,11 +3210,8 @@ MUTATIONS = [
      '            keys = []  # V075-21 mutated',
      'test_units'),
     ('V075-22-有 active 但不可写时不再抑制（degraded 又建专用卡）', 'core/adapter.py',
-     '            return any(isinstance(state, dict)\n'
-     '                       and str(state.get("chat_id") or "") == chat\n'
-     '                       and state.get("message_id")\n'
-     '                       for state in streams.values())',
-     '            return False  # V075-22 mutated',
+     '        total_streams = self._ld_stream_count_for_chat(chat)',
+     '        total_streams = 0  # V075-22 mutated',
      'test_units'),
     ('V075-23-清心跳标题改回 raw text（工具进度帧擦掉 Working）', 'core/adapter.py',
      '        if finalize or visible != str(state.get("last_rendered_body") or ""):',
@@ -3271,9 +3268,29 @@ MUTATIONS = [
      '            if key_chat not in seed_keys and len(seed_keys) >= _LD_HB_CARD_MAX:',
      '            if False:  # V075-34 mutated',
      'test_units'),
-    ('V075-35-per-chat 锁表不再裁剪（无界增长）', 'core/adapter.py',
-     '            if len(locks) >= _LD_HB_CARD_MAX * 2:',
-     '            if False:  # V075-35 mutated',
+    ('V075-36-心跳失败不推进序号（复用同 seq / 假 300317）', 'core/adapter.py',
+     '                    # ⚠️ 失败也必须推进序号（与 `_ld_ck_apply` 同纪律）：写请求可能已在\n'
+     '                    # 服务端消费，只是响应丢了；不推进会在下一拍复用同 seq 撞 200770，\n'
+     '                    # 甚至让随后的帧拿到 300317 被误判成整车道死法。\n'
+     '                    updated["ck_seq"] = int(seq)',
+     '                    pass  # V075-36 mutated\n'
+     '                    # 不推进 ck_seq：下一拍复用同号（回归）',
+     'test_units'),
+    ('V075-37-切卡继承 ck_panel_dead（新卡心跳永久 stop）', 'core/adapter.py',
+     '            "ck_panel_dead": 0,',
+     '            # V075-37 mutated：移除 ck_panel_dead 重置',
+     'test_units'),
+    ('V075-38-/stop 无卡时不记安静窗口（终态后补 Working 卡）', 'core/adapter.py',
+     '            self._ld_hb_note_final(chat)   # V075：没有卡可重绘也是终态，心跳不得再补卡',
+     '            pass  # V075-38 mutated',
+     'test_units'),
+    ('V075-39-卡片失败回落纯文本不记安静窗口（终态后补卡）', 'core/adapter.py',
+     '            self._ld_hb_note_final(chat_id)   # V075：卡片失败回落纯文本也是终态',
+     '            pass  # V075-39 mutated',
+     'test_units'),
+    ('V075-40-专用 orphan 不登记（下一拍又建第二张）', 'core/adapter.py',
+     '                self._ld_hb_card_set(chat, new_mid)',
+     '                pass  # V075-40 mutated：orphan 不登记',
      'test_units'),
 
 
