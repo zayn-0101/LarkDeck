@@ -418,6 +418,7 @@ LarkDeckFeishuAdapter → LarkDeckMixin → FeishuAdapter → BasePlatformAdapte
 - **更新流的 fenced 代码块（``` 开头）故意不登记为系统提示**：真实答案也常以代码块开头，按内容前缀
   会误杀真终稿；若 P4 真机日志显示它在飞书成为可见噪声，再单独设计（metadata 或专用前缀）。
 - **系统提示判定 = 默认回合 + 已知前缀负清单**（v0.7.3 Design D）：只有来源可枚举的已知提示（Gateway online/restarting、Session database、Hermes update、cron/后台任务、Goal 等，见 `core/adapter.py::_LD_SYSTEM_NOTICE_PREFIXES`）整卡不出面板/状态头/页脚；**未登记的新系统提示仍按回合卡渲染出 `✅ 已完成`**。发布前用 `send 判定 turn=` 日志复核；发现漏网先登记前缀再重跑全量变异。命令/控制回复（`/larkdeck`、澄清/审批提示）带 `notify` ⇒ **有意**保留状态词。
+- **长任务/多卡时中间卡执行详情面板可能空白**（v0.7.3 登记 v0.7.4）：原生流回退/多回合交错时，最终整卡可能拿到已被后续回合顶掉的 panel 快照，而空面板仍作为状态色载体保留。已登记专项（复现 + 「无过程数据时沿用本回合最后一次非空面板或不出面板」二选一），本批不修。
 - **必须和官方适配器同一进程**：官方 `feishu` 平台被禁用时，LarkDeck 无处附着。
 - **依赖官方适配器的内部方法**：发送/编辑路径 3 个必需（`_feishu_send_with_retry` 等，启动自检校验，缺了**拒绝覆盖**并保持内置行为）+ 1 个可选（`edit_message`，有则用、无则退回内置）；点击回调路径 5 个类属性 + 2 个实例属性（`_on_card_action_trigger`、`_card_response`、`_client` 等）；信号型 1 个（`interrupt_session_activity`，缺了「中止后卡片不变色」）；处理生命周期 1 个（`_reactions_enabled`，缺了 `reactions: false` 静默失效）；澄清网关内部结构（`_lock` / `_entries` / `entry.multi_select` / `mark_awaiting_text` / `resolve_gateway_clarify`）。全部集中登记在 `compat.py`（分七组 + 会话归属公开面）：`probe_adapter_class()` 守必需项，`probe_report()` 的完整快照在启动时打进日志（缺点击回调会提级 WARNING 并写明「澄清按钮会静默失灵」）—— 官方哪天改了名字，日志会直接说出来，而不是静默失效。
 - ~~**`i18n_content` 的元素级支持需真机确认**~~ → **已实测确认**（2026-09-12）：

@@ -249,7 +249,7 @@ A1（3 处 partial 少 `expanded`、entity `expanded` false→true）、C1（`tu
 * 追加决定：**A1 展开时序保持不变**（用户复确认；理由与代价见
   `docs/audits/v0.7.2/p6-live-verification.md` 的「追加决定」一节）。
 
-## 2026-09-23 · v0.7.3 宿主矩阵探针（真机目视完成：A/B 通过，C 回退 notation）
+## 2026-09-23 · v0.7.3 宿主矩阵探针（真机目视完成：A/B 通过，C 换 markdown 宿主）
 
 * `tests/probe_text_size_hosts.py --send`（生产代码渲染，直接 SDK 发到 `FEISHU_HOME_CHANNEL`）：
   **11 张卡全部 `code=0`**。
@@ -260,7 +260,7 @@ A1（3 处 partial 少 `expanded`、entity `expanded` false→true）、C1（`tu
   - N2 真实回合卡：`om_x100b641fbaa8a8a0c2ecd6c33ddac0e`（本地断言必须有 `✅ 已完成`）。
 * **服务端结论**：三宿主都接受 `x-small`，未出现 `200621`/拒收。
 * **真机目视结论（2026-09-23 用户截图 + 像素测量）**：A `markdown` 23→19px、B `div.text=plain_text` 21→17px ⇒ **确实更小**；C `div.text=lark_md` 26→26px（行距同为 44px） ⇒ **客户端忽略 `text_size`**。
-* **处置**：C 宿主对应的 Error/Result 块按回退规则改回 `notation`（commit `db58dc5`）；细节行两宿主继续 `x-small`。
+* **处置（最终）**：C 旧宿主 `div.text=lark_md` 确认客户端忽略 `text_size`；Error/Result 块改用 **`markdown` 宿主**后 x-small 真机确认更小且代码栈可读（候选卡 `om_x100b6407fb0468a0df9a8617dab7f93`，用户结论「红框字号变小了，绿框没变」）⇒ commit `732cf88` 换宿主，不拆元素、标签一起变小；细节行两宿主继续 `x-small`。
 * 回退规则：若某 host 被拒或不变小 ⇒ **该 host 退回 `notation`**（改代码 + 断言/变异/夹具 + 重跑 P3）；当前代码**没有运行时自动回退**。
 * `send 判定 turn=` 日志复核：`.deploy=8474418`（代码即 `db58dc5`）+ 网关重启（09:49:29 自检通过）后，已确认系统提示 `turn=False`（09:49:22/09:49:39）与中途播报 `turn=False keys=['_interim_send']`（10:28:46）；真实用户消息的 `turn=True` 由发布前终验消息回填。
 
@@ -293,3 +293,16 @@ A1（3 处 partial 少 `expanded`、entity `expanded` false→true）、C1（`tu
 * 合并备注：刷新后的 base 账本仍带 `V073-1c` 旧名 ⇒ 自带 merge 先因「名字集合多 1」拒绝；
   剔除旧键后用**同一** `tools/merge_ledger4.py --write` 合并通过（只名字集合问题，无缺条/指纹失败）；
 * P3 事后三路审计（证据链 / 反假绿 / 发布诚实性）全部 PASS；详见 `docs/audits/v0.7.3/p3b-post-fallback.md`。
+
+## 2026-09-23 · v0.7.3 P4 Error 宿主切换
+
+* 候选 A `markdown`+notation vs 候选 B `markdown`+x-small：用户截图确认 B 代码块与 `**Error**` 标签一起变小、11–19 行栈可读；旧 `div.text=lark_md`+x-small 与 notation 同大。
+* 候选卡 `om_x100b6407fb0468a0df9a8617dab7f93`（2026-09-23 10:37 用户回话）。
+* 代码 commit `732cf88`：`_tool_output_div` 改返回 `markdown` 组件（组件级 warning 图标、fenced content、`text_size=x-small`）；断言/变异同步；P3 六分片在该提交重跑。
+
+## 2026-09-23 · v0.7.3 已知问题登记（v0.7.4）
+
+* **长任务/多卡时中间卡执行详情面板空白**（用户 2026-09-23 反馈，确认只在长任务/多卡出现）：
+  用户消息 `om_x100b6407c4b7b4a0b18b539eee9f04a`（10:25:43）后卡片 1 `om_x100b6407c47450a4c2486c55ca4e9ff`（10:25:48）面板展开空白，Working 卡 `om_x100b6407db3f98b4c1198e72899932d`（10:28:47），最终答案卡 `om_x100b6407d5fc2ca8c125c5be7c07dd3`（10:30:11）；日志有 `卡片正文世代漂移` 与 `finalize 分叉`。
+* 初步判定：原生流回退/多回合交错时最终整卡拿到的 panel 快照被后续回合顶掉，空面板仍作为状态色载体保留；与本批 x-small/系统提示改动无直接因果。
+* 处置：登记 v0.7.4，本批不修、不阻塞发布；详情见 `docs/audits/v0.7.3/p4-long-task-blank-panel.md`。

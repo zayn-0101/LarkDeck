@@ -756,12 +756,37 @@ golden 顶层 8 叶变化且 footer 叶不变；新增 `/stop` 行为断言与 s
 
 ---
 
-### 6.16 P4 真机回退（Error/Result 块 → notation）与最终宿主矩阵
+### 6.16 P4 真机验证与 Error 块宿主切换（markdown + x-small）
 
 * 系统提示对照（用户截图确认）：1/3 旧版卡（`6fd68f3` 提取代码）有状态头+面板+页脚 `✅ 已完成`；2/3 新版系统提示卡无状态头/面板/页脚/✅；3/3 新版真实回合卡保留 `✅ 已完成`。目标 ② 成立。
 * x-small 宿主矩阵（用户目视 + 截图行高测量）：A `markdown` 23→19px、B `div.text=plain_text` 21→17px ⇒ 确实更小；C `div.text=lark_md` 26→26px（行距同为 44px） ⇒ 客户端忽略 `text_size`。
-* 处置（按 §6.10.10 回退规则）：Error/Result 块 `text_size` 改回 `notation`（commit `db58dc5`），细节行两宿主继续 `x-small`；断言/变异/文档同步，P3 六分片在该提交重跑并重新盖章。
-* 证据：`docs/audits/v0.7.3/p4-real-device-fallback.md`、`docs/verify-log.md` 的 2026-09-23 宿主矩阵/P4 条目。
+* 处置（最终）：`div.text=lark_md` 宿主确认客户端忽略 `text_size`；改用 **`markdown` 宿主**后
+  x-small 真机确认更小且代码栈可读（候选卡 `om_x100b6407fb0468a0df9a8617dab7f93`，用户截图
+  「红框变小、绿框没变」）⇒ Error/Result 块换宿主为 `markdown` + `x-small`（commit `732cf88`），
+  不拆元素、标签与代码一起变小；细节行两宿主继续 `x-small`。
+* 证据：`docs/audits/v0.7.3/p4-error-host-switch.md`、`docs/audits/v0.7.3/p4-real-device-fallback.md`
+  （历史回退轮）、`docs/verify-log.md` 的 2026-09-23 宿主矩阵/P4 条目。
+
+---
+
+### 6.17 Error 宿主切换后的 P3 重验 + 长任务空白面板登记
+
+**P3 六分片（冻结提交 `10914b6`，Error 块换 markdown 宿主）**
+
+* 6 分片并行、独立账本/日志、坏 0；合并 `tools/merge_ledger4.py --write`：
+  **523/523 red-assert**、`full_audit_at=10914b6`、`full_audit_tree=eae2f0809e627cb1155b03b3114a970858ad79e6`
+  （== `10914b6^{tree}`）、`tree_dirty=false`、继承 0；
+* **实测墙钟 1228.5s**（11:18:20→11:38:48）；`--preflight 535/535`；`-k V073` 24/24 red；
+* 证据：`~/.larkdeck-scratch/v0.7.3/full-run-evidence.json`、`docs/audits/v0.7.3/p3c-host-switch.md`。
+
+**长任务/多卡时中间卡执行详情面板空白（登记 v0.7.4）**
+
+* 用户 2026-09-23 反馈：长任务最终收到两张答案卡 + Working 卡，第一张卡的面板展开空白；
+  用户确认只在长任务/多卡时出现。证据与消息 id 见 `docs/audits/v0.7.3/p4-long-task-blank-panel.md`。
+* 初步判定：原生流回退/多回合交错时最终整卡拿到的 panel 快照可能已被后续回合顶掉，
+  `_ld_cardview` 仍按状态色载体保留空面板；与本批 x-small / 系统提示改动无直接因果。
+* 处置：**登记 v0.7.4**（复现 + 「无过程数据时沿用本回合最后一次非空面板或不出面板」二选一），
+  本批不修、不阻塞发布；`README` 已知限制同步写明。
 
 ---
 
@@ -791,6 +816,7 @@ golden 顶层 8 叶变化且 footer 叶不变；新增 `/stop` 行为断言与 s
 | E2 过程/正文交错结构 | **defer v0.7.4** | 正文分段 + 渲染器结构调整，独立批次 |
 | 嵌套 `element_id` 单独 `partial_update` 探针 | **defer v0.7.4** | 需真机探针；与「嵌套面板渲染」同一张待回话卡 |
 | 加载动图资产主题化 | **关闭** | D1′ 自研资产已定版；彻底主题化只剩 D5 且已关闭 |
+| 长任务/多卡时中间卡执行详情面板空白（原生流回退/多回合交错） | **defer v0.7.4** | 2026-09-23 用户反馈（消息 id/日志见 `docs/audits/v0.7.3/p4-long-task-blank-panel.md`）；初步判定与本批无因果；复现 + 「无过程数据时沿用本回合最后一次非空面板或不出面板」二选一 |
 
 **收尾纪律**：以上「defer v0.7.4」是**书面承诺**，v0.7.4 计划必须先复核本表；关闭项若再被用户点名，
 重新立项而不是翻旧账。
