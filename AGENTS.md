@@ -242,6 +242,14 @@ tests/        见「验证」
     ⚠️ **notify 边界**：`notify=True` 是上游**所有最终回复**的通用标记，真实模型 non-native 终稿
     也带它 ⇒ 不能据此判非回合；命令回复只能按内容 header/整段相等登记，误杀（真实回答首行命中
     已登记 header）是**终态不可逆**的残余风险，靠 `send 判定 turn=` 日志发现并重跑全量收紧。
+    ⚠️ **心跳/seed 边界（v0.7.5）**：上游默认 `⏳ Working — `（`_interim_send`）由 `send()` 返回
+    `success=True, message_id=""`，绝不把主卡 mid 交回上游以免落在无元数据的 `edit_message`
+    整卡 patch 上；有 active structured 主卡时只合入 panel header，无 active 时只建一张专用
+    静默卡并复用，多条 active/degraded/无 panel/刚终态的安静窗口内一律抑制。默认心跳字面量
+    之外（generic 模式）不识别。新 consumer seed 不读上一回合 panel 快照；seed 后、begin_turn
+    前的 3s tick/上游心跳走 `_ld_panel_is_stale` 窄闸门，live 帧不做 capture-only 闸门（会误判
+    seed 晚于 begin_turn 的当前回合），毫秒级 live 竞态登记为已知限制。不同入站回合各自一张卡，
+    不做跨回合答案卡合并；同轮 fallback 合卡需上游 `_stream_turn_id`/`get_stream_message_id`。
     ⚠️ **i18n 边界**：`markdown` element.content 不承载 `i18n_content` ⇒ 工具行动作词/
     状态词固定英文、分区小标题固定中文；完整句子提示仍走 `i18n.t()`。不要把它写成
     “动作词双语”。

@@ -14,7 +14,7 @@
 > 已知待验：`text_profile` / `ap_lite` 真机视觉、无网关 cron 真机投递。
 
 
-## [Unreleased] - v0.7.5 心跳进面板 + seed 防闪旧
+## [0.7.5] - 2026-09-23 心跳进面板 + seed 防闪旧
 
 ### 修复（用户可见）
 
@@ -54,6 +54,11 @@
 - 全量 6 分片（冻结提交 `3dce128`）：**577/577 red-assert**、12/12 对照、🟢0/💥0/❓0、
   `tree_dirty=false`、`n_inh=0`、墙钟 **1282.4s**（22:11:59→22:33:21）；证据
   `~/.larkdeck-scratch/v0.7.5/evidence-3dce128/`、`docs/audits/v0.7.5/p3-full-run-3dce128.md`。
+
+### 发布结果
+
+- tag `v0.7.5` = `7ccffa0`；GitHub Release https://github.com/zayn-0101/larkdeck/releases/tag/v0.7.5；`.deploy` 指向该提交；网关重启自检通过 23:21:31。
+- 用户真机终验三项通过：长任务无独立 Working 卡且标题进主卡面板、追问不闪上一回合工具、真实回合 ✅ 保留。
 
 ## [0.7.4] - 2026-09-23 系统/命令提示静默 + 长任务面板
 

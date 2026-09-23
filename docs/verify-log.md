@@ -354,3 +354,10 @@ A1（3 处 partial 少 `expanded`、entity `expanded` false→true）、C1（`tu
 * 证据：`~/.larkdeck-scratch/v0.7.5/evidence-3dce128/`（6 log + 6 seed + 6 inventory + `full-run-evidence.json` + `sha256.txt`）、`docs/audits/v0.7.5/p3-full-run-3dce128.md`；
 * 范围说明：V075 共 38 条，其中 V075-2/3 为 legacy/patch rollback/test-forced 车道；其余 36 条在生产 structured / 降级 / 防御路径上有判别力；
 * 待办：`.deploy` 到 stamp HEAD + 网关自检 + 用户真机终验后发布 v0.7.5。
+
+## 2026-09-23 · v0.7.5 发布与真机终验
+
+* `release-v0.7.5.py --go`：main 推送、tag **v0.7.5** = `7ccffa0`、GitHub Release https://github.com/zayn-0101/larkdeck/releases/tag/v0.7.5、`.deploy` = `7ccffa0`、网关重启自检通过 23:21:31。
+* 用户真机终验三项通过：长任务超过 180s 不再出现独立 Working 中间卡、Working 标题进入当前主卡面板、最终答案仍写同一张卡；多工具回合后追问不再闪上一回合工具步骤；普通真实回合仍保留 `✅ 已完成` 页脚。
+* 发布前机械链：`run_fast --full` 8/8、`--preflight 589/589`、账本 577/577 red-assert、`full_audit_at=3dce128`、`full_audit_tree=70bbb6f44273`、`tree_dirty=false`、`n_inh=0`、墙钟 1282.4s；证据 `~/.larkdeck-scratch/v0.7.5/evidence-3dce128/`。
+* 残余限制：`long_running_notifications: generic` 文案不进面板；无 active 主卡的专用 Working 卡终稿后不自动删除/合并；首个 live 帧抢在 `on_stream_start` 前的毫秒级竞态属已知残余。

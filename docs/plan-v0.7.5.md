@@ -235,6 +235,6 @@ P1 的“同轮多 finalize”仍需另外的证据；没有同轮证据前不�
 * ✅ 6 分片全量盖章：冻结 `3dce128`，**577/577 red-assert**、12/12 对照、🟢0/💥0/❓0、
   `tree_dirty=false`、`n_inh=0`、墙钟 **1282.4s**；证据
   `~/.larkdeck-scratch/v0.7.5/evidence-3dce128/`、`docs/audits/v0.7.5/p3-full-run-3dce128.md`。
-* ⏳ `.deploy` 到被测提交 + 网关有界自检。
-* ⏳ 真机：长任务心跳只进主卡面板、追问不闪旧、真实回合 ✅ 不变 → 用户终验。
-* ⏳ 发布 v0.7.5 + neat-freak 收尾。
+* ✅ `.deploy` 到 stamp 提交 `7ccffa0` + 网关自检 23:21:31 通过。
+* ✅ 用户真机终验：长任务心跳只进主卡面板、追问不闪旧、真实回合 ✅ 不变。
+* ✅ 发布 v0.7.5：tag `7ccffa0`、GitHub Release、`.deploy` 指 tag；neat-freak 收尾进行中。
