@@ -9618,7 +9618,10 @@ def test_aggregate_diagnosis_reports_facts_without_claiming_healthy():
         lines = adapter._ld_diagnosis_lines()
         assert len(lines) == 2, lines
         card_text = adapter._ld_command_card("status")
-        assert lines[0] in card_text and lines[1] in card_text, card_text
+        # V079：状态卡分节后标签会加粗、异常标签带 <font> —— 判据改成「去掉样式后的
+        # 纯文本里事实一行都不少」，既不钉死版式，也不放过「行被删掉」。
+        plain = re.sub(r"<font[^>]*>|</font>", "", card_text).replace("**", "")
+        assert lines[0] in plain and lines[1] in plain, card_text
         total = len(hooks.SUBSCRIPTIONS)
         assert lines[0].startswith("🩺"), lines[0]
         for token in ("探测=已接管", f"钩子={total}/{total}", "命令=已注册",
@@ -9995,7 +9998,11 @@ def test_command_card_reports_version_transport_and_three_records():
         for line in _lines:
             if "已运行" in line:
                 continue
-            assert line in text, f"少了自检行：{line!r}"
+            # V079 起记录区是表格：整行被拆成「标签 / 值」两格，所以逐条核对两半 ——
+            # 判据仍是「一条记录都不许少」，而不是钉死版式。
+            _label, _sep, _value = line.partition("：")
+            assert _label in text and _value in text, (
+                f"卡片少了自检记录（标签或值不完整）：{line!r}；text={text!r}")
         assert "已运行" in text, f"卡片少了 uptime 那一行（只钉标签，不钉秒数）：{text!r}"
         # 没参数与显式 `status` 必须**同一张卡**（不然 `help` 里写的默认值就是假的）；
         # 比较前剥掉 uptime 秒数 —— 两次渲染跨秒时它会不同（本用例的既有假红源）。
@@ -10143,6 +10150,21 @@ def test_card_builders_apply_text_profile_not_just_the_helper():
         adapter._CONFIG.clear()
         adapter._CONFIG.update(defaults)
         adapter._apply_metrics_config()
+
+
+def test_command_card_renders_sections_list_and_records_table():
+    """V079：状态卡要有分节标题、引用块、列表、记录表格与分隔线，不再是一坨纯文本。"""
+    context.reset()
+    try:
+        text = adapter._ld_command_card("status")
+        assert "> " in text, f"口径说明应当是引用块：{text!r}"
+        assert "| 项目 | 值 |" in text, f"记录区应当是两列表格：{text!r}"
+        assert "| --- | --- |" in text, text
+        assert "\n- " in text, f"分节内容应当是无序列表：{text!r}"
+        assert "\n---" in text, f"结尾应当有分隔线：{text!r}"
+        assert "🩺" in text and "🔍" in text and "📋" in text, text
+    finally:
+        context.reset()
 
 
 def test_command_card_says_so_when_the_version_is_unreadable():

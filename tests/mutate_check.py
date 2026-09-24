@@ -1148,16 +1148,8 @@ MUTATIONS = [
      '    if not isinstance(ts, (int, float)) or isinstance(ts, bool) or ts <= 0:',
      "test_units"),
     ("R9-20-卡片不再说清数字是进程级累计（用户拿别人会话的失败原因查自己的卡）", "core/adapter.py",
-     '        return "\\n".join([header, _i18n.t("cmd.scope")]\n'
-     '                          + _ld_diagnosis_lines()\n'
-     '                          + [_ld_reasoning_diag_line()]\n'
-     '                          + _probe_status_lines()\n'
-     '                          + _context.status_lines())',
-     '        return "\\n".join([header]\n'
-     '                          + _ld_diagnosis_lines()\n'
-     '                          + [_ld_reasoning_diag_line()]\n'
-     '                          + _probe_status_lines()\n'
-     '                          + _context.status_lines())',
+     '            scope=_i18n.t("cmd.scope"),',
+     '            scope="",',
      "check_override"),
     ("R9-21-启动自检硬编码「命令已注册」（不看真实注册结果，而运维会信这句话）", "core/adapter.py",
      '        _cmd_registered = bool(COMMAND.get("registered"))',
@@ -1811,10 +1803,8 @@ MUTATIONS = [
      "test_units"),
     ("P1a-2-`/larkdeck status` 不再输出能力探测摘要（探测结论重新变回被动日志）",
      "core/adapter.py",
-     '                          + _probe_status_lines()\n'
-     '                          + _context.status_lines())',
-     '                          + []\n'
-     '                          + _context.status_lines())',
+     '            probe=_probe_status_lines(),',
+     '            probe=[],',
      "test_units"),
     ("P1a-3-成功接管后不写 probe 快照（status 永远显示「未探测」，已接管状态不可达）",
      "core/adapter.py",
@@ -2158,14 +2148,8 @@ MUTATIONS = [
      "test_units"),
     ("P2-6-status 卡不再渲染聚合诊断（新看板只活在被测函数里）",
      "core/adapter.py",
-     '        return "\\n".join([header, _i18n.t("cmd.scope")]\n'
-     '                          + _ld_diagnosis_lines()\n'
-     '                          + [_ld_reasoning_diag_line()]\n'
-     '                          + _probe_status_lines()\n'
-     '                          + _context.status_lines())',
-     '        return "\\n".join([header, _i18n.t("cmd.scope")]\n'
-     '                          + _probe_status_lines()\n'
-     '                          + _context.status_lines())',
+     '            diagnosis=diagnosis,',
+     '            diagnosis=[],',
      "test_units"),
     ("P2-7-能力异常不再加 ⚠️（坏掉的链路看起来和健康一样）",
      "core/adapter.py",

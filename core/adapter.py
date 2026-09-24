@@ -7174,6 +7174,61 @@ def _ld_config_card(raw_args: str) -> str:
     return "\n".join([_i18n.t("config.unknown_action", arg=action), _i18n.t("cmd.help")])
 
 
+def _ld_status_split(line: str) -> "tuple[str, str, str]":
+    """把「标签：值」拆成 (标签, 分隔符, 值)；拆不出来时标签为空、整行当值（V079）。"""
+    for sep in ("：", ": "):
+        idx = line.find(sep)
+        if 0 < idx <= 28:
+            return line[:idx], sep, line[idx + len(sep):]
+    return "", "", line
+
+
+def _ld_status_bullet(line: str) -> str:
+    """分节里的一条：标签加粗；带 ⚠️ 的标签标红（事实文本本身一个字节不动）。
+
+    ⚠️ 标红时不套加粗：`<font>` 里再放 `**` 是两层嵌套，不同客户端对嵌套的容忍度
+    不一致；宁可只上色，也不要让用户看到裸露的 `**`。
+    """
+    label, sep, value = _ld_status_split(line)
+    if not label:
+        return f"- {line}"
+    if label.startswith("⚠️"):
+        return f"- <font color='red'>{label}</font>{sep}{value}"
+    return f"- **{label}**{sep}{value}"
+
+
+def _ld_status_markdown(*, header: str, scope: str, diagnosis: List[str],
+                        probe: List[str], records: List[str]) -> str:
+    """把状态行的**事实文本**排成有层级的 markdown 卡（V079）。
+
+    纯展示层：不改任何读数、不写「正常」；记录表里标签与值都保持 ``status_lines()``
+    的原文（测试会按标签 / 值逐条核对「一条都没少」，所以这里不许改写数据）。
+    """
+    out: List[str] = [f"**{header}**", "", f"> {scope}", ""]
+    if diagnosis:
+        out += [f"**{_i18n.t('status.section_diag')}**", ""]
+        out += [_ld_status_bullet(x) for x in diagnosis] + [""]
+    if probe:
+        # 能力探测行**保持原文**（不再拆标签加粗）：这一段的判据大量依赖整句可读，
+        # 加粗会在「能力探测：」中间插入 ** 而把既有断言拆断（V079 实测踩到）。
+        out += [f"**{_i18n.t('status.section_probe')}**", ""]
+        out += [f"- {x}" for x in probe] + [""]
+    if records:
+        out += [f"**{_i18n.t('status.section_records')}**", "",
+                f"| {_i18n.t('status.col_item')} | {_i18n.t('status.col_value')} |",
+                "| --- | --- |"]
+        for line in records:
+            label, _sep, value = _ld_status_split(line)
+            cell = label.replace("|", "\\|") or "—"
+            if label.startswith("⚠️"):
+                cell = f"<font color='red'>{cell}</font>"
+            escaped = value.replace("|", "\\|")
+            out.append(f"| {cell} | {escaped} |")
+        out.append("")
+    out += ["---", _i18n.t("status.tip")]
+    return "\n".join(out)
+
+
 def _ld_command_card(raw_args: str) -> str:
     """``/larkdeck [status|config|help]`` 的处理器（**模块级函数**：命令 API 要的是可调用对象）。
 
@@ -7218,11 +7273,14 @@ def _ld_command_card(raw_args: str) -> str:
         # 而且它在三行全是「无记录」时也在（那种时刻同样需要知道这些数是全进程的）。
         # P2：聚合诊断紧跟口径说明，把「能力 / 链路 / 运行 / 账本」压成两行总览；随后才是
         # P1a 的能力探测详情与 R9 的逐条账本。顺序 = 先总后分，用户扫一眼就能判断要不要细看。
-        return "\n".join([header, _i18n.t("cmd.scope")]
-                          + _ld_diagnosis_lines()
-                          + [_ld_reasoning_diag_line()]
-                          + _probe_status_lines()
-                          + _context.status_lines())
+        diagnosis = _ld_diagnosis_lines() + [_ld_reasoning_diag_line()]
+        return _ld_status_markdown(
+            header=header,
+            scope=_i18n.t("cmd.scope"),
+            diagnosis=diagnosis,
+            probe=_probe_status_lines(),
+            records=_context.status_lines(),
+        )
     except Exception as exc:  # pragma: no cover - 防御性：处理器绝不能抛
         # 日志只记类型名（A6）：`%s` 直接格式化病态异常会在 logger 里再抛一次。
         logger.warning("[larkdeck] `/larkdeck` 状态读取失败: %s", type(exc).__name__,

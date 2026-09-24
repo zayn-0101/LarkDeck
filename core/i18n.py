@@ -144,6 +144,14 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     # 不写清楚，多会话并发时用户会拿**别人会话**的失败原因来查自己的卡。
     "cmd.scope":          {ZH: "（下面的数字是**进程级累计**：含本进程上全部会话，不只你这一条对话）",
                            EN: "(the counters below are process-wide: every conversation in this process, not just yours)"},
+    # V079：状态卡改为分节排版（列表 / 表格 / 颜色 / 分隔线），这几条是新的版式文案。
+    "status.section_diag":    {ZH: "🩺 能力与链路", EN: "🩺 Capability & wiring"},
+    "status.section_probe":   {ZH: "🔍 能力探测", EN: "🔍 Capability probe"},
+    "status.section_records": {ZH: "📋 记录", EN: "📋 Records"},
+    "status.col_item":        {ZH: "项目", EN: "Item"},
+    "status.col_value":       {ZH: "值", EN: "Value"},
+    "status.tip":             {ZH: "生成回答期间命令会排队到回合结束；配置用 `/larkdeck config` 查看。",
+                               EN: "Commands are queued until the turn ends while a reply is streaming; see `/larkdeck config` for settings."},
     "cmd.help":           {ZH: "用法：/larkdeck [status|config|help]\n"
                                "· status（默认）：本卡 —— 聚合诊断 / 版本 / 生效传输 / 钩子 / 六条记录\n"
                                "· config：只读查看本进程生效配置；config reload 从官方设置重读；"
