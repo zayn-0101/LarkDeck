@@ -129,6 +129,18 @@ plugins:
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 开发环境、测试与提交流程 |
 | [LICENSE](LICENSE) | MIT 许可证 |
 
+## 致敬与启发
+
+飞书流式卡片这条路，社区里已经有人先走过了；LarkDeck 从这些项目里学到了很多。具体学到了什么，写清楚：
+
+- [Cheerwhy/hermes-lark-streaming](https://github.com/Cheerwhy/hermes-lark-streaming)（CLS）—— 这条线上较早的 CardKit 2.0 流式卡片实现；LarkDeck 的工具行与图标体系按它的实现逐条对齐。
+- [Aowen-Nowor/hermes-lark-streaming](https://github.com/Aowen-Nowor/hermes-lark-streaming)（ALS）—— 较早实践了「推理与工具合并成一个面板」、用卡片直接回答运维命令、以及用入站心跳发现静默断连。
+- [monkey2jack/aiduPOP](https://github.com/monkey2jack/aiduPOP) —— 泡波观感主题（LarkDeck 的 `ap_lite` / `ap_bubble`）与「把每个设计决定写清楚」的文档习惯。
+- [techysy/hermes-fry-cards](https://github.com/techysy/hermes-fry-cards) —— 统一面板、上下文用量的多种展示、模型别名；LarkDeck 的 `context_style` 与 `model_aliases` 受它启发。
+- [baileyh8/hermes-feishu-streaming-card](https://github.com/baileyh8/hermes-feishu-streaming-card)（HFC）—— 卡片自检 / 运维卡，以及「升级后先确认兼容，而不是静默失灵」的思路。
+
+它们大多通过修改 Hermes 运行时接入；LarkDeck 走官方插件契约（`register_platform` + 官方钩子），不修改 Hermes 源码。机制不同，要解决的问题相同。
+
 ## 贡献
 
 欢迎提交 Issue 与 Pull Request；开始前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
