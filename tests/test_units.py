@@ -1054,7 +1054,10 @@ def _golden_trace() -> dict:
     returns = []
     try:
         adapter.configure(native_transport="cardkit", unified_panel=True,
-                          panel_expanded=False, footer=True, show_model=True)
+                          panel_expanded=False, footer=True, show_model=True,
+                          # 夹具必须自足：`auto` 会跟随本机 Hermes 配置（用户可能刚跑过
+                          # `/reasoning on`），不钉住就会在“单跑/全套件/生成脚本”之间假红。
+                          show_reasoning=False)
         # ⚠️ 必须**灌入非空面板数据**：否则夹具里 `panel_body` 的两次内容都是 `" "`，
         # 而「面板内容整条丢失」这种改动就抓不到（R1 审计 W6：把面板内容换成常量，全绿）。
         panel.reset()
@@ -12284,6 +12287,44 @@ def test_v4_2_finalize_card_contains_duration_and_trace_element():
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
 
+def test_finalize_panel_uses_stream_cache_when_snapshot_was_cleared():
+    """收尾帧读快照为空时，用流状态缓存恢复面板内容（background review 清桶的真机竞态）。
+
+    真机 2026-09-24：主回合结束后核心立刻启动 background review（同 session 新 hook turn），
+    它的 `on_stream_start` 先清空面板桶，主回合的收尾帧随后才到 ⇒ 快照为空 ⇒ 收尾卡面板
+    只剩空壳。流状态缓存最后一帧的面板数据，确保用户看到的过程信息不因这个竞态丢失。
+    """
+    chat, key, turn = "oc_pcache", "oc_pcache:t1", "t1"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    try:
+        panel.bind_chat_session(chat, "s_pcache")
+        panel.record_reasoning("s_pcache", turn, "第一轮推理")
+        panel.record_tool_started("s_pcache", turn, "terminal",
+                                  {"command": "ls"}, "tc-pcache")
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        # 这一帧把面板数据写进流状态缓存（此时快照仍有数据）。
+        assert _run(raw.send_stream_frame("第一段", chat_id=chat, turn_id=turn))
+        assert (raw._ld_stream_get(key) or {}).get("ck_panel_cache"), \
+            "帧路径必须把本回合面板写进流缓存"
+
+        # 模拟 background review：同 session 切到新 hook turn，面板快照被清空。
+        panel.begin_turn("s_pcache", "t-review")
+        assert _run(raw.send_stream_frame("第一段结束", finalize=True,
+                                          chat_id=chat, turn_id=turn))
+        finals = [card for card in (calls.get("patch_cards") or [])
+                  if not card.get("config", {}).get("streaming_mode", True)]
+        assert finals, "收尾必须是一次关掉流式态的整卡 patch"
+        panel_el = next((e for e in finals[-1]["body"]["elements"]
+                         if e.get("element_id") == "panel"), None)
+        assert panel_el is not None, finals[-1]["body"]["elements"]
+        assert panel_el.get("elements"), "收尾面板不能是空壳"
+        blob = json.dumps(panel_el, ensure_ascii=False)
+        assert "terminal" in blob or "Run command" in blob, blob
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+        panel.reset()
+
+
 def _async_result(value):
     """把一个值包成可 await 的协程（给替身方法用）。"""
     async def _coro():
@@ -15739,8 +15780,9 @@ def main() -> int:
         try:
             # v0.7.0 P1.5：生产默认已切 own；旧用例的断言语义是 legacy 路径，
             # 这里逐条把基线设为 legacy；own 专属用例会在函数体内自行 configure(own)。
-            # P2b 删除 legacy 后，这些旧用例会随路径一起归档/重写。
-            adapter.configure(body_source="legacy")
+            # show_reasoning 钉成显式 false：生产默认 auto 会跟随本机 Hermes 配置，
+            # 不钉住的话用户改过 /reasoning on 之后这批用例会随真实配置红/绿。
+            adapter.configure(body_source="legacy", show_reasoning=False)
             adapter._LD_ENGINE_OVERRIDE = ("legacy" if name in _LEGACY_LANE_TESTS
                                            else None)
             fn()

@@ -2279,6 +2279,11 @@ MUTATIONS = [
      '        if False:  # V076-4 mutated\n'
      '            state = {"enabled": False, "mode": "auto", "source": "no-deltas",',
      "test_units"),
+    ("V076-5-收尾快照被 background review 清空时不回退流缓存（面板空壳）",
+     "core/adapter.py",
+     '                and _restore_panel_view_cache(view.panel, cached_panel)):',
+     '                and False):  # V076-5 mutated',
+     "test_units"),
     ("V076C-1-clarify 边界仍按普通 finalize 收尾（主卡点击后无卡可刷）", "core/adapter.py",
      '        clarify_boundary = bool(\n'
      '            finalize\n'

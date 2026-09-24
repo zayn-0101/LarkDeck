@@ -33,15 +33,18 @@
 - **折叠提示去掉前导省略号**：`…已折叠 N 条早期思考/工具记录` → `已折叠 N 条早期思考/
   工具记录`，`…更早的 N 轮已折叠` → `更早的 N 轮已折叠`；「…已省略 N 字符」保留（那是
   被截断的尾巴，语义不同）。
+- **收尾卡面板不再偶尔空白**：回合结束后核心会立刻启动 background review（同 session
+  新 hook turn），它的 `on_stream_start` 可能先清空面板桶，主回合的收尾帧随后才到 ⇒
+  收尾卡面板只剩空壳。现在每帧把本回合面板数据缓存进流状态，收尾快照为空时回退到缓存。
 
 ### 门禁与证据（2026-09-24，定向）
 
-- `test_units.py`：**342/342 passed**（新增：轮次 id 换代与 expanded 记账、标题/折叠文案、
-  `show_reasoning auto/on/off` 与无 delta 诊断）。
+- `test_units.py`：**343/343 passed**（新增：轮次 id 换代与 expanded 记账、标题/折叠文案、
+  `show_reasoning auto/on/off` 与无 delta 诊断、收尾空快照的回流缓存）。
 - `run_fast.py --full`：8 步全 `[OK]`。
-- `mutate_check.py --preflight`：**599/599 可用**（变异 587 + 对照 12）；
-  新增 `V076-1..4`（换 id 自动折叠、手动状态保持、auto 跟随 Hermes、无 delta 隐藏）
-  与 `V076C-1..4`（澄清修复）均实测 `red-assert`。
+- `mutate_check.py --preflight`：**600/600 可用**（变异 588 + 对照 12）；
+  新增 `V076-1..5`（换 id 自动折叠、手动状态保持、auto 跟随 Hermes、无 delta 隐藏、
+  收尾空快照回流缓存）与 `V076C-1..4`（澄清修复）均实测 `red-assert`。
 - 真机部署与视觉验收记录见 `docs/releases/v0.7.8.md`（本版发布时补）。
 
 

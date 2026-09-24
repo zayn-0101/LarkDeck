@@ -1494,6 +1494,87 @@ def _ck_panel_partial_for_state(panel: "_cardview.PanelView",
     return partial, signature, updates
 
 
+def _panel_view_cache(panel: "_cardview.PanelView") -> Optional[Dict[str, Any]]:
+    """把这一帧的面板视图序列化进流状态（只存**本回合**自己的过程数据）。
+
+    为什么需要：收尾整卡是在回合结束之后才处理的，而收尾帧要重新读
+    `_panel.snapshot(chat)`。真机 2026-09-24 实测：回合结束后核心立刻启动
+    background review（同一 session，新 hook turn），`on_stream_start` 先清了面板桶，
+    主回合的收尾帧随后才到 ⇒ 快照为空 ⇒ 收尾卡的外层面板**里面什么都没有**（用户截图）。
+    流状态里缓存最后一帧的面板数据，收尾时快照为空就回退到它，面板内容不丢。
+    """
+    try:
+        return {
+            "title": panel.title,
+            "expanded": bool(panel.expanded),
+            "collapsed_hint": str(panel.collapsed_hint or ""),
+            "tool_icon_mode": str(panel.tool_icon_mode or "line"),
+            "rounds": [{
+                "index": int(round_view.index),
+                "text": str(round_view.text or ""),
+                "elapsed_ms": round_view.elapsed_ms,
+                "finalized": bool(round_view.finalized),
+            } for round_view in (panel.reasoning_rounds or [])],
+            "tools": [{
+                "name": str(tool.name or ""),
+                "title": str(tool.title or ""),
+                "status": str(tool.status or "running"),
+                "duration_ms": tool.duration_ms,
+                "detail": str(tool.detail or ""),
+                "result_block": str(tool.result_block or ""),
+                "error_block": str(tool.error_block or ""),
+                "icon_token": str(tool.icon_token or ""),
+            } for tool in (panel.tools or [])],
+        }
+    except Exception:                        # pragma: no cover - 防御性
+        return None
+
+
+def _restore_panel_view_cache(panel: "_cardview.PanelView",
+                              cache: Optional[Dict[str, Any]]) -> bool:
+    """收尾帧在快照为空时用流状态缓存恢复面板内容；成功返回 True。"""
+    if not isinstance(cache, dict):
+        return False
+    try:
+        rounds = [
+            _cardview.ReasoningRoundView(
+                index=int(item.get("index") or 0),
+                text=str(item.get("text") or ""),
+                elapsed_ms=item.get("elapsed_ms"),
+                # 收尾帧里所有轮都已结束：最后一轮在缓存时可能还是 live，
+                # 不置 True 的话收尾卡上它会保持展开（与 A1 语义相反）。
+                finalized=True,
+            )
+            for item in (cache.get("rounds") or []) if isinstance(item, dict)
+        ]
+        tools = [
+            _cardview.ToolStepView(
+                name=str(item.get("name") or ""),
+                title=str(item.get("title") or ""),
+                status=str(item.get("status") or "running"),
+                duration_ms=item.get("duration_ms"),
+                detail=str(item.get("detail") or ""),
+                result_block=str(item.get("result_block") or ""),
+                error_block=str(item.get("error_block") or ""),
+                icon_token=str(item.get("icon_token") or _cardview.ICON_TOKENS["fallback"]),
+            )
+            for item in (cache.get("tools") or []) if isinstance(item, dict)
+        ]
+        if rounds:
+            panel.reasoning_rounds = rounds
+        if tools:
+            panel.tools = tools
+        if cache.get("collapsed_hint"):
+            panel.collapsed_hint = str(cache["collapsed_hint"])
+        if cache.get("title") is not None:
+            panel.title = cache["title"]
+        if cache.get("tool_icon_mode"):
+            panel.tool_icon_mode = str(cache["tool_icon_mode"])
+        return bool(rounds or tools or cache.get("collapsed_hint"))
+    except Exception:                        # pragma: no cover - 防御性
+        return False
+
+
 class _CkResult(NamedTuple):
     """一次 CardKit 写的**结果三件套**：成功与否 + 返回码 + 原始 msg。
 
@@ -4964,10 +5045,26 @@ class LarkDeckMixin:
             if state.get("hb_title"):
                 state = {**state, "hb_title": ""}
                 self._ld_stream_put(key, state)
+        cached_panel = state.get("ck_panel_cache") if finalize else None
         view = self._ld_cardview(chat, visible, status=status, finalize=finalize,
                                  started=state.get("t0"),
                                  message_id=state.get("message_id"))
+        if (finalize and cached_panel
+                and not (view.panel.reasoning_rounds or view.panel.tools
+                         or view.panel.collapsed_hint)
+                and _restore_panel_view_cache(view.panel, cached_panel)):
+            # 真机 2026-09-24：background review 的 on_stream_start 先清空面板桶，
+            # 主回合收尾帧随后才到 ⇒ 快照为空、收尾卡面板空白。回退到流缓存。
+            logger.info("[larkdeck] 收尾面板快照为空，已从流状态缓存恢复"
+                        "（rounds=%d tools=%d）", len(view.panel.reasoning_rounds),
+                        len(view.panel.tools))
         self._ld_apply_hb_title(view, state)
+        # 每一帧都把本回合自己的面板数据写进流状态，作为收尾帧空快照的兜底。
+        _cache = _panel_view_cache(view.panel)
+        if _cache is not None and (_cache.get("rounds") or _cache.get("tools")
+                                   or _cache.get("collapsed_hint")):
+            state = {**state, "ck_panel_cache": _cache}
+            self._ld_stream_put(key, state)
         card_id = str(state.get("card_id") or "")
         if not card_id:
             return self._ld_stream_fail("structured 状态缺 card_id")
