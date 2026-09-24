@@ -119,6 +119,7 @@ LarkDeck's design and implementation were inspired by several excellent Feishu /
 
 - [Cheerwhy/hermes-lark-streaming](https://github.com/Cheerwhy/hermes-lark-streaming)
 - [Aowen-Nowor/hermes-lark-streaming](https://github.com/Aowen-Nowor/hermes-lark-streaming)
+- [BcubBo/lark-hls-v2](https://github.com/BcubBo/lark-hls-v2)
 - [monkey2jack/aiduPOP](https://github.com/monkey2jack/aiduPOP)
 - [techysy/hermes-fry-cards](https://github.com/techysy/hermes-fry-cards)
 - [baileyh8/hermes-feishu-streaming-card](https://github.com/baileyh8/hermes-feishu-streaming-card)

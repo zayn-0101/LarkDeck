@@ -135,6 +135,7 @@ LarkDeck 在设计与实现过程中，受到了社区中多个优秀飞书 / La
 
 - [Cheerwhy/hermes-lark-streaming](https://github.com/Cheerwhy/hermes-lark-streaming)
 - [Aowen-Nowor/hermes-lark-streaming](https://github.com/Aowen-Nowor/hermes-lark-streaming)
+- [BcubBo/lark-hls-v2](https://github.com/BcubBo/lark-hls-v2)
 - [monkey2jack/aiduPOP](https://github.com/monkey2jack/aiduPOP)
 - [techysy/hermes-fry-cards](https://github.com/techysy/hermes-fry-cards)
 - [baileyh8/hermes-feishu-streaming-card](https://github.com/baileyh8/hermes-feishu-streaming-card)
