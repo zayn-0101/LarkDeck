@@ -2071,10 +2071,12 @@ def clarify_card_2(question: str, choices: Sequence[str], *, clarify_id: str,
     ``larkdeck_action`` 那个拦截键照旧成立；用户选了什么则在 ``action.option``，
     输入框内容在 ``action.input_value``（见 ``adapter._ld_clarify_answer``）。
 
-    多选用 ``multi_select_static``（回调的 ``option`` 是**列表**，要拼成 JSON 数组
-    —— 与网关那条「文字回答多选」的规范一致，见 ``clarify_gateway`` 的
-    ``_coerce_multi_select_text``）。多选时**不给**自由输入框：混在一起会与
-    「编号/标签」的解析规则打架。
+    多选用 ``multi_select_static`` + **表单容器 + 提交按钮**（2026-09-24 用户反馈）：
+    多选下拉不会自动提交，卡上必须有一个「提交选择」才符合直觉。官方表单提交的回调结构是
+    ``action.value``（提交按钮的 ``value`` = 路由键）+ ``action.form_value``（按组件
+    ``name`` 映射选中值）；适配器 `_ld_normalize_value` 会把 ``clarify_options`` 并回
+    ``value["options"]``，`_ld_clarify_answer` 再拼成 JSON 数组（与网关 ``_coerce_multi_select_text``
+    的规范一致）。多选时**不给**自由输入框：混在一起会与「编号/标签」的解析规则打架。
     """
     value: Dict[str, Any] = {"larkdeck_action": "clarify", "clarify_id": clarify_id,
                              "session_key": session_key, "question": question}
@@ -2085,12 +2087,36 @@ def clarify_card_2(question: str, choices: Sequence[str], *, clarify_id: str,
         "placeholder": {"tag": "plain_text",
                         "content": _i18n.t("clarify.pick_multi" if multi else "clarify.pick")},
         "options": _clarify_options(pairs),
-        "behaviors": [{"type": "callback", "value": dict(value)}],
     }
+    if multi:
+        # 表单内的多选组件：name 是 form_value 的键（`_ld_normalize_value` 认这个键）。
+        selector["name"] = "clarify_options"
+        selector["required"] = True
+    else:
+        selector["behaviors"] = [{"type": "callback", "value": dict(value)}]
     # 卡面上那份**可见**的选项列表（与下拉同源）：不点开也能看到有哪几个选项
     elements: List[Dict[str, Any]] = [_clarify_question_md(question),
-                                      md(_clarify_choice_list(pairs)), selector]
-    if not multi:
+                                      md(_clarify_choice_list(pairs))]
+    if multi:
+        # 表单容器只能放卡片根节点下；提交按钮按官方结构用 `form_action_type: submit`
+        # （表单内按钮**不用** `behaviors`，路由键靠按钮自己的 `value` 回调）。
+        elements.append({
+            "tag": "form",
+            "name": f"clarify_form_{clarify_id}",
+            "elements": [
+                selector,
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": _i18n.t("clarify.submit")},
+                    "type": "primary",
+                    "form_action_type": "submit",
+                    "name": "clarify_submit",
+                    "value": dict(value),
+                },
+            ],
+        })
+    else:
+        elements.append(selector)
         elements.append({
             "tag": "input",
             "label": _i18n.i18n_text("clarify.other"),

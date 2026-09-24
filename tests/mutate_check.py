@@ -1033,11 +1033,9 @@ MUTATIONS = [
      "test_units"),
     ("R9-4-首发建卡不记账（短回答的回合会被报成「一次都没写」）", "core/adapter.py",
      '        if getattr(result, "success", False) and getattr(result, "message_id", ""):\n'
-     '            _context.note_frame_ok()\n'
-     '        return result',
-     '        if False:\n'
-     '            _context.note_frame_ok()\n'
-     '        return result',
+     '            _context.note_frame_ok()',
+     '        if False:  # R9-4 mutated\n'
+     '            _context.note_frame_ok()',
      "test_units"),
     ("R9-5-`send()` 报「成功」但没拿到 message_id 时也算写卡（卡在飞书侧没有落点）", "core/adapter.py",
      '        if getattr(result, "success", False) and getattr(result, "message_id", ""):',
@@ -1629,12 +1627,17 @@ MUTATIONS = [
     # 入口的断言。G1-5/G1-8 同理：用例原来用数字值（`4096`），JSON 规则本就匹配
     # 不到 ⇒ 变异与用例同时是空的。
     ('G1-1-卡面可见选项列表被撤掉（选项又只活在下拉里）', 'core/cards.py',
-     'md(_clarify_choice_list(pairs)), selector]',
-     'selector]',
+     '    elements: List[Dict[str, Any]] = [_clarify_question_md(question),\n'
+     '                                      md(_clarify_choice_list(pairs))]',
+     '    elements: List[Dict[str, Any]] = [_clarify_question_md(question)]',
      'test_units'),
     ('G1-2-卡面列表与下拉不同源（列表另算一遍、没去重）', 'core/cards.py',
-     'md(_clarify_choice_list(pairs)), selector]',
-     'md(_clarify_choice_list([(f"{i}. {str(c)}", str(c)) for i, c in enumerate(choices, start=1)])), selector]',
+     '    elements: List[Dict[str, Any]] = [_clarify_question_md(question),\n'
+     '                                      md(_clarify_choice_list(pairs))]',
+     '    elements: List[Dict[str, Any]] = [\n'
+     '        _clarify_question_md(question),\n'
+     '        md(_clarify_choice_list([(f"{i}. {c}", c)\n'
+     '                                 for i, c in enumerate(choices, start=1)]))]',
      'test_units'),
     ('G1-3-2.0 脚注退回旧文案（没有按钮的卡又说「点按钮」）', 'core/cards.py',
      '"clarify.multi_hint" if multi else "clarify.hint_2"',
@@ -2251,8 +2254,20 @@ MUTATIONS = [
      '        _warn_visual_once("show_reasoning",',
      "test_units"),
     ("V076C-1-clarify 边界仍按普通 finalize 收尾（主卡点击后无卡可刷）", "core/adapter.py",
-     '        clarify_boundary = bool(finalize and _is_clarify_boundary_text(text))',
+     '        clarify_boundary = bool(\n'
+     '            finalize\n'
+     '            and (_is_clarify_boundary_text(text)\n'
+     '                 or _panel_has_running_clarify(chat)))',
      '        clarify_boundary = False  # V076C-1 mutated',
+     "test_units"),
+    ("V076C-3-有累积正文的 clarify 边界漏识别（同为 Running 病复发）", "core/adapter.py",
+     '                 or _panel_has_running_clarify(chat)))',
+     '                 or False))  # V076C-3 mutated',
+     "test_units"),
+    ("V076C-4-多选表单不把 clarify_options 并回 value（多选空提交）", "core/adapter.py",
+     '            if "options" not in value and form_value.get("clarify_options") is not None:\n'
+     '                value["options"] = form_value["clarify_options"]',
+     '            pass  # V076C-4 mutated',
      "test_units"),
     ("V076C-2-澄清点击后不乐观标 ok（面板一直 Running）", "core/panel.py",
      '            target["status"] = "ok"',
@@ -2603,8 +2618,9 @@ MUTATIONS = [
      '    ("exec", "robot_outlined"),  # V4-38 mutated',
      'test_units'),
     ('V4-45-表单提交只抄路由键（答案丢失 ⇒ 空提交 toast）', 'core/adapter.py',
-     '                for key in (ACTION_KEY, "clarify_id", "session_key", "question", "answer"):',
-     '                for key in (ACTION_KEY, "clarify_id"):  # V4-39 mutated',
+     '            for key in (ACTION_KEY, "clarify_id", "session_key", "question", "answer",\n'
+     '                        "options", "option", "input_value"):',
+     '            for key in (ACTION_KEY, "clarify_id"):  # V4-39 mutated',
      'test_units'),
     ('P5-出站留痕不再记录卡片成功分支（「这条以什么形态发出去」不可证伪）', 'core/adapter.py',
      '                _log_outbound("card", chat_id, content, message_id)\n', '', 'test_units'),
