@@ -20,7 +20,7 @@
 
 ## 快速开始
 
-前置：Hermes Agent 0.21.x 已安装并运行，飞书 / Lark 应用凭据已配置（应用创建见 [INSTALL.md](INSTALL.md)）。
+前置：Hermes Agent 0.21.x 已安装并运行，飞书 / Lark 应用凭据已配置（应用创建见[安装指南](INSTALL.md)）。
 
 安装（默认软链到本仓库；NAS / 容器加 `--copy`）：
 
@@ -52,7 +52,7 @@ hermes gateway restart
 
 启动日志里会出现一行 `[larkdeck] 启动自检通过`。自检失败会打 `ERROR`，并保持官方适配器原样工作：卡片不生效，但飞书不会被弄坏。
 
-升级：软链安装执行 `git pull && hermes gateway restart`。`--copy` 安装先 `git pull`，再把旧目录移开、重跑 `./install.sh --copy`，最后重启网关；脚本不会覆盖已有目标，完整命令见 [INSTALL.md](INSTALL.md#升级)。模块不会热重载，必须重启网关。
+升级：软链安装执行 `git pull && hermes gateway restart`。`--copy` 安装先 `git pull`，再把旧目录移开、重跑 `./install.sh --copy`，最后重启网关；脚本不会覆盖已有目标，完整命令见[安装指南](INSTALL.md#升级)。模块不会热重载，必须重启网关。
 
 卸载：从 `plugins.enabled` 删除 `larkdeck`，再删除 `~/.hermes/plugins/larkdeck/`。插件没有改写 Hermes 源码，不存在残留注入。
 
@@ -90,7 +90,7 @@ plugins:
 
 环境变量 `LARKDECK_<KEY>` 可临时覆盖配置（如 `LARKDECK_CARDS=0`）。优先级：环境变量 > `config.yaml` > 默认值。
 
-全部配置项、默认值、类型与场景示例见 [docs/guide/configuration.md](docs/guide/configuration.md)。查看本进程生效值用 `/larkdeck config`；改完文件用 `/larkdeck config reload` 热刷新。
+全部配置项、默认值、类型与场景示例见[配置参考](docs/guide/configuration.md)。查看本进程生效值用 `/larkdeck config`；改完文件用 `/larkdeck config reload` 热刷新。
 
 ## 常用命令
 
@@ -102,13 +102,13 @@ plugins:
 | `/larkdeck help` | 命令用法 |
 | `/reasoning on\|off` | Hermes 命令：开关推理正文；默认 `show_reasoning: auto` 约 1 秒内跟随 |
 
-详细说明见 [docs/guide/commands.md](docs/guide/commands.md)。
+详细说明见[命令](docs/guide/commands.md)。
 
 ## 兼容与限制
 
 - **环境**：面向 Hermes Agent 0.21.x（已在 0.21.1 / 0.21.4 上验证），且官方 `feishu` 平台必须在同一进程可用；与同样接管 `feishu` 或改写 Hermes 源码的插件不能共存。
 - **失败时的行为**：卡片只是增强层。卡片发送、流式或交互任一步失败，会自动改用官方纯文本或编辑消息；那一刻没有卡片样式或动画，但消息不会丢。
-- **客户端差异**：客户端不支持卡片 2.0 能力时，部分组件可能不渲染或降级；卡片界面文案跟随客户端语言，AI 正文与部分 markdown 文案（工具动作 / 状态词等）语言固定。能力边界与替代形态见 [docs/guide/card-capabilities.md](docs/guide/card-capabilities.md)。
+- **客户端差异**：客户端不支持卡片 2.0 能力时，部分组件可能不渲染或降级；卡片界面文案跟随客户端语言，AI 正文与部分 markdown 文案（工具动作 / 状态词等）语言固定。能力边界与替代形态见[卡片能力](docs/guide/card-capabilities.md)。
 - **推理正文**：需要 Hermes 开启 `plugins.stream_reasoning_deltas`（默认关闭）；未开启时过程面板只显示工具步骤，`/larkdeck status` 会说明原因。
 - **命令时机**：在飞书网关里，生成回答期间发送的命令会排队到回合结束；CLI / TUI 中会立即执行。
 - **统计口径**：页脚指标与 `/larkdeck status` 的记录是进程级累计，多会话并发时不区分会话；超长回答分卡后，`/stop` 只重绘最新一张卡。
@@ -117,17 +117,17 @@ plugins:
 
 | 文档 | 用途 |
 |---|---|
-| [INSTALL.md](INSTALL.md) | 安装、升级、卸载与回滚 |
+| [安装指南](INSTALL.md) | 安装、升级、卸载与回滚 |
 | [快速开始](docs/guide/quickstart.md) | 五分钟发出第一张卡片 |
-| [配置](docs/guide/configuration.md) | 全部配置项、默认值与示例 |
+| [配置参考](docs/guide/configuration.md) | 全部配置项、默认值与示例 |
 | [命令](docs/guide/commands.md) | 命令与参数说明 |
 | [卡片能力](docs/guide/card-capabilities.md) | 支持与不支持的卡片能力 |
 | [故障排查](docs/guide/troubleshooting.md) | 症状 → 根因 → 排查 → 修复 |
 | [架构](docs/development/architecture.md) | 模块分层、钩子与传输设计 |
 | [版本说明](docs/releases/README.md) | 每个版本的完整变更与说明 |
-| [CHANGELOG](CHANGELOG.md) | 用户可见变更列表 |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | 开发环境、测试与提交流程 |
-| [LICENSE](LICENSE) | MIT 许可证 |
+| [更新日志](CHANGELOG.md) | 用户可见变更列表 |
+| [贡献指南](CONTRIBUTING.md) | 开发环境、测试与提交流程 |
+| [许可证](LICENSE) | MIT 许可证 |
 
 ## 致谢
 
@@ -145,7 +145,7 @@ LarkDeck 为独立实现，与上述项目无隶属关系；相关名称与成�
 
 ## 贡献
 
-欢迎提交 Issue 与 Pull Request；开始前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+欢迎提交 Issue 与 Pull Request；开始前请阅读[贡献指南](CONTRIBUTING.md)。
 
 ## 许可证
 

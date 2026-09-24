@@ -20,7 +20,7 @@
 
 ## Quick start
 
-Prerequisites: Hermes Agent 0.21.x running, with Feishu / Lark app credentials (see [INSTALL.md](INSTALL.md)).
+Prerequisites: Hermes Agent 0.21.x running, with Feishu / Lark app credentials (see the [installation guide](INSTALL.md)).
 
 ```bash
 git clone https://github.com/zayn-0101/LarkDeck.git
@@ -44,7 +44,7 @@ hermes gateway restart
 
 Verify: send `/larkdeck status` to the bot in Feishu. A self-check card means the plugin has taken over. The gateway log shows a `[larkdeck]` startup self-check line; on failure it logs `ERROR` and leaves the official adapter working, so Feishu never breaks.
 
-Upgrade: `git pull && hermes gateway restart` for a symlink install. For a copy install, `git pull`, move the old directory aside, re-run `./install.sh --copy`, then restart — the script never overwrites an existing target; see [INSTALL.md](INSTALL.md). The gateway must be restarted; modules are not hot-reloaded. Uninstall: remove `larkdeck` from `plugins.enabled`, then delete `~/.hermes/plugins/larkdeck/`.
+Upgrade: `git pull && hermes gateway restart` for a symlink install. For a copy install, `git pull`, move the old directory aside, re-run `./install.sh --copy`, then restart — the script never overwrites an existing target; see the [installation guide](INSTALL.md). The gateway must be restarted; modules are not hot-reloaded. Uninstall: remove `larkdeck` from `plugins.enabled`, then delete `~/.hermes/plugins/larkdeck/`.
 
 ## Features
 
@@ -75,7 +75,7 @@ plugins:
         unified_panel: true
 ```
 
-`LARKDECK_<KEY>` environment variables override config values (e.g. `LARKDECK_CARDS=0`); precedence is environment > `config.yaml` > default. See [docs/guide/configuration.md](docs/guide/configuration.md) for every key, default and example; `/larkdeck config` shows effective values and `/larkdeck config reload` re-reads them.
+`LARKDECK_<KEY>` environment variables override config values (e.g. `LARKDECK_CARDS=0`); precedence is environment > `config.yaml` > default. See [Configuration](docs/guide/configuration.md) for every key, default and example; `/larkdeck config` shows effective values and `/larkdeck config reload` re-reads them.
 
 ## Commands
 
@@ -87,12 +87,12 @@ plugins:
 | `/larkdeck help` | Usage |
 | `/reasoning on\|off` | Hermes command: toggle reasoning text; `show_reasoning: auto` follows within ~1s |
 
-See [docs/guide/commands.md](docs/guide/commands.md).
+See [Commands](docs/guide/commands.md).
 
 ## Compatibility and limits
 
 - **Environment**: Hermes Agent 0.21.x (verified on 0.21.1 / 0.21.4), with the official `feishu` platform available in the same process; cannot coexist with plugins that also take over the same `feishu` platform or patch Hermes source.
-- **Fallback and client differences**: cards are an enhancement. Any card, streaming or interaction failure falls back to official plain text / edit, so no message is lost; styling or animation may be missing for that reply. Clients that do not support card 2.0 may render fewer components or simpler forms; card chrome follows the client language, while model output and some markdown labels are language-fixed. See [docs/guide/card-capabilities.md](docs/guide/card-capabilities.md).
+- **Fallback and client differences**: cards are an enhancement. Any card, streaming or interaction failure falls back to official plain text / edit, so no message is lost; styling or animation may be missing for that reply. Clients that do not support card 2.0 may render fewer components or simpler forms; card chrome follows the client language, while model output and some markdown labels are language-fixed. See [Card capabilities](docs/guide/card-capabilities.md).
 - **Reasoning text**: requires Hermes `plugins.stream_reasoning_deltas` (off by default); without it the panel shows tool steps only, and `/larkdeck status` says why.
 - **Command timing**: in the Feishu gateway, commands sent while a reply is streaming are queued until the turn ends; the CLI / TUI runs them immediately.
 - **Scope of counters**: footer metrics and `/larkdeck status` records are process-wide, not per conversation; after a long answer splits cards, `/stop` recolors only the newest card.
@@ -101,7 +101,7 @@ See [docs/guide/commands.md](docs/guide/commands.md).
 
 | Document | Contents |
 |---|---|
-| [INSTALL.md](INSTALL.md) | Install, upgrade, uninstall, rollback |
+| [Installation](INSTALL.md) | Install, upgrade, uninstall, rollback |
 | [Quickstart](docs/guide/quickstart.md) | First card in five minutes |
 | [Configuration](docs/guide/configuration.md) | All settings, defaults and examples |
 | [Commands](docs/guide/commands.md) | Command reference |
@@ -109,7 +109,9 @@ See [docs/guide/commands.md](docs/guide/commands.md).
 | [Troubleshooting](docs/guide/troubleshooting.md) | Symptom → cause → fix |
 | [Architecture](docs/development/architecture.md) | Module layers, hooks, transport |
 | [Release notes](docs/releases/README.md) | Full notes per release |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Development, tests, release flow |
+| [Changelog](CHANGELOG.md) | User-visible changes |
+| [Contributing](CONTRIBUTING.md) | Development, tests, release flow |
+| [License](LICENSE) | MIT license |
 
 ## Acknowledgements
 
@@ -127,7 +129,7 @@ LarkDeck is an independent implementation and is not affiliated with the project
 
 ## Contributing
 
-Issues and pull requests are welcome; please read [CONTRIBUTING.md](CONTRIBUTING.md) first.
+Issues and pull requests are welcome; please read the [contributing guide](CONTRIBUTING.md) first.
 
 ## License
 
