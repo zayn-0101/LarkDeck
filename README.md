@@ -133,11 +133,11 @@ plugins:
 
 LarkDeck 在设计与实现过程中，受到了社区中多个优秀飞书 / Lark 卡片项目的启发，在此谨向以下项目及其作者致谢：
 
-- [Cheerwhy/hermes-lark-streaming](https://github.com/Cheerwhy/hermes-lark-streaming)（CLS）
-- [Aowen-Nowor/hermes-lark-streaming](https://github.com/Aowen-Nowor/hermes-lark-streaming)（ALS）
+- [Cheerwhy/hermes-lark-streaming](https://github.com/Cheerwhy/hermes-lark-streaming)
+- [Aowen-Nowor/hermes-lark-streaming](https://github.com/Aowen-Nowor/hermes-lark-streaming)
 - [monkey2jack/aiduPOP](https://github.com/monkey2jack/aiduPOP)
 - [techysy/hermes-fry-cards](https://github.com/techysy/hermes-fry-cards)
-- [baileyh8/hermes-feishu-streaming-card](https://github.com/baileyh8/hermes-feishu-streaming-card)（HFC）
+- [baileyh8/hermes-feishu-streaming-card](https://github.com/baileyh8/hermes-feishu-streaming-card)
 
 同时感谢 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 与[飞书开放平台](https://open.feishu.cn/)提供的公开能力。
 

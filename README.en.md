@@ -117,11 +117,11 @@ See [Commands](docs/guide/commands.md).
 
 LarkDeck's design and implementation were inspired by several excellent Feishu / Lark card projects in the community. Our thanks to the following projects and their authors:
 
-- [Cheerwhy/hermes-lark-streaming](https://github.com/Cheerwhy/hermes-lark-streaming) (CLS)
-- [Aowen-Nowor/hermes-lark-streaming](https://github.com/Aowen-Nowor/hermes-lark-streaming) (ALS)
+- [Cheerwhy/hermes-lark-streaming](https://github.com/Cheerwhy/hermes-lark-streaming)
+- [Aowen-Nowor/hermes-lark-streaming](https://github.com/Aowen-Nowor/hermes-lark-streaming)
 - [monkey2jack/aiduPOP](https://github.com/monkey2jack/aiduPOP)
 - [techysy/hermes-fry-cards](https://github.com/techysy/hermes-fry-cards)
-- [baileyh8/hermes-feishu-streaming-card](https://github.com/baileyh8/hermes-feishu-streaming-card) (HFC)
+- [baileyh8/hermes-feishu-streaming-card](https://github.com/baileyh8/hermes-feishu-streaming-card)
 
 Thanks also to [Hermes Agent](https://github.com/NousResearch/hermes-agent) and the [Feishu Open Platform](https://open.feishu.cn/) for the public capabilities they provide.
 
