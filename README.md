@@ -3,7 +3,7 @@
 > **飞书里的回答会像打字机一样实时写出来，思考与工具调用收在卡片底部，随时展开。**
 > LarkDeck 是基于飞书 CardKit 2.0 的 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 插件：不改 Hermes 源码，回答、过程与澄清交互都在同一张卡里完成。
 
-[![version](https://img.shields.io/badge/version-0.7.10-blue.svg)](https://github.com/zayn-0101/LarkDeck/releases)
+[![version](https://img.shields.io/badge/version-0.7.11-blue.svg)](https://github.com/zayn-0101/LarkDeck/releases)
 [![AH (Hermes Agent) 0.21.x](https://img.shields.io/badge/AH-0.21.x-blueviolet.svg)](https://github.com/NousResearch/hermes-agent)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 

@@ -9071,33 +9071,30 @@ def test_plan_progress_table_is_checkable_from_its_own_rows() -> None:
 
 
 def test_status_lines_never_claim_healthy_without_records():
-    """没有记录时，**每一条记录行都要说「无记录」**；一张永远说「正常」的自检，
-    与一张坏掉的自检在用户眼里长得一模一样（「绿而无判别力」）。
+    """没有记录时行首标记与文案必须一致：**没有数据写「无记录」（○）、零计数写「0 次」（✅）**；
+    一张永远说「正常」的自检，与一张坏掉的自检在用户眼里长得一模一样（「绿而无判别力」）。
 
-    判别力：变异 `R9-2`（把「无记录」改成「正常」）必须让这条红。
+    判别力：变异 `R9-2`（把「无记录」改成「正常」）必须让这条红；
+    `P2-8`（失败计数不再标 ⚠️）由下面的计数行断言拦住。
     """
     context.reset()
     lines = context.status_lines()
     # R11-C2 起是 6 行：入站 / 写卡 / 写卡失败 + **运行时长 / 掉回纯文本 / 错误码**
     assert len(lines) == 6, lines
-    for i, line in enumerate(lines):
-        if i == 3:
-            # ⚠️ **运行时长是唯一的例外，而且必须明说**：它是**时钟读数**（建盒子那一刻就有），
-            #    不是「记录」⇒ 永远有值；它也不是健康声明（"已运行 3s" 什么都没断言）。
-            #    把它也要求成「无记录」会让这个字段变成永远无用的装饰。
-            assert "已运行" in line and "无记录" not in line, line
-            continue
-        assert "无记录" in line, f"没有记录却没说「无记录」：{line!r}"
-    assert "正常" not in "".join(lines), "没有任何证据却给自己发了张健康证明"
+    # V079：没有数据的行用 ○ + 「无记录」；零计数的行用 ✅ + 「0 次」；时长是时钟读数用 🕒。
+    assert lines[0].startswith("○ ") and "无记录" in lines[0], lines[0]
+    assert lines[1].startswith("○ ") and "无记录" in lines[1], lines[1]
+    assert lines[2].startswith("✅ ") and lines[2].endswith("0 次"), lines[2]
+    assert lines[3].startswith("🕒 ") and "已运行" in lines[3], lines[3]
+    assert lines[4].startswith("✅ ") and lines[4].endswith("0 次"), lines[4]
+    assert lines[5].startswith("✅ ") and lines[5].endswith("0 次"), lines[5]
+    assert "正常" not in "".join(lines) and "健康" not in "".join(lines), \
+        "没有任何证据却给自己发了张健康证明"
     # ⚠️ **累计次数**必须一起显示：只有「最近一次是什么时候」的话，刚重启的进程与
-    # 「跑了三天、一次没失败」看起来完全一样。
-    # ⚠️ 写卡那行的尾巴在 R9 审计中-5 之后**故意**变长了（多一句口径说明）：
-    # 它数的是**帧数**，不是 API 调用次数（cardkit 一帧最多 3 次逻辑写、seed 是 2 次网络调用、
-    # 撞限流一次逻辑写最多 4 次 HTTP，全都只 +1）⇒ 断言跟着**改口径**，不是放松：
-    # 仍然要求「字面量 `累计 0`」+ 仍然要求出现「帧」这个单位词（含糊写「次」会让用户以为
-    # 它数的是写动作，而 patch 车道恰好一比一，纯属巧合 —— 审计中-5 指出的病）。
-    assert lines[0].endswith("累计 0 条消息"), lines
-    assert "累计 0 帧真的有写出" in lines[1], lines
+    # 「跑了三天、一次没失败」看起来完全一样。写卡行必须出现「帧」这个单位词
+    # （含糊写「次」会让用户以为它数的是写动作，而 patch 车道恰好一比一，纯属巧合）。
+    assert lines[0].endswith("累计 0 条消息）"), lines
+    assert lines[1].endswith("累计 0 帧）"), lines
 
 
 def test_status_lines_report_real_records_with_time_and_count():
@@ -9114,16 +9111,17 @@ def test_status_lines_report_real_records_with_time_and_count():
     _all = context.status_lines()
     assert len(_all) == 6, _all
     inbound, written, failed = _all[:3]
-    assert re.match(r"^入站心跳：\d\d-\d\d \d\d:\d\d:\d\d · 距上次 \d+[smh] · 累计 2 条消息$",
+    assert re.match(r"^✅ 入站心跳：\d\d-\d\d \d\d:\d\d:\d\d · 距上次 \d+[smh] · 累计 2 条消息$",
                     inbound), inbound
-    # 写卡行：时刻 + **帧数**（口径见中-5）+ 单位说明。用「累计 1 帧」而不是「累计 1 次」，
-    # 这样「把帧说成 API 调用次数」那种文案退化会当场红。
-    assert re.match(r"^最近写卡：\d\d-\d\d \d\d:\d\d:\d\d · 累计 1 帧真的有写出"
-                    r"（帧数，不是 API 调用次数）$", written), written
-    assert "累计 1 次" in failed and "收尾帧失败（boom）" in failed, failed
-    # 失败行也要写清口径（中-2）：它只算**我们发起且失败**的写，不含「没活跃流可收尾」
-    # 那种按契约返回 False 的正常路径 —— 不写的话用户会拿它当「核心收到几个 False」的证据。
-    assert "只算我们发出且失败的写" in failed, failed
+    # 写卡行：时刻 + **帧数**。断言必须出现「帧」这个单位词 —— 把帧说成「次」当场红
+    # （patch 车道恰好一比一，写成「次」会让人以为它数的是写动作，纯属巧合）。
+    assert re.match(r"^✅ 最近写卡：\d\d-\d\d \d\d:\d\d:\d\d · 累计 1 帧$", written), written
+    # 失败行：⚠️ 标记 + 次数 + 原因。口径说明移到记录区脚注（`status.note_frames`），
+    # 在状态卡版式测试里逐字核对，避免把一整句解释塞进表格单元格。
+    assert failed.startswith("⚠️ ") and "最近写卡失败：1 次" in failed \
+        and "收尾帧失败（boom）" in failed, failed
+    note = i18n.t("status.note_frames")
+    assert "帧" in note and "不计" in note, note
 
 
 def test_when_rejects_dirty_timestamps_below_the_epoch_floor():
@@ -9584,12 +9582,12 @@ def _manifest_version() -> str:
 
 
 def test_aggregate_diagnosis_reports_facts_without_claiming_healthy():
-    """P2 聚合诊断：把跨模块事实压成两行，但**不做「健康/正常」结论**。
+    """V079 状态卡「能力与链路」：逐项事实，但**不做「健康/正常」结论**。
 
     判据分三组（每组都必须有判别力）：
-      * 能力/链路行：探测结论、钩子数、命令注册、模块世代；
-      * 运行/账本行：入站心跳年龄、写卡帧数、写卡失败、掉回纯文本、错误码；
-      * 异常时的 ``⚠️`` 前缀只由**明确事实**触发（未接管 / 钩子不全 / 命令未注册 /
+      * 能力项：探测结论、钩子数、命令注册、模块世代（每项一条，统一 ✅/⚠️ 标记）；
+      * 运行事实：入站年龄、写卡帧数、失败 / 回落 / 错误码在**记录表**里带 ⚠️，本节不重复；
+      * 异常时的 ``⚠️`` 只由**明确事实**触发（未接管 / 钩子不全 / 命令未注册 /
         世代裂脑 / 有失败计数），不作为「一切正常」的反面承诺。
     """
     saved_report = dict(adapter.PROBE_REPORT)
@@ -9616,40 +9614,44 @@ def test_aggregate_diagnosis_reports_facts_without_claiming_healthy():
         adapter.COMMAND.update({"registered": True, "why": ""})
 
         lines = adapter._ld_diagnosis_lines()
-        assert len(lines) == 2, lines
+        assert len(lines) == 4, lines
         card_text = adapter._ld_command_card("status")
         # V079：状态卡分节后标签会加粗、异常标签带 <font> —— 判据改成「去掉样式后的
         # 纯文本里事实一行都不少」，既不钉死版式，也不放过「行被删掉」。
         plain = re.sub(r"<font[^>]*>|</font>", "", card_text).replace("**", "")
-        assert lines[0] in plain and lines[1] in plain, card_text
+        for line in lines:
+            assert line in plain, f"能力项没有进卡：{line!r}"
         total = len(hooks.SUBSCRIPTIONS)
-        assert lines[0].startswith("🩺"), lines[0]
-        for token in ("探测=已接管", f"钩子={total}/{total}", "命令=已注册",
-                      f"世代={panel.load_seq()}/{panel.latest_load_seq()}"):
-            assert token in lines[0], f"聚合能力行少了 {token!r}：{lines[0]!r}"
-        assert lines[1].startswith("📊"), lines[1]
-        assert "入站=无记录" in lines[1], lines[1]
-        assert "写卡=0 帧" in lines[1] and "写卡失败=0" in lines[1], lines[1]
+        expected = [
+            "✅ 能力探测：已接管",
+            f"✅ 钩子：{total}/{total} 已挂",
+            "✅ 命令：已注册",
+            f"✅ 世代：{panel.load_seq()}/{panel.latest_load_seq()}",
+        ]
+        assert lines == expected, (lines, expected)
         assert "正常" not in "".join(lines) and "健康" not in "".join(lines), lines
 
-        # 入站心跳的年龄与 status.inbound 同源；这里把记录改成 90 秒前，必须显示「1m前」。
+        # 入站心跳的年龄与记录区同源；这里把记录改成 90 秒前，必须显示「1m前」。
         context.note_inbound()
         context._shared_status()["inbound_at"] = time.time() - 90
-        line = adapter._ld_diagnosis_lines()[1]
-        assert "1m前" in line, f"入站年龄没有进入聚合行：{line!r}"
+        records = context.status_lines()
+        assert "距上次 1m" in records[0], f"入站年龄没有进入记录行：{records[0]!r}"
 
-        # 运行异常：三种失败计数各自进账本，聚合行必须带 ⚠️ 且如实列数。
+        # 运行异常：三种失败计数各自进账本，对应的**记录行**必须带 ⚠️ 且如实列数
+        # （V079 起运行事实只在记录表里出现一次，不再单起一行「聚合（运行/账本）」）。
         context.note_frame_fail("写卡炸了")
         context.note_plaintext_fallback("fallback 了")
         context.note_response_code(300309)
-        line = adapter._ld_diagnosis_lines()[1]
-        assert line.startswith("⚠️ 📊"), line
-        assert "写卡失败=1" in line and "掉回纯文本=1" in line and "错误码=1" in line, line
+        records = context.status_lines()
+        assert records[2].startswith("⚠️ ") and "最近写卡失败：1 次" in records[2], records[2]
+        assert records[4].startswith("⚠️ ") and "掉回纯文本：1 次" in records[4], records[4]
+        assert records[5].startswith("⚠️ ") and "错误码：1 次" in records[5], records[5]
 
-        # 能力异常：四种探测负结论 + 钩子不全 + 命令未注册 + 世代裂脑都必须是 ⚠️。
+        # 能力异常：三种探测负结论 + 钩子不全 + 命令未注册 + 世代裂脑都必须是 ⚠️。
         adapter.PROBE_REPORT["adopted"] = False
         line = adapter._ld_diagnosis_lines()[0]
-        assert line.startswith("⚠️ 🩺") and "未接管（覆盖层构造失败）" in line, line
+        assert line.startswith("⚠️ ") and "能力探测" in line \
+            and "未接管（覆盖层构造失败）" in line, line
         adapter.PROBE_REPORT["ok"] = False
         line = adapter._ld_diagnosis_lines()[0]
         assert "未接管（必需接口缺失）" in line, line
@@ -9660,12 +9662,12 @@ def test_aggregate_diagnosis_reports_facts_without_claiming_healthy():
         _full_report()
         first_hook = next(iter(adapter.HOOKS))
         adapter.HOOKS.pop(first_hook)
-        line = adapter._ld_diagnosis_lines()[0]
-        assert line.startswith("⚠️ 🩺") and f"钩子={total - 1}/{total}" in line, line
+        line = adapter._ld_diagnosis_lines()[1]
+        assert line.startswith("⚠️ ") and f"钩子：{total - 1}/{total} 已挂" in line, line
         adapter.HOOKS[first_hook] = True
         adapter.COMMAND["registered"] = False
-        line = adapter._ld_diagnosis_lines()[0]
-        assert line.startswith("⚠️ 🩺") and "命令=未注册" in line, line
+        line = adapter._ld_diagnosis_lines()[2]
+        assert line.startswith("⚠️ ") and "命令：未注册" in line, line
 
         # 世代裂脑：本模块加载序号与进程内最新序号不一致时必须报出来。
         saved_load = panel.load_seq
@@ -9673,8 +9675,8 @@ def test_aggregate_diagnosis_reports_facts_without_claiming_healthy():
         panel.load_seq = lambda: 1
         panel.latest_load_seq = lambda: 2
         try:
-            line = adapter._ld_diagnosis_lines()[0]
-            assert line.startswith("⚠️ 🩺") and "世代=1/2" in line, line
+            line = adapter._ld_diagnosis_lines()[3]
+            assert line.startswith("⚠️ ") and "世代：1/2" in line, line
         finally:
             panel.load_seq = saved_load
             panel.latest_load_seq = saved_latest
@@ -9684,18 +9686,20 @@ def test_aggregate_diagnosis_reports_facts_without_claiming_healthy():
         assert context.age_text(context._EPOCH_FLOOR - 1) == i18n.t("status.none")
         assert context.age_text(time.time() - 5) in ("4s", "5s"), context.age_text(time.time() - 5)
 
-        # 聚合自身失败时**不许静默少两行**：把失败原因放到卡上（R9 低-2 同源）。
-        saved_snapshot = context.status_snapshot
-        def _boom_snapshot():
-            raise RuntimeError("snapshot boom")
+        # 聚合自身失败时**不许静默少行**：把失败原因放到卡上（R9 低-2 同源）。
+        # V079 起这个函数不再读 status_snapshot（运行事实已移到记录表），改让 load_seq 抛。
+        saved_load2 = panel.load_seq
 
-        context.status_snapshot = _boom_snapshot
+        def _boom_load():
+            raise RuntimeError("load boom")
+
+        panel.load_seq = _boom_load
         try:
             failed = adapter._ld_diagnosis_lines()
             assert len(failed) == 1, failed
-            assert "聚合诊断渲染失败" in failed[0] and "snapshot boom" in failed[0], failed
+            assert "聚合诊断渲染失败" in failed[0] and "load boom" in failed[0], failed
         finally:
-            context.status_snapshot = saved_snapshot
+            panel.load_seq = saved_load2
     finally:
         adapter.PROBE_REPORT.clear()
         adapter.PROBE_REPORT.update(saved_report)

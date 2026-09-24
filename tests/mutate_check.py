@@ -1167,7 +1167,7 @@ MUTATIONS = [
      '"⚠️ 仅空闲态可用。不在飞书网关里也一样。"',
      "test_units"),
     ("R9-24-写卡文案退回「累计 N 次」（把**帧数**说成 API 调用次数）", "core/i18n.py",
-     '"status.frame_ok":    {ZH: "最近写卡：{when} · 累计 {n} 帧真的有写出（帧数，不是 API 调用次数）",',
+     '"status.frame_ok":    {ZH: "最近写卡：{when} · 累计 {n} 帧",',
      '"status.frame_ok":    {ZH: "最近写卡：{when} · 累计 {n} 次",',
      "test_units"),
     # ---- R8①② 点击路径：内联换卡的能力探测 + 失败态只弹 toast -------------------------- #
@@ -1840,12 +1840,9 @@ MUTATIONS = [
      '            return self._ld_card_response_safe()',
      "test_units"),
     ("P1b-4-status 心跳行不再显示「距上次多久」（渠道静默断连失去年龄信号）",
-     "core/context.py",
-     '        _i18n.t("status.inbound", when=_when(snap.get("inbound_at")),\n'
-     '                age=_dur(snap.get("inbound_at")),\n'
-     '                n=int(snap.get("inbound_count") or 0)),',
-     '        _i18n.t("status.inbound", when=_when(snap.get("inbound_at")),\n'
-     '                n=int(snap.get("inbound_count") or 0)),',
+     "core/i18n.py",
+     '    "status.inbound":     {ZH: "入站心跳：{when} · 距上次 {age} · 累计 {n} 条消息",',
+     '    "status.inbound":     {ZH: "入站心跳：{when} · 累计 {n} 条消息",',
      "test_units"),
     ("P1b-5-核心查找名探测永远返回 True（核心改名后 status 仍报「在位」）",
      "core/compat.py",
@@ -1854,9 +1851,9 @@ MUTATIONS = [
      "test_units"),
     ("P1b-6-status 不再显示核心中断查找名状态（改名静默失灵重新无信号）",
      "core/adapter.py",
-     '        _i18n.t("probe.signal", state=lookup_state),\n'
-     '    ]',
-     '    ]',
+     '        signal_mark + _i18n.t("probe.signal", state=lookup_state),\n'
+     '        _ld_mark(not absent) + _i18n.t("probe.contract", contract=contract),',
+     '        _ld_mark(not absent) + _i18n.t("probe.contract", contract=contract),',
      "test_units"),
     ("P1b-7-字号档位不给元素加 text_size 引用（配置了档位但正文不变）",
      "core/cards.py",
@@ -2153,17 +2150,13 @@ MUTATIONS = [
      "test_units"),
     ("P2-7-能力异常不再加 ⚠️（坏掉的链路看起来和健康一样）",
      "core/adapter.py",
-     '            ("⚠️ " if capability_bad else "") + _i18n.t(\n'
-     '                "diag.capability",',
-     '            ("" if capability_bad else "") + _i18n.t(\n'
-     '                "diag.capability",',
+     '    return "✅ " if ok else "⚠️ "',
+     '    return "✅ "',
      "test_units"),
     ("P2-8-运行失败不再加 ⚠️（失败计数和零失败看起来一样）",
-     "core/adapter.py",
-     '            ("⚠️ " if runtime_bad else "") + _i18n.t(\n'
-     '                "diag.runtime",',
-     '            ("" if runtime_bad else "") + _i18n.t(\n'
-     '                "diag.runtime",',
+     "core/context.py",
+     '        ("⚠️ " if failures else "✅ ") + (',
+     '        "✅ " + (',
      "test_units"),
     ("P2-11-配置刷新读失败不再整次取消（留下半套新配置）",
      "core/adapter.py",
@@ -2175,13 +2168,10 @@ MUTATIONS = [
      '    fresh = dict(_DEFAULTS)\n    fresh.update(found)',
      '    fresh = dict(previous)\n    fresh.update(found)',
      "test_units"),
-    ("P2-13-聚合行不再显示入站年龄（静默断连失去唯一相对信号）",
-     "core/adapter.py",
-     '    age = _context.age_text(snap.get("inbound_at"))\n'
-     '    if age == _i18n.t("status.none"):\n'
-     '        return _i18n.t("diag.inbound_none")\n'
-     '    return _i18n.t("diag.inbound_ago", age=age)',
-     '    return _i18n.t("diag.inbound_none")',
+    ("P2-13-记录行不再显示入站年龄（静默断连失去唯一相对信号）",
+     "core/context.py",
+     '            _i18n.t("status.inbound", when=_when(inbound_at), age=_dur(inbound_at),',
+     '            _i18n.t("status.inbound", when=_when(inbound_at), age="",',
      "test_units"),
     ("P2-15-read_terminal 被画成键盘（读取类工具与图标语义分叉）",
      "core/cards.py",

@@ -63,13 +63,28 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "clarify.hint":       {ZH: "点按钮，或直接回复文字都行。", EN: "Tap a button, or just reply with text."},
     # 2.0 澄清卡上**没有按钮** ⇒ 脚注不能再说「点按钮」（R11-C1）
     "clarify.hint_2":     {ZH: "点下拉选择，或直接回复文字都行。", EN: "Pick from the list, or just reply with text."},
-    # R11-C2：`/larkdeck status` 的三条新记录
-    "status.uptime":      {ZH: "⏱ 已运行：{v}", EN: "⏱ Uptime: {v}"},
-    "status.fallback":    {ZH: "🪂 掉回纯文本：{n} 次（最近 {when} · {reason}）",
-                           EN: "🪂 Fell back to plain text: {n} (last {when} · {reason})"},
-    "status.fallback_none": {ZH: "🪂 掉回纯文本：无记录", EN: "🪂 Fell back to plain text: no record"},
-    "status.codes":       {ZH: "❗ 错误码（累计 {n} 次）：{top}", EN: "❗ Error codes ({n} total): {top}"},
-    "status.codes_none":  {ZH: "❗ 错误码：无记录", EN: "❗ Error codes: no record"},
+    # R11-C2 / V079：记录区文案统一成「标记 + 标签：值」；标记由代码加，文案本身不带 emoji。
+    # 零计数写「0 次」，无数据写「无记录」——两者不许混用（用户看到的每一行同一套语法）。
+    "status.inbound":     {ZH: "入站心跳：{when} · 距上次 {age} · 累计 {n} 条消息",
+                           EN: "Inbound heartbeat: {when} · last {age} ago · {n} messages"},
+    "status.inbound_none": {ZH: "入站心跳：无记录（累计 0 条消息）",
+                            EN: "Inbound heartbeat: no record (0 messages)"},
+    "status.frame_ok":    {ZH: "最近写卡：{when} · 累计 {n} 帧",
+                           EN: "Last card write: {when} · {n} frames"},
+    "status.frame_ok_none": {ZH: "最近写卡：无记录（累计 0 帧）",
+                             EN: "Last card write: no record (0 frames)"},
+    "status.frame_fail":  {ZH: "最近写卡失败：{n} 次（最近 {when} · {reason}）",
+                           EN: "Last write failure: {n} (last {when} · {reason})"},
+    "status.frame_fail_none": {ZH: "最近写卡失败：0 次",
+                               EN: "Last write failure: 0"},
+    "status.uptime":      {ZH: "已运行：{v}", EN: "Uptime: {v}"},
+    "status.fallback":    {ZH: "掉回纯文本：{n} 次（最近 {when} · {reason}）",
+                           EN: "Plain-text fallbacks: {n} (last {when} · {reason})"},
+    "status.fallback_none": {ZH: "掉回纯文本：0 次", EN: "Plain-text fallbacks: 0"},
+    "status.codes":       {ZH: "错误码：{n} 次（{top}）", EN: "Error codes: {n} ({top})"},
+    "status.codes_none":  {ZH: "错误码：0 次", EN: "Error codes: 0"},
+    "status.note_frames": {ZH: "写卡按帧计数，不是 API 调用次数；不计「没有活跃流可收尾」这类无写出的返回。",
+                           EN: "Card writes are counted per frame, not per API call; normal no-op returns are not counted."},
     # 2.0 澄清卡：下拉占位 + 输入框占位（1.0 卡不用这两条）
     "clarify.pick":       {ZH: "选一个（也可在下面直接输入）", EN: "Pick one (or type below)"},
     "clarify.pick_multi": {ZH: "可多选：点开勾选", EN: "Multi-select: tap to pick"},
@@ -142,8 +157,9 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "cmd.version_unknown": {ZH: "版本读不到", EN: "version unreadable"},
     # ⚠️ 口径说明（R9 审计中-4）：三条记录是**进程级**全局，与页脚指标同源。
     # 不写清楚，多会话并发时用户会拿**别人会话**的失败原因来查自己的卡。
-    "cmd.scope":          {ZH: "（下面的数字是**进程级累计**：含本进程上全部会话，不只你这一条对话）",
-                           EN: "(the counters below are process-wide: every conversation in this process, not just yours)"},
+    # V079：改成系统口径的正式表述（旧句「不只你这一条对话」太口语）。
+    "cmd.scope":          {ZH: "统计口径：本卡数字为进程级累计，含本进程全部会话。",
+                           EN: "Scope: all counters below are process-wide, covering every conversation in this process."},
     # V079：状态卡改为分节排版（列表 / 表格 / 颜色 / 分隔线），这几条是新的版式文案。
     "status.section_diag":    {ZH: "🩺 能力与链路", EN: "🩺 Capability & wiring"},
     "status.section_probe":   {ZH: "🔍 能力探测", EN: "🔍 Capability probe"},
@@ -177,10 +193,13 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "probe.none":         {ZH: "能力探测：未探测（无记录）",
                            EN: "Capability probe: not probed (no record)"},
     "probe.short_none":   {ZH: "未探测", EN: "not probed"},
-    "probe.line":         {ZH: "能力探测：{state} · Hermes {version} · 适配器 {adapter} · 会话归属 {session}",
-                           EN: "Capability probe: {state} · Hermes {version} · adapter {adapter} · session attribution {session}"},
-    "probe.missing":      {ZH: "探测缺失：必需[{required}] · 可选[{optional}] · 点击[{callback}] · 信号[{signal}] · reactions[{reactions}] · chrome[{chrome}]",
-                           EN: "Probe gaps: required[{required}] · optional[{optional}] · callback[{callback}] · signal[{signal}] · reactions[{reactions}] · chrome[{chrome}]"},
+    "probe.runtime":      {ZH: "运行环境：Hermes {version}",
+                           EN: "Runtime: Hermes {version}"},
+    "probe.adapter":      {ZH: "适配器：{adapter}", EN: "Adapter: {adapter}"},
+    "probe.session":      {ZH: "会话归属：{state}", EN: "Session attribution: {state}"},
+    "probe.missing":      {ZH: "缺失接口：{summary}",
+                           EN: "Missing interfaces: {summary}"},
+    "probe.missing_none": {ZH: "无", EN: "none"},
     "probe.contract":     {ZH: "探测契约：{contract}", EN: "Probe contract: {contract}"},
     "probe.contract_ok":  {ZH: "完整", EN: "complete"},
     "probe.contract_bad": {ZH: "缺键 {keys}", EN: "missing keys {keys}"},
@@ -190,8 +209,7 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "probe.incomplete":   {ZH: "探测报告缺键", EN: "probe report incomplete"},
     "probe.session_ok":   {ZH: "就绪", EN: "ready"},
     "probe.session_bad":  {ZH: "未就绪（多会话可能串台）", EN: "not ready (multi-session may mix up)"},
-    "probe.signal":       {ZH: "信号契约（静态源码，不替代运行期）：{state}",
-                           EN: "Interrupt contract (static source, not runtime): {state}"},
+    "probe.signal":       {ZH: "信号契约：{state}", EN: "Interrupt contract: {state}"},
     "probe.signal_ok":    {ZH: "静态查到核心查找名字面量（不替代运行期）",
                            EN: "static core lookup literal found (not runtime proof)"},
     "probe.signal_bad":   {ZH: "静态未命中（未必等于运行期一定坏；请复跑 check_override）",
@@ -199,19 +217,17 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "probe.signal_unknown": {ZH: "未取证（核心源码不可读）", EN: "unverified (core source unreadable)"},
     "probe.unknown":      {ZH: "未知", EN: "unknown"},
     "probe.none_list":    {ZH: "无", EN: "none"},
-    # P2 聚合诊断（`/larkdeck status` 顶部两行）。只报事实、不做「健康/正常」结论；
-    # 有明确异常时前缀 ⚠️，其余只列读数。入站年龄与 status.inbound 同源（`context.age_text`）。
-    "diag.capability":    {ZH: "🩺 聚合（能力/链路）：探测={probe} · 钩子={wired}/{total} · 命令={command} · 世代={gen}/{latest}",
-                           EN: "🩺 Aggregate (capability/wiring): probe={probe} · hooks={wired}/{total} · command={command} · generation={gen}/{latest}"},
-    "diag.runtime":       {ZH: "📊 聚合（运行/账本）：入站={inbound} · 写卡={writes} 帧 · 写卡失败={fail} · 掉回纯文本={fallback} · 错误码={codes}",
-                           EN: "📊 Aggregate (runtime/ledger): inbound={inbound} · card writes={writes} frames · write failures={fail} · plain-text fallbacks={fallback} · error codes={codes}"},
-    # 聚合渲染自身失效时**不许静默少两行**（R9 低-2）：把失败原因放到卡上。
+    # V079：状态卡「能力与链路」拆成逐项 (标签: 值)，标记（✅/⚠️）由代码统一加；
+    # 不再用「聚合（…）：a=b · c=d」这种一行塞四件事的写法。
+    "diag.item_probe":    {ZH: "能力探测：{value}", EN: "Capability probe: {value}"},
+    "diag.item_hooks":    {ZH: "钩子：{wired}/{total} 已挂", EN: "Hooks: {wired}/{total} wired"},
+    "diag.item_command":  {ZH: "命令：{value}", EN: "Command: {value}"},
+    "diag.item_generation": {ZH: "世代：{gen}/{latest}", EN: "Generation: {gen}/{latest}"},
+    # 聚合渲染自身失效时**不许静默少行**（R9 低-2）：把失败原因放到卡上。
     "diag.failed":        {ZH: "🩺 聚合诊断渲染失败：{error}（其余状态行仍可用）",
                            EN: "🩺 Aggregate diagnosis failed to render: {error} (other status lines are still available)"},
     "diag.command_ok":    {ZH: "已注册", EN: "registered"},
     "diag.command_bad":   {ZH: "未注册", EN: "not registered"},
-    "diag.inbound_ago":   {ZH: "{age}前", EN: "{age} ago"},
-    "diag.inbound_none":  {ZH: "无记录", EN: "no record"},
     # 推理显示解析结果（`show_reasoning=auto` 跟随 Hermes）。必须能说出「为什么关」：
     # display 开着但 stream_reasoning_deltas 关着时，用户看到的卡片不会有推理正文，
     # 这张状态行是唯一能区分「Hermes 没发数据」与「插件 bug」的地方。
@@ -270,22 +286,11 @@ _STRINGS: Dict[str, Dict[str, str]] = {
                                         "effective in-process values: {keys}"},
     "config.unknown_action": {ZH: "不认识的 config 子命令：{arg}（可用：show / reload）",
                               EN: "Unknown config subcommand: {arg} (available: show / reload)"},
-    "status.inbound":     {ZH: "入站心跳：{when} · 距上次 {age} · 累计 {n} 条消息",
-                           EN: "Inbound heartbeat: {when} · last {age} ago · {n} messages"},
-    # ⚠️ 口径（R9 审计中-5）：数的是「有多少帧**真的有东西写出去**」，不是 API 调用次数 ——
-    #    cardkit 一帧最多 3 次逻辑写（装饰 batch + 正文 content + 限频的会话预览）、
-    #    seed 帧是 2 次网络调用、一次逻辑写撞限流最多重发 4 次 HTTP，全都只 +1。
-    #    写成「写卡：累计 N 次」会让人以为它数的是写动作（而 patch 车道恰好一比一，纯属巧合）。
-    #    （正文里不加 `**`：文案走 `i18n.t()` 是**纯文本**，星号会原样显示给用户。）
-    "status.frame_ok":    {ZH: "最近写卡：{when} · 累计 {n} 帧真的有写出（帧数，不是 API 调用次数）",
-                           EN: "Last card write: {when} · {n} frames actually wrote (frames, not API calls)"},
-    # ⚠️ 同样写死口径（R9 审计中-2）：「写卡失败」只统计**我们真的发起过写、而它失败了**的帧；
-    #    不含「没有活跃流可收尾 ⇒ 按契约返回 False 交核心回落」这种**正常**返回
-    #    （那时一个写请求都没发，核心的 edit/send 会把消息正常发出去）。
-    "status.frame_fail":  {ZH: "最近写卡失败：{when} · 累计 {n} 次（只算我们发出且失败的写）· {reason}",
-                           EN: "Last write failure: {when} · {n} (only writes we sent and that failed) · {reason}"},
-    "status.frame_fail_none": {ZH: "最近写卡失败：无记录（累计 0 次）",
-                               EN: "Last write failure: no record (0)"},
+    # V079：记录区的 status.* 文案统一在上方只定义一次；这里只留通用的「无记录」。
+    # 口径备忘（不许丢）：`frame_ok` 数的是「真的有东西写出去的帧」，不是 API 调用次数
+    # （cardkit 一帧最多 3 次逻辑写、seed 帧 2 次网络调用、限流重发全部只 +1）；
+    # `frame_fail` 只算「我们发出且失败的写」，不含「没有活跃流可收尾 ⇒ 正常返回 False」。
+    # 这两条口径现在写进上面 `status.note_frames`，由状态卡的记录区脚注展示。
     "status.none":        {ZH: "无记录", EN: "no record"},
 }
 

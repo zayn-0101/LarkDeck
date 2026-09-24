@@ -6875,18 +6875,23 @@ def _probe_state_label(report: Dict[str, Any]) -> str:
     return _i18n.t("probe.short_none" if key == "probe.none" else key)
 
 
+def _ld_mark(ok: Any) -> str:
+    """状态卡统一标记（V079）：✅ / ⚠️。所有分区共用同一处定义。"""
+    return "✅ " if ok else "⚠️ "
+
+
 def _probe_status_lines() -> List[str]:
-    """`/larkdeck status` 的能力探测摘要（P1a）。
+    """`/larkdeck status` 的能力探测摘要（P1a；V079 改成逐项「标记 + 标签：值」）。
 
     数据只来自 `build_adapter()` 时存下的 `PROBE_REPORT` 快照 —— 命令路径**不重新探测**：
     那时接管用的基类可能已经不在了，而且探测不应在命令线程上做 IO。
-    未探测/探测本身失败 ⇒ 写「未探测」；已探测 ⇒ 按「状态 / 缺失 / 契约」三行给可读摘要。
-    覆盖 `compat.PROBE_REPORT_KEYS` 全部键；不把原始键名列表直接堆给用户，也绝不写「正常」。
+    未探测 ⇒ 一行「○ 能力探测：未探测」；已探测 ⇒ 状态 / 适配器 / 会话归属 / 缺失接口 /
+    信号契约 / 探测契约，覆盖 `compat.PROBE_REPORT_KEYS` 全部键。绝不写「正常」。
     """
     report = dict(PROBE_REPORT)
     state_key = _probe_state_key(report)
     if state_key == "probe.none":
-        return [_i18n.t("probe.none")]
+        return ["○ " + _i18n.t("probe.none")]
 
     def _names(key: str) -> str:
         value = report.get(key)
@@ -6896,51 +6901,47 @@ def _probe_status_lines() -> List[str]:
         return names or _i18n.t("probe.none_list")
 
     absent = _probe_absent_keys(report)
-    state = _i18n.t(state_key)
     version = str(report.get("hermes_version") or _i18n.t("probe.unknown"))
     adapter_class = str(report.get("adapter_class") or _i18n.t("probe.unknown"))
-    session = (_i18n.t("probe.session_ok") if report.get("session_attribution_ok")
-              else _i18n.t("probe.session_bad"))
+    session_ok = bool(report.get("session_attribution_ok"))
     lookup = report.get("core_interrupt_lookup")
     if lookup is True:
-        lookup_state = _i18n.t("probe.signal_ok")
+        lookup_state, lookup_ok = _i18n.t("probe.signal_ok"), True
     elif lookup is False:
-        lookup_state = _i18n.t("probe.signal_bad")
+        lookup_state, lookup_ok = _i18n.t("probe.signal_bad"), False
     else:
-        lookup_state = _i18n.t("probe.signal_unknown")
-    lines = [
-        _i18n.t("probe.line", state=state, version=version,
-                adapter=adapter_class, session=session),
-        _i18n.t("probe.missing",
-                required=_names("missing_required"), optional=_names("missing_optional"),
-                callback=_names("missing_callback"), signal=_names("missing_signal"),
-                reactions=_names("missing_reactions"), chrome=_names("missing_display_chrome")),
-        _i18n.t("probe.signal", state=lookup_state),
-    ]
+        lookup_state, lookup_ok = _i18n.t("probe.signal_unknown"), None
+    # 缺失接口统一成一行摘要：全空写「无」，否则逐类列出（不把六个空括号都印出来）。
+    gaps = []
+    for label, key in (("必需", "missing_required"), ("可选", "missing_optional"),
+                       ("点击", "missing_callback"), ("信号", "missing_signal"),
+                       ("reactions", "missing_reactions"), ("chrome", "missing_display_chrome")):
+        names = _names(key)
+        if names != _i18n.t("probe.none_list"):
+            gaps.append(f"{label}[{names}]")
+    summary = " · ".join(gaps) if gaps else _i18n.t("probe.missing_none")
     contract = (_i18n.t("probe.contract_bad", keys=", ".join(absent))
                 if absent else _i18n.t("probe.contract_ok"))
-    lines.append(_i18n.t("probe.contract", contract=contract))
-    return lines
-
-
-def _ld_diag_inbound(snap: Dict[str, Any]) -> str:
-    """入站心跳的**相对年龄**；没有可用记录就如实写「无记录」。"""
-    age = _context.age_text(snap.get("inbound_at"))
-    if age == _i18n.t("status.none"):
-        return _i18n.t("diag.inbound_none")
-    return _i18n.t("diag.inbound_ago", age=age)
+    signal_mark = _ld_mark(True) if lookup_ok is True else (
+        "○ " if lookup_ok is None else _ld_mark(False))
+    return [
+        "✅ " + _i18n.t("probe.runtime", version=version),
+        "✅ " + _i18n.t("probe.adapter", adapter=adapter_class),
+        _ld_mark(session_ok) + _i18n.t(
+            "probe.session", state=_i18n.t("probe.session_ok" if session_ok
+                                           else "probe.session_bad")),
+        _ld_mark(not gaps) + _i18n.t("probe.missing", summary=summary),
+        signal_mark + _i18n.t("probe.signal", state=lookup_state),
+        _ld_mark(not absent) + _i18n.t("probe.contract", contract=contract),
+    ]
 
 
 def _ld_diagnosis_lines() -> List[str]:
-    """P2 聚合诊断：把跨模块的健康事实压成两行，给 `/larkdeck status` 顶部用。
+    """状态卡「能力与链路」区的逐项事实（P2 起用；V079 从两行长句拆成逐项行）。
 
-    与 AP 的 `doctor` 同一目的，但只报**本进程手上有证据的事实**，不做结论性健康声明：
-      * 能力/链路行：探测结论、钩子挂载数、命令注册、模块世代；
-      * 运行/账本行：入站心跳年龄、写卡帧数、写卡失败、掉回纯文本、错误码总数。
-
-    两行在**有明确异常**（未接管 / 钩子不全 / 命令未注册 / 世代裂脑 / 有失败计数）时
-    以 ``⚠️`` 开头；其余情况只列事实，**不写「正常」「健康」** —— 一个永远说健康的诊断
-    与一个坏掉的诊断在卡上没有区别（`docs/internal/lessons.md` 推论 6）。
+    只报**本进程手上有证据的事实**，每项统一「✅/⚠️ + 标签：值」；没有异常也只列事实，
+    **不写「正常」「健康」** —— 一个永远说健康的诊断与一个坏掉的诊断在卡上没有区别
+    （`docs/internal/lessons.md` 推论 6）。运行/账本类事实在记录表里，不在这里重复。
     """
     try:
         report = dict(PROBE_REPORT)
@@ -6951,35 +6952,19 @@ def _ld_diagnosis_lines() -> List[str]:
         command_ok = bool(COMMAND.get("registered"))
         generation = int(_panel.load_seq())
         latest = int(_panel.latest_load_seq())
-        snap = _context.status_snapshot() or {}
-        writes = int(snap.get("frame_ok_count") or 0)
-        failures = int(snap.get("frame_fail_count") or 0)
-        fallbacks = int(snap.get("fallback_count") or 0)
-        codes = int(snap.get("code_total") or 0)
-        capability_bad = (state_key != "probe.covered" or wired < total
-                          or not command_ok or generation != latest)
-        runtime_bad = failures > 0 or fallbacks > 0 or codes > 0
         return [
-            ("⚠️ " if capability_bad else "") + _i18n.t(
-                "diag.capability",
-                probe=_probe_state_label(report),
-                wired=wired,
-                total=total,
-                command=_i18n.t("diag.command_ok" if command_ok else "diag.command_bad"),
-                gen=generation,
-                latest=latest,
-            ),
-            ("⚠️ " if runtime_bad else "") + _i18n.t(
-                "diag.runtime",
-                inbound=_ld_diag_inbound(snap),
-                writes=writes,
-                fail=failures,
-                fallback=fallbacks,
-                codes=codes,
-            ),
+            _ld_mark(state_key == "probe.covered") + _i18n.t(
+                "diag.item_probe", value=_probe_state_label(report)),
+            _ld_mark(wired == total) + _i18n.t(
+                "diag.item_hooks", wired=wired, total=total),
+            _ld_mark(command_ok) + _i18n.t(
+                "diag.item_command",
+                value=_i18n.t("diag.command_ok" if command_ok else "diag.command_bad")),
+            _ld_mark(generation == latest) + _i18n.t(
+                "diag.item_generation", gen=generation, latest=latest),
         ]
     except Exception as exc:
-        # ⚠️ 不许静默少两行（R9 低-2 同源）：聚合失败必须让用户在卡上看到，
+        # ⚠️ 不许静默少行（R9 低-2 同源）：聚合失败必须让用户在卡上看到，
         # 否则「聚合行不见了」与「一切正常」在用户眼里一样。
         # 日志只记异常**类型名**：病态异常对象的 `__str__` 可能在 logger 格式化时再抛，
         # 那会把「诊断失败」升级成「命令处理器穿透」（审计 A6）。
@@ -7224,8 +7209,8 @@ def _ld_status_markdown(*, header: str, scope: str, diagnosis: List[str],
                 cell = f"<font color='red'>{cell}</font>"
             escaped = value.replace("|", "\\|")
             out.append(f"| {cell} | {escaped} |")
-        out.append("")
-    out += ["---", _i18n.t("status.tip")]
+        out += ["", f"> {_i18n.t('status.note_frames')}"]
+    out += ["", "---", _i18n.t("status.tip")]
     return "\n".join(out)
 
 

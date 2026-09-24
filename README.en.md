@@ -3,7 +3,7 @@
 > **Replies are typed out live in Feishu, with reasoning and tool calls kept in the card's bottom panel — expand it anytime.**
 > LarkDeck is a [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin built on Feishu CardKit 2.0: it never patches Hermes source, and the answer, the process, and clarify choices all live in one card.
 
-[![version](https://img.shields.io/badge/version-0.7.10-blue.svg)](https://github.com/zayn-0101/LarkDeck/releases)
+[![version](https://img.shields.io/badge/version-0.7.11-blue.svg)](https://github.com/zayn-0101/LarkDeck/releases)
 [![AH (Hermes Agent) 0.21.x](https://img.shields.io/badge/AH-0.21.x-blueviolet.svg)](https://github.com/NousResearch/hermes-agent)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 

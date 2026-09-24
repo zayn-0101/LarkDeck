@@ -813,22 +813,33 @@ def status_lines() -> List[str]:
     snap = status_snapshot()
     failures = int(snap.get("frame_fail_count") or 0)
     fallbacks = int(snap.get("fallback_count") or 0)
+    codes = int(snap.get("code_total") or 0)
+    inbound_at = snap.get("inbound_at")
+    frame_ok_at = snap.get("frame_ok_at")
+    # V079：每行行首统一加标记 —— 有数据/零计数 ✅、无数据 ○、异常 ⚠️、运行时长中性 🕒。
+    # 标记由这里加（不写进 i18n 文案），这样「同一套语法」只有一处定义。
     return [
-        _i18n.t("status.inbound", when=_when(snap.get("inbound_at")),
-                age=_dur(snap.get("inbound_at")),
-                n=int(snap.get("inbound_count") or 0)),
-        _i18n.t("status.frame_ok", when=_when(snap.get("frame_ok_at")),
-                n=int(snap.get("frame_ok_count") or 0)),
-        (_i18n.t("status.frame_fail", when=_when(snap.get("frame_fail_at")), n=failures,
-                 reason=str(snap.get("frame_fail_reason") or ""))
-         if failures else _i18n.t("status.frame_fail_none")),
+        ("✅ " if inbound_at else "○ ") + (
+            _i18n.t("status.inbound", when=_when(inbound_at), age=_dur(inbound_at),
+                    n=int(snap.get("inbound_count") or 0))
+            if inbound_at else _i18n.t("status.inbound_none")),
+        ("✅ " if frame_ok_at else "○ ") + (
+            _i18n.t("status.frame_ok", when=_when(frame_ok_at),
+                    n=int(snap.get("frame_ok_count") or 0))
+            if frame_ok_at else _i18n.t("status.frame_ok_none")),
+        ("⚠️ " if failures else "✅ ") + (
+            _i18n.t("status.frame_fail", when=_when(snap.get("frame_fail_at")), n=failures,
+                    reason=str(snap.get("frame_fail_reason") or ""))
+            if failures else _i18n.t("status.frame_fail_none")),
         # ---- R11-C2：三条「用户看不见但排障必须知道」的记录 ----
-        _i18n.t("status.uptime", v=_dur(snap.get("started_at"))),
-        (_i18n.t("status.fallback", when=_when(snap.get("fallback_at")), n=fallbacks,
-                 reason=str(snap.get("fallback_reason") or ""))
-         if fallbacks else _i18n.t("status.fallback_none")),
-        (_i18n.t("status.codes", n=int(snap.get("code_total") or 0), top=_codes_top(snap))
-         if int(snap.get("code_total") or 0) else _i18n.t("status.codes_none")),
+        "🕒 " + _i18n.t("status.uptime", v=_dur(snap.get("started_at"))),
+        ("⚠️ " if fallbacks else "✅ ") + (
+            _i18n.t("status.fallback", when=_when(snap.get("fallback_at")), n=fallbacks,
+                    reason=str(snap.get("fallback_reason") or ""))
+            if fallbacks else _i18n.t("status.fallback_none")),
+        ("⚠️ " if codes else "✅ ") + (
+            _i18n.t("status.codes", n=codes, top=_codes_top(snap))
+            if codes else _i18n.t("status.codes_none")),
     ]
 
 
