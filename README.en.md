@@ -111,17 +111,19 @@ See [docs/guide/commands.md](docs/guide/commands.md).
 | [Release notes](docs/releases/README.md) | Full notes per release |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development, tests, release flow |
 
-## Credits
+## Acknowledgements
 
-Streaming cards for Feishu did not start here — LarkDeck learned from these projects. What we took, specifically:
+LarkDeck's design and implementation were inspired by several excellent Feishu / Lark card projects in the community. Our thanks to the following projects and their authors:
 
-- [Cheerwhy/hermes-lark-streaming](https://github.com/Cheerwhy/hermes-lark-streaming) (CLS) — an early CardKit 2.0 streaming card implementation on this line; LarkDeck's tool rows and icon table are aligned to its implementation line by line.
-- [Aowen-Nowor/hermes-lark-streaming](https://github.com/Aowen-Nowor/hermes-lark-streaming) (ALS) — an early take on merging reasoning and tool calls into one panel, answering ops commands with a card, and using an inbound heartbeat to catch silent disconnects.
-- [monkey2jack/aiduPOP](https://github.com/monkey2jack/aiduPOP) — the bubble-wave look (LarkDeck's `ap_lite` / `ap_bubble`) and the habit of writing down every design decision.
-- [techysy/hermes-fry-cards](https://github.com/techysy/hermes-fry-cards) — the unified panel, multiple context-usage styles, and model aliases; LarkDeck's `context_style` and `model_aliases` were inspired by it.
-- [baileyh8/hermes-feishu-streaming-card](https://github.com/baileyh8/hermes-feishu-streaming-card) (HFC) — the self-check / ops card, and "check compatibility after an upgrade instead of failing silently".
+- [Cheerwhy/hermes-lark-streaming](https://github.com/Cheerwhy/hermes-lark-streaming) (CLS)
+- [Aowen-Nowor/hermes-lark-streaming](https://github.com/Aowen-Nowor/hermes-lark-streaming) (ALS)
+- [monkey2jack/aiduPOP](https://github.com/monkey2jack/aiduPOP)
+- [techysy/hermes-fry-cards](https://github.com/techysy/hermes-fry-cards)
+- [baileyh8/hermes-feishu-streaming-card](https://github.com/baileyh8/hermes-feishu-streaming-card) (HFC)
 
-Most of them patch the Hermes runtime to hook in; LarkDeck uses the official plugin contract (`register_platform` + official hooks) and never patches Hermes source. Different mechanism, same user problems.
+Thanks also to [Hermes Agent](https://github.com/NousResearch/hermes-agent) and the [Feishu Open Platform](https://open.feishu.cn/) for the public capabilities they provide.
+
+LarkDeck is an independent implementation and is not affiliated with the projects above; all project names and work belong to their respective authors.
 
 ## Contributing
 

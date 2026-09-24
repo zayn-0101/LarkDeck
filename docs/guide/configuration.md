@@ -1,6 +1,6 @@
 # 配置参考
 
-给需要调整 LarkDeck 行为的用户：以 `plugin.yaml` 的 `config_schema` 为唯一事实来源，列出全部用户可配置项、默认值、作用与常用示例，并说明配置优先级和 `config reload` 的边界。
+本文面向需要调整 LarkDeck 行为的用户：以 `plugin.yaml` 的 `config_schema` 为唯一事实来源，列出全部可配置项、默认值、作用与常用示例，并说明配置优先级和 `config reload` 的边界。
 
 ## 配置写在哪
 
