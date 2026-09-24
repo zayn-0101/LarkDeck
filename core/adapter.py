@@ -1007,6 +1007,31 @@ def _is_clarify_boundary_text(text: Any) -> bool:
     return str(text or "").strip() == CLARIFY_BOUNDARY_TEXT
 
 
+def _panel_has_running_clarify(chat_id: str) -> bool:
+    """当前面板快照里是否有**仍在运行**的 clarify 工具步骤。
+
+    为什么不能只认占位正文：核心边界帧发的是 ``self._accumulated or placeholder`` ——
+    只要 clarify 之前已经有任何正文（真机常见：模型先写一段话再调用 clarify），
+    那一帧的文本就不是占位，仅靠文本识别会把边界漏掉，主卡又走普通 finalize ⇒
+    点击后没有活跃卡可刷新（2026-09-24 真机复现）。clarify 是阻塞工具，**收尾帧里
+    它还在 running** 就等价于「这是一个 clarify 边界」，比文本可靠。
+    """
+    try:
+        snap = _panel.snapshot(str(chat_id or "")) or {}
+    except Exception:                        # pragma: no cover - 防御性
+        return False
+    tools = snap.get("tools")
+    if not isinstance(tools, list):
+        return False
+    for item in reversed(tools):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("name") or "").strip().lower() != "clarify":
+            continue
+        return str(item.get("status") or "").strip().lower() == "running"
+    return False
+
+
 def _event_chat_id(event: Any) -> str:
     """从卡片点击事件里尽力取 chat_id（回调 response 不换主卡时，主卡刷新需要它）。"""
     context = getattr(event, "context", None)
@@ -2960,6 +2985,20 @@ class LarkDeckMixin:
         result = self._finalize_send_result(response, "larkdeck card send failed")
         if getattr(result, "success", False) and getattr(result, "message_id", ""):
             _context.note_frame_ok()
+            # 出站留痕（与 send() 出口同一判据：success 且拿到 message_id）：
+            # 澄清卡走的就是这条 _ld_send_card，没有这行日志，点击丢失时
+            # 「卡到底有没有发出去」就不可证伪。限流在 _log_outbound 内部。
+            # ⚠️ 2.0 卡的元素在 `body.elements`（structured 车道/澄清卡都是），
+            # 只读顶层 `elements` 会把所有 2.0 出站记成**空前置** —— 而这条日志的全部意义
+            # 就是拿前置对照用户截图（2026-09-24 单测抓到：结构化默认下卡片出站长这样）。
+            _parts = card.get("elements")
+            if not isinstance(_parts, list):
+                _body = card.get("body")
+                _parts = _body.get("elements") if isinstance(_body, dict) else []
+            _log_outbound("card", chat_id, "".join(
+                str(part.get("content", ""))
+                for part in (_parts or []) if isinstance(part, dict)
+            ), result.message_id)
         return result
 
     async def _ld_update_card(self, chat_id: str, message_id: str, card: Dict[str, Any]) -> Any:
@@ -4893,12 +4932,20 @@ class LarkDeckMixin:
         # `post_tool_call`，这段时间主卡永远停在那一行。修法：识别这个占位帧，**不关流**，
         # 原地写等待文案；点击处理器随后在同一张卡上写「已收到选择」+ 面板标 ok，
         # 后续 delta 继续更新同一张卡。见 `_ld_clarify_refresh_card`。
-        clarify_boundary = bool(finalize and _is_clarify_boundary_text(text))
+        clarify_boundary = bool(
+            finalize
+            and (_is_clarify_boundary_text(text)
+                 or _panel_has_running_clarify(chat)))
         if clarify_boundary:
             finalize = False
         display = self._ld_body_text(text, chat, finalize=finalize, stream_state=state,)
         if clarify_boundary:
-            display = _i18n.t("clarify.main_waiting")
+            # 占位文案整段替换成我们的等待文案；如果有已累积正文就保留
+            # （不要让边界把用户已经看到的半段话擦掉）。
+            if _is_clarify_boundary_text(text):
+                display = _i18n.t("clarify.main_waiting")
+            else:
+                display = str(display or "").strip() or _i18n.t("clarify.main_waiting")
         offset = int(state.get("ck_offset") or 0)
         visible = display[offset:]
         if _card_body_bytes(visible) > _CK_SPLIT_SEAL_AT:
@@ -5875,6 +5922,25 @@ class LarkDeckMixin:
             event = getattr(data, "event", None)
             action = getattr(event, "action", None)
             value = self._ld_normalize_value(action)
+            # 诊断（2026-09-24 多选表单提交落到内置 `/card` 合成命令）：只记形状不记内容值。
+            _tag = str(getattr(action, "tag", "") or "")
+            if _tag == "button" or getattr(action, "form_value", None):
+                _raw_value = getattr(action, "value", None)
+                _fv = getattr(action, "form_value", None)
+                _raw_keys = (sorted(str(k) for k in _raw_value.keys())
+                             if isinstance(_raw_value, dict) else type(_raw_value).__name__)
+                _fv_keys = (sorted(str(k) for k in _fv.keys())
+                            if isinstance(_fv, dict) else type(_fv).__name__)
+                _opts = getattr(action, "options", None)
+                _inp = getattr(action, "input_value", None)
+                logger.info(
+                    "[larkdeck] 卡片按钮形状 tag=%s value_keys=%s form_value_keys=%s "
+                    "name=%r option=%r options_count=%s input_len=%s normalized_action=%s",
+                    _tag, _raw_keys, _fv_keys, getattr(action, "name", None),
+                    getattr(action, "option", None),
+                    len(_opts) if isinstance(_opts, (list, tuple)) else None,
+                    len(_inp) if isinstance(_inp, str) else None,
+                    value.get(ACTION_KEY))
             if isinstance(value, dict) and value.get(ACTION_KEY) == ACTION_CLARIFY:
                 return self._ld_handle_clarify_click(event=event, action=action, value=value)
             if _cards.is_probe_value(value):      # 判据只有一处（见 cards.is_probe_value）
@@ -5891,10 +5957,9 @@ class LarkDeckMixin:
           （hermes-feishu-streaming-card 的取值器）专门为此写了 ``json.loads`` 兜底。
           我们不兜的话，`.get(ACTION_KEY)` 会抛 AttributeError，被外层 except 接住后
           **静默交回内置实现** —— 用户的点击就是「点了没反应」（本项目最怕的失败形态）。
-        * 表单提交按钮（``form_action_type=submit``）的回调 **``value`` 是空的**，
-          数据在 ``action.form_value`` 里（HFC 的注释记了这件事）。我们现在不发表单卡，
-          但一旦发（比如 2.0 澄清卡要组合多个输入），没有这一层就是点了没反应。
-          只从 ``form_value`` 里取**我们自己的键**，绝不整体合并（免得污染判断）。
+        * 表单提交按钮（``form_action_type=submit``）的回调 ``value`` 带按钮自己的路由键，
+          多选值在 ``action.form_value["clarify_options"]``（2026-09-24 起多选澄清卡用的就是
+          这个形态）。这里只并回**我们自己的键**，绝不整体合并（免得污染判断）。
         """
         raw = getattr(action, "value", None)
         value: Dict[str, Any] = {}
@@ -5907,12 +5972,17 @@ class LarkDeckMixin:
                 parsed = None
             if isinstance(parsed, dict):
                 value = parsed
-        if ACTION_KEY not in value:
-            form_value = getattr(action, "form_value", None)
-            if isinstance(form_value, dict):
-                for key in (ACTION_KEY, "clarify_id", "session_key", "question", "answer"):
-                    if key not in value and form_value.get(key) is not None:
-                        value[key] = form_value[key]
+        form_value = getattr(action, "form_value", None)
+        if isinstance(form_value, dict):
+            for key in (ACTION_KEY, "clarify_id", "session_key", "question", "answer",
+                        "options", "option", "input_value"):
+                if key not in value and form_value.get(key) is not None:
+                    value[key] = form_value[key]
+            # 2.0 表单提交：多选值在 `form_value["clarify_options"]`（组件 name），
+            # 路由键在提交按钮自己的 `value` 里；统一并回 `value["options"]` 交给
+            # `_ld_clarify_answer` 走多选解析。
+            if "options" not in value and form_value.get("clarify_options") is not None:
+                value["options"] = form_value["clarify_options"]
         return value
 
     def _ld_log_probe_click(self, *, event: Any, action: Any) -> Any:
@@ -6155,15 +6225,22 @@ class LarkDeckMixin:
         ``mode == "none"`` 表示载荷里什么都没有 —— 调用方保持安静、不要提交空答案。
         """
         options = getattr(action, "options", None)
+        if options is None and isinstance(value, dict):
+            # 2.0 表单提交：值在 form_value，已由 `_ld_normalize_value` 并进 value["options"]
+            options = value.get("options")
         if isinstance(options, str) and options.strip():
             # 线格式可能是 "A,B"（视客户端/版本），与 list 等价处理
             options = [part.strip() for part in options.split(",") if part.strip()]
         if isinstance(options, (list, tuple)) and options:
             return json.dumps([str(item) for item in options], ensure_ascii=False), "multi"
         option = getattr(action, "option", None)
+        if option is None and isinstance(value, dict):
+            option = value.get("option")
         if isinstance(option, str) and option.strip():
             return option, "choice"
         typed = getattr(action, "input_value", None)
+        if typed is None and isinstance(value, dict):
+            typed = value.get("input_value")
         if isinstance(typed, str) and typed.strip():
             return typed.strip(), "text"
         fallback = value.get("answer") if isinstance(value, dict) else None
@@ -6174,27 +6251,34 @@ class LarkDeckMixin:
     def _ld_note_clarify_answered(self, event: Any, *, awaiting_text: bool) -> None:
         """点击成功后：同步标面板（乐观），异步刷主卡正文/面板。绝不抛进回调线程。"""
         chat_id = _event_chat_id(event)
+        marked = False
         try:
-            _panel.mark_clarify_clicked(chat_id, awaiting_text=awaiting_text)
+            marked = _panel.mark_clarify_clicked(
+                chat_id, awaiting_text=awaiting_text) is not None
         except Exception:                    # pragma: no cover - 防御性
             logger.debug("[larkdeck] clarify 面板乐观更新失败", exc_info=True)
         if not chat_id:
+            logger.info("[larkdeck] clarify 点击已提交，但事件里没有 chat_id，主卡无法即时刷新"
+                        "（marked=%s）", marked)
             return
         text_key = ("clarify.main_text_pending" if awaiting_text
                     else "clarify.main_choice_received")
-        self._ld_schedule_clarify_refresh(chat_id, _i18n.t(text_key))
+        scheduled = self._ld_schedule_clarify_refresh(chat_id, _i18n.t(text_key))
+        logger.info("[larkdeck] clarify 点击已提交：chat=%s awaiting=%s 面板乐观标记=%s 主卡刷新"
+                    "调度=%s", chat_id, awaiting_text, marked, scheduled)
 
     def _ld_schedule_clarify_refresh(self, chat_id: str, body_text: str) -> bool:
         """把主卡刷新挂到网关 loop；调度失败只留 DEBUG（点击本身已生效）。"""
         loop = getattr(self, "_loop", None)
         if not self._loop_accepts_callbacks(loop):
+            logger.info("[larkdeck] clarify 主卡刷新未调度：适配器 loop 不可用（chat=%s）", chat_id)
             return False
         try:
             asyncio.run_coroutine_threadsafe(
                 self._ld_clarify_refresh_card(str(chat_id or ""), str(body_text or "")), loop)
             return True
         except Exception as exc:             # pragma: no cover - 防御性
-            logger.debug("[larkdeck] clarify 主卡刷新调度失败: %s", exc)
+            logger.info("[larkdeck] clarify 主卡刷新调度失败：%s（chat=%s）", exc, chat_id)
             return False
 
     async def _ld_clarify_refresh_card(self, chat: str, body_text: str) -> bool:
@@ -6210,17 +6294,22 @@ class LarkDeckMixin:
             return False
         keys = self._ld_hb_candidates(chat)
         if len(keys) != 1:
+            logger.info("[larkdeck] clarify 主卡刷新跳过：候选卡=%d（chat=%s）", len(keys), chat)
             return False
         key = keys[0]
         async with self._ld_card_lock(key):
             state = self._ld_stream_get(key)
             if not isinstance(state, dict) or not state.get("ck_clarify_waiting"):
+                logger.info("[larkdeck] clarify 主卡刷新跳过：等待标记已失效（chat=%s key=%s）",
+                            chat, key)
                 return False
             if (str(state.get("engine") or "") != "structured"
                     or state.get("engine_stamp") == "degraded"):
+                logger.info("[larkdeck] clarify 主卡刷新跳过：车道不是 structured（chat=%s）", chat)
                 return False
             card_id = str(state.get("card_id") or "")
             if not card_id:
+                logger.info("[larkdeck] clarify 主卡刷新跳过：card_id 为空（chat=%s）", chat)
                 return False
             view = self._ld_cardview(chat, body_text, status="processing",
                                      started=state.get("t0"),
@@ -6257,6 +6346,7 @@ class LarkDeckMixin:
                 # 再点、post_tool_call 后再次刷新仍能定位到这张卡。
                 self._ld_stream_put(key, live)
                 _context.note_frame_ok()
+                logger.info("[larkdeck] clarify 主卡已刷新（chat=%s body=%r）", chat, body_text[:40])
                 return True
             # 元素通道不可用（会话被其它路径关闭 / 序号问题）：回落同一张卡的整卡 patch。
             logger.info("[larkdeck] clarify 主卡元素写入失败（code=%s），整卡 patch 兜底",
@@ -6272,6 +6362,7 @@ class LarkDeckMixin:
             if ok:
                 live["last_rendered_body"] = body_text
                 self._ld_stream_put(key, live)
+            logger.info("[larkdeck] clarify 主卡整卡兜底刷新：ok=%s（chat=%s）", ok, chat)
             return bool(ok)
 
     def _ld_handle_clarify_click(self, *, event: Any, action: Any,

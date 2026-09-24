@@ -3689,6 +3689,47 @@ def test_clarify_boundary_keeps_structured_stream_and_click_rewrites_it():
         panel.reset()
 
 
+def test_clarify_boundary_detected_even_with_accumulated_body():
+    """边界帧正文非空（模型先写了半段话）时，用「面板里 clarify 还在 running」识别边界。
+
+    真机复现（2026-09-24）：`_finalize_boundary_stream` 发的是
+    `self._accumulated or placeholder` —— 有累积正文时文本不是占位，仅靠文本识别会走普通
+    finalize、pop 掉流状态，点击后就无法刷新主卡（面板一直 Running）。
+    """
+    panel.reset()
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    saved_config = dict(adapter._CONFIG)
+    raw = _make()
+    calls, client = _mk_cardkit_fake()
+    raw._client = client
+    target_cls = type(raw)
+    old_reqs = target_cls.__dict__.get("_ld_ck_requests")
+    target_cls._ld_ck_requests = staticmethod(_fake_ck_requests)
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    adapter.configure(visual_engine="structured", native_transport="cardkit")
+    try:
+        panel.bind_chat_session("oc_cb2", "s_cb2")
+        assert _run(raw.send_stream_frame("", chat_id="oc_cb2", turn_id="t_cb2"))
+        panel.record_tool_started("s_cb2", "t_cb2", "clarify", {"question": "选？"}, "tc-cb2")
+        # 边界帧带**已有正文**：不是占位文案，但 clarify 仍 running ⇒ 必须识别为边界。
+        assert _run(raw.send_stream_frame("先给你一段背景。", finalize=True,
+                                          chat_id="oc_cb2", turn_id="t_cb2"))
+        state = raw._ld_stream_get("oc_cb2:t_cb2")
+        assert state is not None, "有累积正文时也必须在 clarify 边界保留主卡流状态"
+        assert state.get("ck_clarify_waiting") is True, state
+        answers = [item for item in calls["content"]
+                   if item[0] == cards.CARDKIT_ANSWER_ID]
+        assert "先给你一段背景。" in answers[-1][1], answers
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        adapter.configure(**saved_config)
+        if old_reqs is None:
+            delattr(target_cls, "_ld_ck_requests")
+        else:
+            target_cls._ld_ck_requests = old_reqs
+        panel.reset()
+
+
 def test_clarify_click_that_did_not_commit_must_not_refill_card():
     """提交未生效时**绝不能**把卡片换成「已答复」。
 
@@ -6345,11 +6386,27 @@ def test_clarify_card_2_shows_the_choices_and_never_says_tap_a_button():
     # 1.0 卡**有**真按钮 ⇒ 它的脚注就该说「点按钮」（反向对照，防「两处都改掉」）
     card1 = cards.clarify_card("选哪个？", choices, clarify_id="c", session_key="s")
     assert "按钮" in json.dumps(card1, ensure_ascii=False), "1.0 卡的脚注被误改了"
-    # 多选：不给自由输入框（与编号/标签解析打架），但可见列表照旧
+    # 多选：不给自由输入框（与编号/标签解析打架）；下拉放进**表单容器** + 提交按钮
+    # （2026-09-24 用户反馈：多选下拉不会自动提交，卡上必须有「提交选择」才符合直觉）。
     card_m = cards.clarify_card_2("选哪个？", choices, clarify_id="c", session_key="s",
                                   multi=True)
     tags_m = [e["tag"] for e in card_m["body"]["elements"]]
-    assert "multi_select_static" in tags_m and "input" not in tags_m, tags_m
+    assert "form" in tags_m and "input" not in tags_m, tags_m
+    _form_m = next(e for e in card_m["body"]["elements"] if e["tag"] == "form")
+    _form_tags = [e["tag"] for e in _form_m["elements"]]
+    assert "multi_select_static" in _form_tags, _form_tags
+    _submit_m = [e for e in _form_m["elements"] if e.get("tag") == "button"]
+    assert _submit_m and _submit_m[0].get("form_action_type") == "submit", _submit_m
+    assert _submit_m[0]["text"]["content"] == i18n.t("clarify.submit"), _submit_m[0]
+    # 官方表单回调示例里提交按钮的 behaviors.value 才会回传路由键到 action.value；
+    # 真机实测只挂历史 `value` 会落到内置 `/card` 合成命令（2026-09-24）。
+    _submit_behaviors = _submit_m[0].get("behaviors") or []
+    assert _submit_behaviors and _submit_behaviors[0].get("type") == "callback", _submit_m[0]
+    assert _submit_behaviors[0]["value"].get("larkdeck_action") == "clarify", _submit_behaviors
+    assert _submit_behaviors[0]["value"].get("clarify_id") == "c", _submit_behaviors
+    _multi_sel = [e for e in _form_m["elements"] if e["tag"] == "multi_select_static"][0]
+    assert _multi_sel.get("name") == "clarify_options", _multi_sel
+    assert "behaviors" not in _multi_sel, "表单内的多选不应再挂 behaviors（由提交按钮统一提交）"
     body_md_m = [e for e in card_m["body"]["elements"]
                  if e["tag"] == "markdown" and e.get("text_size") != "notation"]
     assert len(body_md_m) == 2, f"多选卡同样要有可见列表（问题 + 列表）：{tags_m}"
@@ -6392,6 +6449,15 @@ def test_clarify_answer_extraction_covers_all_three_shapes():
     assert cls._ld_clarify_answer(
         _Action(tag="multi_select_static", option=["A"]), {})[1] == "none", \
         "`option` 是列表不是官方形状，不该被当成多选答案"
+    # 2.0 表单提交的多选：路由键在按钮 value，选中值在 form_value["clarify_options"]。
+    _form_norm = cls._ld_normalize_value(_Action(
+        value={"larkdeck_action": "clarify", "clarify_id": "c-m"},
+        form_value={"clarify_options": ["A 方案", "C 方案"]}))
+    assert _form_norm.get("options") == ["A 方案", "C 方案"], _form_norm
+    _form_ans, _form_mode = cls._ld_clarify_answer(
+        _Action(tag="button", value=_form_norm), _form_norm)
+    assert _form_mode == "multi" and json.loads(_form_ans) == ["A 方案", "C 方案"], \
+        (_form_ans, _form_mode)
     # 2.0 输入框
     assert cls._ld_clarify_answer(
         _Action(tag="input", input_value="  自己写的  "), {}) == ("自己写的", "text")

@@ -373,6 +373,31 @@ async def scenario():
         check(resp_form2.card is None and resp_form2.toast is not None,
               "同一条提交再点一次：只许 toast，不许把已确认退回待答")
 
+        # —— 多选表单：路由键在提交按钮 value，选中值在 form_value["clarify_options"] ——
+        # 2026-09-24 用户反馈「多选没有自动提交、也没有提交按钮」后的新形态。
+        cid_multi, skey_multi = "cid-e2e-multi", "sk-multi"
+        cg.register(cid_multi, skey_multi, "多选测试：要哪些？", ["A 方案", "B 方案"],
+                    multi_select=True)
+        ev_multi = _REAL_EVENT({"event": {
+            "action": {"value": {"larkdeck_action": "clarify",
+                                 "clarify_id": cid_multi,
+                                 "session_key": skey_multi,
+                                 "question": "多选测试：要哪些？"},
+                       "tag": "button",
+                       "name": "clarify_submit",
+                       "form_value": {"clarify_options": ["A 方案", "B 方案"]}},
+            "operator": {"open_id": "ou_zayn"},
+            "context": {"open_message_id": "om_e2e_multi", "open_chat_id": "oc_test"},
+        }})
+        resp_multi = adapter._on_card_action_trigger(ev_multi)
+        check(cg._entries[cid_multi].event.is_set() is True,
+              "多选表单提交后事件必须已 set（同步 handler）")
+        check(cg._entries[cid_multi].response == json.dumps(["A 方案", "B 方案"],
+                                                            ensure_ascii=False),
+              f"多选表单的答案必须是 JSON 数组字符串：{cg._entries[cid_multi].response!r}")
+        check(resp_multi.card is not None and resp_multi.toast is None,
+              f"多选表单提交必须回执换卡：{digest(resp_multi)[:200]}")
+
     finally:
         ld_mod._CONFIG["clarify_dialect"] = "1.0"
 
