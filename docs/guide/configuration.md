@@ -125,7 +125,7 @@ plugins:
 - **card_status_header** · `boolean` · 默认 `false`
   卡片顶部状态条：处理中蓝 / 完成绿 / 停止黄 / 出错红。默认不显示。示例：`card_status_header: true`。
 - **show_reasoning** · `string` · 默认 `auto`
-  推理正文是否显示。`auto` 跟随 Hermes 的 `display.show_reasoning` 与平台覆盖；`on` / `off` 由插件强制。旧布尔 `true` / `false` 仍接受。Hermes 未发 reasoning delta 时按关闭处理，并在 `/larkdeck status` 说明原因。示例：`show_reasoning: "on"`。
+  推理正文是否显示。`auto` 跟随 Hermes 的 `display.show_reasoning` 与平台覆盖；`on` / `off` 由插件强制。旧布尔 `true` / `false` 仍接受。Hermes 未发 reasoning delta 时按关闭处理，`/larkdeck status --detail` 会说明原因。示例：`show_reasoning: "on"`。
 
 ### 页脚与外观
 

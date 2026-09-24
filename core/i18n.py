@@ -149,10 +149,13 @@ _STRINGS: Dict[str, Dict[str, str]] = {
                                   EN: "⌨️ Switched to text input — reply with your answer…"},
     # /larkdeck 自检卡（R9）。三条状态行由 context.status_lines() 组装；没记录写「无记录」，
     # **绝不写「正常」** —— 一个永远说「正常」的自检与一个坏掉的自检，用户分辨不出来。
-    "cmd.description":    {ZH: "larkdeck 状态 / 配置：版本 / 生效传输 / 钩子 / 心跳",
-                           EN: "larkdeck status / config: version / transport / hooks / heartbeats"},
+    "cmd.description":    {ZH: "larkdeck 状态 / 配置：默认运行概览，status --detail 看完整诊断",
+                           EN: "larkdeck status / config: overview by default, status --detail for full diagnostics"},
     "cmd.header":         {ZH: "{name} · 传输 {transport} · 钩子 {wired}/{total} 已挂",
                            EN: "{name} · transport {transport} · hooks {wired}/{total} wired"},
+    # V080：默认卡的首行只留版本与传输 —— 钩子数改到表格里带 ✅/⚠️（一眼能看出缺失）。
+    "cmd.header_short":   {ZH: "{name} · 传输 {transport}",
+                           EN: "{name} · transport {transport}"},
     # ⚠️ 版本读不到时**必须看得出来**（R9 审计低-2）：以前版本段整段消失，卡片看起来跟一切正常一样。
     "cmd.version_unknown": {ZH: "版本读不到", EN: "version unreadable"},
     # ⚠️ 口径说明（R9 审计中-4）：三条记录是**进程级**全局，与页脚指标同源。
@@ -166,17 +169,33 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "status.section_records": {ZH: "📋 记录", EN: "📋 Records"},
     "status.col_item":        {ZH: "项目", EN: "Item"},
     "status.col_value":       {ZH: "值", EN: "Value"},
+    # V080：默认状态卡只给**结论**（表格七行），排障细节写日志、`status --detail` 才展开。
+    # 这几条是精简视图的行标签与页脚；值仍取自 `status_lines()` / 诊断行的原文（不另造读数）。
+    "status.short_takeover":  {ZH: "平台接管", EN: "Platform takeover"},
+    "status.short_hooks":     {ZH: "钩子", EN: "Hooks"},
+    "status.short_reasoning": {ZH: "推理显示", EN: "Reasoning display"},
+    "status.short_last_write": {ZH: "最近写卡", EN: "Last card write"},
+    "status.short_failures":  {ZH: "写卡失败 / 掉回纯文本",
+                               EN: "Write failures / plain-text fallbacks"},
+    "status.short_codes":     {ZH: "错误码", EN: "Error codes"},
+    "status.short_uptime":    {ZH: "已运行", EN: "Uptime"},
+    "status.short_hint":      {ZH: "详细诊断已写入 `agent.log`；完整视图：`/larkdeck status --detail`",
+                               EN: "Details are in `agent.log`; full view: `/larkdeck status --detail`"},
     "status.tip":             {ZH: "生成回答期间命令会排队到回合结束；配置用 `/larkdeck config` 查看。",
                                EN: "Commands are queued until the turn ends while a reply is streaming; see `/larkdeck config` for settings."},
     "cmd.help":           {ZH: "用法：/larkdeck [status|config|help]\n"
-                               "· status（默认）：本卡 —— 聚合诊断 / 版本 / 生效传输 / 钩子 / 六条记录\n"
+                               "· status（默认）：运行概览 —— 平台接管 / 推理显示 / 最近写卡与失败计数\n"
+                               "· status --detail：完整诊断 —— 版本 / 生效传输 / 钩子 / 六条记录，"
+                               "外加能力探测、适配器与契约细节\n"
                                "· config：只读查看本进程生效配置；config reload 从官方设置重读；"
                                "聊天侧没有写入命令（写配置用官方 Hermes CLI / 配置文件）\n"
                                "· help：这段说明\n"
                                "⚠️ 在飞书网关里，**生成回答期间**发的命令会被当成普通输入排队到回合结束"
                                "（命令派发只挂在核心的 idle 路径上）；CLI / TUI 里可以直接执行。",
                            EN: "Usage: /larkdeck [status|config|help]\n"
-                               "· status (default): this card — aggregate diagnosis / version / active transport / hooks / six records\n"
+                               "· status (default): overview — takeover / reasoning display / last card write and failures\n"
+                               "· status --detail: full diagnostics — version / active transport / hooks / six records, "
+                               "plus capability probe, adapter and contract details\n"
                                "· config: read-only effective in-process settings; config reload re-reads official settings; "
                                "there is no chat-side write command (use official Hermes CLI / config file)\n"
                                "· help: this text\n"

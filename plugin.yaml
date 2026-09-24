@@ -1,7 +1,7 @@
 name: larkdeck
 label: LarkDeck — Feishu streaming cards
 kind: platform
-version: 0.7.11
+version: 0.7.12
 description: >
   Streaming Feishu / Lark cards for Hermes Agent. Shadows the built-in `feishu`
   platform adapter (registry last-writer-wins) and subclasses it, replacing the

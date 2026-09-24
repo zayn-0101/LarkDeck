@@ -7182,6 +7182,122 @@ def _ld_status_bullet(line: str) -> str:
     return f"- **{label}**{sep}{value}"
 
 
+#: 状态行行首的统一标记（V079）；去掉它才能拿**裸标签**去匹配。
+_LD_STATUS_MARKS = ("✅ ", "⚠️ ", "○ ", "🕒 ")
+
+#: `/larkdeck status --detail` 的展开开关（V080）；裸 `status` 仍然只给运行概览。
+_LD_STATUS_DETAIL_TOKENS = ("--detail", "-d", "--verbose", "-v", "detail", "verbose")
+
+
+def _ld_status_unmark(text: str) -> str:
+    """去掉状态行行首的统一标记，返回裸标签（或裸值）。"""
+    for mark in _LD_STATUS_MARKS:
+        if text.startswith(mark):
+            return text[len(mark):]
+    return text
+
+
+def _ld_status_find(lines: List[str], key: str) -> Optional["tuple[str, str, str]"]:
+    """按 i18n 模板的**裸标签**在状态行里找一条：返回 (标记, 裸标签, 值)。
+
+    找不到返回 ``None`` —— 调用方必须退回完整视图，而不是静默少一行（R9 低-2）。
+    行的标记由 :func:`_ld_status_unmark` 剥掉，所以带不带 ✅/○ 都能匹配。
+    """
+    template_label, _sep, _value = _ld_status_split(_i18n.t(key))
+    want = _ld_status_unmark(template_label)
+    for line in lines:
+        label, _sep2, value = _ld_status_split(line)
+        bare = _ld_status_unmark(label)
+        if bare == want:
+            mark = label[:len(label) - len(bare)]
+            return mark, bare, value
+    return None
+
+
+def _ld_status_short_value(value: str) -> str:
+    """精简视图的单元格：只留计数本身，原因 / 明细留给 `--detail` 与日志。"""
+    head = value.split("（", 1)[0].strip()
+    return head or value
+
+
+def _ld_status_short_markdown(*, header: str, scope: str, diagnosis: List[str],
+                              reasoning: str, records: List[str]) -> Optional[str]:
+    """默认 `/larkdeck status` 的运行概览（V080）：七行表格，只给结论。
+
+    值全部取自 :func:`_ld_diagnosis_lines` / :func:`_ld_reasoning_diag_line` /
+    ``context.status_lines()`` 的**同一份原文**（这里只挑行、截断括号里的细节，不改读数）；
+    适配器 / 契约 / 世代 / 失败原因 / 错误码明细不进卡面 —— 它们写进日志，由
+    `status --detail` 展开。
+
+    返回 ``None`` = 某条应有的事实没解析出来；调用方退回完整视图。宁可长一点，
+    也不静默少一行。
+    """
+    probe = _ld_status_find(diagnosis, "diag.item_probe")
+    hooks = _ld_status_find(diagnosis, "diag.item_hooks")
+    reason = _ld_status_find([reasoning], "diag.reasoning")
+    written = (_ld_status_find(records, "status.frame_ok")
+               or _ld_status_find(records, "status.frame_ok_none"))
+    failed = (_ld_status_find(records, "status.frame_fail")
+              or _ld_status_find(records, "status.frame_fail_none"))
+    fallback = (_ld_status_find(records, "status.fallback")
+                or _ld_status_find(records, "status.fallback_none"))
+    codes = (_ld_status_find(records, "status.codes")
+             or _ld_status_find(records, "status.codes_none"))
+    uptime = _ld_status_find(records, "status.uptime")
+    if not all((probe, hooks, reason, written, failed, fallback, codes, uptime)):
+        return None
+    # 推理行**只有**「本可显示却被挡住」才自带 ⚠️；显式开关没有标记，这里按状态补一个中性的。
+    if reason[0]:
+        reason_mark = reason[0]
+    elif reason[2].startswith(_i18n.t("diag.reasoning_on")):
+        reason_mark = "✅ "
+    else:
+        reason_mark = "○ "
+    fail_mark = failed[0] if failed[0].startswith("⚠️") else (
+        fallback[0] if fallback[0].startswith("⚠️") else "✅ ")
+    rows = [
+        ("status.short_takeover", probe[0] + probe[2]),
+        ("status.short_hooks", hooks[0] + hooks[2]),
+        ("status.short_reasoning", reason_mark + reason[2].split(" · ")[0]),
+        ("status.short_last_write", written[0] + _ld_status_short_value(written[2])),
+        ("status.short_failures",
+         fail_mark + _ld_status_short_value(failed[2]) + " / "
+         + _ld_status_short_value(fallback[2])),
+        ("status.short_codes", codes[0] + _ld_status_short_value(codes[2])),
+        ("status.short_uptime", uptime[0] + uptime[2]),
+    ]
+    out: List[str] = [
+        f"**{header}**", "", f"> {scope}", "",
+        f"| {_i18n.t('status.col_item')} | {_i18n.t('status.col_value')} |",
+        "| --- | --- |",
+    ]
+    for label_key, value in rows:
+        label = _i18n.t(label_key)
+        cell = (f"<font color='red'>{label}</font>" if value.startswith("⚠️")
+                else f"**{label}**")
+        out.append(f"| {cell} | {value.replace('|', chr(92) + '|')} |")
+    out += ["", f"> {_i18n.t('status.short_hint')}"]
+    return "\n".join(out)
+
+
+def _ld_log_status_snapshot(header: str, diagnosis: List[str], probe: List[str],
+                            records: List[str]) -> None:
+    """把命令卡**不展示**的技术细节写进日志（V080）：默认卡只给结论，排障读 agent.log。
+
+    只记事实原文（与卡上同源），不记 markdown 版式；日志失败绝不影响命令。
+    """
+    try:
+        logger.info("[larkdeck] status 快照：%s", header)
+        for label, lines in (("诊断", diagnosis), ("探测", probe), ("记录", records)):
+            try:
+                joined = " ｜ ".join(str(x) for x in lines)
+            except Exception:
+                joined = "<unreadable>"
+            logger.info("[larkdeck] status %s：%s", label, joined)
+    except Exception:  # pragma: no cover - 防御性：日志不许拖垮命令
+        logger.debug("[larkdeck] status 技术细节写日志失败", exc_info=True)
+
+
 def _ld_status_markdown(*, header: str, scope: str, diagnosis: List[str],
                         probe: List[str], records: List[str]) -> str:
     """把状态行的**事实文本**排成有层级的 markdown 卡（V079）。
@@ -7228,6 +7344,8 @@ def _ld_command_card(raw_args: str) -> str:
       * **config 默认只读** —— `/larkdeck config` 与 `config reload` 都只读；聊天侧没有写入
         命令（安全审计 B1：handler 拿不到发送者身份，进程级开关无法授权）。写配置走官方
         Hermes CLI / 配置文件，再用 `config reload` 热刷新。
+      * **默认只给结论**（V080）—— 技术细节（适配器 / 契约 / 世代 / 失败原因 / 错误码）
+        写进日志，`status --detail` 才展开完整诊断。
     """
     try:
         raw = str(raw_args or "").strip()
@@ -7236,9 +7354,18 @@ def _ld_command_card(raw_args: str) -> str:
             return _i18n.t("cmd.help")
         head = raw.split(maxsplit=1)
         token = head[0].lower() if head else ""
+        tail = head[1].strip().lower() if len(head) > 1 else ""
         if token == "config":
             return _ld_config_card(head[1] if len(head) > 1 else "")
-        if arg not in ("", "status"):
+        detail = token in _LD_STATUS_DETAIL_TOKENS
+        if token == "status":
+            if tail:
+                if tail not in _LD_STATUS_DETAIL_TOKENS:
+                    # 静默忽略尾巴 = 用户以为开了详细视图其实没开（不许）。
+                    return "\n".join([_i18n.t("cmd.unknown", arg=raw),
+                                      _i18n.t("cmd.help")])
+                detail = True
+        elif token != "":
             return "\n".join([_i18n.t("cmd.unknown", arg=arg), _i18n.t("cmd.help")])
         version = _ld_plugin_version()
         # ⚠️ 读不到清单**不许静默**（R9 审计低-2）：以前 `version` 为空串时版本段整段消失，
@@ -7247,8 +7374,9 @@ def _ld_command_card(raw_args: str) -> str:
         name = "🃏 larkdeck v" + (version or _i18n.t("cmd.version_unknown"))
         wired = sum(1 for hook_name, ok in HOOKS.items()
                     if ok and hook_name not in _HOOK_EXTRA_NAMES)
-        header = _i18n.t("cmd.header", name=name,
-                         transport=LarkDeckMixin._ld_transport(),
+        transport = LarkDeckMixin._ld_transport()
+        header_short = _i18n.t("cmd.header_short", name=name, transport=transport)
+        header = _i18n.t("cmd.header", name=name, transport=transport,
                          wired=wired, total=len(_hooks.SUBSCRIPTIONS))
         # ⚠️ **口径说明必须进卡**（R9 审计中-4）：这三条记录和页脚指标一样是**进程级全局**
         # （`context._STATUS` 是模块级 dict），多会话并发时「累计 42 条消息 / 118 次写卡」
@@ -7256,15 +7384,30 @@ def _ld_command_card(raw_args: str) -> str:
         # 不说清楚，用户会拿别人的失败去查自己的卡 —— 正是本轮要消灭的「静默误诊」。
         # 放在**数据行之上**（不是之后）：用户是从上往下读的，先看到口径再看到数字才不会误解；
         # 而且它在三行全是「无记录」时也在（那种时刻同样需要知道这些数是全进程的）。
-        # P2：聚合诊断紧跟口径说明，把「能力 / 链路 / 运行 / 账本」压成两行总览；随后才是
-        # P1a 的能力探测详情与 R9 的逐条账本。顺序 = 先总后分，用户扫一眼就能判断要不要细看。
+        # V080：同一份读数分别渲染两个视图 —— 默认（表格七行）与 `--detail`（完整诊断）。
+        # 无论哪个视图，技术细节都先进日志，排障不依赖用户截图。
+        scope = _i18n.t("cmd.scope")
         diagnosis = _ld_diagnosis_lines() + [_ld_reasoning_diag_line()]
+        probe = _probe_status_lines()
+        records = _context.status_lines()
+        _ld_log_status_snapshot(header_short, diagnosis, probe, records)
+        if not detail:
+            short = _ld_status_short_markdown(
+                header=header_short,
+                scope=scope,
+                diagnosis=diagnosis,
+                reasoning=diagnosis[-1],
+                records=records,
+            )
+            if short is not None:
+                return short
+            # 解析不出某条应有的事实时**退回完整视图**：宁可长一点，也不静默少一行。
         return _ld_status_markdown(
             header=header,
-            scope=_i18n.t("cmd.scope"),
+            scope=scope,
             diagnosis=diagnosis,
-            probe=_probe_status_lines(),
-            records=_context.status_lines(),
+            probe=probe,
+            records=records,
         )
     except Exception as exc:  # pragma: no cover - 防御性：处理器绝不能抛
         # 日志只记类型名（A6）：`%s` 直接格式化病态异常会在 logger 里再抛一次。

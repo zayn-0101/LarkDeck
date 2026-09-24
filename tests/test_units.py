@@ -9615,7 +9615,8 @@ def test_aggregate_diagnosis_reports_facts_without_claiming_healthy():
 
         lines = adapter._ld_diagnosis_lines()
         assert len(lines) == 4, lines
-        card_text = adapter._ld_command_card("status")
+        # V080：聚合诊断只在 `--detail` 视图（默认卡是精简概览）；判据仍打在**卡片的文本**上。
+        card_text = adapter._ld_command_card("status --detail")
         # V079：状态卡分节后标签会加粗、异常标签带 <font> —— 判据改成「去掉样式后的
         # 纯文本里事实一行都不少」，既不钉死版式，也不放过「行被删掉」。
         plain = re.sub(r"<font[^>]*>|</font>", "", card_text).replace("**", "")
@@ -9970,7 +9971,8 @@ def test_standalone_client_init_is_required_and_falls_back():
     assert "error" in out and "media" in out["error"], out
 
 def test_command_card_reports_version_transport_and_three_records():
-    """`/larkdeck status`：版本**现读清单** + 传输自报 + 钩子 + 三条记录。
+    """`/larkdeck status`：默认卡是**精简概览**（版本 / 传输 / 接管 / 钩子 / 计数），
+    `--detail` 才逐条列出六条记录与技术细节。
 
     版本这条必须有判别力：把「读 plugin.yaml」换成写死常量（变异 `R9-6`）时，
     这里与清单**独立解析**出来的值一比就红 —— 卡片报错版本号会把排障带偏。
@@ -9985,17 +9987,20 @@ def test_command_card_reports_version_transport_and_three_records():
         assert version and version in text, f"卡片没报出清单里的版本：{text!r}"
         assert f"larkdeck v{version}" in text, text
         assert f"传输 {adapter.LarkDeckMixin._ld_transport()}" in text, text
-        assert f"钩子 1/{len(hooks.SUBSCRIPTIONS)} 已挂" in text, text
-        # R9 审计中-4：**进程级口径必须在卡上**。账本与页脚指标一样是模块级全局
-        # （`context._STATUS`），多会话并发时「累计 N 条消息 / N 帧写卡」里可能大部分
+        # V080：钩子从首行移到表格行（带 ✅/⚠️），数量仍必须现算、现报。
+        assert "钩子" in text and f"1/{len(hooks.SUBSCRIPTIONS)} 已挂" in text, text
+        # R9 审计中-4：**进程级口径必须在卡上**（默认与详细视图都在）。账本与页脚指标一样是
+        # 模块级全局（`context._STATUS`），多会话并发时「累计 N 条消息 / N 帧写卡」里可能大部分
         # 来自**别的会话** —— 不写清楚，用户会拿别人的失败原因去查自己的卡。
-        # 判据落在**卡片的文本**上（不是落在 i18n 表上）：写在表里但没拼进卡等于没说。
         assert "进程级" in text, f"卡片没写明这些数字是进程级累计（含全部会话）：{text!r}"
-        # ⚠️⚠️ **不许整行比对**（审计 X19 实测出来的**假红源**）：`status_lines()` 里有一行是
-        #    `⏱ 已运行：2s` 这种**墙钟读数** —— 卡片是上一次调用渲染的，跨过一秒它就与
-        #    现在这一行不等 ⇒ 这条断言会**随机**变红。而 `mutate_check` 把「假红」当成
-        #    **判别力证据**（结论正好写反），所以它比「断言太松」更危险。
-        #    ⇒ 判据分两层：稳定的行**整行**不许少；uptime 那一行只钉**标签**（不钉秒数）。
+        # V080：默认卡只给结论 —— 技术细节（写日志、`--detail` 才展开）不许出现在卡面。
+        for token in ("能力探测", "适配器：", "世代：", "命令：", "信号契约", "探测契约"):
+            assert token not in text, f"默认卡不该铺排技术细节 {token!r}：{text!r}"
+        assert "--detail" in text, f"默认卡必须告诉用户去哪看完整诊断：{text!r}"
+
+        # `--detail` 视图：六条记录**一条不许少**（标签与值都要在），技术细节确实展开。
+        # ⚠️ 判据落在**卡片的文本**上（不是落在 i18n 表上）：写在表里但没拼进卡等于没说。
+        detail = adapter._ld_command_card("status --detail")
         _lines = context.status_lines()
         _uptime = [l for l in _lines if "已运行" in l]
         assert len(_uptime) == 1, f"uptime 行应当正好一行：{_uptime}"
@@ -10005,16 +10010,27 @@ def test_command_card_reports_version_transport_and_three_records():
             # V079 起记录区是表格：整行被拆成「标签 / 值」两格，所以逐条核对两半 ——
             # 判据仍是「一条记录都不许少」，而不是钉死版式。
             _label, _sep, _value = line.partition("：")
-            assert _label in text and _value in text, (
-                f"卡片少了自检记录（标签或值不完整）：{line!r}；text={text!r}")
-        assert "已运行" in text, f"卡片少了 uptime 那一行（只钉标签，不钉秒数）：{text!r}"
+            assert _label in detail and _value in detail, (
+                f"详细卡少了自检记录（标签或值不完整）：{line!r}；detail={detail!r}")
+        assert "已运行" in detail, f"详细卡少了 uptime 那一行（只钉标签，不钉秒数）：{detail!r}"
+        # 分节里标签会加粗（`**✅ 世代**：`），所以判据先剥样式再比。
+        plain_detail = re.sub(r"<font[^>]*>|</font>", "", detail).replace("**", "")
+        assert "能力探测" in plain_detail and "🩺" in detail and "🔍" in detail, detail
+
         # 没参数与显式 `status` 必须**同一张卡**（不然 `help` 里写的默认值就是假的）；
-        # 比较前剥掉 uptime 秒数 —— 两次渲染跨秒时它会不同（本用例的既有假红源）。
+        # 比较前把 uptime 行整行替换掉 —— 两次渲染跨秒时它会不同（本用例的既有假红源），
+        # 而且两个视图的版式不同（表格单元格 vs 「标签：值」），所以要按**行**归一。
         def _without_uptime(blob: str) -> str:
-            return re.sub(r"已运行：[^\n]*", "已运行：<t>", blob)
+            return "\n".join("<uptime>" if "已运行" in line else line
+                             for line in blob.splitlines())
 
         assert _without_uptime(adapter._ld_command_card("status")) == _without_uptime(text)
         assert _without_uptime(adapter._ld_command_card(" STATUS ")) == _without_uptime(text)
+        # `--detail` 的两个别名开的是同一张完整卡（同样按行剥 uptime）。
+        assert _without_uptime(adapter._ld_command_card("status --detail")) == \
+            _without_uptime(detail)
+        assert _without_uptime(adapter._ld_command_card("status -v")) == \
+            _without_uptime(detail)
     finally:
         adapter.HOOKS.clear()
         adapter.HOOKS.update(saved_hooks)
@@ -10157,10 +10173,10 @@ def test_card_builders_apply_text_profile_not_just_the_helper():
 
 
 def test_command_card_renders_sections_list_and_records_table():
-    """V079：状态卡要有分节标题、引用块、列表、记录表格与分隔线，不再是一坨纯文本。"""
+    """V079：完整诊断卡（`--detail`）要有分节标题、引用块、列表、记录表格与分隔线。"""
     context.reset()
     try:
-        text = adapter._ld_command_card("status")
+        text = adapter._ld_command_card("status --detail")
         assert "> " in text, f"口径说明应当是引用块：{text!r}"
         assert "| 项目 | 值 |" in text, f"记录区应当是两列表格：{text!r}"
         assert "| --- | --- |" in text, text
@@ -10168,6 +10184,64 @@ def test_command_card_renders_sections_list_and_records_table():
         assert "\n---" in text, f"结尾应当有分隔线：{text!r}"
         assert "🩺" in text and "🔍" in text and "📋" in text, text
     finally:
+        context.reset()
+
+
+def test_command_card_default_view_is_short_and_logs_the_details():
+    """V080：默认状态卡只给七行结论 + 页脚指引；技术细节写日志、`--detail` 才展开。
+
+    判别力：默认视图若把「适配器 / 契约 / 世代」铺回卡面（或 `--detail` 被静默忽略），
+    这里的**两面对偶断言**（默认没有、详细有）必须当场红。
+    """
+    saved_report = dict(adapter.PROBE_REPORT)
+    saved_hooks = dict(adapter.HOOKS)
+    context.reset()
+    try:
+        adapter.PROBE_REPORT.clear()
+        adapter.PROBE_REPORT.update({key: [] for key in compat.PROBE_REPORT_KEYS})
+        adapter.PROBE_REPORT.update({
+            "hermes_version": "0.21.4",
+            "adapter_class": "example.FeishuAdapter",
+            "ok": True,
+            "adopted": True,
+            "session_attribution_ok": True,
+            "core_interrupt_lookup": True,
+        })
+        adapter.HOOKS.clear()
+        adapter.HOOKS.update({name: True for name in hooks.SUBSCRIPTIONS})
+
+        short = adapter._ld_command_card("status")
+        # 「标记 + 标签：值」的统一语法在默认卡上仍然成立（表格每格都有标记）。
+        for token in ("平台接管", "钩子", "推理显示", "最近写卡",
+                      "写卡失败 / 掉回纯文本", "错误码", "已运行"):
+            assert token in short, f"默认卡少了结论行 {token!r}：{short!r}"
+        for mark in ("✅", "🕒"):
+            assert mark in short, f"默认卡少了统一标记 {mark!r}：{short!r}"
+        assert "| 项目 | 值 |" in short and "| --- | --- |" in short, short
+        assert "进程级" in short, short
+        assert "--detail" in short, f"默认卡必须指路完整视图：{short!r}"
+        # 技术细节**不在**默认卡上 —— 它们写日志，或由 `--detail` 展开。
+        for token in ("能力探测", "适配器：", "世代：", "命令：", "信号契约",
+                      "探测契约", "运行环境", "会话归属"):
+            assert token not in short, f"默认卡暴露了技术细节 {token!r}：{short!r}"
+        # 默认视图比详细视图短得多（用户反馈「太长」的回归判据）。
+        detail = adapter._ld_command_card("status --detail")
+        assert short.count("\n") < detail.count("\n") // 2, (
+            f"默认卡没有明显短于详细卡：{short.count(chr(10))} vs {detail.count(chr(10))}")
+        # 技术细节在详细卡上必须真的在（不是只从默认卡删掉）；分节标签会加粗，先剥样式。
+        plain_detail = re.sub(r"<font[^>]*>|</font>", "", detail).replace("**", "")
+        for token in ("能力探测", "适配器：example.FeishuAdapter",
+                      f"世代：{panel.load_seq()}/{panel.latest_load_seq()}",
+                      "信号契约", "探测契约", "运行环境：Hermes 0.21.4", "🩺", "🔍", "📋"):
+            assert token in plain_detail, f"详细卡少了 {token!r}：{detail!r}"
+        # 未知尾巴不许被静默忽略：`status wat` 要报「不认识」而不是装作完整视图。
+        unknown = adapter._ld_command_card("status wat")
+        assert "不认识" in unknown and "wat" in unknown, unknown
+    finally:
+        adapter.PROBE_REPORT.clear()
+        adapter.PROBE_REPORT.update(saved_report)
+        adapter.HOOKS.clear()
+        adapter.HOOKS.update(saved_hooks)
         context.reset()
 
 
@@ -10207,9 +10281,13 @@ def test_command_card_surfaces_probe_report_and_never_calls_it_healthy():
     context.reset()
     try:
         adapter.PROBE_REPORT.clear()
-        text = adapter._ld_command_card("status")
-        assert "能力探测：未探测" in text, f"未探测时必须说出来：{text!r}"
-        assert "正常" not in text, f"没有探测结论时绝不能说「正常」：{text!r}"
+        # V080：默认卡也要明说「未探测」（平台接管行），但完整探测摘要只在 `--detail`。
+        short = adapter._ld_command_card("status")
+        assert "未探测" in short, f"未探测时必须说出来：{short!r}"
+        assert "正常" not in short, f"没有探测结论时绝不能说「正常」：{short!r}"
+        detail = adapter._ld_command_card("status --detail")
+        assert "能力探测：未探测" in detail, f"未探测时必须说出来：{detail!r}"
+        assert "正常" not in detail, f"没有探测结论时绝不能说「正常」：{detail!r}"
 
         # 从唯一事实来源派生 fixture；新增第 11 个契约键会立刻在这里显现。
         adapter.PROBE_REPORT.update({key: [] for key in compat.PROBE_REPORT_KEYS})
@@ -10222,30 +10300,39 @@ def test_command_card_surfaces_probe_report_and_never_calls_it_healthy():
             "session_attribution_ok": True,
             "core_interrupt_lookup": True,
         })
-        text = adapter._ld_command_card("status")
+        detail = adapter._ld_command_card("status --detail")
         for token in ("能力探测", "已接管", "Hermes 0.21.1", "example.FeishuAdapter",
                       "edit_message", "会话归属", "探测契约", "完整", "信号契约",
                       "静态查到核心查找名字面量"):
-            assert token in text, f"探测摘要少了 {token!r}：{text!r}"
-        assert "正常" not in text, f"探测摘要不许写「正常」：{text!r}"
+            assert token in detail, f"探测摘要少了 {token!r}：{detail!r}"
+        assert "正常" not in detail, f"探测摘要不许写「正常」：{detail!r}"
+        # 默认卡只保留结论：「已接管」必须可见，具体适配器 / 契约细节不许在卡面。
+        short = adapter._ld_command_card("status")
+        assert "已接管" in short, short
+        for token in ("example.FeishuAdapter", "edit_message", "会话归属",
+                      "探测契约", "信号契约"):
+            assert token not in short, f"默认卡暴露了探测细节 {token!r}：{short!r}"
 
-        # 覆盖层构造失败：探测跑了，但没接管 —— 不能说「已接管」。
+        # 覆盖层构造失败：探测跑了，但没接管 —— 不能说「已接管」（两个视图都要如实）。
         adapter.PROBE_REPORT["adopted"] = False
-        text = adapter._ld_command_card("status")
-        assert "未接管（覆盖层构造失败）" in text, text
-        assert "已接管" not in text, text
+        for _view in ("status", "status --detail"):
+            text = adapter._ld_command_card(_view)
+            assert "未接管（覆盖层构造失败）" in text, (_view, text)
+            assert "已接管" not in text, (_view, text)
 
-        # 必需接口缺失：headline 必须是「未接管（必需接口缺失）」，并列出缺失项。
+        # 必需接口缺失：headline 必须是「未接管（必需接口缺失）」，并列出缺失项（详细视图）。
         adapter.PROBE_REPORT.update({"ok": False,
                                      "missing_required": ["_feishu_send_with_retry"]})
-        text = adapter._ld_command_card("status")
-        assert "未接管（必需接口缺失）" in text and "_feishu_send_with_retry" in text, text
+        detail = adapter._ld_command_card("status --detail")
+        assert "未接管（必需接口缺失）" in detail and "_feishu_send_with_retry" in detail, detail
+        assert "未接管（必需接口缺失）" in adapter._ld_command_card("status"), \
+            "默认卡的结论行也必须报出「未接管（必需接口缺失）」"
 
         # 契约缺键：从键集合删一个，显示层必须自己求差集，而不是只依赖 contract_violation。
         adapter.PROBE_REPORT.pop("missing_signal", None)
-        text = adapter._ld_command_card("status")
-        assert "缺键" in text and "missing_signal" in text, \
-            f"探测契约缺键必须明说：{text!r}"
+        detail = adapter._ld_command_card("status --detail")
+        assert "缺键" in detail and "missing_signal" in detail, \
+            f"探测契约缺键必须明说：{detail!r}"
     finally:
         adapter.PROBE_REPORT.clear()
         adapter.PROBE_REPORT.update(saved)
@@ -10275,10 +10362,13 @@ def test_build_adapter_missing_required_stores_probe_snapshot_without_adopting()
         assert report.get("ok") is False, report
         assert report.get("adopted") is False, report
         assert "_feishu_send_with_retry" in (report.get("missing_required") or []), report
-        text = adapter._ld_command_card("status")
+        text = adapter._ld_command_card("status --detail")
         assert "未接管（必需接口缺失）" in text, text
         assert "_feishu_send_with_retry" in text, text
         assert "未探测（无记录）" not in text, text
+        # V080：默认卡只报结论，也必须报出同一负结论（不许只剩「未探测」）。
+        short = adapter._ld_command_card("status")
+        assert "未接管（必需接口缺失）" in short, short
     finally:
         adapter._compat.probe_adapter_class = saved_probe
         adapter.PROBE_REPORT.clear()
@@ -10332,8 +10422,13 @@ def test_command_card_help_states_the_queue_caveat():
     help_text = adapter._ld_command_card("help")
     assert "排队" in help_text and "CLI" in help_text, help_text
     assert "仅空闲态" not in help_text, f"旧的绝对措辞还在（CLI/TUI 里不成立）：{help_text!r}"
+    # V080：帮助必须写明「默认给概览、--detail 才展开」—— 不然用户不知道去哪看诊断。
+    assert "status --detail" in help_text, help_text
     unknown = adapter._ld_command_card("wat")
     assert "wat" in unknown and "排队" in unknown, unknown
+    # 未知尾巴（`status wat`）不许被静默吞掉：必须报「不认识」并附帮助。
+    tail = adapter._ld_command_card("status wat")
+    assert "不认识" in tail and "status wat" in tail and "排队" in tail, tail
 
 
 def test_command_card_never_raises_even_when_state_read_fails():

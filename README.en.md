@@ -3,7 +3,7 @@
 > **Replies are typed out live in Feishu, with reasoning and tool calls kept in the card's bottom panel — expand it anytime.**
 > LarkDeck is a [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin built on Feishu CardKit 2.0: it never patches Hermes source, and the answer, the process, and clarify choices all live in one card.
 
-[![version](https://img.shields.io/badge/version-0.7.11-blue.svg)](https://github.com/zayn-0101/LarkDeck/releases)
+[![version](https://img.shields.io/badge/version-0.7.12-blue.svg)](https://github.com/zayn-0101/LarkDeck/releases)
 [![AH (Hermes Agent) 0.21.x](https://img.shields.io/badge/AH-0.21.x-blueviolet.svg)](https://github.com/NousResearch/hermes-agent)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -44,7 +44,7 @@ Restart the gateway:
 hermes gateway restart
 ```
 
-Verify: send `/larkdeck status` to the bot in Feishu. A self-check card means the plugin has taken over. The gateway log shows a `[larkdeck]` startup self-check line; on failure it logs `ERROR` and leaves the official adapter working, so Feishu never breaks.
+Verify: send `/larkdeck status` to the bot in Feishu. A seven-row summary card (`Platform takeover` and `Hooks` both `✅`) means the plugin has taken over. Send `/larkdeck status --detail` for the capability probe and the six process-wide records. The gateway log shows a `[larkdeck]` startup self-check line; on failure it logs `ERROR` and leaves the official adapter working, so Feishu never breaks.
 
 Upgrade: `git pull && hermes gateway restart` for a symlink install. For a copy install, `git pull`, move the old directory aside, re-run `./install.sh --copy`, then restart — the script never overwrites an existing target; see the [installation guide](INSTALL.md). The gateway must be restarted; modules are not hot-reloaded. Uninstall: remove `larkdeck` from `plugins.enabled`, then delete `~/.hermes/plugins/larkdeck/`.
 
@@ -83,7 +83,8 @@ plugins:
 
 | Command | Purpose |
 |---|---|
-| `/larkdeck status` | Version, active transport, hooks, card writes and error records |
+| `/larkdeck status` | Overview: version, active transport, takeover, hooks, reasoning display and failure counts |
+| `/larkdeck status --detail` | Full diagnostics: capability probe, adapter/contract details, six process-wide records |
 | `/larkdeck config` | Read-only view of effective settings and their source |
 | `/larkdeck config reload` | Re-read settings from Hermes; aborts as a whole if any key fails |
 | `/larkdeck help` | Usage |
@@ -95,7 +96,7 @@ See [Commands](docs/guide/commands.md).
 
 - **Environment**: Hermes Agent 0.21.x (verified on 0.21.1 / 0.21.4), with the official `feishu` platform available in the same process; cannot coexist with plugins that also take over the same `feishu` platform or patch Hermes source.
 - **Fallback and client differences**: cards are an enhancement. Any card, streaming or interaction failure falls back to official plain text / edit, so no message is lost; styling or animation may be missing for that reply. Clients that do not support card 2.0 may render fewer components or simpler forms; card chrome follows the client language, while model output and some markdown labels are language-fixed. See [Card capabilities](docs/guide/card-capabilities.md).
-- **Reasoning text**: requires Hermes `plugins.stream_reasoning_deltas` (off by default); without it the panel shows tool steps only, and `/larkdeck status` says why.
+- **Reasoning text**: requires Hermes `plugins.stream_reasoning_deltas` (off by default); without it the panel shows tool steps only, and `/larkdeck status --detail` says why.
 - **Command timing**: in the Feishu gateway, commands sent while a reply is streaming are queued until the turn ends; the CLI / TUI runs them immediately.
 - **Scope of counters**: footer metrics and `/larkdeck status` records are process-wide, not per conversation; after a long answer splits cards, `/stop` recolors only the newest card.
 

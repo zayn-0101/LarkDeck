@@ -415,9 +415,9 @@ else:
         if not isinstance(_cmd_text, str) or not _cmd_text.strip():
             problems.append(f"`/larkdeck status` 没返回文本：{_cmd_text!r}")
         else:
-            # 关键词取自**三条记录 + 传输自报**：少了任何一段，这张自检卡就答不了
-            # 「插件在不在动」这个问题（而它存在的唯一理由就是回答这个）。
-            for _need in ("传输", "入站心跳", "写卡", "聚合", "能力探测"):
+            # V080：默认卡是**运行概览**（结论 + 计数），技术细节在 `--detail`。
+            # 默认卡的关键词 = 用户一眼判断「插件在不在动」所需的最少事实。
+            for _need in ("传输", "平台接管", "最近写卡", "推理显示"):
                 if _need not in _cmd_text:
                     problems.append(f"`/larkdeck status` 少了「{_need}」这一段：{_cmd_text!r}")
             if _effective not in _cmd_text:
@@ -428,6 +428,17 @@ else:
             if "进程级" not in _cmd_text:
                 problems.append(f"`/larkdeck status` 没说清数字是进程级累计（含全部会话）："
                                 f"{_cmd_text!r}")
+            # 完整诊断：六条记录与三段诊断（聚合 / 能力探测 / 记录）必须仍可展开 —— 精简
+            # 不是把事实删掉，而是把它们移到用户主动请求的视图里。
+            _detail_text = str(_run_cmd("status --detail"))
+            for _need in ("入站心跳", "写卡", "能力与链路", "能力探测", "记录"):
+                if _need not in _detail_text:
+                    problems.append(f"`/larkdeck status --detail` 少了「{_need}」这一段："
+                                    f"{_detail_text!r}")
+            for _need in ("适配器", "信号契约", "世代"):
+                if _need not in _detail_text:
+                    problems.append(f"`/larkdeck status --detail` 少了技术细节「{_need}」："
+                                    f"{_detail_text!r}")
         # P2 配置刷新：`config` 必须真能在核心派发的处理器里读到官方设置（不是单测替身）。
         # 这里只跑**只读**路径；聊天侧写入命令已按安全审计 B1 移除，不会有写动作。
         _cfg_text = str(_run_cmd("config"))

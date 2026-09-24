@@ -3,7 +3,7 @@
 > **飞书里的回答会像打字机一样实时写出来，思考与工具调用收在卡片底部，随时展开。**
 > LarkDeck 是基于飞书 CardKit 2.0 的 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 插件：不改 Hermes 源码，回答、过程与澄清交互都在同一张卡里完成。
 
-[![version](https://img.shields.io/badge/version-0.7.11-blue.svg)](https://github.com/zayn-0101/LarkDeck/releases)
+[![version](https://img.shields.io/badge/version-0.7.12-blue.svg)](https://github.com/zayn-0101/LarkDeck/releases)
 [![AH (Hermes Agent) 0.21.x](https://img.shields.io/badge/AH-0.21.x-blueviolet.svg)](https://github.com/NousResearch/hermes-agent)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -46,11 +46,13 @@ plugins:
 hermes gateway restart
 ```
 
-验证：在飞书里给机器人发送 `/larkdeck status`，收到自检卡即接管成功：
+验证：在飞书里给机器人发送 `/larkdeck status`，收到一张结论卡（`平台接管` / `钩子` 均为 `✅`）即接管成功：
 
 ```
-🃏 larkdeck v<当前版本> · 传输 cardkit · 钩子 8/8 已挂
+🃏 larkdeck v<当前版本> · 传输 cardkit
 ```
+
+需要更细的能力探测与六条记录时，发送 `/larkdeck status --detail`。
 
 启动日志里会出现一行 `[larkdeck] 启动自检通过`。自检失败会打 `ERROR`，并保持官方适配器原样工作：卡片不生效，但飞书不会被弄坏。
 
@@ -98,7 +100,8 @@ plugins:
 
 | 命令 | 作用 |
 |---|---|
-| `/larkdeck status` | 版本、生效传输、钩子、写卡与错误记录；没有记录时如实显示 |
+| `/larkdeck status` | 运行概览：版本、生效传输、接管、钩子、推理显示与失败计数；没有记录时如实显示 |
+| `/larkdeck status --detail` | 完整诊断：能力探测、适配器与契约细节、六条进程级记录 |
 | `/larkdeck config` | 只读查看本进程生效配置与来源 |
 | `/larkdeck config reload` | 从 Hermes 配置重读；任一键失败则整次取消 |
 | `/larkdeck help` | 命令用法 |
@@ -111,7 +114,7 @@ plugins:
 - **环境**：面向 Hermes Agent 0.21.x（已在 0.21.1 / 0.21.4 上验证），且官方 `feishu` 平台必须在同一进程可用；与同样接管 `feishu` 或改写 Hermes 源码的插件不能共存。
 - **失败时的行为**：卡片只是增强层。卡片发送、流式或交互任一步失败，会自动改用官方纯文本或编辑消息；那一刻没有卡片样式或动画，但消息不会丢。
 - **客户端差异**：客户端不支持卡片 2.0 能力时，部分组件可能不渲染或降级；卡片界面文案跟随客户端语言，AI 正文与部分 markdown 文案（工具动作 / 状态词等）语言固定。能力边界与替代形态见[卡片能力](docs/guide/card-capabilities.md)。
-- **推理正文**：需要 Hermes 开启 `plugins.stream_reasoning_deltas`（默认关闭）；未开启时过程面板只显示工具步骤，`/larkdeck status` 会说明原因。
+- **推理正文**：需要 Hermes 开启 `plugins.stream_reasoning_deltas`（默认关闭）；未开启时过程面板只显示工具步骤，`/larkdeck status --detail` 会说明原因。
 - **命令时机**：在飞书网关里，生成回答期间发送的命令会排队到回合结束；CLI / TUI 中会立即执行。
 - **统计口径**：页脚指标与 `/larkdeck status` 的记录是进程级累计，多会话并发时不区分会话；超长回答分卡后，`/stop` 只重绘最新一张卡。
 

@@ -21,7 +21,7 @@
 - 一段连续推理被正文或工具事件打断，就算一轮（round），标题形如“第 N 轮思考 · 1.6s”。
 - 当前正在生成的轮自动展开，已结束的轮自动折叠；你手动展开或收起后，后续 token 不会把它顶回去。
 - 推理正文要两个开关同时成立：Hermes 侧 `plugins.stream_reasoning_deltas: true`，插件侧 `show_reasoning` 为 `auto`（跟随 Hermes）或 `on`。
-- 只开显示、没开 Hermes 增量时，面板仍会显示工具和“思考 X.Xs”的耗时摘要，但不显示推理文字；`/larkdeck status` 会说明原因。
+- 只开显示、没开 Hermes 增量时，面板仍会显示工具和“思考 X.Xs”的耗时摘要，但不显示推理文字；`/larkdeck status --detail` 会说明原因。
 
 ## 执行详情（panel）
 
