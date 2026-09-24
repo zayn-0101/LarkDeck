@@ -6398,6 +6398,12 @@ def test_clarify_card_2_shows_the_choices_and_never_says_tap_a_button():
     _submit_m = [e for e in _form_m["elements"] if e.get("tag") == "button"]
     assert _submit_m and _submit_m[0].get("form_action_type") == "submit", _submit_m
     assert _submit_m[0]["text"]["content"] == i18n.t("clarify.submit"), _submit_m[0]
+    # 官方表单回调示例里提交按钮的 behaviors.value 才会回传路由键到 action.value；
+    # 真机实测只挂历史 `value` 会落到内置 `/card` 合成命令（2026-09-24）。
+    _submit_behaviors = _submit_m[0].get("behaviors") or []
+    assert _submit_behaviors and _submit_behaviors[0].get("type") == "callback", _submit_m[0]
+    assert _submit_behaviors[0]["value"].get("larkdeck_action") == "clarify", _submit_behaviors
+    assert _submit_behaviors[0]["value"].get("clarify_id") == "c", _submit_behaviors
     _multi_sel = [e for e in _form_m["elements"] if e["tag"] == "multi_select_static"][0]
     assert _multi_sel.get("name") == "clarify_options", _multi_sel
     assert "behaviors" not in _multi_sel, "表单内的多选不应再挂 behaviors（由提交按钮统一提交）"

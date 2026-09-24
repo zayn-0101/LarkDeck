@@ -31,8 +31,9 @@
      同卡整卡 patch）；后续 delta 继续更新这张卡；
   4. 真正的 `post_tool_call` 到达时覆盖乐观状态并复用同一行，不产生重复的 clarify 行
      （失败/取消也能覆盖）。提交未生效的迟到重复点击仍然只回 toast，绝不换卡。
-- **多选澄清卡增加「提交选择」按钮**：`multi_select_static` 不会自动提交，现在把它放进
-  官方 `form` 容器并加一个 `form_action_type: submit` 的提交按钮；提交时从
+- **多选澄清卡增加「提交」按钮**：`multi_select_static` 不会自动提交，现在把它放进
+  官方 `form` 容器并加一个 `form_action_type: submit` 的提交按钮；提交按钮必须挂官方
+  `behaviors.value`（只挂历史 `value` 时真机会落到内置 `/card` 合成命令），提交时从
   `action.form_value["clarify_options"]` 读选中值、拼成网关规范的 JSON 数组。
 - 修复只影响结构化 CardKit 车道与 2.0 澄清卡；旧 `patch`/降级车道与 1.0 澄清卡行为不变。
 
@@ -43,6 +44,8 @@
 - `run_fast.py --full`：8 步全 `[OK]`。
 - `mutate_check.py --preflight`：**595/595 可用**（变异 583 + 对照 12）。
 - 新增变异 `V076C-1/2/3/4` 均 `red-assert`（定向跑 4/4）。
+- 真机（2026-09-24，用户目视）：单选点击后主卡立即从 `clarify · Running` 变为已收到选择；
+  多选勾选后点「提交」成功提交（此前无反应是提交按钮缺 `behaviors.value`）。
 - 真机部署与用户点击验收记录见 `docs/releases/v0.7.7.md`。
 
 
