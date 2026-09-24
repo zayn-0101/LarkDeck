@@ -1,7 +1,7 @@
 # LarkDeck
 
-> **The answer streams in live, with process and result in one card.**
-> LarkDeck is a streaming Feishu / Lark card plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent): the answer is written into the card as it is generated, reasoning and tool calls stay in a collapsible panel at the bottom, and questions are answered right on the card.
+> **Replies are typed out live in Feishu, with reasoning and tool calls kept in the card's bottom panel — expand it anytime.**
+> LarkDeck is a [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin built on Feishu CardKit 2.0: it never patches Hermes source, and the answer, the process, and clarify choices all live in one card.
 
 [![version](https://img.shields.io/badge/version-0.7.9-blue.svg)](https://github.com/zayn-0101/LarkDeck/releases)
 [![AH (Hermes Agent) 0.21.x](https://img.shields.io/badge/AH-0.21.x-blueviolet.svg)](https://github.com/NousResearch/hermes-agent)
@@ -107,7 +107,6 @@ See [docs/guide/commands.md](docs/guide/commands.md).
 | [Commands](docs/guide/commands.md) | Command reference |
 | [Card capabilities](docs/guide/card-capabilities.md) | Supported and unsupported card features |
 | [Troubleshooting](docs/guide/troubleshooting.md) | Symptom → cause → fix |
-| [Migrating from HFC](docs/guide/switch-from-hfc.md) | Switch steps if HFC was installed before |
 | [Architecture](docs/development/architecture.md) | Module layers, hooks, transport |
 | [Release notes](docs/releases/README.md) | Full notes per release |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development, tests, release flow |

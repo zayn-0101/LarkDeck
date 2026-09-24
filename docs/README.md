@@ -13,7 +13,6 @@ LarkDeck 的文档分三层，按你的角色选择入口即可。
 | [命令](guide/commands.md) | `/larkdeck status|config|help` 与 `/reasoning` |
 | [卡片能力与限制](guide/card-capabilities.md) | 支持哪些卡片形态、哪些做不到 |
 | [故障排查](guide/troubleshooting.md) | 症状 → 根因 → 修复 |
-| [从 HFC 迁移](guide/switch-from-hfc.md) | 与 HFC 不能共存时的切换步骤 |
 
 ## 开发与发布
 

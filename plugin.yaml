@@ -7,7 +7,7 @@ description: >
   platform adapter (registry last-writer-wins) and subclasses it, replacing the
   plain-text reply path with a card renderer: one card streams from the first
   token through the final answer, with a collapsible reasoning + tool panel
-  (a CLS-style `💭 Thought · 🛠️ Tools` panel summary; status, elapsed and model
+  (a `💭 Thought · 🛠️ Tools` panel summary; status, elapsed and model
   in the footer), per-turn status colors on
   the panel border (green = done, red = failed, yellow = stopped), default
   coloured tool status words and a compact 12px panel/footer text profile,
@@ -31,23 +31,23 @@ config_schema:
   cards:
     type: boolean
     default: true
-    description: "用卡片渲染回复；任何卡片失败自动回落纯文本"
+    description: "用卡片渲染回复；任何卡片失败自动改用纯文本"
   native_streaming:
     type: boolean
     default: true
-    description: "官方 native streaming：一回合一张卡（工具进度合入同卡）；失败自动回落"
+    description: "官方 native streaming：一回合一张卡（工具进度合入同卡）；失败自动改用普通发送"
   clarify_cards:
     type: boolean
     default: true
-    description: "澄清提问用交互卡；无线索或其他失败时回落内置文字提问"
+    description: "澄清提问用交互卡；无线索或其他失败时改用内置文字提问"
   native_transport:
     type: string
     default: "cardkit"
-    description: "native 流式帧的传输：cardkit（默认，CardKit 实体 + 元素流式写入 = 真逐字打字机；任何一步失败自动回落）/ patch（旧路径，整卡替换；字是几个几个跳）"
+    description: "native 流式帧的传输：cardkit（默认，CardKit 实体 + 元素流式写入 = 真逐字打字机；任何一步失败自动切换）/ patch（旧路径，整卡替换；字是几个几个跳）"
   clarify_dialect:
     type: string
     default: "2.0"
-    description: "澄清卡方言：2.0（下拉+输入框，默认；真机点击已验证回调到达）/ 1.0（按钮，旧路径，真机也跑得通）"
+    description: "澄清卡形态：2.0（下拉+输入框，默认；真机点击已验证回调到达）/ 1.0（按钮，旧路径，真机也跑得通）"
   tool_row_icon:
     type: string
     default: "line"

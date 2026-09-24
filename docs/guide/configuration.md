@@ -96,11 +96,11 @@ plugins:
 - **native_streaming** · `boolean` · 默认 `true`
   官方 native 流式：一回合一张卡，工具进度合入同卡。关掉后退回核心的逐段发送 / 编辑路径。示例：`native_streaming: false`。
 - **clarify_cards** · `boolean` · 默认 `true`
-  澄清提问用交互卡；无线索或卡片失败时回落内置文字提问。示例：`clarify_cards: false`。
+  澄清提问用交互卡；无线索或卡片失败时自动改用内置文字提问。示例：`clarify_cards: false`。
 - **native_transport** · `string` · 默认 `"cardkit"`
-  流式帧传输。`cardkit` 用 CardKit 实体加逐元素写入，带来真逐字打字机；`patch` 是旧路径，整卡替换、字跳得更粗。任何一步失败都自动回落。示例：`native_transport: "patch"`。
+  流式帧传输。`cardkit` 用 CardKit 实体加逐元素写入，带来真逐字打字机；`patch` 是旧路径，整卡替换、字跳得更粗。任何一步失败都会自动切换。示例：`native_transport: "patch"`。
 - **clarify_dialect** · `string` · 默认 `"2.0"`
-  澄清卡（clarify）方言。`2.0` 是下拉 / 多选 / 输入框；`1.0` 是按钮旧路径。待答卡与确认卡必须同方言。示例：`clarify_dialect: "1.0"`。
+  澄清卡（clarify）形态，配置键为 `clarify_dialect`。`2.0` 是下拉 / 多选 / 输入框；`1.0` 是按钮旧路径。待答卡与确认卡必须同形态。示例：`clarify_dialect: "1.0"`。
 
 ### 过程面板与推理
 
@@ -140,7 +140,7 @@ plugins:
 - **text_profile** · `string` · 默认 `"compact"`
   设备字号档位：`compact` 面板 / 页脚用 12px notation、正文 normal；其余可选 `off`、`mobile_friendly`、`large`。工具细节行与错误块的字号是字面量，不随本档位放大。示例：`text_profile: "large"`。
 - **theme** · `string` · 默认 `"ap_lite"`
-  观感主题：`neutral` 原符号 / `ap_lite` 抽象 emoji / `ap_bubble` AP 泡波风。示例：`theme: "ap_bubble"`。
+  观感主题：`neutral` 原符号 / `ap_lite` 抽象 emoji / `ap_bubble` 泡波风格（含人物 emoji）。示例：`theme: "ap_bubble"`。
 - **panel_color_tags** · `boolean` · 默认 `true`
   面板 markdown 是否使用 `<font color>` 上色。客户端不认时可显式设 `false` 走纯文本降级。示例：`panel_color_tags: false`。
 

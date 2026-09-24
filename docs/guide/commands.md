@@ -75,4 +75,4 @@ plugins:
 - `/reasoning on|off` 在网关忙碌时会拒绝执行并提示等待或先 `/stop`；它影响的是下一回合，建议空闲时发。
 - `/stop` 是忙碌状态下的例外，随时可用。
 
-卡片能力与回落行为见 [卡片能力与限制](card-capabilities.md)。
+卡片能力与失败后的表现见 [卡片能力与限制](card-capabilities.md)。

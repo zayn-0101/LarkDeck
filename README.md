@@ -1,7 +1,7 @@
 # LarkDeck
 
-> **回答边写边长，过程和结果都收在一张卡片里。**
-> LarkDeck 是 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 的飞书 / Lark 流式卡片插件：正文实时生成，推理与工具过程收在底部可折叠面板，需要选择时直接在卡片上作答。
+> **飞书里的回答会像打字机一样实时写出来，思考与工具调用收在卡片底部，随时展开。**
+> LarkDeck 是基于飞书 CardKit 2.0 的 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 插件：不改 Hermes 源码，回答、过程与澄清交互都在同一张卡里完成。
 
 [![version](https://img.shields.io/badge/version-0.7.9-blue.svg)](https://github.com/zayn-0101/LarkDeck/releases)
 [![AH (Hermes Agent) 0.21.x](https://img.shields.io/badge/AH-0.21.x-blueviolet.svg)](https://github.com/NousResearch/hermes-agent)
@@ -11,12 +11,12 @@
 
 ## 核心能力
 
-- **一条回复一张卡**：首帧先建卡，正文逐字显示；工具进度不再单独刷消息。
+- **一条回复一张卡**：回答还没出第一个字，卡片就先建好；正文逐字显示，工具进度不再单独刷消息。
 - **过程面板（panel）**：推理与工具调用合并到卡片底部，可折叠；按第 N 轮思考（round）分段计时。
 - **澄清交互卡（clarify）**：下拉、多选、输入框或按钮直接作答，不用手打选项。
 - **状态与用量**：完成 / 失败 / 中止对应绿 / 红 / 黄边框；页脚显示耗时、模型与上下文用量。
 - **双语界面**：卡片界面文案跟随飞书客户端语言；AI 生成的正文不翻译。
-- **安全回落**：卡片、传输或流式任一步失败，自动回落官方纯文本 / 编辑发送，消息不会丢。
+- **安全兜底**：卡片、传输或流式任一步失败，自动改用官方纯文本或编辑消息，消息不会丢。
 
 ## 快速开始
 
@@ -69,7 +69,7 @@ hermes gateway restart
 | 长回答分卡 | 单卡装不下时自动封卡续写，只写剩余内容，切点避开代码围栏 |
 | 正文排版 | 清理游离的 `**`、把 H1–H3 降级为加粗，避免卡片里出现夸张大字 |
 | 双语界面 | 卡片界面文案跟随客户端语言；AI 正文保持原文 |
-| 安全回落 | 任一步失败都换成官方纯文本 / 编辑发送，消息与内容不丢 |
+| 安全兜底 | 任一步失败都改用官方纯文本或编辑消息，消息与内容不丢 |
 | 自检命令 | `/larkdeck status` 随时查看接管状态与写卡失败记录 |
 
 ## 配置概览
@@ -107,7 +107,7 @@ plugins:
 ## 兼容与限制
 
 - **环境**：面向 Hermes Agent 0.21.x（已在 0.21.1 / 0.21.4 上验证），且官方 `feishu` 平台必须在同一进程可用；与同样接管 `feishu` 或改写 Hermes 源码的插件不能共存。
-- **回落行为**：卡片只是增强层。卡片发送、流式或交互任一步失败，会回落官方纯文本 / 编辑发送；那一刻没有卡片样式或动画，但消息不会丢。
+- **失败时的行为**：卡片只是增强层。卡片发送、流式或交互任一步失败，会自动改用官方纯文本或编辑消息；那一刻没有卡片样式或动画，但消息不会丢。
 - **客户端差异**：客户端不支持卡片 2.0 能力时，部分组件可能不渲染或降级；卡片界面文案跟随客户端语言，AI 正文与部分 markdown 文案（工具动作 / 状态词等）语言固定。能力边界与替代形态见 [docs/guide/card-capabilities.md](docs/guide/card-capabilities.md)。
 - **推理正文**：需要 Hermes 开启 `plugins.stream_reasoning_deltas`（默认关闭）；未开启时过程面板只显示工具步骤，`/larkdeck status` 会说明原因。
 - **命令时机**：在飞书网关里，生成回答期间发送的命令会排队到回合结束；CLI / TUI 中会立即执行。
@@ -123,7 +123,6 @@ plugins:
 | [命令](docs/guide/commands.md) | 命令与参数说明 |
 | [卡片能力](docs/guide/card-capabilities.md) | 支持与不支持的卡片能力 |
 | [故障排查](docs/guide/troubleshooting.md) | 症状 → 根因 → 排查 → 修复 |
-| [从 HFC 迁移](docs/guide/switch-from-hfc.md) | 之前装过 HFC 时的切换步骤 |
 | [架构](docs/development/architecture.md) | 模块分层、钩子与传输设计 |
 | [版本说明](docs/releases/README.md) | 每个版本的完整变更与说明 |
 | [CHANGELOG](CHANGELOG.md) | 用户可见变更列表 |
