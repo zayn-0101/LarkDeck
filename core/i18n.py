@@ -75,7 +75,7 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "clarify.other_hint": {ZH: "直接输入你的答案，回车提交", EN: "Type your answer, press Enter"},
     "clarify.multi_hint": {ZH: "勾选需要的选项，再点「提交选择」；也可以直接回复文字。",
                            EN: "Check the options, then tap “Submit”; you can also reply with text."},
-    "clarify.submit":     {ZH: "提交选择", EN: "Submit"},
+    "clarify.submit":     {ZH: "提交", EN: "Submit"},
     # 卡链（R4）：封掉的那张卡尾部加一行，告诉用户回答还没完（下一条继续）
     "stream.continued":   {ZH: "（续下一条）", EN: "(continues in the next card)"},
     # 澄清点击的**瞬时提示**（toast）：失败态与「其他」提示态都**不动卡片** ——

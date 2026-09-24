@@ -2111,6 +2111,9 @@ def clarify_card_2(question: str, choices: Sequence[str], *, clarify_id: str,
                     "type": "primary",
                     "form_action_type": "submit",
                     "name": "clarify_submit",
+                    # 官方表单回调示例里提交按钮的 `behaviors.value` 会进 `action.value`
+                    # （路由键靠它回到 handler）；同时保留历史 `value` 字段兜底。
+                    "behaviors": [{"type": "callback", "value": dict(value)}],
                     "value": dict(value),
                 },
             ],

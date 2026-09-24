@@ -5785,6 +5785,25 @@ class LarkDeckMixin:
             event = getattr(data, "event", None)
             action = getattr(event, "action", None)
             value = self._ld_normalize_value(action)
+            # 诊断（2026-09-24 多选表单提交落到内置 `/card` 合成命令）：只记形状不记内容值。
+            _tag = str(getattr(action, "tag", "") or "")
+            if _tag == "button" or getattr(action, "form_value", None):
+                _raw_value = getattr(action, "value", None)
+                _fv = getattr(action, "form_value", None)
+                _raw_keys = (sorted(str(k) for k in _raw_value.keys())
+                             if isinstance(_raw_value, dict) else type(_raw_value).__name__)
+                _fv_keys = (sorted(str(k) for k in _fv.keys())
+                            if isinstance(_fv, dict) else type(_fv).__name__)
+                _opts = getattr(action, "options", None)
+                _inp = getattr(action, "input_value", None)
+                logger.info(
+                    "[larkdeck] 卡片按钮形状 tag=%s value_keys=%s form_value_keys=%s "
+                    "name=%r option=%r options_count=%s input_len=%s normalized_action=%s",
+                    _tag, _raw_keys, _fv_keys, getattr(action, "name", None),
+                    getattr(action, "option", None),
+                    len(_opts) if isinstance(_opts, (list, tuple)) else None,
+                    len(_inp) if isinstance(_inp, str) else None,
+                    value.get(ACTION_KEY))
             if isinstance(value, dict) and value.get(ACTION_KEY) == ACTION_CLARIFY:
                 return self._ld_handle_clarify_click(event=event, action=action, value=value)
             if _cards.is_probe_value(value):      # 判据只有一处（见 cards.is_probe_value）
