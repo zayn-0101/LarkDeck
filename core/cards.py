@@ -2136,10 +2136,20 @@ def clarify_card_2(question: str, choices: Sequence[str], *, clarify_id: str,
                 title=_i18n.i18n_text("clarify.header"), summary=question)
 
 
+def _clarify_resolved_line(label: str, user_name: str) -> str:
+    """已答复卡的正文行：**有显示名才署名**（V079）。
+
+    以前显示名取不到时会退回 ``open_id``（``ou_...``），用户看到一串无意义字符；
+    现在拿不到名字就只显示选项本身。
+    """
+    line = f"\u2705 **{label}**"
+    return f"{line}\u3000\u2014\u3000{user_name}" if user_name else line
+
+
 def clarify_resolved_card_2(*, question: str, answer: Any, user_name: str) -> Dict[str, Any]:
     """2.0 的已答复卡 —— **必须与待答卡同方言**，否则回调里回填的那一帧会被飞书丢弃。"""
     return card(elements=[_clarify_question_md(question),
-                          md(f"\u2705 **{_clarify_answer_label(answer)}**\u3000\u2014\u3000{user_name}")],
+                          md(_clarify_resolved_line(_clarify_answer_label(answer), user_name))],
                 template="green", title=_i18n.i18n_text("clarify.header"), summary=question)
 
 
@@ -2164,6 +2174,6 @@ def clarify_resolved_card(*, question: str, answer: str, user_name: str) -> Dict
     """
     label = _clarify_answer_label(answer)
     return legacy_card(
-        elements=[_clarify_question_md(question), md(f"\u2705 **{label}**\u3000\u2014\u3000{user_name}")],
+        elements=[_clarify_question_md(question), md(_clarify_resolved_line(label, user_name))],
         template="green", title=_i18n.i18n_text("clarify.header"),
     )

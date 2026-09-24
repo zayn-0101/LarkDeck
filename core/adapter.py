@@ -6277,6 +6277,16 @@ class LarkDeckMixin:
         return _cards.clarify_resolved_card(question=question, answer=str(answer),
                                             user_name=user_name)
 
+    def _ld_click_display_name(self, open_id: str) -> str:
+        """点击者在已答复卡上的署名：**拿不到就返回空串**，绝不把 open_id 当名字（V079）。
+
+        名字只是装饰，这里也绝不抛 —— 抛出去会把一次已经成功的点击回填炸掉。
+        """
+        try:
+            return str(self._get_cached_sender_name(open_id) or "")
+        except Exception:  # pragma: no cover - 防御性
+            return ""
+
     @staticmethod
     def _ld_typing_text_key() -> str:
         """「其他（我直接输入）」的提示文案按**当前方言**选（审计低-3）。
@@ -6544,7 +6554,7 @@ class LarkDeckMixin:
                     if outcome == _compat.CLARIFY_TEXT_NO_PENDING
                     else "clarify.toast_rejected")
             self._ld_note_clarify_answered(event, awaiting_text=False)
-            user_name = self._get_cached_sender_name(open_id) or open_id or "?"
+            user_name = self._ld_click_display_name(open_id)
             return self._ld_card_response_safe(
                 self._ld_build_resolved_card(question=question, answer=answer,
                                              user_name=user_name))
@@ -6589,7 +6599,7 @@ class LarkDeckMixin:
             return self._ld_toast_or_noop(kind="info", text_key=self._ld_typing_text_key())
 
         self._ld_note_clarify_answered(event, awaiting_text=False)
-        user_name = self._get_cached_sender_name(open_id) or open_id or "?"
+        user_name = self._ld_click_display_name(open_id)
         # 回填卡必须与待答卡同方言，否则飞书会**静默丢弃**这一帧（HFC 踩过）
         return self._ld_card_response_safe(
             self._ld_build_resolved_card(question=question, answer=answer, user_name=user_name)

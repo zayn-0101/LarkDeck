@@ -545,6 +545,29 @@ def test_clarify_resolved_card_shares_the_same_dialect():
     assert resolved["header"]["template"] == "green"
 
 
+def test_clarify_resolved_card_omits_signature_without_display_name():
+    """V079：拿不到显示名时不署名 —— 绝不把 open_id（``ou_...``）显示给用户。"""
+    blob = json.dumps(cards.clarify_resolved_card(question="选哪个？", answer="A", user_name=""),
+                      ensure_ascii=False)
+    assert "\u2014" not in blob and "ou_" not in blob, blob
+    blob2 = json.dumps(cards.clarify_resolved_card_2(question="选哪个？", answer="A", user_name=""),
+                       ensure_ascii=False)
+    assert "\u2014" not in blob2 and "ou_" not in blob2, blob2
+    named = json.dumps(cards.clarify_resolved_card(question="选哪个？", answer="A",
+                                                   user_name="汪老师"), ensure_ascii=False)
+    assert "汪老师" in named and "\u2014" in named, named
+
+
+def test_ld_click_display_name_never_falls_back_to_open_id():
+    """V079：入口层也不许把 open_id 当显示名（缓存里没有名字时返回空串）。"""
+    raw = _make()
+    raw._get_cached_sender_name = lambda open_id: ""
+    assert adapter.LarkDeckMixin._ld_click_display_name(
+        raw, "ou_a1e3c4b33e2d924f561196325a9678c0") == ""
+    raw._get_cached_sender_name = lambda open_id: "汪老师"
+    assert adapter.LarkDeckMixin._ld_click_display_name(raw, "ou_x") == "汪老师"
+
+
 def test_reply_card_is_20_with_summary():
     """流式回复卡走 2.0，且必须带 config.summary（官方 SDK 与 HFC 都强制带）。"""
     card = cards.reply_card("一段很长的回答" * 30, streaming=True)
