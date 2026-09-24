@@ -217,7 +217,7 @@ plugins:
         body_source: "own"      # 默认 own：正文只认插件 on_stream_delta 累积；legacy 仅过渡回退（P2b 后删除）
         visual_engine: "structured" # v0.7.1 视觉引擎：structured（**默认**，结构化元素树）。`legacy` 配置键自 v0.7.1 起**已退役**（设了只留一条退休 WARNING，行为仍是 structured）；旧渲染器仍作为 DEGRADE 车道的降级渲染器保留。真正回退请 revert 到 v0.7.0
         card_status_header: false # v0.7.2：顶部状态条**默认关**（用户口径「顶栏默认不显示」）；置 true 可开回来（非默认值告警）
-        show_reasoning: false   # v0.7.1 V3：是否显示推理正文；默认 false（对齐 CLS/aiduPOP），摘要行始终保留；已登记未生效，V3 前两种取值观感相同（README no-op 说明）
+        show_reasoning: auto    # 是否显示推理正文：auto（默认，跟随 Hermes display.show_reasoning / 平台覆盖）/ on / off；旧布尔 true/false 仍接受。Hermes 未发送 reasoning delta（plugins.stream_reasoning_deltas 关闭）时按关闭处理，并在 /larkdeck status 说明原因
         footer: true             # 页脚：状态 → 耗时 → 模型 → 上下文用量（v0.7.2 起无段前缀 emoji/短码；v0.7.3 起已知系统提示整段不渲染）
         show_model: true         # 页脚里显示模型名（面板标题只放「💭 思考 / 🛠️ 工具执行」摘要）
         context_style: text      # 上下文用量样式：text | bar | both

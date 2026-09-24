@@ -42,17 +42,18 @@ _STRINGS: Dict[str, Dict[str, str]] = {
                                      EN: "💭 Thought · 🛠️ Tools · 1 step"},
     # 溢出保护：内容被截断 / 步骤被裁掉时补一行说明，让用户知道「还有东西但没显示」
     "panel.overflow":     {ZH: "…已省略 {n} 字符", EN: "…{n} chars omitted"},
-    "panel.trimmed":      {ZH: "…已折叠 {n} 条早期思考/工具记录", EN: "…{n} earlier steps folded"},
+    # 2026-09-24 用户口径：折叠提示自己不带前导省略号（它是提示，不是被截断的尾巴）。
+    "panel.trimmed":      {ZH: "已折叠 {n} 条早期思考/工具记录", EN: "{n} earlier steps folded"},
     # 推理轮标题。注意「轮」= 一段连续推理（被正文或工具打断），不是 API 调用次数。
-    "panel.round_n":      {ZH: "第 {n} 轮", EN: "Round {n}"},
+    "panel.round_n":      {ZH: "第 {n} 轮思考", EN: "Thinking round {n}"},
     # 轮数超过渲染上限时，更早的轮整轮折叠（保证面板总量有界，见 cards.unified_panel）
-    "panel.rounds_trimmed": {ZH: "…更早的 {n} 轮已折叠", EN: "…{n} earlier rounds folded"},
+    "panel.rounds_trimmed": {ZH: "更早的 {n} 轮已折叠", EN: "{n} earlier rounds folded"},
     # 回合结局的文字兜底（面板没有别的正文时显示；边框色是主要载体）
     "stream.pending":     {ZH: "⏳ 正在生成…", EN: "⏳ Generating…"},
     # 文案逐字取自 aiduPOP `cardkit/i18n.py:35`（"Loading context..." / "正在加载上下文..."）
     "stream.loading_context": {ZH: "正在加载上下文...", EN: "Loading context..."},
     "card.status_processing": {ZH: "🫧 处理中…", EN: "🫧 Working…"},
-    "panel.reasoning_round": {ZH: "💭 思考 · {n}", EN: "💭 Thought · {n}"},
+    "panel.reasoning_round": {ZH: "第 {n} 轮思考", EN: "Thinking round {n}"},
     "panel.status_ok":    {ZH: "✅ 已完成", EN: "✅ Completed"},
     "panel.status_error": {ZH: "❌ 执行出错", EN: "❌ Failed"},
     "panel.status_stopped": {ZH: "⛔ 已中止", EN: "⛔ Stopped"},
@@ -201,6 +202,24 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "diag.command_bad":   {ZH: "未注册", EN: "not registered"},
     "diag.inbound_ago":   {ZH: "{age}前", EN: "{age} ago"},
     "diag.inbound_none":  {ZH: "无记录", EN: "no record"},
+    # 推理显示解析结果（`show_reasoning=auto` 跟随 Hermes）。必须能说出「为什么关」：
+    # display 开着但 stream_reasoning_deltas 关着时，用户看到的卡片不会有推理正文，
+    # 这张状态行是唯一能区分「Hermes 没发数据」与「插件 bug」的地方。
+    "diag.reasoning":     {ZH: "💭 推理显示：{state} · 模式={mode} · {detail}",
+                           EN: "💭 Reasoning display: {state} · mode={mode} · {detail}"},
+    "diag.reasoning_on":  {ZH: "开", EN: "on"},
+    "diag.reasoning_off": {ZH: "关", EN: "off"},
+    "diag.reasoning_detail_explicit": {ZH: "插件显式设置", EN: "explicit plugin setting"},
+    "diag.reasoning_detail_hermes_off": {ZH: "Hermes display.show_reasoning 未开启",
+                                         EN: "Hermes display.show_reasoning is off"},
+    "diag.reasoning_detail_hermes_unreadable": {ZH: "读不到 Hermes display.show_reasoning，按关闭处理",
+                                                EN: "Hermes display.show_reasoning unreadable; treated as off"},
+    "diag.reasoning_detail_no_deltas": {ZH: "Hermes 未发送 reasoning delta（plugins.stream_reasoning_deltas 未开）",
+                                        EN: "Hermes is not sending reasoning deltas (plugins.stream_reasoning_deltas is off)"},
+    "diag.reasoning_detail_deltas_unreadable": {ZH: "读不到 Hermes 的 reasoning delta 开关，按关闭处理",
+                                                EN: "Hermes reasoning-delta switch unreadable; treated as off"},
+    "diag.reasoning_detail_hermes_on": {ZH: "跟随 Hermes display.show_reasoning",
+                                        EN: "following Hermes display.show_reasoning"},
     # P2 `/larkdeck config`：只读视图 + `config reload` 热刷新；聊天侧没有写入命令
     # （安全审计 B1：handler 拿不到发送者身份，无法安全授权）。
     "config.header":      {ZH: "⚙️ 生效配置（来源优先级：环境变量 > 官方插件设置 > 默认值）：\n"
