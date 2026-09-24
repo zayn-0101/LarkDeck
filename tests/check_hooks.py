@@ -628,6 +628,11 @@ else:
                     return getattr(prepared, "text", str(prepared))
 
             class _FakeRunner:
+                def _delivery_adapter_for(self, source):
+                    # Hermes 0.21.4 renamed the runner hook; keep the old name too so the
+                    # harness stays valid on the 0.21.1 baseline (this plugin supports both).
+                    return _FakeCardAdapter()
+
                 def _adapter_for_source(self, source):
                     return _FakeCardAdapter()
 

@@ -3293,6 +3293,14 @@ MUTATIONS = [
      '                pass  # V075-40 mutated：orphan 不登记',
      'test_units'),
 
+    # ---- P9：Hermes 0.21.4 deferred bundled platform 的加载死锁（2026-09-24） ----- #
+    # 撤掉 deferred 分支 ⇒ 回退成 platform_registry.get()。单测里的 deferred registry
+    # 明确让 get() 抛 AssertionError ⇒ test_units 断言红（不会走成加载崩溃）。
+    ('P9-deferred 内置平台误走 registry.get()（插件加载 worker 会 10s 超时死锁）', 'core/adapter.py',
+     '        if deferred is not None:',
+     '        if False:',
+     'test_units'),
+
 
 ]
 

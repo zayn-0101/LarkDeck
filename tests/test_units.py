@@ -15307,6 +15307,98 @@ def test_v075_dedicated_orphan_is_registered_not_recreated():
         adapter._apply_metrics_config()
 
 
+def test_deferred_builtin_resolution_never_calls_platform_registry_get():
+    """Hermes 0.21.4 的 deferred bundled platform 绝不能经 registry.get() 解析（死锁）。"""
+
+    class _Entry:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    class _DeferredRegistry:
+        def __init__(self):
+            self.get_calls = 0
+
+        def current_scope_key(self):
+            return "scope-test"
+
+        def snapshot_registration(self, name, scope=None):
+            return (None, object())
+
+        def get(self, name):
+            self.get_calls += 1
+            raise AssertionError("deferred builtin platform must not go through get()")
+
+    original = compat.capture_bundled_platform_registration
+    compat.capture_bundled_platform_registration = lambda: {
+        "name": "feishu",
+        "label": "Feishu / Lark",
+        "adapter_factory": lambda config: None,
+        "check_fn": lambda: True,
+    }
+    registry = _DeferredRegistry()
+    try:
+        entry = adapter._resolve_builtin_platform_entry(registry, _Entry)
+    finally:
+        compat.capture_bundled_platform_registration = original
+
+    assert isinstance(entry, _Entry)
+    assert callable(entry.adapter_factory) and callable(entry.check_fn)
+    assert registry.get_calls == 0
+
+
+def test_concrete_builtin_entry_is_reused_without_direct_import():
+    class _Entry:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    concrete = _Entry(adapter_factory=lambda config: None, check_fn=lambda: True)
+
+    class _Registry:
+        def current_scope_key(self):
+            return "scope-test"
+
+        def snapshot_registration(self, name, scope=None):
+            return (concrete, None)
+
+        def get(self, name):
+            raise AssertionError("concrete entry must be reused")
+
+    original = compat.capture_bundled_platform_registration
+    compat.capture_bundled_platform_registration = lambda: (_ for _ in ()).throw(
+        AssertionError("concrete entry must not trigger a direct import"))
+    try:
+        assert adapter._resolve_builtin_platform_entry(_Registry(), _Entry) is concrete
+    finally:
+        compat.capture_bundled_platform_registration = original
+
+
+def test_capture_bundled_platform_registration_reads_register_kwargs():
+    module = types.ModuleType("_larkdeck_fake_bundled_platform")
+
+    def register(ctx):
+        ctx.register_platform(
+            name="feishu", label="Fake Feishu",
+            adapter_factory=lambda config: None, check_fn=lambda: True,
+            max_message_length=8000, required_env=["A", "B"],
+        )
+
+    module.register = register
+    sys.modules["_larkdeck_fake_bundled_platform"] = module
+    try:
+        captured = compat.capture_bundled_platform_registration(("_larkdeck_fake_bundled_platform",))
+    finally:
+        sys.modules.pop("_larkdeck_fake_bundled_platform", None)
+
+    assert captured is not None
+    assert captured["label"] == "Fake Feishu"
+    assert captured["max_message_length"] == 8000
+    assert captured["required_env"] == ["A", "B"]
+
+
+def test_capture_bundled_platform_registration_returns_none_for_missing_module():
+    assert compat.capture_bundled_platform_registration(("_no_such_larkdeck_bundled_platform",)) is None
+
+
 def main() -> int:
     # `--only <子串>`：只跑名字里含该子串的用例。**专供变异判读**（审计 A：单条变异 idle 28s、
     # 重载 89s，秒级判读只能靠「preflight + 只跑受影响的那几条用例」）。不是发布门禁 ——

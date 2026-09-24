@@ -94,6 +94,62 @@ OBSERVED_HOOKS: Tuple[str, ...] = (
     "on_session_end",
 )
 
+#: Bundled Feishu platform module candidates. Hermes 0.21.4 registers bundled platforms as
+#: *deferred* registry loaders; resolving one through ``platform_registry.get()`` inside a
+#: plugin-load deadline worker deadlocks with the discovery lock held by the main thread that
+#: is joining that worker. The direct module import below is the lock-free fallback: it yields
+#: the exact same ``register_platform`` kwargs the deferred loader would have published.
+#: The plugin-manager namespace is preferred when that module was already imported (e.g. a
+#: previous generation loaded it), so we don't create a second copy of the adapter classes.
+BUNDLED_FEISHU_PLATFORM_MODULES: Tuple[str, ...] = (
+    "hermes_plugins.platforms__feishu.adapter",
+    "plugins.platforms.feishu.adapter",
+)
+
+
+def capture_bundled_platform_registration(
+    module_names: Tuple[str, ...] = BUNDLED_FEISHU_PLATFORM_MODULES,
+) -> Optional[Dict[str, Any]]:
+    """Import a bundled platform module directly and capture its ``register_platform`` kwargs.
+
+    Returns ``None`` when the module/register is unavailable or does not publish a usable
+    ``adapter_factory``/``check_fn``. This deliberately bypasses ``platform_registry.get()``:
+    in Hermes 0.21.4 the bundled platform's deferred loader takes the discovery RLock that
+    the plugin-load sweep already holds while it joins this very worker — a self-deadlock
+    that ends in the load timeout and silently drops the takeover.
+    """
+    import importlib
+
+    module = None
+    for name in module_names:
+        module = sys.modules.get(name)
+        if module is not None:
+            break
+    if module is None:
+        for name in module_names:
+            try:
+                module = importlib.import_module(name)
+                break
+            except Exception:
+                logger.debug("Bundled platform module %s import failed", name, exc_info=True)
+                module = None
+    if module is None or not callable(getattr(module, "register", None)):
+        return None
+    captured: Dict[str, Any] = {}
+
+    class _CaptureCtx:
+        def register_platform(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    try:
+        module.register(_CaptureCtx())
+    except Exception:
+        logger.debug("Bundled platform register() capture failed", exc_info=True)
+        return None
+    if not callable(captured.get("adapter_factory")) or not callable(captured.get("check_fn")):
+        return None
+    return captured
+
 
 def hermes_version() -> str:
     """尽力拿到 Hermes 版本号；拿不到返回 ``"unknown"``。"""

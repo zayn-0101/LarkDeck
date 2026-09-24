@@ -241,10 +241,17 @@ else:
 # 判据 = **内置注册函数真给的字段** vs **我们注册后 entry 上的字段**，逐字段比对。
 # ⚠️ 不要用 `snapshot_registration` 的第二个返回值当「被替换的内置 entry」——
 # 它是**延迟加载器**（`_Loader`），不是 entry（这条我第一版就写错了，门禁当场自曝）。
-_CLS_MODULE = type(adapter).__mro__[1].__module__ if len(type(adapter).__mro__) > 1 else ""
-_builtin_mod = (sys.modules.get("hermes_plugins.feishu_platform.adapter")
-                or sys.modules.get(_CLS_MODULE))
-if _builtin_mod is None or not hasattr(_builtin_mod, "register"):
+# ⚠️ 内置模块的解析也不能用 `type(adapter).__mro__[1].__module__` —— 那是 `LarkDeckMixin`
+# （我们自己），会拿 larkdeck 的 register() 再跑一遍，配一个只认 register_platform 的
+# recording ctx，把启动自检/hook/command 全打乱（Hermes 0.21.4 实测）。旧版本靠
+# `hermes_plugins.feishu_platform.adapter` 这个不再存在的老模块名掩盖了这个坑。
+# 现在从 `compat.BUNDLED_FEISHU_PLATFORM_MODULES`（单一事实来源）里取真正加载过的内置模块。
+_builtin_modules = tuple(getattr(_compat_mod, "BUNDLED_FEISHU_PLATFORM_MODULES", ()) or ())
+_builtin_mod = next(
+    (sys.modules.get(_name) for _name in _builtin_modules if sys.modules.get(_name) is not None),
+    None,
+)
+if _builtin_mod is None or not callable(getattr(_builtin_mod, "register", None)):
     problems.append("找不到内置 feishu 的 register()（entry 保真检查跑不起来）")
 else:
     _captured: dict = {}

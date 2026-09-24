@@ -6787,6 +6787,54 @@ def _make_standalone_sender(factory: Any, fallback: Any) -> Any:
     return _send
 
 
+def _resolve_builtin_platform_entry(platform_registry: Any, platform_entry_cls: Any) -> Any:
+    """Resolve the built-in Feishu platform entry without tripping a deferred-loader deadlock.
+
+    Hermes 0.21.4 registers bundled platforms as deferred registry loaders. Calling
+    ``platform_registry.get()`` from a plugin-load deadline worker makes that loader take the
+    discovery RLock which the sweep's main thread holds while it joins this very worker ⇒
+    mutual wait until ``plugins.load_timeout_seconds`` fires and the takeover is dropped.
+    Three cases:
+      * a concrete entry (old Hermes / warm registry) is reused as-is;
+      * a deferred loader is bypassed by importing the bundled module directly
+        (``compat.capture_bundled_platform_registration()``) and building the same
+        PlatformEntry the loader would have published;
+      * neither state is observable (pre-0.21.4 registry without snapshot API) ⇒ fall back
+        to ``get()``, which is safe there because no deferred platform exists to resolve.
+    """
+    snapshot = getattr(platform_registry, "snapshot_registration", None)
+    if callable(snapshot):
+        scope = None
+        try:
+            scope = platform_registry.current_scope_key()
+        except Exception:
+            pass
+        try:
+            current, deferred = snapshot(PLATFORM_NAME, scope=scope)
+        except TypeError:  # older signature without the scope keyword
+            current, deferred = snapshot(PLATFORM_NAME)
+        if current is not None and getattr(current, "adapter_factory", None) is not None:
+            logger.debug("[larkdeck] 内置 '%s' 已是具体 entry，直接复用", PLATFORM_NAME)
+            return current
+        if deferred is not None:
+            captured = _compat.capture_bundled_platform_registration()
+            if captured:
+                try:
+                    entry = platform_entry_cls(**captured)
+                except Exception as exc:
+                    logger.warning("[larkdeck] 捕获内置 '%s' 注册参数后构造 entry 失败: %s",
+                                   PLATFORM_NAME, exc)
+                else:
+                    logger.info("[larkdeck] 内置 '%s' 为 deferred，已直接导入 bundled 模块捕获完整 entry",
+                                PLATFORM_NAME)
+                    return entry
+            # Do NOT fall back to get() here: that is the exact deferred-loader deadlock.
+            logger.error("[larkdeck] 内置 '%s' 为 deferred 且直接导入捕获失败；"
+                         "拒绝走会死锁的 registry.get()", PLATFORM_NAME)
+            return None
+    return platform_registry.get(PLATFORM_NAME)
+
+
 def register(ctx: Any) -> None:
     """插件入口：抢占 ``feishu`` 平台名，并把卡片层叠到内置适配器上。"""
     try:
@@ -6803,9 +6851,10 @@ def register(ctx: Any) -> None:
     _remember_plugin_ctx(ctx)
     _apply_ctx_settings(ctx)
 
-    # 1) 先把内置 feishu 解析出来（这一步会触发它的 deferred loader）。
+    # 1) 解析内置 feishu。⚠️ 不能直接 get()：0.21.4 的 bundled 平台是 deferred loader，
+    #    在插件加载 worker 里触发它会和主线程的 discovery RLock 互等（见 helper 注释）。
     try:
-        builtin = platform_registry.get(PLATFORM_NAME)
+        builtin = _resolve_builtin_platform_entry(platform_registry, PlatformEntry)
     except Exception as exc:
         _remember_selfcheck(False, f"解析内置 '{PLATFORM_NAME}' 平台失败: {exc}")
         return
