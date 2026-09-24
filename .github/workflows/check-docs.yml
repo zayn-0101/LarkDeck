@@ -1,0 +1,20 @@
+name: check-docs
+
+# 只跑零依赖的文档守卫：版本三处一致、相对链接可达、对外文档不引用内部归档。
+# 插件的完整门禁（真实 Hermes / CardKit / CLS 源码 / 本机归档）仍在开发机跑
+# `tests/run_fast.py --full`，不放进公开 CI。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 文档守卫
+        run: python3 tests/check_docs.py

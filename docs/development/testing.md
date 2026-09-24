@@ -1,7 +1,7 @@
 # 测试与门禁
 
 > 读者：改动 LarkDeck 后需要给出「真的验证过」证据的人（人类开发者或 AI coding agent）。
-> 结论先行：本仓库没有 CI、lint、formatter，**下面这些脚本就是全部验证**。
+> 结论先行：本仓库没有跑完整插件门禁的 CI（它依赖真实 Hermes、CLS 源码与维护者本机归档），也没有 lint / formatter；公开 CI 只跑 `tests/check_docs.py` 这一道零依赖的文档守卫（`.github/workflows/check-docs.yml`）。**插件改动仍以本节的脚本为准**。
 
 ## 运行环境
 
