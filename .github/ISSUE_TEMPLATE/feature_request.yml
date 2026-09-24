@@ -1,0 +1,38 @@
+name: 功能建议
+description: 想要的新能力或改进
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你想解决什么问题
+      description: 描述使用场景，而不只是想要的功能名。
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你设想的方案
+      description: 卡片长什么样、怎么交互、配置项怎么开。
+    validations:
+      required: false
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: 影响范围
+      options:
+        - 仅 LarkDeck
+        - 需要 Hermes Agent 配合
+        - 不确定
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已在 issues 里搜过，没有重复建议
+          required: true

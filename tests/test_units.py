@@ -105,7 +105,7 @@ class StubAdapter:
         # ⚠️ 这里**有意不再预置**一个 `submitted` 列表：它原来只被初始化、没有任何写入点，
         # 于是「未授权用户的点击不得触发澄清解析」那条断言**恒真**（R8 审计中-4 实测：
         # 把鉴权拦截删掉四门禁全绿）。观测点现在由 `_fake_clarify_gateway(..., record=[...])`
-        # 在**提交真的被发起**时写入 —— 恒真的空列表不算证据（`docs/lessons.md` 推论 8）。
+        # 在**提交真的被发起**时写入 —— 恒真的空列表不算证据（`docs/internal/lessons.md` 推论 8）。
         self.card_updates: list = []
         self._loop = object()
 
@@ -172,7 +172,7 @@ def _fake_clarify_gateway(resolved: list, *, commit: bool = True,
     ``record``（可选）是一个 list：**每一次「提交被发起」都往里记一条**。
     ⚠️ 这个参数是 R8 审计中-4 的直接产物：原来「未授权用户的点击不得触发澄清解析」
     那条断言盯的是 ``StubAdapter.submitted``，而全仓**只有初始化、没有任何写入点**
-    ⇒ 那条断言**恒真**，把鉴权拦截删掉四门禁全绿（`docs/lessons.md` 推论 8 的
+    ⇒ 那条断言**恒真**，把鉴权拦截删掉四门禁全绿（`docs/internal/lessons.md` 推论 8 的
     「空集 = 一切正常」型）。现在观测点真的会记录，断言才有判别力。
     """
     fake_tools = types.ModuleType("tools")
@@ -1204,7 +1204,7 @@ def test_ck_plan_content_and_role_failures_are_pinned():
     assert "answer" in reasons[adapter._CK_ROLE_ANSWER]
     assert "panel_body" in reasons[adapter._CK_ROLE_PANEL]
     assert "footer" in reasons[adapter._CK_ROLE_DECOR]
-    # 写入预算（`docs/plan-v1.md` 附录 B）：数字**写死**在这里，因为它们是「照着官方口径
+    # 写入预算（`docs/internal/plans/plan-v1.md` 附录 B）：数字**写死**在这里，因为它们是「照着官方口径
     # 留余量」的**显式决定**，不是从别的常量顺手推出来的。算式那条断言单独也留着 ——
     # 它保证「改了帧窗口却没同步预算」会发生在这里，而不是发生在真机的限流上。
     assert adapter._CK_WRITES_PER_SECOND == 10, \
@@ -1475,7 +1475,7 @@ def _fake_ck_requests():
 def test_cardkit_transport_writes_elements_and_falls_open():
     """阶段 9：`native_transport: "cardkit"` 的帧序列 + **任何一步失败都回落**。
 
-    真机实测确立的两条硬约束（`docs/plan-6-effects.md` 阶段 9）：
+    真机实测确立的两条硬约束（`docs/internal/plans/plan-6-effects.md` 阶段 9）：
       * **只能按 `element_id` 写内容**（`card_element.content`），结构在建实体时定死 ——
         任何结构性写入（patch / card.update）都会**关闭流式会话**，之后再写元素得 `300309`；
       * 序号必须**单调递增**（用 settings 重开会话后序号没对齐会拿到 `300317`）。
@@ -2547,7 +2547,7 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             之后那个 ``if tick.is_interim``），**收尾帧发的是纯 ``self._accumulated``**
             （finalize 发送点**除一处例外**都是纯累积：``:486``/``:747``/``:781``/``:834``/``:856``/
             ``:862``/``:912``；例外是 ``stream_consumer_transport.py:391`` 的「失败后重发」——
-            那条路会带进度行+光标，本测试**不模拟**它，已知缺口记在 ``docs/plan-v1.md`` 附录 F）。
+            那条路会带进度行+光标，本测试**不模拟**它，已知缺口记在 ``docs/internal/plans/plan-v1.md`` 附录 F）。
             旧版拿**同一个 frame** 发两次 —— 那是按**错误的核心行为**写的测试，它让
             「收尾帧也剥进度」看起来是对的（R11-A7 尾巴的更正，变异 ``R11-9``）。
 
@@ -4804,7 +4804,7 @@ def test_sanitize_markdown_is_idempotent_and_never_touches_code() -> None:
 
 #: 测试自己的**独立**代码区提取器（只认「闭合的三反引号对 + 行内单反引号」）。
 #: 刻意**不复用** `cards._code_spans`：它就是要被检验的那个实现，拿它算期望值等于自证循环
-#: （`docs/lessons.md` 推论 2/6/8）。它也**故意**不认未闭合围栏 / 四反引号 / `~~~` ——
+#: （`docs/internal/lessons.md` 推论 2/6/8）。它也**故意**不认未闭合围栏 / 四反引号 / `~~~` ——
 #: 正好用来证明「被测实现比这条独立正则更保守」：产出里凡是它认出来的代码区，
 #: 都必须逐字不变。
 _INDEPENDENT_CODE_RE = re.compile(r"```.*?```|`[^`\n]*`", re.S)
@@ -5032,7 +5032,7 @@ def test_sanitize_reverts_when_it_would_push_the_card_over_the_limit() -> None:
     于是存在「卫生前过闸、卫生后超限」的窄带（审计构造过 `128000 → 128080`）。
     卫生前那道闸门（CardKit 元素帧）量的是**卫生前**的文本，收尾帧原本一道都没有 ⇒
     超限的收尾卡被拒 ⇒ fail-open ⇒ 用户从「一张卡」掉成「若干条纯文本」。
-    口径病见 `docs/lessons.md` 推论 13：闸门必须量**要发出去的那一份**。
+    口径病见 `docs/internal/lessons.md` 推论 13：闸门必须量**要发出去的那一份**。
     """
     saved = cards.FEISHU_CARD_BYTE_LIMIT
     try:
@@ -5272,7 +5272,7 @@ def test_footer_metrics_are_opt_in_and_never_fake_zero() -> None:
     这条断言的判别力在两个方向上：
       * 关着（默认）⇒ 一个新段都不许有（否则等于偷偷改了所有人的观感）；
       * 开着但数据缺 ⇒ 那一段**不许**以 0 的形式出现（`cache=0.0` 是「真的 0% 命中」、
-        `None` 是「不知道」—— 编 0 就是在骗人，见 `docs/lessons.md` 的口径病）。
+        `None` 是「不知道」—— 编 0 就是在骗人，见 `docs/internal/lessons.md` 的口径病）。
     """
     defaults = dict(adapter._DEFAULTS)
     try:
@@ -5722,7 +5722,7 @@ def test_panel_round_bytes_never_inflate_with_round_count():
     与 ``max_reasoning_chars`` 无关（默认预算 1200 → 第 11 轮起线性膨胀）。
     这里的场景是修复前真会踩到的：51 轮 + 9000 字正文，面板把总字节顶过
     ``CARD_BYTE_BUDGET`` → ``fit_reply_card`` 降载到 ``no-panel``，**推理面板凭空消失**，
-    日志里只有一行 INFO（正是 docs/lessons.md 里最怕的静默降级）。
+    日志里只有一行 INFO（正是 docs/internal/lessons.md 里最怕的静默降级）。
     """
     rounds = [{"text": "推理" * 1000, "elapsed_ms": 1000} for _ in range(51)]
     node = cards.unified_panel(rounds=rounds, max_reasoning_chars=1200)
@@ -6193,7 +6193,7 @@ def test_native_frame_failure_and_success_are_both_visible_in_logs():
 
     帧失败会让内核静默关掉本回合的 native（输出退化成多条纯文本），用户在飞书那侧
     只看到「卡片怎么变成一条条消息了」。所以两个方向都要有日志：成功 = 帧数，
-    失败 = 明确的 WARNING（docs/lessons.md 推论 1）。
+    失败 = 明确的 WARNING（docs/internal/lessons.md 推论 1）。
     """
     defaults = dict(adapter._DEFAULTS)
     old_interval = adapter._STREAM_MIN_INTERVAL
@@ -6302,7 +6302,7 @@ def test_clarify_card_2_shows_the_choices_and_never_says_tap_a_button():
     起因（用户对着 aiduPOP 的截图追问过这件事）：默认方言翻成 2.0 之后，选项文本
     **只活在下拉里** —— 不点开就看不出有哪几个选项；而脚注还写着「点按钮，或直接回复
     文字都行」，可这张卡上**根本没有按钮**。两件事都是「计划里有、实现漏了」，
-    不是权衡（`docs/plan-6-effects.md` 的路径 A 本就写了选项要外显）。
+    不是权衡（`docs/internal/plans/plan-6-effects.md` 的路径 A 本就写了选项要外显）。
 
     三条判据缺一条就会退化成「看起来有列表、点下去对不上」：
       ① 卡面列表**逐条等于**下拉的显示标签（同源）；② 提交值仍是**原始选项文本**
@@ -6575,7 +6575,7 @@ def test_tool_args_preview_redacts_credentials_and_keeps_normal_fields():
     我们是 raw JSON 预览（只做了有界化），而钩子拿到的是**原始**参数：
     ``export TOKEN=…`` / ``Authorization: Bearer …`` / ``{"api_key": "…"}`` 都会原样进卡。
     判据要**两头都钉**：凭据必须被涂掉，**正常字段一个字节都不许动** ——
-    猜值式的脱敏会把正常内容涂掉，那比不脱敏更难查（`docs/lessons.md` 对「猜」的纪律）。
+    猜值式的脱敏会把正常内容涂掉，那比不脱敏更难查（`docs/internal/lessons.md` 对「猜」的纪律）。
     另：脱敏必须**幂等**（预览可能被重复处理），否则第二次会把 `***` 再改写一遍。
     """
     cases = {
@@ -7145,7 +7145,7 @@ def test_every_python_file_compiles():
     bad = []
     # ⚠️ **必须排除 VCS / 缓存目录**：这道门禁在**带 `.git` 的真仓库**里跑，而金标快照里没有 `.git`
     #    —— 不排除的话，「快照里绿、移植后突然红」这种最讨厌的形态就会出现（本项目栽过同类的坑：
-    #    被测对象与验证对象必须一致，见 `docs/lessons.md` 的二类假绿）。
+    #    被测对象与验证对象必须一致，见 `docs/internal/lessons.md` 的二类假绿）。
     _SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", ".mypy_cache"}
     for path in sorted(_REPO_ROOT.rglob("*.py")):
         if _SKIP_DIRS & set(path.parts):
@@ -8042,16 +8042,43 @@ def test_config_schema_matches_defaults_exactly():
     assert set(declared) == set(adapter._DEFAULTS), (
         f"plugin.yaml 与 _DEFAULTS 的键不一致："
         f"只在一处有 {sorted(set(declared) ^ set(adapter._DEFAULTS))}")
-    # README 的样例配置块也列了全部键 —— 「三处同步」里的第三处，这里一并机械核对键集
-    readme_path = Path(__file__).resolve().parent.parent / "README.md"
-    if readme_path.is_file():
-        block = readme_path.read_text(encoding="utf-8").split("settings:", 1)[-1].split("```", 1)[0]
-        import re as _readme_re
-        readme_keys = set(_readme_re.findall(r"^\s{8}([a-z_]+):", block, _readme_re.M))
-        assert readme_keys == set(adapter._DEFAULTS), (
-            f"README 的配置样例与 _DEFAULTS 键集不一致："
-            f"README 缺 {sorted(set(adapter._DEFAULTS) - readme_keys)}、"
-            f"README 多 {sorted(readme_keys - set(adapter._DEFAULTS))}")
+    # `docs/guide/configuration.md` 的完整样例是「三处同步」里的第三处，这里一并机械核对键集。
+    # 旧版从 README 里抠样例；README 精简后不再放全量样例 —— 不迁移就会变成静默空洞，
+    # 所以这里对「文档缺失」和「样例缺键」都直接报错，不做 `if is_file()` 的静默跳过。
+    guide_path = Path(__file__).resolve().parent.parent / "docs" / "guide" / "configuration.md"
+    assert guide_path.is_file(), (
+        "docs/guide/configuration.md 缺失：它是配置样例的第三处机械核对来源，不能只靠 plugin.yaml")
+    import re as _doc_re
+    guide_text = guide_path.read_text(encoding="utf-8")
+    candidates: list[set[str]] = []
+    for block in _doc_re.findall(r"```(?:yaml|yml)?\n(.*?)```", guide_text, _doc_re.S):
+        head = _doc_re.search(r"^(\s*)settings:\s*$", block, _doc_re.M)
+        if head is None:
+            continue
+        base = len(head.group(1))
+        rows: list[tuple[int, str]] = []
+        for line in block[head.end():].splitlines():
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            indent = len(line) - len(line.lstrip())
+            if indent <= base:
+                break
+            key_match = _doc_re.match(r"([a-z_]+):", line.strip())
+            if key_match:
+                rows.append((indent, key_match.group(1)))
+        if not rows:
+            continue
+        top_indent = min(indent for indent, _ in rows)
+        candidates.append({key for indent, key in rows if indent == top_indent})
+    assert candidates, (
+        "docs/guide/configuration.md 里找不到含 `settings:` 的 yaml 代码块 —— "
+        "配置参考必须给出一份覆盖全部键的完整样例")
+    # 多个候选块时取键最多的那个（其余是片段示例），并保证它覆盖全部默认键
+    guide_keys = max(candidates, key=len)
+    assert guide_keys == set(adapter._DEFAULTS), (
+        f"docs/guide/configuration.md 的配置样例与 _DEFAULTS 键集不一致："
+        f"样例缺 {sorted(set(adapter._DEFAULTS) - guide_keys)}、"
+        f"样例多 {sorted(guide_keys - set(adapter._DEFAULTS))}")
 
     for key, expected in adapter._DEFAULTS.items():
         got = declared[key]
@@ -8518,7 +8545,7 @@ def test_panel_concurrent_writes_are_safe():
 # 9. 阶段 0 修复的回归网（审计指出这批「零覆盖」，逐条补上）
 #
 # 每条都必须**能抓住对应缺陷**：撤掉修复会红。补这些是因为
-# docs/lessons.md 推论 1：每加一层能力，都要配一个「能自证」的东西。
+# docs/internal/lessons.md 推论 1：每加一层能力，都要配一个「能自证」的东西。
 # --------------------------------------------------------------------------- #
 def test_inf_and_nan_config_never_escape_as_exceptions():
     """`inf` / `1e999` / `.inf` 这类 YAML 合法值**不许**让插件注册炸掉。
@@ -8876,14 +8903,14 @@ _PLAN_DONE_PHASES = ("R0", "R1", "R1.5", "R2", "R5", "R6a", "R7", "R9", "R8①�
 
 
 def _plan_progress_problems(plan: str):
-    """检查 `docs/plan-v1.md` 的进度表，返回**问题清单**（空 = 通过）。
+    """检查 `docs/internal/plans/plan-v1.md` 的进度表，返回**问题清单**（空 = 通过）。
 
     判据全部**从表格行派生**，不硬编码任何字面 token（R6a 审计低-6：旧版只查 `"| R3"`
     与 `"| R5 "`（含半角空格）之类的字面串，于是「掏空照样绿、合法改写假红」同时成立）。
 
     单独抽成函数是为了**能被合成输入测**：`test_plan_progress_table_is_checkable...` 会拿
     「把表格反过来」「把证据列清空」这些构造样本喂进来，证明这个门禁**真的会拒绝**它们
-    —— 否则「门禁有效」这件事本身没有证据（`docs/lessons.md` 推论 11）。
+    —— 否则「门禁有效」这件事本身没有证据（`docs/internal/lessons.md` 推论 11）。
     """
     problems = []
     if "## 实施进度" not in plan:
@@ -8948,7 +8975,7 @@ def _plan_progress_problems(plan: str):
 def _append_progress_row(plan: str, row: str) -> str:
     """把一行**进度表行**追加到 `## 实施进度` 那张表的末尾。
 
-    为什么测试要能自己造行（R6a 审计低-6 / `docs/lessons.md` 推论 11）：
+    为什么测试要能自己造行（R6a 审计低-6 / `docs/internal/lessons.md` 推论 11）：
     门禁的判别力不能只用「改真文档」来证明 —— 挪动真文档的行会同时触发**别的**断言，
     于是「掏空证据列被抓住了」这句话就成了误归因（究竟是被证据判据抓的，还是被
     「行不见了」抓的？）。造一行来测，红的理由就是**唯一**的。
@@ -8967,7 +8994,7 @@ def _append_progress_row(plan: str, row: str) -> str:
 
 
 def test_plan_progress_table_is_checkable_from_its_own_rows() -> None:
-    """`docs/plan-v1.md` 的进度表门禁：**真的会拒绝**坏表格，且**不**对合法改写假红。
+    """`docs/internal/plans/plan-v1.md` 的进度表门禁：**真的会拒绝**坏表格，且**不**对合法改写假红。
 
     R6a 审计低-6 实测了旧版（只查 `"| R3"` 与几个 `"| R5 "` 之类的字面串）的三个毛病：
       * **掏空照样绿**：R3 那一行的「证据」列清空（`'| R3 起 | 未开始 | |'`）⇒ 154/154 全绿，
@@ -8977,11 +9004,17 @@ def test_plan_progress_table_is_checkable_from_its_own_rows() -> None:
       * **R8/R9/R6a 的行被删查不出来**（清单里只点名 R0/R1/R2/R5/R7）。
 
     这条用例**两半都要**：① 真文档必须通过；② 四种构造样本必须被拒绝 —— 只有 ① 的话，
-    「门禁有没有判别力」就没有证据（`docs/lessons.md` 推论 11：给验证器本身写输入）。
+    「门禁有没有判别力」就没有证据（`docs/internal/lessons.md` 推论 11：给验证器本身写输入）。
     判别力：变异 `R6a-18`（在**真文档**上掏空 R6a 那一行的证据列）必须让这条红。
     """
-    real = (_pathlib.Path(_REPO_PARENT) / "larkdeck" / "docs" / "plan-v1.md").read_text(
-        encoding="utf-8")
+    plan_path = (_pathlib.Path(_REPO_PARENT) / "larkdeck" / "docs" / "internal"
+                 / "plans" / "plan-v1.md")
+    if not plan_path.is_file():
+        # 内部归档（规划 / 审计 / 调研）只在维护者本机保留，不随仓库发布。
+        # 公开 clone 里这份计划不存在 —— 大声跳过，别假装验证过一份没读到的文档。
+        print("[SKIP] docs/internal/plans/plan-v1.md 不在本机（本地归档不随仓库发布）")
+        return
+    real = plan_path.read_text(encoding="utf-8")
     assert _plan_progress_problems(real) == [], _plan_progress_problems(real)
 
     # ① 掏空证据列（审计的 S2 场景）⇒ 必须被拒绝。
@@ -9138,7 +9171,7 @@ def test_inbound_heartbeat_is_the_first_statement_of_the_callback():
     context.reset()
     # ⚠️ **打桩要打在钩子真正读的那个模块对象上**（`hooks._context`），不是测试文件里那个
     # `context` 名字上：两者**通常是**同一个模块，但一旦不是（双模块对象 —— 见
-    # `docs/lessons.md` 里「用加载器那份 context」那条），打在 `context` 上的桩就完全看不见，
+    # `docs/internal/lessons.md` 里「用加载器那份 context」那条），打在 `context` 上的桩就完全看不见，
     # 断言会读一个永远不变的计数而**假绿**（这条实测踩到过：变异 R9-17 因此四门禁全绿）。
     # 所以下面既断言身份、又直接在 `hooks._context` 上打桩。
     assert hooks._context is context, \
@@ -10831,7 +10864,7 @@ def test_gate_import_guard_rejects_a_foreign_tree():
     """「门禁先自证被测代码」那条守卫必须**真的会拒绝**（否则它只是一句注释）。
 
     与 `test_plan_progress_table_is_checkable_from_its_own_rows` 同一手法：门禁自己也要有输入
-    （`docs/lessons.md` 推论 11 —— 「给验证器本身写输入」）。
+    （`docs/internal/lessons.md` 推论 11 —— 「给验证器本身写输入」）。
     判据是拿一个**明确不属于本仓库**的路径去问它，它必须报出问题；本仓库自己的路径必须通过。
     """
     foreign = _pathlib.Path("/tmp/some-other-export/larkdeck/core/adapter.py")
@@ -13082,7 +13115,7 @@ def test_v4_18_icon_mapping_matches_cls_semantics():
     审计 C 又添一刀：只钉常用别名不算覆盖 —— 把 `("exec", "setting_outlined")` 改成
     `robot_outlined` 时 HEAD 五门禁**全绿**（29 条里 `exec/command/run/open/search/fetch/edit/
     agent/check/playwright/navigate` 等都没被字面量钉住）。所以覆盖面改成读**冻结契约**
-    `docs/audits/v0.7.2/tool-icons.json`：生产表必须与它逐条**且顺序**相等，然后逐条验语义。
+    `tests/fixtures/tool-icons.json`：生产表必须与它逐条**且顺序**相等，然后逐条验语义。
 
     审计 A 再添一刀：`terminal` **不在** CLS 表里（实测 `_resolve_tool_descriptor("terminal")`
     落 fallback），我们原来那条是「照着自己的偏差对齐」。现在 `ICON_ALIASES` 逐条等于 CLS，
@@ -13091,7 +13124,7 @@ def test_v4_18_icon_mapping_matches_cls_semantics():
     """
     pick = adapter.LarkDeckMixin._ld_icon_token
     contract_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                 "..", "docs", "audits", "v0.7.2", "tool-icons.json")
+                                 "..", "tests", "fixtures", "tool-icons.json")
     with open(contract_path, encoding="utf-8") as fh:
         contract = json.load(fh)
     want = list(contract["tool_icons"].items())
@@ -13275,7 +13308,7 @@ def test_v4_33_long_turn_card_never_puts_text_nodes_inside_collapsible_panels():
     `plain_text` / `lark_md` 是**文本节点**（只能出现在 `div.text` / `markdown.content` 这类
     **字段**里），不是组件 —— 真机把它们当 `elements` 的直接子元素会 `300313` 拒收整帧，
     随后收尾整卡 `200621`、核心回落 `send()` ⇒ 用户看到「卡片 + ⏳ Working 纯文本」并存
-    （2026-09-21 14:44 的真根因，见 `docs/audits/v0.7.2/`）。
+    （2026-09-21 14:44 的真根因，见 `docs/internal/audits/v0.7.2/`）。
     这里不再只看**一个元素**的类型（那是 `test_v4_structured_panel_budget_trims_old_steps` 的事），
     而是对**建卡实体 + 每一次元素 batch + 收尾整卡**做**递归**扫描。
     """
@@ -13347,7 +13380,7 @@ _VERIFIED_LINEAR_TOKENS = [
 def test_v4_46_tool_rows_use_official_line_icon_as_text_prefix():
     """V4.46 / P3.1：工具行行首图标 = **官方线性图标做文本前缀**（用户 2026-09-22 三臂选版）。
 
-    真机三臂对照（`tests/probe_icons_layout.py`，卡 `om_x100b6414825f3ca8c339ed0a7cef3e9`，
+    真机三臂对照（`tests/probe_icons_layout.py`，卡 `om_…`，
     我按像素量过用户截图）：
       甲 元素级 `div.icon`（CLS 同款）⇒ **图标比文字高 3px**（就是用户 2026-09-21 嫌「偏上」的那种）；
       乙 `markdown.icon`（官方 2.0 文档叫「**前缀图标**」）⇒ **0px 偏差** —— 用户选它；
@@ -13834,7 +13867,7 @@ def test_v4_15b_terminal_writes_keep_the_status_panel_even_without_process_data(
 
     ⚠️ 2026-09-21 终审 A 建议把 V4.15「没有过程数据就不出面板」也用到 native 终态 patch /
     切卡封旧卡 / `/stop` 重绘三处。**未采纳**（分歧与理由见
-    `docs/audits/v0.7.2/audit-round1.md` 第七节）：`card_status_header` 默认关 ⇒ 面板边框是
+    `docs/internal/audits/v0.7.2/audit-round1.md` 第七节）：`card_status_header` 默认关 ⇒ 面板边框是
     **唯一**的状态色载体，摘掉它 = 用户看不到完成绿/出错红/中止黄 ——
     `test_stop_redraw_paints_an_empty_turn_yellow` 记的就是这条用户口径（「状态改了、
     卡片没变、还不报错」是最怕的失败形态）。

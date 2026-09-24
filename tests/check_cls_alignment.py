@@ -2,7 +2,7 @@
 """P3 交叉门禁：生产图标表 vs CLS `_TOOL_DESCRIPTORS`（**不是** vs 我们自己的冻结契约）。
 
 为什么需要独立一条：`test_v4_18` 与 `check_cardview.py` 比对的是
-`docs/audits/v0.7.2/tool-icons.json` —— 它能抓住「生产表被改坏」，但**抓不住**
+`tests/fixtures/tool-icons.json` —— 它能抓住「生产表被改坏」，但**抓不住**
 「我们当初抄错 / 抄的是旧版 CLS」。审计 A 正是这样抓到 `terminal` 那条偏差的：
 CLS 的 `Run command` 描述符只收 `exec/bash/command/run`，`terminal` 落 fallback。
 
@@ -67,7 +67,7 @@ def main() -> int:
         return 0
 
     contract = json.loads(
-        (_REPO / "docs" / "audits" / "v0.7.2" / "tool-icons.json").read_text(encoding="utf-8"))
+        (_REPO / "tests" / "fixtures" / "tool-icons.json").read_text(encoding="utf-8"))
     ours = [(str(a).strip().lower().replace("-", "_"), t)
             for a, t in contract["tool_icons"].items()]
     theirs = [(a, t) for a, t in _cls_table(cls_dir)]

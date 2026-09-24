@@ -32,13 +32,16 @@ python3 tests/probe_ck_stream_ops.py --lanes   # R5：batch 坏 id 的返回码�
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import sys
 import time
 
 _HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent.parent))            # 使 `import larkdeck` 成立
-sys.path.insert(0, "/Users/Zayn/.hermes/hermes-agent/venv/lib/python3.11/site-packages")
+_HERMES = pathlib.Path(os.environ.get("HERMES_HOME", str(pathlib.Path.home() / ".hermes")))
+for _sp in sorted((_HERMES / "hermes-agent" / "venv" / "lib").glob("python3*/site-packages")):
+    sys.path.insert(0, str(_sp))
 
 import lark_oapi as lark                                            # noqa: E402
 from lark_oapi.api.cardkit.v1 import (                              # noqa: E402
@@ -576,7 +579,7 @@ def probe_visual(keep: bool) -> int:
 def probe_capacity_codes() -> int:
     """R11-B2 真机探针：**容量到顶 / 重复 id 时，运行时 `card_element.create` 到底回什么码 + 什么 msg**。
 
-    为什么必须实测（`docs/plan-v1.md` 附录 F 把 append 形状登记为**未测**）：
+    为什么必须实测（`docs/internal/plans/plan-v1.md` 附录 F 把 append 形状登记为**未测**）：
     `300315` 在本项目里**一名两义** ——
       * 容量满：P7 记的是「msg 里包着内层 `300305`」，但那是 `insert_after(answer)` 的形状；
       * 复用已存在的元素 id：`Code 1001: Duplicate ID`。

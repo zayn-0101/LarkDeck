@@ -471,7 +471,7 @@ def _args_preview(args: Any) -> str:
 #: 为什么必须有：钩子拿到的是**原始**工具参数，卡片（群聊里人人可见）会原样印出来 ——
 #: ``export TOKEN=…``、``Authorization: Bearer …``、``{"api_key": "…"}`` 都是真实出现过的形状。
 #: 判据是「**键名以凭据词结尾**」而不是「值长得像随机串」：
-#: 猜值会把正常内容涂掉，那比不脱敏更难查（本项目对「猜」的纪律见 ``docs/lessons.md``）。
+#: 猜值会把正常内容涂掉，那比不脱敏更难查（本项目对「猜」的纪律见 ``docs/internal/lessons.md``）。
 #: ⚠️ **有意的保守**：键名里凭据词出现在**中间**的（如 ``password_hash``、``secret_sauce``）
 #: **不脱敏**；好处是不会误伤 ``max_tokens`` / ``input_tokens`` / ``token_count`` 这类
 #: 正常字段（它们的凭据词后面还跟着字母，被前瞻挡住了）。
@@ -652,7 +652,7 @@ def record_turn_end(session_id: str, turn_id: str, *, completed: bool = False,
     官方源码：``finalize_turn`` 里 ``completed = final_response is not None and not failed and ...``。
 
     ⚠️ **绝不对 ``error`` 之类的字符串做分类** —— 载荷里没有 ``reason`` / ``cancelled`` 字段，
-    中止与报错在字符串上不可区分（``docs/lessons.md`` 明令禁止）。
+    中止与报错在字符串上不可区分（``docs/internal/lessons.md`` 明令禁止）。
 
     三个标志全为 False 时不改状态（例如 ``max_iterations`` 之外的一些收尾路径、
     以及 ``/new`` 这类会话级收尾）—— 没有结论就保持中性，不猜。
@@ -1416,7 +1416,7 @@ def diagnose(chat_id: str = "") -> Dict[str, Any]:
     为什么需要它：面板为空有**两种完全不同的原因**，而线上只看得到「空」这一个结果 ——
       * ① **绑定了另一个（空的）会话**（`_CHAT_SESSION[chat]` 指向的桶没数据）；
       * ② **桶被反复清空**（`_touch_locked` 把每次事件都判成「换了回合」⇒ rounds/tools 被清）。
-    两种的修法完全不同，所以先分辨再动手（`docs/lessons.md`：先量再修）。
+    两种的修法完全不同，所以先分辨再动手（`docs/internal/lessons.md`：先量再修）。
     """
     now = _now()
     with _LOCK:

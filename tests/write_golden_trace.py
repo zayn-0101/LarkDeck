@@ -1,7 +1,7 @@
 """重新生成 `tests/golden_cardkit_trace.json`（golden trace 夹具）。
 
 ```bash
-/Users/Zayn/.hermes/hermes-agent/venv/bin/python3 tests/write_golden_trace.py
+${HERMES_HOME:-$HOME/.hermes}/hermes-agent/venv/bin/python3 tests/write_golden_trace.py
 ```
 
 **什么时候该跑它**：只有当你**有意**改变 CardKit 写入路径的对外行为时（例如把正文挪到最后写）。

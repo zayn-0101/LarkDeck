@@ -19,7 +19,7 @@
 不 import 真 SDK、不建卡实体、不发消息、不读 `~/.hermes` 的凭据，因此**没有副作用**。
 
 用法::
-    PY=/Users/Zayn/.hermes/hermes-agent/venv/bin/python3
+    PY="${HERMES_HOME:-$HOME/.hermes}/hermes-agent/venv/bin/python3"
     $PY tests/dump_structured_card.py            # 3 个工具 + 1 轮推理 + Result/Error
     $PY tests/dump_structured_card.py --plain    # 不渲染推理（show_reasoning=false）
 """

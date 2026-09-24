@@ -1,7 +1,7 @@
 name: larkdeck
 label: LarkDeck — Feishu streaming cards
 kind: platform
-version: 0.7.8
+version: 0.7.9
 description: >
   Streaming Feishu / Lark cards for Hermes Agent. Shadows the built-in `feishu`
   platform adapter (registry last-writer-wins) and subclasses it, replacing the
@@ -23,7 +23,7 @@ description: >
   upgrade never requires reinstalling or re-patching this plugin.
 author: zayn-0101
 license: MIT
-homepage: https://github.com/zayn-0101/larkdeck
+homepage: https://github.com/zayn-0101/LarkDeck
 tags: [feishu, lark, streaming, cards, ui]
 # 插件配置写在 config.yaml 的 plugins.entries.larkdeck.settings.<key>；
 # 同名环境变量 LARKDECK_<KEY> 优先。default 与代码 _DEFAULTS 保持一致。

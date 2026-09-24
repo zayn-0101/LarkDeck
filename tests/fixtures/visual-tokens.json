@@ -1,0 +1,112 @@
+{
+  "schema": "larkdeck.visual-tokens.v0.7.1",
+  "frozen_at": "2026-09-20",
+  "source_refs": {
+    "cls_builder": "/private/tmp/ref-cls/hermes_lark_streaming/cardkit/builder.py",
+    "cls_segment_helper": "/private/tmp/ref-cls/hermes_lark_streaming/streaming/segment_helper.py",
+    "cls_tooluse": "/private/tmp/ref-cls/hermes_lark_streaming/streaming/tooluse.py",
+    "fc_builder": "/private/tmp/ref-fc/hermes_fry_cards/cardkit/builder.py",
+    "ap_elements": "~/.larkdeck-scratch/route-audit/aiduPOP/cardkit/elements.py"
+  },
+  "tokens": {
+    "panel_radius": "5px",
+    "panel_padding": "8px 8px 8px 8px",
+    "panel_vertical_spacing": "4px",
+    "reasoning_vertical_spacing": "8px",
+    "markdown_margin": "0px 0px 0px 0px",
+    "tool_detail_indent": "0px 0px 0px 22px",
+    "panel_text_size": "notation",
+    "body_text_size_pending_probe": [
+      "normal",
+      "normal_v2"
+    ],
+    "icon_size": "16px 16px",
+    "icon_position": "right",
+    "icon_expanded_angle": -180,
+    "header_vertical_align": "center",
+    "icon_color": "grey",
+    "expanded_default": false,
+    "footer_hr": true,
+    "body_text_size": "normal",
+    "body_text_size_decision": "2026-09-21 真机截图：normal 与 normal_v2 客户端肉眼无差异；保持 compact/normal，避免 legacy output 漂移。"
+  },
+  "status": {
+    "processing": {
+      "header_template": "blue",
+      "border": "grey",
+      "title_zh": "🫧 处理中…"
+    },
+    "completed": {
+      "header_template": "green",
+      "border": "green",
+      "title_zh": "✅ 已完成"
+    },
+    "stopped": {
+      "header_template": "yellow",
+      "border": "yellow",
+      "title_zh": "⛔ 已停止"
+    },
+    "error": {
+      "header_template": "red",
+      "border": "red",
+      "title_zh": "❌ 执行出错"
+    }
+  },
+  "tool_icons": {
+    "skill": "app-default_outlined",
+    "read": "file-link-text_outlined",
+    "edit": "edit_outlined",
+    "search": "search_outlined",
+    "fetch": "language_outlined",
+    "grep": "doc-search_outlined",
+    "glob": "folder_outlined",
+    "terminal": "setting_outlined",
+    "browser": "browser-mac_outlined",
+    "agent": "robot_outlined",
+    "check": "list-check_outlined",
+    "analyze": "report_outlined",
+    "clarify": "chat_outlined",
+    "fallback": "setting-inter_outlined"
+  },
+  "tool_status": {
+    "running": {
+      "label": "Running",
+      "color": "turquoise"
+    },
+    "success": {
+      "label": "Succeeded",
+      "color": "green"
+    },
+    "error": {
+      "label": "Failed",
+      "color": "red"
+    }
+  },
+  "element_anchors": {
+    "answer": "answer",
+    "panel": "panel",
+    "panel_body": "panel_body",
+    "panel_tools": "panel_tools",
+    "footer": "footer",
+    "loading": "loading_icon",
+    "down_icon": "down-small-ccm_outlined"
+  },
+  "panel_header": {
+    "format": "💭 思考 {elapsed}s · 🛠️ 工具执行 · {n} 步",
+    "model_in_panel": false,
+    "footer_order": [
+      "status",
+      "elapsed",
+      "model",
+      "context",
+      "short_code"
+    ]
+  },
+  "unverified": [
+    "normal_v2 client support",
+    "nested collapsible_panel streaming render",
+    "standard_icon token per-item client render",
+    "header/border partial update visual",
+    "batch add/delete action schema"
+  ]
+}

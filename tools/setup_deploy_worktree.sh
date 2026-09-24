@@ -10,11 +10,11 @@
 #   tools/setup_deploy_worktree.sh --apply                 # 创建 + 重指软链（需你确认）
 #   tools/setup_deploy_worktree.sh --rollback              # 恢复上次软链备份
 #
-# 默认部署路径：/Users/Zayn/.hermes/deploy/larkdeck，release ref：origin/main
+# 默认部署路径：${HOME}/.hermes/deploy/larkdeck，release ref：origin/main
 set -euo pipefail
 
-DEV_REPO="/Users/Zayn/Code/larkdeck"
-DEPLOY_DIR="${LARKDECK_DEPLOY_DIR:-/Users/Zayn/.hermes/deploy/larkdeck}"
+DEV_REPO="${LARKDECK_DEV_REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
+DEPLOY_DIR="${LARKDECK_DEPLOY_DIR:-${HOME}/.hermes/deploy/larkdeck}"
 RELEASE_REF="${LARKDECK_RELEASE_REF:-origin/main}"
 PLUGIN_LINK="${HOME}/.hermes/plugins/larkdeck"
 BACKUP_LINK="${PLUGIN_LINK}.bak.$(date +%Y%m%d%H%M%S)"

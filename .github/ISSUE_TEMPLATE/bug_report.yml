@@ -1,0 +1,67 @@
+name: Bug 报告
+description: 卡片、配置、命令或安装出问题时使用
+labels: [bug]
+body:
+  - type: input
+    id: larkdeck-version
+    attributes:
+      label: LarkDeck 版本
+      description: 在 `plugin.yaml` 里，或对机器人发 `/larkdeck status`
+      placeholder: "0.7.8"
+    validations:
+      required: true
+
+  - type: input
+    id: hermes-version
+    attributes:
+      label: Hermes Agent 版本
+      placeholder: "0.21.4"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: client
+    attributes:
+      label: 飞书客户端
+      options:
+        - 桌面端
+        - 移动端
+        - 两者都有
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 现象
+      description: 你期望发生什么？实际发生了什么？
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 发送 "..."
+        2. 点开折叠面板
+        3. 看到 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志
+      description: 相关日志片段。请先删掉 app id / secret / token / 用户 ID 等敏感信息。
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已在 docs/guide/troubleshooting.md 里找过对应症状
+          required: true

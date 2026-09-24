@@ -2,7 +2,7 @@
 """生成 v0.7.1 视觉重构的阶段冻结 manifest（C2 强制条件）。
 
 用法：
-  python3 tools/freeze_tree.py --stage V0 [--out docs/audits/v0.7.1-visual/freeze-V0.json]
+  python3 tools/freeze_tree.py --stage V0 [--out docs/internal/audits/v0.7.1-visual/freeze-V0.json]
 
 记录：
   plan sha256 / HEAD / tree / branch / git status / dirty diff sha /
@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -28,7 +29,9 @@ REFS = {
     "cls_segment_helper": "/private/tmp/ref-cls/hermes_lark_streaming/streaming/segment_helper.py",
     "cls_tooluse": "/private/tmp/ref-cls/hermes_lark_streaming/streaming/tooluse.py",
     "fc_builder": "/private/tmp/ref-fc/hermes_fry_cards/cardkit/builder.py",
-    "ap_elements": "/Users/Zayn/.larkdeck-scratch/route-audit/aiduPOP/cardkit/elements.py",
+    "ap_elements": os.environ.get(
+        "LARKDECK_AP_ELEMENTS",
+        os.path.expanduser("~/.larkdeck-scratch/route-audit/aiduPOP/cardkit/elements.py")),
 }
 
 
@@ -92,7 +95,7 @@ def main() -> int:
         out_rel = str(out.resolve().relative_to(REPO.resolve()))
     except ValueError:
         out_rel = ""
-    ignore_fragments = ["docs/audits/v0.7.1-visual/freeze-"] + [
+    ignore_fragments = ["docs/internal/audits/v0.7.1-visual/freeze-"] + [
         str(pathlib.Path(p)) for p in args.gate_log]
     if out_rel:
         ignore_fragments.append(out_rel)

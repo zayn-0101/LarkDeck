@@ -17,7 +17,7 @@
 不发消息给任何人：只 ``cardkit.v1.card.create`` 建实体，跑完打印码表。
 
 用法::
-    PY=/Users/Zayn/.hermes/hermes-agent/venv/bin/python3
+    PY="${HERMES_HOME:-$HOME/.hermes}/hermes-agent/venv/bin/python3"
     $PY tests/probe_concurrent.py
 """
 from __future__ import annotations

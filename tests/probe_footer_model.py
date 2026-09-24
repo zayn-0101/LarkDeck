@@ -9,7 +9,7 @@
 
 用法::
 
-    PY=/Users/Zayn/.hermes/hermes-agent/venv/bin/python3
+    PY="${HERMES_HOME:-$HOME/.hermes}/hermes-agent/venv/bin/python3"
     $PY tests/probe_footer_model.py
 """
 from __future__ import annotations

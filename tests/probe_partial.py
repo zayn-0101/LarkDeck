@@ -14,7 +14,7 @@
 跑完矩阵在本地打印码表。会话里一个气泡都不会多。
 
 用法::
-    PY=/Users/Zayn/.hermes/hermes-agent/venv/bin/python3
+    PY="${HERMES_HOME:-$HOME/.hermes}/hermes-agent/venv/bin/python3"
     $PY tests/probe_partial.py
 """
 from __future__ import annotations

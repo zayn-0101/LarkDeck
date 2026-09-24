@@ -23,3 +23,8 @@ config.yml
 
 # 非本项目的产物（别的会话/设计工具生成），别误提交
 design/
+
+# 内部过程材料：本地参考用，不随仓库发布（plans / audits / handoff / compare / 历史证据）
+docs/internal/
+tests/mutation-verdicts.json
+tools/release-v0.7.*.py

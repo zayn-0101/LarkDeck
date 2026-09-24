@@ -494,7 +494,7 @@ else:
     #    （2026-09-16 对抗审计中-2 实测：改名会让裸调用抛 `AttributeError`、只打 traceback
     #    而没有 FAIL 行，并且**这一格之后的断言全部不再执行**）⇒ 整段驱动套一层 try/except，
     #    退化成一条可读的 FAIL。**它必须红**：这一格守的是外部前提，前提没了就得有人看一眼
-    #    （`docs/lessons.md` 推论 8：探测失效 ≠ 契约齐全）。
+    #    （`docs/internal/lessons.md` 推论 8：探测失效 ≠ 契约齐全）。
     _PSESSION, _PTURN = "sess-premise", "premise-1"
     _PCHAT = "chat-premise"
     try:

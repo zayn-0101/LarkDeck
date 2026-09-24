@@ -38,7 +38,7 @@ import re
 import subprocess
 import sys
 
-REPO = pathlib.Path("/Users/Zayn/Code/larkdeck")
+REPO = pathlib.Path(__file__).resolve().parent.parent
 
 
 def load_entries(path: str) -> dict:

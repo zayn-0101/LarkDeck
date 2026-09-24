@@ -14,7 +14,7 @@
 
 用法::
 
-    PY=/Users/Zayn/.hermes/hermes-agent/venv/bin/python3
+    PY="${HERMES_HOME:-$HOME/.hermes}/hermes-agent/venv/bin/python3"
     $PY tools/make_spinner_gif.py --variant swirl --color grey --out assets/spinner-tool.gif
     $PY tools/make_spinner_gif.py --all --outdir /tmp/spinner-candidates   # 出四张候选（挑图用）
 

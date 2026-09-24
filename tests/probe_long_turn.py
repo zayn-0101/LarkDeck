@@ -16,7 +16,7 @@
 
 用法::
 
-    PY=/Users/Zayn/.hermes/hermes-agent/venv/bin/python3
+    PY="${HERMES_HOME:-$HOME/.hermes}/hermes-agent/venv/bin/python3"
     $PY tests/probe_long_turn.py
 """
 from __future__ import annotations
@@ -81,7 +81,7 @@ def build_card() -> dict:
                f"1. 面板里只保留最后 {MAX_STEPS} 步，顶部一行折叠提示（`panel.trimmed`）—— "
                "它以前带着非法字段 `markdown.text_color`，会让**整张卡**被服务端拒收；\n"
                "2. 错误块标题的前缀图标以前挂在 `div.text.icon`（那里没有这个字段）—— 同样整卡被拒；\n"
-               "3. 两个都是 2026-09-22 真机探针揪出来并修掉的（见 `docs/audits/v0.7.2/audit-round1.md` §8.7）。\n\n"
+               "3. 两个都是 2026-09-22 真机探针揪出来并修掉的（见 `docs/internal/audits/v0.7.2/audit-round1.md` §8.7）。\n\n"
                "请确认：① 折叠提示那行有图标、没乱码；② 20 行工具图标是否**统一灰色线性**；"
                "③ 展开/折叠是否正常；④ 这张卡之外**没有**再跟一条纯文本「⏳ Working —」。",
         panel=_cardview.PanelView(

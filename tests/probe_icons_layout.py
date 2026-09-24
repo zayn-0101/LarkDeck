@@ -12,7 +12,7 @@
 判据（用户目视，一次点击 / 一句话即可）：哪一臂「图标与文字对得最齐、看起来最统一」。
 用法::
 
-    PY=/Users/Zayn/.hermes/hermes-agent/venv/bin/python3
+    PY="${HERMES_HOME:-$HOME/.hermes}/hermes-agent/venv/bin/python3"
     $PY tests/probe_icons_layout.py
 """
 from __future__ import annotations

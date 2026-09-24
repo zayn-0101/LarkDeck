@@ -227,7 +227,7 @@ async def scenario():
         # `lark_oapi.event.callback.model.p2_card_action_trigger` 里的**真类**，
         # 真类带 `_types` 声明，且 `digest()` 走的是 WS 客户端
         # （`lark_oapi/ws/client.py` 的 `JSON.marshal(result)`）那条线上序列化的同一批字段
-        # —— 断言的东西与**真机上会发出去的响应体**同源（`docs/lessons.md` 推论 19
+        # —— 断言的东西与**真机上会发出去的响应体**同源（`docs/internal/lessons.md` 推论 19
         # 第三形态：别把「断言我自己的替身」当成「断言生产代码」）。
         from lark_oapi.event.callback.model.p2_card_action_trigger import (
             P2CardActionTriggerResponse as _REAL_RESP)

@@ -34,6 +34,20 @@ from typing import Optional
 
 REPO = Path(__file__).resolve().parent.parent
 
+
+#: 内部归档（plans / audits / handoff / compare / lessons）只在维护者本机保留，
+#: **不随仓库发布**。公开 clone 里这些路径不存在，相关变异/对照整条跳过（会打印、会计数），
+#: 绝不静默当通过；维护者本机文件在，行为与以前完全一致。
+_LOCAL_ARCHIVE_PREFIX = "docs/internal/"
+
+
+def _skip_local_archive(rel: str, name: str, kind: str, skipped: list) -> bool:
+    if rel.startswith(_LOCAL_ARCHIVE_PREFIX) and not (REPO / rel).exists():
+        skipped.append(name)
+        print(f"⏭️  [{kind}] {name} —— 本地归档不在（{rel}），跳过")
+        return True
+    return False
+
 #: (名字, 相对文件, 原文, 替换成, 期望其中哪个门禁变红)
 #: 期望值只用于打印对照；判定标准是「至少一门红」。
 MUTATIONS = [
@@ -698,7 +712,7 @@ MUTATIONS = [
      '    merged = sorted(fences + spans)',
      '    return []',
      'test_units'),
-    ('R6a-18-进度表某行的「证据」列被掏空（记录空洞化却骗过旧门禁）', 'docs/plan-v1.md',
+    ('R6a-18-进度表某行的「证据」列被掏空（记录空洞化却骗过旧门禁）', 'docs/internal/plans/plan-v1.md',
      '| R6a markdown 卫生 | ✅ 完成（**写完整文本的每条路径**都卫生；删**第一个**游离 `**` 而不补、H1–H3 降级、代码区零改动（含未闭合/四反引号/`~~~` 围栏）、幂等、卫生后过同口径字节闸门）；对抗审计后收口 **1 高 + 4 中 + 4 低** | 单测 6 条 · 变异 `R6a-1..R6a-18` 共 **17 条全红** · 门禁 **162/162** + OVERRIDE/HOOKS/CLARIFY E2E 全绿 · 审计明细见「R6a 对抗审计」一节（表格降载**有意不做**，理由见上） |',
      '| R6a markdown 卫生 | ✅ 完成（**写完整文本的每条路径**都卫生；删**第一个**游离 `**` 而不补、H1–H3 降级、代码区零改动（含未闭合/四反引号/`~~~` 围栏）、幂等、卫生后过同口径字节闸门）；对抗审计后收口 **1 高 + 4 中 + 4 低** |   |',
      'test_units'),
@@ -1238,7 +1252,7 @@ MUTATIONS = [
      "test_units"),
     # ---- R8 对抗审计（第十二路）收口新增：每条都对应一条**曾经零判别力**的声明 --- #
     # 为什么这八条值得单列：审计自造变异实测它们**撤掉后四门禁全绿** —— 也就是说
-    # 代码里那几行「声明了纪律」的语句，当时一条门禁都没看着（`docs/lessons.md` 推论 6）。
+    # 代码里那几行「声明了纪律」的语句，当时一条门禁都没看着（`docs/internal/lessons.md` 推论 6）。
     ("R8-7-撤掉未授权用户的拦截（群里任何人都能替你答澄清）", "core/adapter.py",
      '        if not self._is_interactive_operator_authorized(open_id):',
      '        if False:',
@@ -2311,7 +2325,7 @@ MUTATIONS = [
      '        _warn_visual_once("card_status_header",',
      "test_units"),
     ("V0-4-token 表 panel_radius 漂移（check_cardview 必须红）",
-     "docs/audits/v0.7.1-visual/visual-tokens.json",
+     "tests/fixtures/visual-tokens.json",
      '"panel_radius": "5px"',
      '"panel_radius": "8px"',
      "check_cardview"),
@@ -2331,12 +2345,12 @@ MUTATIONS = [
      '        if engine == "structured":  # V0-7 mutated',
      "test_units"),
     ("V0-8-read 图标 token 漂移（check_cardview 必须红）",
-     "docs/audits/v0.7.1-visual/visual-tokens.json",
+     "tests/fixtures/visual-tokens.json",
      '"read": "file-link-text_outlined"',
      '"read": "folder_outlined"',
      "check_cardview"),
     ("V0-9-status stopped 标题 emoji 漂移（check_cardview 必须红）",
-     "docs/audits/v0.7.1-visual/visual-tokens.json",
+     "tests/fixtures/visual-tokens.json",
      '"title_zh": "⛔ 已停止"',
      '"title_zh": "已停止"',
      "check_cardview"),
@@ -2358,12 +2372,12 @@ MUTATIONS = [
      '',
      "check_cardview"),
     ("V0-13-token 表 element_anchors.answer 键被删（check_cardview 必须断言红）",
-     "docs/audits/v0.7.1-visual/visual-tokens.json",
+     "tests/fixtures/visual-tokens.json",
      '    "answer": "answer",\n',
      '',
      "check_cardview"),
     ("V0-14-panel_header.format 漂移（check_cardview 必须红）",
-     "docs/audits/v0.7.1-visual/visual-tokens.json",
+     "tests/fixtures/visual-tokens.json",
      '"format": "💭 思考 {elapsed}s · 🛠️ 工具执行 · {n} 步"',
      '"format": "💭 思考 {elapsed}s · 🛠️ 工具执行 · {n} 项"',
      "check_cardview"),
@@ -3433,7 +3447,7 @@ CONTROLS = [
      ""),
     # 进度表的**合法改写**：阶段名后面加全角括号，信息一个字都没少 —— 旧门禁把
     # `"| R5 "`（含半角空格）当字面量比对，于是这里会**假红**（审计低-6 实测）。
-    ("C-对照：进度表阶段名后加全角括号（信息等价，旧门禁在这里假红）", "docs/plan-v1.md",
+    ("C-对照：进度表阶段名后加全角括号（信息等价，旧门禁在这里假红）", "docs/internal/plans/plan-v1.md",
      '| R5 健壮性 |', '| R5（健壮性） |', ""),
     ("C-对照：纯注释改动", "core/adapter.py",
      "#: 卡片按钮 value 里的动作键；只认自己这一个，其余一律回落给内置实现。",
@@ -3776,8 +3790,8 @@ def _gate_fp(gate: str) -> str:
 _HELPER_FILES = (
     "tests/write_golden_trace.py",
     "tests/golden_cardkit_trace.json",
-    "docs/audits/v0.7.2/tool-icons.json",
-    "docs/audits/v0.7.2/footer-contract.json",
+    "tests/fixtures/tool-icons.json",
+    "tests/fixtures/footer-contract.json",
 )
 
 
@@ -3934,7 +3948,7 @@ def _noop_reason(rel: str, old: str, new: str) -> Optional[str]:
     为什么要单独判（审计 D1/D3）：全量跑现在把「撤掉修复却全绿」一律打印成
     🟢「**断言没有判别力**」—— 但对下面两类，**真相不是那个**：变异的替换串与原文**逐字节等价**
     （撤了个寂寞），或锚点整段落在**注释**里（改的是注释，代码一个字节没动）。
-    两种情况都会让报告**把结论写反**（`docs/lessons.md` 推论 ③ 描述的正是这个形态：
+    两种情况都会让报告**把结论写反**（`docs/internal/lessons.md` 推论 ③ 描述的正是这个形态：
     真发生的是「变异没生效」，报告写的是「断言没判别力」）。
     ⚠️ 只对 ``MUTATIONS`` 用它 —— ``CONTROLS`` 里的「纯注释改动」是**故意的**等价对照，
     对它报「没生效」反而是误诊。
@@ -3999,6 +4013,7 @@ def preflight() -> int:
     """
     picked = [(m, "变异") for m in MUTATIONS] + [(m, "对照") for m in CONTROLS]
     bad = []
+    skipped: list = []
     for entry, kind in picked:
         shape = _shape_error(entry, kind)
         if shape:
@@ -4006,14 +4021,17 @@ def preflight() -> int:
             bad.append(f"[{kind}] 第 {picked.index((entry, kind)) + 1} 条 —— {shape}")
             continue
         name, rel, old, _new, _rest = entry
+        if _skip_local_archive(rel, name, kind, skipped):
+            continue
         why = _anchor_problem(rel, old)
         if why:
             bad.append(f"{name}: {why}")
             print(f"❓ {name}\n   {why}")
         else:
             print(f"✅ {name}")
-    print(f"\n锚点对账：{len(picked) - len(bad)}/{len(picked)} 可用"
-          f"（变异 {len(MUTATIONS)} + 对照 {len(CONTROLS)}）")
+    note = f"，本地归档缺席跳过 {len(skipped)} 条" if skipped else ""
+    print(f"\n锚点对账：{len(picked) - len(bad) - len(skipped)}/{len(picked)} 可用"
+          f"（变异 {len(MUTATIONS)} + 对照 {len(CONTROLS)}）{note}")
     if bad:
         print("\n结论：清单与源码脱节（或锚点歧义 / 条目形状不对）——**全量跑之前先修这里**。")
         for line in bad:
@@ -4221,11 +4239,14 @@ def main() -> int:
         return 2
 
     bad = []
+    skipped: list = []
     verified: dict = {}
     tmp_root = Path(tempfile.mkdtemp(prefix="larkdeck-mut-"))
     try:
         for idx, (name, rel, old, new, expect) in enumerate(picked):
             parent = tmp_root / f"mut{idx:02d}"
+            if _skip_local_archive(rel, name, "变异", skipped):
+                continue
             if idx:                      # 只留上一代：磁盘占用从 O(N) 降到 O(1)（否则 238 份 ≈ 1.6GB）
                 shutil.rmtree(tmp_root / f"mut{idx - 1:02d}", ignore_errors=True)
             parent.mkdir(parents=True)
@@ -4310,6 +4331,8 @@ def main() -> int:
     # 必须四门禁全绿 —— 用来证明门禁不会假红。第九路审计实测：原来靠 `"对照" in name`
     # 判定，于是把任意一条「抓不住的变异」改个名字就能被跳过（可滥用）。
     for idx, (name, rel, old_text, new_text, _unused) in enumerate(controls):
+        if _skip_local_archive(rel, name, "对照", skipped):
+            continue
         parent = tmp_root / f"ctl{idx:02d}"
         parent.mkdir(parents=True)
         repo = _prepare(parent)
@@ -4334,7 +4357,8 @@ def main() -> int:
         for line in bad:
             print(" -", line)
         return 1
-    print(f"\n全部 {len(picked)} 条变异都被门禁抓住 ✅")
+    suffix = f"（本地归档缺席跳过 {len(skipped)} 条：{', '.join(skipped)}）" if skipped else ""
+    print(f"\n全部 {len(picked) - len(skipped)} 条变异都被门禁抓住 ✅{suffix}")
     # ⚠️ 全量章的**唯一**入口（见 `finally` 上面那段注释）：`_is_full_run` 已经排除了
     # `--target-only` / `--delta` / `-k` / 分片 / 有缺陷 / 只跑一部分 —— 再加上「能走到
     # 这一行」= 变异循环与对照循环都完整跑完（异常会让函数在这里之前就退出）。

@@ -41,7 +41,7 @@
 
 用法::
 
-    PY=/Users/Zayn/.hermes/hermes-agent/venv/bin/python3
+    PY="${HERMES_HOME:-$HOME/.hermes}/hermes-agent/venv/bin/python3"
     $PY tests/probe_render.py             # 清理旧探针卡 → 发新卡
     $PY tests/probe_render.py --no-clean  # 不清理，直接发（排查清理逻辑时用）
     $PY tests/probe_render.py --clean-only

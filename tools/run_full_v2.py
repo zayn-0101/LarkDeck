@@ -1,5 +1,5 @@
 # SNAPSHOT（v0.7.3）：用于证据 a2290da 的 scratch runner。
-# 路径常量是 Zayn 本机设置（已脱敏为 <HOME>）；库内仅作审计/复现记录，install.sh 不安装 tools/*。
+# 路径常量按维护者本机设置脱敏为 <HOME>；库内仅作审计/复现记录，install.sh 不安装 tools/*。
 
 #!/usr/bin/env python3
 """v0.7.3 P3 全量变异（v2：先验片、后盖章；每轮独立目录 + 证据哈希 + 禁旧 at 白名单）。

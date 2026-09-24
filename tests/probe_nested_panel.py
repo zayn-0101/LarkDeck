@@ -5,7 +5,7 @@
 ------------
 生产代码在 `show_reasoning=true` 时会把「推理轮」渲染成**外层面板里再套一层**
 `collapsible_panel`（外：`💭 思考 … · 🛠️ 工具执行 · N 步`；内：`💭 思考 · 1 · 1.2s`，
-每个推理轮一个）。仓库自己的 `docs/audits/v0.7.1-visual/plan-consensus.md:111` 把
+每个推理轮一个）。仓库自己的 `docs/internal/audits/v0.7.1-visual/plan-consensus.md:111` 把
 「嵌套 collapsible_panel 客户端渲染」列为**未验证**；两个参考实现（CLS/FC）是把面板
 **平铺在 body 顶层**的，所以「嵌套」这件事没有先例可抄。
 
@@ -21,7 +21,7 @@
 
 用法::
 
-    PY=/Users/Zayn/.hermes/hermes-agent/venv/bin/python3
+    PY="${HERMES_HOME:-$HOME/.hermes}/hermes-agent/venv/bin/python3"
     $PY tests/probe_nested_panel.py
 """
 from __future__ import annotations

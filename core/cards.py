@@ -475,7 +475,7 @@ def footer_line(*, duration: Optional[float] = None, model: str = "",
       * ``api``   —— 本回合 API 请求次数 ⇒ ``api 7``；
       * ``ttfb``  —— 首个流式分块的首字节延迟（**秒**）⇒ ``ttfb 0.4s``。
 
-    ⚠️ **缺数据就少一段，绝不编 0**（`docs/lessons.md` 的口径病）。判据逐段不同，
+    ⚠️ **缺数据就少一段，绝不编 0**（`docs/internal/lessons.md` 的口径病）。判据逐段不同，
     **不是**一条规则（R7 审计低-2 更正 —— 本 docstring 以前写成「三段都按 `is None` 判」，
     与实现不符）：
       * ``cache`` 按 **`is None`** 判：`0.0` 是「真的 0% 命中」⇒ 要显示 `cache 0%`；
@@ -1527,7 +1527,7 @@ def fit_reply_card(answer: str, *, streaming: bool = False,
     truncates against the stream protocol's own limit"），而官方 ``send()`` 本身是**分块**的
     （``splits_long_messages``）。所以正文过长时正确的做法是**让它发失败**，由核心的
     fail-open 链回落到官方 ``send()`` → 分块发送（退化成多条纯文本，但**内容完整**）。
-    静默截断答案会让用户以为模型就说了这么多 —— 这正是 ``docs/lessons.md`` 里最怕的失败模式。
+    静默截断答案会让用户以为模型就说了这么多 —— 这正是 ``docs/internal/lessons.md`` 里最怕的失败模式。
     """
     attempts = ((panel, footer, "ok"),
                 (None, footer, "no-panel"),
@@ -1568,7 +1568,7 @@ def _round_title(index: int, elapsed_ms: Any) -> str:
 
 
 #: CardKit 实体卡的**固定元素 id**（结构在建实体时定死，之后只按 id 写内容）。
-#: 见 docs/plan-6-effects.md「阶段 9」与 2026-09-13 的「重大更正」：**整卡替换**会关闭流式会话
+#: 见 docs/internal/plans/plan-6-effects.md「阶段 9」与 2026-09-13 的「重大更正」：**整卡替换**会关闭流式会话
 #: （`card_element.patch/create/update` 与 `card.batch_update` **不受此限** —— 见 plan-v1 的 R2）
 #: （真机实测 `300309`），所以结构不能边流边改。
 CARDKIT_ANSWER_ID = "answer"

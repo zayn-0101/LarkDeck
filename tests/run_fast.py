@@ -28,6 +28,7 @@ _REPO = _HERE.parent
 _PY = sys.executable
 
 FAST = [
+    ("check_docs", [_PY, str(_HERE / "check_docs.py")], 30.0),
     ("test_units", [_PY, str(_HERE / "test_units.py")], 120.0),
     ("check_own_body", [_PY, str(_HERE / "check_own_body.py")], 60.0),
     ("mutate_preflight", [_PY, str(_HERE / "mutate_check.py"), "--preflight"], 120.0),

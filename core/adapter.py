@@ -148,7 +148,7 @@ _HOPELESS_BYTES = 512 * 1024
 _MAX_STREAMS = 64
 _STREAM_MIN_INTERVAL = 0.25
 
-#: CardKit 的**写入预算**（`docs/plan-v1.md` 附录 B）：卡级上限按官方口径 **10 次/秒**，
+#: CardKit 的**写入预算**（`docs/internal/plans/plan-v1.md` 附录 B）：卡级上限按官方口径 **10 次/秒**，
 #: 而帧节流窗口是 :data:`_STREAM_MIN_INTERVAL` ⇒ 每帧最多写
 #: ``_CK_WRITES_PER_FRAME`` 次。**真实余量远大于此**（R0 真机实测 50 次/秒连打零失败），
 #: 所以这个数不是「贴着上限走」，而是留了一倍以上的余量 —— 之所以还要这么省：
@@ -176,13 +176,13 @@ _CK_WINDOW_MAXLEN = 64
 def _ck_window(state_ref: Dict[str, Any]) -> Deque[float]:
     """取（必要时建）**本回合**的写入滑窗（R11-B1）。
 
-    ⚠️ **窗口挂在回合状态上，不是进程级共享盒子** —— 这条与 `docs/plan-r11.md` §3 里
+    ⚠️ **窗口挂在回合状态上，不是进程级共享盒子** —— 这条与 `docs/internal/plans/plan-r11.md` §3 里
     「共享盒子里的 `deque`」的原措辞**不同**，理由是实测出来的两条：
       * 飞书的口径是**每张卡** 10 次/秒 ⇒ 一个进程级窗口会把并发回合的写入**加在一起算**，
         两个长回合会让彼此的装饰互相饿死，而它们本来各有各的配额；
       * 进程级窗口还会让**测试按执行顺序漂移**：上一个用例的写入填满窗口之后，
         「这一帧写了几次 / 第 2 次写的是哪个元素」这类断言随顺序变化（实测：两条既有用例
-        当场红，而它们与守卫毫无关系）—— 这正是 `docs/lessons.md` 推论 28 的形态
+        当场红，而它们与守卫毫无关系）—— 这正是 `docs/internal/lessons.md` 推论 28 的形态
         （时间派生的行为必须能被冻结或隔离）。
       * A0 那条纪律（进程内全局必须与它的守卫/兄弟容器同源）在这里**自动满足**：它根本不是
         全局的，而是随回合状态显式传递的（回合状态本身有上界 `_MAX_STREAMS`）。
@@ -334,7 +334,7 @@ def _ck_split_point(text: str, offset: int, *, seal_budget: int,
 #:     （2026-09-13 真机更正：**元素级**接口 `card_element.patch/create/update` 与
 #:     `card.batch_update` 在流式期间可用、不关会话 —— 别再写成「任何结构性写入」）
 #:     以及「用 settings 重开会话后序号没对齐」⇒ `300317`。
-#:     放在这里是为将来可能的 CardKit 传输（见 docs/plan-6-effects.md 阶段 9）预先收口 ——
+#:     放在这里是为将来可能的 CardKit 传输（见 docs/internal/plans/plan-6-effects.md 阶段 9）预先收口 ——
 #:     多一个码只会多一次幂等重试，代价可接受。
 _TRANSIENT_CODES = frozenset({230020, 99991400, 300309, 300317})
 
@@ -685,7 +685,7 @@ def _strip_core_progress(text: str, accumulated: str, tool_pending: bool,
        这是**有意取舍**：可见的进度行（丑，但一个字都没丢）vs. 不可逆地吞掉模型正文
        （静默、无法恢复）。要做对需要**形状判据**（尾巴逐行符合核心进度行形状
        ``{emoji} {tool_name}: "{preview}"``，tool_name 用我们 ``pre_tool_call`` 见过的名字比对），
-       **未做 —— 登记为已知缺口**，见 ``docs/plan-v1.md`` 附录 F。
+       **未做 —— 登记为已知缺口**，见 ``docs/internal/plans/plan-v1.md`` 附录 F。
        ⇒ 在**其余** finalize 帧上，「累积之后还有内容」仍然只可能是模型自己写的
        （**含它自己写的 ``---``**），核心那一帧根本没有进度块可剥。
        为什么非加不可：我们的累积来自**钩子队列**（异步投递），收尾帧完全可能**早于**最后一个
@@ -734,7 +734,7 @@ def _strip_core_progress(text: str, accumulated: str, tool_pending: bool,
     变异 `PA-1`（入账的 delta 被 `.strip()`）与 `PA-2`（正文仓库的按会话分桶被拆掉）各钉一处。
     ⚠️ 仍未覆盖：`run()` 自己的分支与传输层、回合边界的 `_adopt_final_text`
     （核心可能把 `_accumulated` **整段换成**权威终稿 ⇒ 两边分叉；失败方向是 **fail-open**，
-    只会「不剥」，不会吞正文）—— 登记在 `docs/plan-v1.md` 附录 F。
+    只会「不剥」，不会吞正文）—— 登记在 `docs/internal/plans/plan-v1.md` 附录 F。
     **改这一段时，上面那两条判据一起看。**
     """
     if finalize or not text or not tool_pending or not complete:
@@ -1262,7 +1262,7 @@ def _sanitize_for_send(text: str) -> str:
         收尾帧原本**一道闸门都没有**（`_ld_build_card` 刻意不截断正文），后果是发送失败 ⇒
         fail-open 到 `edit_message`/`send()`（同样是超限卡）⇒ 再失败 ⇒ 官方纯文本分块，
         用户从「一张卡」退化成「若干条纯文本」。
-      * 闸门必须量**要发出去的那一份**（`docs/lessons.md` 推论 13 的口径病）：量的对象
+      * 闸门必须量**要发出去的那一份**（`docs/internal/lessons.md` 推论 13 的口径病）：量的对象
         和发的对象不是同一份时，两个判据各自都对、合起来还是漏。
 
     超限时**退回原文**而不是丢弃卫生后的内容：原文就是上一帧用户已经看到的那份，
@@ -1342,7 +1342,7 @@ def _stop_redraw_would_paint(body: str, *, panel: Any = None,
         return True
 
 
-#: CardKit 元素角色 —— 决定「这个元素写失败时这一帧怎么办」（处置矩阵见 docs/plan-v1.md 附录 A）。
+#: CardKit 元素角色 —— 决定「这个元素写失败时这一帧怎么办」（处置矩阵见 docs/internal/plans/plan-v1.md 附录 A）。
 #: R1 只把顺序与账本抽出来，**处置仍是老的**（正文/面板失败都 fail-open）；R2/R5 再按角色分档。
 _CK_ROLE_ANSWER = "answer"      # 提交点：没有它这张卡就没有意义
 _CK_ROLE_PANEL = "panel"        # 内容型装饰（面板正文）
@@ -1678,7 +1678,7 @@ class _CkOp(NamedTuple):
     """一次要发给飞书的元素写入。
 
     ``element_id`` 必须是**建实体时就存在**的那个（写不存在的 id 得 ``300313``，见
-    ``docs/plan-v1.md`` 的 R0 结论）。``role`` 决定失败语义，不是装饰性字段。
+    ``docs/internal/plans/plan-v1.md`` 的 R0 结论）。``role`` 决定失败语义，不是装饰性字段。
 
     ``code`` 是**失败时**由 :meth:`_ld_ck_apply` 回填的服务端返回码（默认 ``None``）。
     ⚠️ 它是为了修 P1a 的类型错配：调用方原先把失败 op 当 ``_CkResult`` 调
@@ -1719,7 +1719,7 @@ def _ck_plan(display: str, panel_text: str, elems: Sequence[str],
     # 装饰先写、**正文最后写**（提交点在后）：上游按「最后一次**成功**发出的帧文本」记账
     # （`stream_consumer_fallback._visible_prefix`），正文最后落盘才能让「这一帧失败」
     # 等价于「正文没更新」——否则卡上已经有这一帧的正文，而核心以为可见前缀还停在前一帧，
-    # 回落补发的尾部会把同一段话再说一遍（R1 审计的第③条，也是 `docs/plan-v1.md` 的 R1 交付项）。
+    # 回落补发的尾部会把同一段话再说一遍（R1 审计的第③条，也是 `docs/internal/plans/plan-v1.md` 的 R1 交付项）。
     if _cards.CARDKIT_PANEL_BODY_ID in elems:
         ops.append(_CkOp(_cards.CARDKIT_PANEL_BODY_ID, panel_text or " ", _CK_ROLE_PANEL))
     if _cards.CARDKIT_PANEL_TOOLS_ID in elems:
@@ -2171,7 +2171,7 @@ def _panel_has_data(chat_id: str) -> bool:
     那些卡的面板是**状态色的唯一载体**（`card_status_header` 默认关）：没有过程数据时也要留住，
     否则「状态改了、卡片没变、还不报错」（`test_stop_redraw_paints_an_empty_turn_yellow`
     就是这条用户口径）。2026-09-21 终审 A 建议把这条判据也用到那三处终态写上；**未采纳**，
-    分歧与理由记在 `docs/audits/v0.7.2/audit-round1.md` 第七节。
+    分歧与理由记在 `docs/internal/audits/v0.7.2/audit-round1.md` 第七节。
 
     ⚠️ **中间帧更不能用它**：卡片结构在建实体那一刻定死，中途摘面板 = 之后的工具行没有落脚处。
     """
@@ -3894,7 +3894,7 @@ class LarkDeckMixin:
         ⚠️ 第三个返回值是**建出来的那张卡的 JSON**：回合状态的元素表要从它里面抽
         （`_ck_elems_from_card`）—— 那是「结构」的唯一来源，不能靠再读一遍配置去猜。
 
-        走的是官方三个接口（真机实测每一步都 ``code=0``，见 `docs/plan-6-effects.md` 阶段 9）：
+        走的是官方三个接口（真机实测每一步都 ``code=0``，见 `docs/internal/plans/plan-6-effects.md` 阶段 9）：
         ``cardkit.v1.card.create`` → ``im.v1.message.create``（content 是
         ``{"type":"card","data":{"card_id":…}}``）。
 
@@ -5159,7 +5159,7 @@ class LarkDeckMixin:
             # V2 修复：先 cancel 心跳，再发终态 patch，避免 tick 在 patch 后落回 processing 面板。
             self._ld_heartbeat_cancel(key)
             # ⚠️ **不摘面板**（与终审 A 的建议相反，理由记在 `_panel_has_data` 的 docstring 与
-            # `docs/audits/v0.7.2/audit-round1.md` 第七节）：回合卡的面板是**状态色的唯一载体**
+            # `docs/internal/audits/v0.7.2/audit-round1.md` 第七节）：回合卡的面板是**状态色的唯一载体**
             # （`card_status_header` 默认关）⇒ 没有过程数据时也要留住它，否则「状态改了、卡片没变」。
             final_card = _cards.apply_text_profile(_cardview.entity_skeleton(view),
                                                    _cfg_raw("text_profile"))
@@ -5350,7 +5350,7 @@ class LarkDeckMixin:
             # ⚠️ 这里**不再**记一笔：首发建卡发出去的正是 `_ld_send_card`，账本已经在
             # 那个底层收口点记过了（R9 审计中-1 的修法）。**一次写只记一笔**必须由构造保证，
             # 不能靠「记得别在调用方也写一遍」—— 那种纪律在下一个调用点就会静默失守
-            # （同一件事两处真相，见 docs/lessons.md 推论 13）。
+            # （同一件事两处真相，见 docs/internal/lessons.md 推论 13）。
             return True
         message_id = state["message_id"]
         if finalize:
@@ -5385,7 +5385,7 @@ class LarkDeckMixin:
             # 能走到这一行 = 本回合 native 全程可用。这是**自证**：帧一旦失败，内核会
             # 关掉本回合的 native 并改走 send/edit，**不会再发 finalize 帧**（见
             # _TRANSIENT_CODES 的说明）—— 所以这行日志本身就是「native 还在工作」的证据，
-            # 也是发现「悄悄退回纯文本」的唯一线索（docs/lessons.md 推论 1）。
+            # 也是发现「悄悄退回纯文本」的唯一线索（docs/internal/lessons.md 推论 1）。
             logger.info("[larkdeck] native 流式收尾：更新 %d 帧（跳过 %d 帧）",
                         int(state.get("frames") or 0) + 1, int(state.get("skipped") or 0))
             _log_turn_selfcheck(chat, self._ld_transport(), int(state.get("frames") or 0) + 1,
@@ -5417,7 +5417,7 @@ class LarkDeckMixin:
         card_id = str(state.get("card_id") or "")
         if card_id:
             # ---- CardKit：本实现只写元素内容（**不做整卡替换** —— 那会关闭流式会话。
-            # 元素级/批量接口其实可以在流式期间用，见 docs/plan-6-effects.md 的「重大更正」）----
+            # 元素级/批量接口其实可以在流式期间用，见 docs/internal/plans/plan-6-effects.md 的「重大更正」）----
             # **正文的容量闸门**（口径与建实体那两道墙同源）：这里量的是**要写进元素的那一段**，
             # 单位必须是 **JSON 转义后的字节**，不是原始 utf-8 —— 飞书拒的是**整卡 JSON**，而
             # `"` `\` `\n` 在 JSON 里会翻倍。R1 审计实测：正文 `"\n"*100000 + "a"*27000`
@@ -5554,7 +5554,7 @@ class LarkDeckMixin:
             # 结论写进它（`ck_dead` / `ck_decor` / 将来的新键），从旧 `state` 出发就等于
             # **只保留了我们记得手动抄过来的那三个** —— 以后任何人在 `_ld_ck_apply` 里新写
             # 一个键，都会在「正文失败」这一支上**静默消失**，而且没有任何门禁看得见
-            # （同一件事两处真相的又一个形态，见 docs/lessons.md 推论 13）。
+            # （同一件事两处真相的又一个形态，见 docs/internal/lessons.md 推论 13）。
             # 下面三行是**点名保留旧值**，不是「拷贝恰好没被改」：读者一眼能看出这一帧的意图。
             self._ld_stream_put(key, {**live_state,
                                       "last": state.get("last", ""),
@@ -6930,7 +6930,7 @@ def _ld_diagnosis_lines() -> List[str]:
 
     两行在**有明确异常**（未接管 / 钩子不全 / 命令未注册 / 世代裂脑 / 有失败计数）时
     以 ``⚠️`` 开头；其余情况只列事实，**不写「正常」「健康」** —— 一个永远说健康的诊断
-    与一个坏掉的诊断在卡上没有区别（`docs/lessons.md` 推论 6）。
+    与一个坏掉的诊断在卡上没有区别（`docs/internal/lessons.md` 推论 6）。
     """
     try:
         report = dict(PROBE_REPORT)

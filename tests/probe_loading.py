@@ -22,7 +22,7 @@ aiduPOP / CLS / FC 三家**硬编码了同一个 `img_key`**
 不启网关、不改插件代码、不写配置。只调 `im.v1.message.create` 发一张卡。
 
 用法::
-    PY=/Users/Zayn/.hermes/hermes-agent/venv/bin/python3
+    PY="${HERMES_HOME:-$HOME/.hermes}/hermes-agent/venv/bin/python3"
     $PY tests/probe_loading.py
 """
 from __future__ import annotations

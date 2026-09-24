@@ -27,7 +27,7 @@ from larkdeck.core import cardview  # noqa: E402
 
 
 def _assert_token_file() -> None:
-    path = _REPO / "docs" / "audits" / "v0.7.1-visual" / "visual-tokens.json"
+    path = _REPO / "tests" / "fixtures" / "visual-tokens.json"
     data = json.loads(path.read_text(encoding="utf-8"))
     for key in ("tokens", "status", "tool_icons", "tool_status", "element_anchors", "panel_header"):
         assert key in data, f"visual-tokens.json 缺顶层键：{key}"
@@ -98,7 +98,7 @@ def _assert_token_file() -> None:
     assert anchors["panel_body"] == "panel_body" and anchors["panel_tools"] == "panel_tools"
     # ⚠️ v0.7.1 夹具记的是 aiduPOP 的元素 id（`loading_icon`），我们的命名空间里叫
     #    `loading_hint` —— 它是**冻结的历史证据**、不是生产契约（v0.7.2 起由
-    #    `_assert_v072_contracts()` 把生产常量钉住，并在 docs/audits/v0.7.2/loading-asset.md 说明）。
+    #    `_assert_v072_contracts()` 把生产常量钉住（资产选型记录在维护者本地归档）。
     assert anchors["loading"] == "loading_icon"
     assert anchors["down_icon"] == "down-small-ccm_outlined"
     assert "footer_order" in data["panel_header"], "visual-tokens.json 缺 footer_order"
@@ -340,7 +340,7 @@ def _assert_v072_contracts() -> None:
 
     ⚠️ v0.7.1 的 `visual-tokens.json` 是**冻结的历史产物**（只有 14 个图标键、`footer_order`
     里还写着 `short_code`）—— 那份记录**不许改写**（它证明当时的状态），但它**不再**是生产契约。
-    生产契约在 `docs/audits/v0.7.2/`：`tool-icons.json`（逐条 + 顺序 + `local_extra`）与
+    生产契约在 `tests/fixtures/`：`tool-icons.json`（逐条 + 顺序 + `local_extra`）与
     `footer-contract.json`。
 
     为什么这条必须在**门禁**里而不是只在单测里：审计 C 实测把 `("exec", "setting_outlined")`
@@ -395,7 +395,7 @@ def _assert_v072_contracts() -> None:
     assert _hint["text"] == {"tag": "plain_text", "content": " "}, _hint["text"]
 
     icons = json.loads(
-        (_REPO / "docs" / "audits" / "v0.7.2" / "tool-icons.json").read_text(encoding="utf-8"))
+        (_REPO / "tests" / "fixtures" / "tool-icons.json").read_text(encoding="utf-8"))
     prod = list(cardview.ICON_ALIASES)
     want = list(icons["tool_icons"].items())
     assert prod == want, f"生产图标表与冻结契约不等：{dict(prod)} != {dict(want)}"
@@ -409,7 +409,7 @@ def _assert_v072_contracts() -> None:
     # ⚠️ **P2 的强制守卫**：`assets/spinner-tool.gif` 一旦入库，生效 key 就必须是自研那条
     # （`SPINNER_TOOL_IMG_KEY != SPINNER_IMG_KEY`）——D1′ 的验收条件之一就是「不是复用旧 key」。
     # 资产还没入库时这条不成立（过渡态：`SPINNER_TOOL_IMG_KEY` 只是共享 key 的别名，见
-    # `docs/audits/v0.7.2/loading-asset-v2.md`）。
+    # 维护者本地归档）。
     if (_REPO / "assets" / "spinner-tool.gif").exists():
         assert cardview.SPINNER_TOOL_IMG_KEY not in ("", cardview.SPINNER_IMG_KEY), (
             "自研动图入库后 SPINNER_TOOL_IMG_KEY 仍然是旧 key（等于没换）："
@@ -418,7 +418,7 @@ def _assert_v072_contracts() -> None:
             f"生效 key 必须优先取自研资产：{cardview.spinner_img_key()!r}")
 
     foot = json.loads(
-        (_REPO / "docs" / "audits" / "v0.7.2" / "footer-contract.json").read_text(encoding="utf-8"))
+        (_REPO / "tests" / "fixtures" / "footer-contract.json").read_text(encoding="utf-8"))
     assert foot["footer_order"] == ["status", "elapsed", "model", "context"], foot
     assert foot["short_code_visible"] is False, foot
     # B1（2026-09-22）：页脚**段前缀** emoji 去掉（状态词里的 ✅/❌/⛔ 保留）。契约文件与门禁

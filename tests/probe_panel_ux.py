@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """P6 真机探针（**部署后**跑）：v0.7.2「面板 UX 定版」一张多行对照卡。
 
-设计依据：`docs/plan-v0.7.2-panel-ux.md` §8 的十格。全部用**生产构建器**（`core.cardview` /
+设计依据：`docs/internal/plans/plan-v0.7.2-panel-ux.md` §8 的十格。全部用**生产构建器**（`core.cardview` /
 `core.cards`）拼卡 —— 用户看到的就是生产会画的样子，不是手写 JSON。
 
 用法::
-    PY=/Users/Zayn/.hermes/hermes-agent/venv/bin/python3
+    PY="${HERMES_HOME:-$HOME/.hermes}/hermes-agent/venv/bin/python3"
     $PY tests/probe_panel_ux.py            # 真发一张卡到 FEISHU_HOME_CHANNEL
 """
 from __future__ import annotations

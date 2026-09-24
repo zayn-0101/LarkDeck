@@ -18,7 +18,7 @@ larkdeck 是「平台插件 + 钩子订阅者」：``ctx.register_platform()`` �
 往这个回调里加任何阻塞物都是把后果从「少一行」升级成「拦工具」。
 
 推理增量有个 Hermes 侧前置条件：``plugins.stream_reasoning_deltas`` 为 true
-时核心才发 ``kind="reasoning"`` 的增量（默认 false，见 docs/metrics-and-hooks
+时核心才发 ``kind="reasoning"`` 的增量（默认 false，见 docs/internal/metrics-and-hooks
 与 README）；不开时订阅照常，只是面板里没有思考文本。
 """
 

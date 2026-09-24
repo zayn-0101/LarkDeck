@@ -204,7 +204,7 @@ SPINNER_IMG_KEY = "img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg"
 #: **共用同一张图**）。真源 `assets/spinner-tool.gif`（生成脚本 `tools/make_spinner_gif.py`，
 #: 一次性上传脚本 `tools/upload_card_asset.py`，用**我们自己的 app** 上传）。
 #: ⏳ P2 进行中：第一轮候选（条纹/弧线）被用户否掉（「外观不行，仿 aiduPOP 那个」），
-#: 第二轮按 aiduPOP 官方截图里的**三个圆点**重画，挑图卡 `om_x100b6411a860d8b4dd88420cef6dc33`
+#: 第二轮按 aiduPOP 官方截图里的**三个圆点**重画，挑图卡（`om_…`）
 #: 等用户回「C」或「D」后上传，把新 key 写在这一行 ——
 #: 形状/字段/回落语义均已定稿，只等这一个字符串；**别在别处再写一份 key**。
 SPINNER_TOOL_IMG_KEY = "img_v3_0215p_a0b0bd11-a182-433f-9647-8573d0dd7efg"
@@ -270,7 +270,7 @@ def _title_node(title: Any, **extra: Any) -> Dict[str, Any]:
 #: `standard_icon` token → **内联 emoji**。为什么要有这张表（用户 2026-09-21 真机选版）：
 #: 飞书把 `div.icon` 里的图标**顶部对齐**渲染，而我们的行文本长/字号不一，用户逐版比对后判定
 #: 「**乙（emoji 内联进文本）图标与文字对得最齐**」（探针 `tests/probe_icons.py`，
-#: `om_x100b6424d23e24a8c3368dfbdaad661`；同一次探针还证伪了「长文本换行导致偏上」的假说 ——
+#: `om_…`；同一次探针还证伪了「长文本换行导致偏上」的假说 ——
 #: 用户明确回「丙 那行没有换行」）。所以工具行改为**内联 emoji**：token 表仍是 CLS 逐条对齐的
 #: 唯一真相，emoji 只负责渲染。
 ICON_EMOJI: Dict[str, str] = {

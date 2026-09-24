@@ -2,7 +2,7 @@
 """P6 真机探针：**手动收起会不会被中间帧顶开**（A1 唯一无法自动化的协议前提）。
 
 为什么必须真机做（审计 A 的中-7）：`partial_update_element` 是**合并**语义还是「整元素替换」，
-仓库里查不到权威口径。我们唯一有的证据是 `docs/audits/v0.7.1-visual/window1-live.md:74` 的字段
+仓库里查不到权威口径。我们唯一有的证据是 `docs/internal/audits/v0.7.1-visual/window1-live.md:74` 的字段
 矩阵（「去 expanded 的载荷 code=0」）—— 那**只证明载荷合法**，不证明合并行为。
 A1 的整个「运行中展开」都押在这条上：如果服务端把「没带 expanded」当成「外层默认收起」，
 那我们第一帧 partial 就会把用户看到的面板静默收掉。
@@ -14,7 +14,7 @@ A1 的整个「运行中展开」都押在这条上：如果服务端把「没�
                 （对照组：如果 control 能顶开、frame 顶不开，就证明「省略 ⇒ 保留」成立）
 
 用法::
-    PY=/Users/Zayn/.hermes/hermes-agent/venv/bin/python3
+    PY="${HERMES_HOME:-$HOME/.hermes}/hermes-agent/venv/bin/python3"
     $PY tests/probe_manual_collapse.py --start     # 发卡（把 card_id 记到 scratch）
     $PY tests/probe_manual_collapse.py --frame     # 用户手动收起之后跑这一条
     $PY tests/probe_manual_collapse.py --control   # 再跑这条（对照）

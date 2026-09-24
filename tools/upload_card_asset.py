@@ -7,7 +7,7 @@
 
 用法::
 
-    PY=/Users/Zayn/.hermes/hermes-agent/venv/bin/python3
+    PY="${HERMES_HOME:-$HOME/.hermes}/hermes-agent/venv/bin/python3"
     $PY tools/upload_card_asset.py assets/spinner-tool.gif          # 打印 image_key
     $PY tools/upload_card_asset.py assets/spinner-tool.gif --json    # 机器可读
 

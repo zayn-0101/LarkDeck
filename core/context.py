@@ -136,7 +136,7 @@ _ALIASES: Dict[str, str] = _shared_box()["ctx_aliases"]
 #: 只在日志里限流留痕）。``/larkdeck status`` 就是「事后自证」的入口。
 #:
 #: ⚠️ 判据纪律：**没记录就写「无记录」**，绝不许把「没有数据」渲染成「正常」——
-#: 那正是「绿而无判别力」（docs/lessons.md 推论 6）：一个永远说「正常」的自检，
+#: 那正是「绿而无判别力」（docs/internal/lessons.md 推论 6）：一个永远说「正常」的自检，
 #: 与一个坏掉的自检在用户眼里长得一模一样。
 #:
 #: ⚠️ **口径：进程级全局、跨会话共享**（R9 审计中-4，与页脚指标同一件事）。`_STATUS` 是
@@ -808,7 +808,7 @@ def status_lines() -> List[str]:
         与 `frame_fail_count`（我们真的发起过一次写而失败）**口径不同**，别混（见
         :func:`note_plaintext_fallback`）；
       * ``status.codes``    —— 错误码 top-5：把「失败了很多次」收敛成「失败在哪个码上」，
-        而码表正是处置表的键（``docs/plan-v1.md`` 附录 A）。
+        而码表正是处置表的键（``docs/internal/plans/plan-v1.md`` 附录 A）。
     """
     snap = status_snapshot()
     failures = int(snap.get("frame_fail_count") or 0)

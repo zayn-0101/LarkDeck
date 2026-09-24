@@ -1,4 +1,0 @@
-test_units exit=0 wall=4s
-check_override exit=0 wall=3s
-check_hooks exit=0 wall=10s
-check_clarify_e2e exit=0 wall=4s
