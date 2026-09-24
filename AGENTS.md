@@ -676,4 +676,7 @@ fail-open」）被顺带满足，报出来的失败信息与真实原因无关�
   真实 chat_id / open_id，以及维护者的机器名、地址、绝对路径等运维信息。这是**公开仓库**。
 - `docs/internal/`（规划 / 审计 / 调研 / 交接 / 验证日志）**一律不进仓库**，已 gitignore；
   它只作为维护者本机的开发依据。对外文档不得链接或复制其中的内容。
+- ⚠️ `tests/mutation-verdicts.json` 与 `tools/release-v0.7.*.py` 在 v0.7.9 之前的 tag 里是**被跟踪**的：
+  `git checkout v0.7.8` 之类会把它们恢复成旧版，切回 `main` 时又会从工作树删掉。要切旧 tag 前先备份
+  （例如 `cp tests/mutation-verdicts.json /tmp/`），或事后用 `git show <tag>:<path> > <path>` 还原。
 - 不在生产 / 容器环境做写操作而不先确认；破坏性操作前先说清范围与回滚点。
