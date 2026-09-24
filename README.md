@@ -1,6 +1,7 @@
 # LarkDeck
 
-> 把 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 的飞书 / Lark 回复变成一张会流式的卡片：正文原地长出来，推理与工具收进底部可折叠面板。
+> **回答边写边长，过程和结果都收在一张卡片里。**
+> LarkDeck 是 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 的飞书 / Lark 流式卡片插件：正文实时生成，推理与工具过程收在底部可折叠面板，需要选择时直接在卡片上作答。
 
 [![version](https://img.shields.io/badge/version-0.7.9-blue.svg)](https://github.com/zayn-0101/LarkDeck/releases)
 [![AH (Hermes Agent) 0.21.x](https://img.shields.io/badge/AH-0.21.x-blueviolet.svg)](https://github.com/NousResearch/hermes-agent)

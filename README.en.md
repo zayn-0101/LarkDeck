@@ -1,6 +1,7 @@
 # LarkDeck
 
-> Streaming Feishu / Lark cards for [Hermes Agent](https://github.com/NousResearch/hermes-agent): replies grow in one card, with reasoning and tool calls folded into a panel at the bottom.
+> **The answer streams in live, with process and result in one card.**
+> LarkDeck is a streaming Feishu / Lark card plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent): the answer is written into the card as it is generated, reasoning and tool calls stay in a collapsible panel at the bottom, and questions are answered right on the card.
 
 [![version](https://img.shields.io/badge/version-0.7.9-blue.svg)](https://github.com/zayn-0101/LarkDeck/releases)
 [![AH (Hermes Agent) 0.21.x](https://img.shields.io/badge/AH-0.21.x-blueviolet.svg)](https://github.com/NousResearch/hermes-agent)
