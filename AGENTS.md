@@ -171,9 +171,11 @@ tests/        见「验证」
   命令：handler 拿不到发送者身份，无法安全授权（安全审计 B1）⇒ 插件**从不**直接写
   `config.yaml`、也不调用 `ctx.set_config()`；写配置走官方 Hermes CLI / 配置文件，再 reload。
   官方 ctx 的**只读**句柄存进程级共享盒子 `adapter.PLUGIN_CTX`（命令可能来自旧世代模块对象）。
-- 视觉三键的**现役默认值**（2026-09-21 v0.7.2 起）：`visual_engine="structured"`（`legacy` 配置键
+- 视觉三键的**现役默认值**（2026-09-24 起）：`visual_engine="structured"`（`legacy` 配置键
   **已退役**：设了只留一条 WARNING，行为仍是 structured；真正回退要 revert 到 v0.7.0）、
-  `card_status_header=false`（用户口径「顶栏默认不显示」）、`show_reasoning=false`（摘要行始终保留）。
+  `card_status_header=false`（用户口径「顶栏默认不显示」）、`show_reasoning="auto"`
+  （跟随 Hermes `display.show_reasoning` / 平台覆盖；也接受 `on`/`off` 与旧布尔 `true`/`false`）。
+  Hermes 未开启 `plugins.stream_reasoning_deltas` 时 auto 按关闭处理，并在 `/larkdeck status` 说明。
   改这三项口径必须同提交改 README / plugin.yaml / CHANGELOG。
 
 - **平台 entry 字段从 dataclass 派生透传**（`_IDENTITY_ENTRY_FIELDS` 除外），新增字段自动跟随；

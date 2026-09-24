@@ -814,8 +814,10 @@ _DEFAULTS: Dict[str, Any] = {
     "visual_engine": "structured",
     # 卡片顶部状态条显隐；V2 实现前两种取值观感相同并留 WARNING。
     "card_status_header": False,
-    # 是否展示推理正文；V3 实现前两种取值观感相同并留 WARNING（摘要行始终保留）。
-    "show_reasoning": False,
+    # 是否展示推理正文：auto（默认，跟随 Hermes display.show_reasoning）/ on / off。
+    # 旧布尔值 true/false 仍然接受（等价 on/off）。auto 在 Hermes 未发送 reasoning delta
+    # 时按关闭处理，并在 /larkdeck status 说明原因，见 `_ld_show_reasoning_state`。
+    "show_reasoning": "auto",
     "footer": True,           # 页脚：状态 → 耗时 → 模型 → 上下文用量（v0.7.2 起**无短码**）
     "show_model": True,       # 页脚里显示模型名（面板标题只放思考/工具摘要）
     "context_style": "text",  # 上下文用量样式：text（默认）| bar | both
@@ -979,6 +981,11 @@ def _cfg(key: str) -> bool:
 #: v0.7.1 V0：未实现配置键的告警限流（5 分钟一条，避免刷日志）。
 _VISUAL_WARN_AT: Dict[str, float] = {}
 
+#: ``show_reasoning=auto`` 跟随 Hermes 的短缓存（1 秒）。只缓存自动解析结论，
+#: 显式 on/off 与读原始配置永远即时 —— 这样 ``/reasoning on|off`` 的生效延迟 ≤1s。
+_SHOW_REASONING_CACHE: Dict[str, Any] = {"at": 0.0, "raw": None, "state": {}}
+_SHOW_REASONING_CACHE_TTL = 1.0
+
 
 def _warn_visual_once(key: str, message: str) -> None:
     now = time.monotonic()
@@ -1037,14 +1044,74 @@ def _ld_card_status_header_enabled() -> bool:
     return enabled
 
 
+def _ld_show_reasoning_state() -> Dict[str, Any]:
+    """``show_reasoning`` 的三态解析结果（``enabled / mode / source / detail``）。
+
+    取值语义（2026-09-24 用户拍板）：
+      * ``auto``（默认）—— **跟随 Hermes**：先取 ``display.platforms.feishu.show_reasoning``，
+        再取 ``display.show_reasoning``，再按 Hermes 自己的平台档位默认值。这样用户在飞书里
+        ``/reasoning on|off`` 或改 Hermes 配置，本插件**无需改配置**就跟着变。
+      * ``on`` / ``off`` —— 插件显式覆盖，永远赢过 auto（含 ``true`` / ``false`` 旧布尔值）。
+      * 读不到 Hermes 配置 / 读不到 ``plugins.stream_reasoning_deltas`` ⇒ **按关闭**处理
+        （fail-closed：宁可少画正文，也不能画一个永远等不到数据的「思考中」）。
+      * display 开着但 ``plugins.stream_reasoning_deltas`` 关着 ⇒ 同样关闭正文，
+        并在 ``/larkdeck status`` 里写明「Hermes 未发送 reasoning delta」——
+        否则用户只会看到「开了 show_reasoning 却没内容」这种静默失败。
+
+    auto 分支缓存 1 秒：``_ld_cardview`` 每帧会问多次，而每次都要读 Hermes 配置；
+    1 秒足够让 ``/reasoning on|off`` 在下一次交互里生效，又不会把读配置摊到每个 token。
+    """
+    raw = _cfg_raw("show_reasoning")
+    explicit: Optional[bool] = None
+    if isinstance(raw, bool):
+        explicit = raw
+    else:
+        token = str(raw).strip().lower() if raw is not None else "auto"
+        if token in ("", "auto", "follow", "hermes"):
+            explicit = None
+        elif token in ("1", "true", "yes", "on", "show"):
+            explicit = True
+        elif token in ("0", "false", "no", "off", "hide"):
+            explicit = False
+        else:
+            _warn_visual_once("show_reasoning-invalid",
+                              f"show_reasoning={raw!r} 非法，按 auto 处理")
+            explicit = None
+    if explicit is not None:
+        return {"enabled": explicit, "mode": "on" if explicit else "off",
+                "source": "explicit", "detail": "插件显式设置"}
+    now = time.monotonic()
+    cache = _SHOW_REASONING_CACHE
+    if (now - float(cache.get("at") or 0.0) < _SHOW_REASONING_CACHE_TTL
+            and cache.get("raw") == raw
+            and isinstance(cache.get("state"), dict)):
+        return dict(cache["state"])
+    hermes_on = _compat.hermes_show_reasoning_enabled("feishu")
+    if hermes_on is None:
+        state = {"enabled": False, "mode": "auto", "source": "hermes-unreadable",
+                 "detail": "读不到 Hermes 的 display.show_reasoning，按关闭处理"}
+    elif not hermes_on:
+        state = {"enabled": False, "mode": "auto", "source": "hermes-off",
+                 "detail": "Hermes 的 display.show_reasoning 未开启"}
+    else:
+        deltas = _compat.hermes_stream_reasoning_deltas_enabled()
+        if deltas is False:
+            state = {"enabled": False, "mode": "auto", "source": "no-deltas",
+                     "detail": "Hermes 未发送 reasoning delta"
+                               "（plugins.stream_reasoning_deltas 未开）"}
+        elif deltas is None:
+            state = {"enabled": False, "mode": "auto", "source": "deltas-unreadable",
+                     "detail": "读不到 Hermes 的 reasoning delta 开关，按关闭处理"}
+        else:
+            state = {"enabled": True, "mode": "auto", "source": "hermes-on",
+                     "detail": "跟随 Hermes display.show_reasoning"}
+    cache["at"], cache["raw"], cache["state"] = now, raw, state
+    return dict(state)
+
+
 def _ld_show_reasoning() -> bool:
-    """生产读取 ``show_reasoning``；V3 实现前两种取值观感相同，非默认值告警。"""
-    enabled = _cfg("show_reasoning")
-    if enabled:
-        _warn_visual_once("show_reasoning",
-                          "show_reasoning=true 已记录；structured canary 下已控制推理正文，"
-                          "legacy 默认仍按旧行为")
-    return enabled
+    """生产读取 ``show_reasoning`` 的布尔结论（解析细节见 :func:`_ld_show_reasoning_state`）。"""
+    return bool(_ld_show_reasoning_state().get("enabled"))
 
 
 def _as_int(value: Any) -> Optional[int]:
@@ -1308,6 +1375,71 @@ def _ck_has_panel_from_card(card: Dict[str, Any]) -> bool:
         elif isinstance(node, (list, tuple)):
             stack.extend(node)
     return False
+
+
+def _ck_panel_partial_for_state(panel: "_cardview.PanelView",
+                                state: Optional[Dict[str, Any]] = None,
+                                ) -> Tuple[Dict[str, Any], str, Dict[str, Any]]:
+    """面板 partial + 稳定签名 + 轮次 id 账本（2026-09-24 自动折叠/手动保持）。
+
+    返回 ``(partial, signature, updates)``：
+
+    * ``partial`` —— 真正发给 ``partial_update_element`` 的载荷。嵌套轮里只有
+      「这一轮第一次以该 element_id 出现」才带 ``expanded``；已在 ``state["ck_round_ids"]``
+      里记过的 id 一律省略 ⇒ 用户手动收起/展开不会被后续帧顶掉。
+    * ``signature`` —— **发送成功后**这张卡的稳定形态签名：所有嵌套轮的 ``expanded`` 都已
+      省略。下一帧若内容不变就能直接跳过；不会为了补一个「省略 expanded」而多发一次写。
+    * ``updates`` —— 成功后要并回回合状态的字段（当前是 ``ck_round_ids``）。调用方**必须
+      在写成功之后**才合并；写失败不合并 ⇒ 下一帧仍把 expanded 带上重试，避免「第一次
+      没写成功、第二次却按已存在省略 expanded」导致活轮以折叠态出生。
+
+    为什么 finalized 的轮要换 element_id：同一 id 上带 ``expanded=false`` 会被客户端当成
+    「与用户手动状态冲突」而忽略（真机探针：手动展开的第 1 轮，同 id + 显式 false 仍展开）；
+    换一个新 id 再带 false，客户端按新元素建，折叠立刻生效（同探针：第 2 轮换 id 后收起）。
+    id 只换这一次，之后继续省略 expanded ⇒ 用户再手动展开该已结束轮，也不会被后续 token 收回。
+    """
+    partial = _cardview.panel_partial(panel)
+    rounds = list(getattr(panel, "reasoning_rounds", ()) or ())
+    finalized_by_id = {_cardview.reasoning_panel_element_id(r): bool(r.finalized)
+                       for r in rounds}
+    prev = (state or {}).get("ck_round_ids")
+    if isinstance(prev, dict):
+        sent = {str(key) for key in prev}
+    elif isinstance(prev, (set, frozenset, list, tuple)):
+        sent = {str(key) for key in prev}
+    else:
+        sent = set()
+    elements = partial.get("elements")
+    seen: set = set()
+    if isinstance(elements, list):
+        for element in elements:
+            if not isinstance(element, dict):
+                continue
+            element_id = str(element.get("element_id") or "")
+            if element_id not in finalized_by_id:
+                continue
+            seen.add(element_id)
+            if element_id in sent:
+                element.pop("expanded", None)
+            else:
+                element["expanded"] = not finalized_by_id[element_id]
+    # 稳定签名：把嵌套轮里的 expanded 全部拿掉（发送成功后卡上就是「只留客户端状态、
+    # 后续不再重放 expanded」的形态）。只浅拷顶层元素 dict，不动嵌套内容。
+    stable_elements: List[Any] = []
+    for element in elements if isinstance(elements, list) else []:
+        if (isinstance(element, dict)
+                and str(element.get("element_id") or "") in finalized_by_id):
+            stable_elements.append({key: value for key, value in element.items()
+                                    if key != "expanded"})
+        else:
+            stable_elements.append(element)
+    stable = {**partial, "elements": stable_elements}
+    try:
+        signature = json.dumps(stable, sort_keys=True, ensure_ascii=False)
+    except Exception:                    # pragma: no cover - 载荷必然可序列化，防御性
+        signature = json.dumps(partial, sort_keys=True, ensure_ascii=False)
+    updates: Dict[str, Any] = {"ck_round_ids": {element_id: True for element_id in seen}}
+    return partial, signature, updates
 
 
 class _CkResult(NamedTuple):
@@ -3184,8 +3316,8 @@ class LarkDeckMixin:
                 if not getattr(view, "panel_enabled", False):
                     return self._ld_hb_result()
                 view.panel.title = _cardview.title_with_note(view.panel.title, content)
-                partial = _cardview.panel_partial(view.panel)
-                signature = json.dumps(partial, sort_keys=True, ensure_ascii=False)
+                partial, signature, round_updates = _ck_panel_partial_for_state(
+                    view.panel, state)
                 note = str(content)
                 if signature == state.get("ck_panel_sig"):
                     self._ld_stream_put(key, {**state, "hb_title": note})
@@ -3208,7 +3340,7 @@ class LarkDeckMixin:
                     self._ld_hb_log(chat, "面板写失败", mid=mid, code=int(res.code))
                     return self._ld_hb_result()
                 updated = {**state, "ck_seq": seq, "ck_panel_sig": signature,
-                           "hb_title": note}
+                           "hb_title": note, **round_updates}
                 _ck_window_note(updated, time.monotonic())
                 self._ld_stream_put(key, updated)
                 self._ld_hb_log(chat, "面板已写", mid=mid)
@@ -4022,8 +4154,12 @@ class LarkDeckMixin:
         }
         if structured:
             new_state["engine"] = "structured"
-            new_state["ck_panel_sig"] = json.dumps(
-                _cardview.panel_partial(new_view.panel), sort_keys=True, ensure_ascii=False)
+            # 新卡由 entity_skeleton(new_view) 一次建出来，里面的嵌套轮已按 finalized 给了
+            # 初始展开态 ⇒ 这里把这批 id 直接记成「已发过」，后续帧只写内容、不再重放
+            # expanded；稳定签名同样去 expanded，避免下一帧为了补一次省略而多发写。
+            _new_partial, _new_sig, _new_rounds = _ck_panel_partial_for_state(new_view.panel)
+            new_state["ck_panel_sig"] = _new_sig
+            new_state.update(_new_rounds)
         return new_state
 
     async def _ld_ck_maybe_summary(self, card_id: str, display: str, state_ref: Dict[str, Any],
@@ -4343,8 +4479,7 @@ class LarkDeckMixin:
             # 结果同一张卡的两帧在 30.0s/0 步 与 2.0s/0 步 之间互跳（审计 B 实测）。
             if not view.panel_enabled:
                 return "unchanged"          # 面板被配置关掉 ⇒ 心跳没有可写的东西
-            partial = _cardview.panel_partial(view.panel)
-            signature = json.dumps(partial, sort_keys=True, ensure_ascii=False)
+            partial, signature, round_updates = _ck_panel_partial_for_state(view.panel, state)
             if signature == state.get("ck_panel_sig"):
                 return "unchanged"
             seq = _ck_seq(state) + 1
@@ -4371,6 +4506,7 @@ class LarkDeckMixin:
             updated = dict(state)
             updated["ck_panel_sig"] = signature
             updated["ck_seq"] = seq
+            updated.update(round_updates)
             _ck_window_note(updated, time.monotonic())
             self._ld_stream_put(key, updated)
             return "wrote"
@@ -4685,6 +4821,7 @@ class LarkDeckMixin:
             if not message_id:
                 return self._ld_stream_fail("structured 建卡成功但没拿到 message_id")
             self._ld_track(message_id, chat)
+            _seed_partial, _seed_sig, _seed_updates = _ck_panel_partial_for_state(view.panel)
             self._ld_stream_put(key, {
                 "message_id": message_id, "chat_id": chat, "t0": now, "last": text,
                 "last_at": now, "frames": 0, "skipped": 0, "strips": 0,
@@ -4697,12 +4834,12 @@ class LarkDeckMixin:
                 # 「有没有提示」必须靠这个显式标志判断 —— 2026-09-21 实测：
                 # 建卡 JSON 里明明有 loading_hint，成员判断却是 False。
                 "ck_loading": True,
-                "ck_panel_sig": json.dumps(_cardview.panel_partial(view.panel),
-                                           sort_keys=True, ensure_ascii=False),
+                "ck_panel_sig": _seed_sig,
                 "last_rendered_body": display, "last_failed_frame": "",
                 "session_id": _panel.bound_session_id(chat) or "",
                 "turn_id": str(turn_id or ""),
                 "panel_gate_turn": _gate_turn, "panel_gate_at": _gate_at,
+                **_seed_updates,
             })
             self._ld_seed_note(chat, turn_id)
             self._ld_heartbeat_start(chat, key, turn_id)
@@ -4779,8 +4916,7 @@ class LarkDeckMixin:
                         "放弃重试，等收尾整卡 patch 摘除", _tries, _hint_res.code, _hint_res.msg)
                     live["ck_loading"] = False
         view.loading_hint = bool(live.get("ck_loading", True) and not visible)
-        partial = _cardview.panel_partial(view.panel)
-        signature = json.dumps(partial, sort_keys=True, ensure_ascii=False)
+        partial, signature, round_updates = _ck_panel_partial_for_state(view.panel, state)
         if view.panel_enabled and signature != state.get("ck_panel_sig"):
             seq += 1
             res = await self._ld_ck_partial(card_id, "panel", partial, seq)
@@ -4797,6 +4933,7 @@ class LarkDeckMixin:
                     [_CkOp("panel", "", _CK_ROLE_PANEL)], res.code, msg=res.msg)
             else:
                 live["ck_panel_sig"] = signature
+                live.update(round_updates)
         footer_text = self._ld_frame_footer({**state, "status": status}) or " "
         if (_cards.CARDKIT_FOOTER_ID in self._ld_ck_elems(state)
                 and state.get("ck_footer") != footer_text):
@@ -6507,6 +6644,41 @@ def _ld_diagnosis_lines() -> List[str]:
         return [_i18n.t("diag.failed", error=reason)]
 
 
+#: ``_ld_show_reasoning_state()["source"]`` → 状态行里的「为什么」文案。
+_REASONING_DETAIL_KEYS = {
+    "explicit": "diag.reasoning_detail_explicit",
+    "hermes-off": "diag.reasoning_detail_hermes_off",
+    "hermes-unreadable": "diag.reasoning_detail_hermes_unreadable",
+    "no-deltas": "diag.reasoning_detail_no_deltas",
+    "deltas-unreadable": "diag.reasoning_detail_deltas_unreadable",
+    "hermes-on": "diag.reasoning_detail_hermes_on",
+}
+
+
+def _ld_reasoning_diag_line() -> str:
+    """`/larkdeck status` 的推理显示行：开/关 + 模式 + 为什么（绝不抛）。"""
+    try:
+        state = _ld_show_reasoning_state()
+        source = str(state.get("source") or "")
+        detail = _i18n.t(_REASONING_DETAIL_KEYS.get(source, _REASONING_DETAIL_KEYS["explicit"]))
+        line = _i18n.t(
+            "diag.reasoning",
+            state=_i18n.t("diag.reasoning_on" if state.get("enabled")
+                          else "diag.reasoning_off"),
+            mode=str(state.get("mode") or "auto"),
+            detail=detail,
+        )
+        # 只有「本可显示却被数据源挡住 / 读不到数据源」才值得预警；显式关和 Hermes 自己关
+        # 都是用户意图，不加 ⚠️（加了会与真正的故障混淆，违背本诊断卡的口径）。
+        if source in ("no-deltas", "deltas-unreadable", "hermes-unreadable"):
+            return "⚠️ " + line
+        return line
+    except Exception as exc:              # pragma: no cover - 防御性
+        logger.warning("[larkdeck] 推理显示诊断渲染失败: %s", type(exc).__name__, exc_info=True)
+        return _i18n.t("diag.reasoning", state=_i18n.t("diag.reasoning_off"),
+                       mode="auto", detail=str(exc) or _i18n.t("cmd.failed_no_reason"))
+
+
 # --------------------------------------------------------------------------- #
 # P2 `/larkdeck config`：只读视图 + 官方 ctx.get_config() 热刷新。
 # ⚠️ 审计 security B1 后**没有聊天侧写入命令**：写配置走官方 Hermes CLI / 配置文件，
@@ -6701,6 +6873,7 @@ def _ld_command_card(raw_args: str) -> str:
         # P1a 的能力探测详情与 R9 的逐条账本。顺序 = 先总后分，用户扫一眼就能判断要不要细看。
         return "\n".join([header, _i18n.t("cmd.scope")]
                           + _ld_diagnosis_lines()
+                          + [_ld_reasoning_diag_line()]
                           + _probe_status_lines()
                           + _context.status_lines())
     except Exception as exc:  # pragma: no cover - 防御性：处理器绝不能抛

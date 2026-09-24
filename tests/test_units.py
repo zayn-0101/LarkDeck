@@ -27,7 +27,7 @@ import sys
 import threading
 import time
 import types
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO_PARENT = os.path.dirname(os.path.dirname(_HERE))  # .../code —— 使 `import larkdeck` 成立
@@ -3828,7 +3828,7 @@ def test_tool_duration_and_section_heading_helpers_are_dirty_data_safe():
         round_title = cards._round_title(1, 10 ** 400)
     except Exception as exc:
         raise AssertionError(f"坏 elapsed 让轮标题崩溃：{exc}") from exc
-    assert round_title == "第 1 轮 · 1440m00s"
+    assert round_title == "第 1 轮思考 · 1440m00s"
     huge_round = cards.unified_panel(rounds=[{"text": "a", "elapsed_ms": 10 ** 400}])
     assert huge_round is not None
     assert "1440m00s" in " ".join(e.get("content", "") for e in huge_round["elements"])
@@ -5553,7 +5553,7 @@ def test_panel_renders_reasoning_rounds_with_durations():
     assert "第 2 轮" in joined and "1.5s" in joined, joined
     assert "第一段推理" in joined and "第二段推理" in joined
     # 英文侧同步
-    assert "Round 1" in i18n.t("panel.round_n", loc := i18n.EN, n=1)
+    assert "Thinking round 1" in i18n.t("panel.round_n", loc := i18n.EN, n=1)
 
     # 没给 rounds 时退回把 reasoning 当一整段（向后兼容）；标题仍走「💭 思考」分区
     flat = cards.unified_panel(reasoning="一整段推理")
@@ -11579,7 +11579,8 @@ def test_v0_visual_config_keys_are_read_with_warning():
             assert adapter._ld_show_reasoning() is True
         text = "\n".join(r.getMessage() for r in records)
         assert "card_status_header=false" in text, text
-        assert "show_reasoning=true" in text, text
+        # show_reasoning 已落地为真实开关：显式 true 是合法配置，不再产生「已登记」式告警。
+        assert "show_reasoning=true" not in text, text
 
         config_text = adapter._ld_config_show()
         for key in ("visual_engine", "card_status_header", "show_reasoning"):
@@ -11588,12 +11589,17 @@ def test_v0_visual_config_keys_are_read_with_warning():
             assert "已登记" not in line, f"{key} 早已落地，不该再标未生效：{line!r}"
 
         raw = _make()
-        # 生产调用点必须真的读：删掉任一调用点，对应 capture 不再出现 WARNING。
-        adapter._VISUAL_WARN_AT.clear()
-        with _LogCapture("larkdeck") as panel_records:
-            raw._ld_panel_parts("oc_v0")
-        panel_text = "\n".join(r.getMessage() for r in panel_records)
-        assert "show_reasoning=true" in panel_text, panel_text
+        # 生产调用点必须真的读 show_reasoning：同一份快照在 on/off 下必须给出不同的面板正文。
+        panel.reset()
+        panel.bind_chat_session("oc_v0", "s_v0")
+        panel.record_reasoning("s_v0", "s_v0", "V0 探针推理正文。")
+        adapter.configure(show_reasoning=True)
+        on_body, _ = raw._ld_panel_parts("oc_v0")
+        assert "V0 探针推理正文" in on_body, on_body
+        adapter.configure(show_reasoning=False)
+        off_body, _ = raw._ld_panel_parts("oc_v0")
+        assert "V0 探针推理正文" not in off_body, off_body
+        adapter.configure(show_reasoning=True)   # 后续 send/edit 仍按显式开
 
         adapter._VISUAL_WARN_AT.clear()
         with _LogCapture("larkdeck") as build_records:
@@ -11631,16 +11637,29 @@ def test_v0_visual_config_keys_are_read_with_warning():
         assert adapter._ld_visual_engine() == "structured", support_text
 
         adapter._VISUAL_WARN_AT.clear()
-        with _LogCapture("larkdeck") as send_records:
-            _run(raw.send("oc_v0", "x"))
-        send_text = "\n".join(r.getMessage() for r in send_records)
-        assert "show_reasoning=true" in send_text, send_text
+        orig_show_reasoning = adapter._ld_show_reasoning
+        show_reads: List[int] = []
 
-        adapter._VISUAL_WARN_AT.clear()
-        with _LogCapture("larkdeck") as edit_records:
-            _run(raw.edit_message("oc_v0", "om_v0", "x"))
-        edit_text = "\n".join(r.getMessage() for r in edit_records)
-        assert "card_status_header=false" in edit_text, edit_text
+        def _counting_show_reasoning() -> bool:
+            show_reads.append(1)
+            return orig_show_reasoning()
+
+        adapter._ld_show_reasoning = _counting_show_reasoning
+        try:
+            with _LogCapture("larkdeck") as send_records:
+                _run(raw.send("oc_v0", "x"))
+            send_text = "\n".join(r.getMessage() for r in send_records)
+            assert show_reads, f"send 路径必须读 show_reasoning：{send_text}"
+            send_reads = len(show_reads)
+
+            adapter._VISUAL_WARN_AT.clear()
+            with _LogCapture("larkdeck") as edit_records:
+                _run(raw.edit_message("oc_v0", "om_v0", "x"))
+            edit_text = "\n".join(r.getMessage() for r in edit_records)
+            assert "card_status_header=false" in edit_text, edit_text
+            assert len(show_reads) > send_reads, f"edit_message 路径必须读 show_reasoning：{edit_text}"
+        finally:
+            adapter._ld_show_reasoning = orig_show_reasoning
 
         adapter._VISUAL_WARN_AT.clear()
         with _LogCapture("larkdeck") as stop_records:
@@ -11650,7 +11669,7 @@ def test_v0_visual_config_keys_are_read_with_warning():
         assert adapter._ld_visual_engine() == "structured", stop_text
     finally:
         adapter.configure(visual_engine="legacy", card_status_header=True,
-                          show_reasoning=False)
+                          show_reasoning=adapter._DEFAULTS["show_reasoning"])
         adapter._VISUAL_WARN_AT.clear()
         panel.reset()
 
@@ -13853,6 +13872,138 @@ def test_v072_nested_rounds_expand_current_and_collapse_finished():
         assert rendered[1]["expanded"] is True, rendered[1]
     finally:
         panel.reset()
+
+
+def test_v076_round_subpanel_ids_and_manual_state_tracking():
+    """2026-09-24 真机结论：轮结束自动折叠靠 **finalized 换 element_id**，不是同 id 改 expanded。
+
+    真机探针（本卡经用户目视）：
+      * 同一 element_id 上带 `expanded=false` 会被客户端当成「与手动状态冲突」而忽略；
+      * 换成新 element_id 再带 `expanded=false` ⇒ 客户端按新元素建，立刻折叠；
+      * 已有 element_id 上省略 `expanded` ⇒ 手动展开/收起都被保留。
+
+    所以 `_ck_panel_partial_for_state` 的契约是：
+      ① 轮第一次以某 id 出现（含 finalized 换代）⇒ 带 expanded；
+      ② 之后同一 id 的帧 ⇒ 省略 expanded；
+      ③ 稳定签名去 expanded，避免下一帧为了「补一次省略」多发写。
+    """
+    cv = adapter._cardview
+    live_view = cv.PanelView(reasoning_rounds=[
+        cv.ReasoningRoundView(index=0, text="第一轮正文", elapsed_ms=1200, finalized=True),
+        cv.ReasoningRoundView(index=1, text="第二轮正文", elapsed_ms=800, finalized=False),
+    ])
+    partial, signature, updates = adapter._ck_panel_partial_for_state(live_view, {})
+    by_id = {element.get("element_id"): element
+             for element in partial["elements"] if isinstance(element, dict)}
+    assert "reasoning_0_folded_panel" in by_id, by_id
+    assert "reasoning_1_live_panel" in by_id, by_id
+    assert by_id["reasoning_0_folded_panel"]["expanded"] is False, by_id
+    assert by_id["reasoning_1_live_panel"]["expanded"] is True, by_id
+    assert updates["ck_round_ids"] == {"reasoning_0_folded_panel": True,
+                                       "reasoning_1_live_panel": True}, updates
+
+    # ② 同一批 id：后续帧不再重放 expanded（用户手动状态才会被保留）
+    partial2, signature2, updates2 = adapter._ck_panel_partial_for_state(
+        live_view, {"ck_round_ids": updates["ck_round_ids"]})
+    for element in partial2["elements"]:
+        if isinstance(element, dict) and str(element.get("element_id") or "").startswith("reasoning_"):
+            assert "expanded" not in element, element
+    assert signature2 == signature, "稳定签名不该因为省略 expanded 而变化"
+    assert updates2["ck_round_ids"] == updates["ck_round_ids"], updates2
+
+    # ③ 活跃轮结束：id 换代成 folded，并带一次 expanded=false（真机上正是这一步折叠）
+    finalized_only = cv.PanelView(reasoning_rounds=[
+        cv.ReasoningRoundView(index=1, text="第二轮正文（已结束）", elapsed_ms=900,
+                              finalized=True),
+    ])
+    partial3, signature3, updates3 = adapter._ck_panel_partial_for_state(
+        finalized_only, {"ck_round_ids": updates["ck_round_ids"]})
+    by_id3 = {element.get("element_id"): element
+              for element in partial3["elements"] if isinstance(element, dict)}
+    assert "reasoning_1_live_panel" not in by_id3, by_id3
+    assert "reasoning_1_folded_panel" in by_id3, by_id3
+    assert by_id3["reasoning_1_folded_panel"]["expanded"] is False, by_id3
+    assert updates3["ck_round_ids"] == {"reasoning_1_folded_panel": True}, updates3
+    partial3b, signature3b, _ = adapter._ck_panel_partial_for_state(
+        finalized_only, {"ck_round_ids": updates3["ck_round_ids"]})
+    assert signature3b == signature3, (signature3, signature3b)
+    assert all("expanded" not in element
+               for element in partial3b["elements"] if isinstance(element, dict))
+
+
+def test_v076_reasoning_title_and_folded_hints_match_user_spec():
+    """用户 2026-09-24 口径：标题 `第 N 轮思考 · X.Xs`；折叠提示不带前导 `…`；
+    只有「已省略 N 字符」保留 `…`（那是被截断的尾巴，语义不同）。"""
+    i18n = adapter._i18n
+    assert i18n.t("panel.round_n", n=2) == "第 2 轮思考"
+    assert i18n.t("panel.trimmed", n=3) == "已折叠 3 条早期思考/工具记录"
+    assert not i18n.t("panel.trimmed", n=3).startswith("…")
+    assert i18n.t("panel.rounds_trimmed", n=2) == "更早的 2 轮已折叠"
+    assert not i18n.t("panel.rounds_trimmed", n=2).startswith("…")
+    assert i18n.t("panel.overflow", n=2) == "…已省略 2 字符"
+
+    cv = adapter._cardview
+    live = cv.ReasoningRoundView(index=0, text="x", elapsed_ms=6200, finalized=False)
+    done = cv.ReasoningRoundView(index=1, text="y", elapsed_ms=1500, finalized=True)
+    live_panel = cv.reasoning_panel(live, expanded=True)
+    done_panel = cv.reasoning_panel(done, expanded=False)
+    assert live_panel["header"]["title"]["content"] == "第 1 轮思考 · 6.2s", live_panel
+    assert done_panel["header"]["title"]["content"] == "第 2 轮思考 · 1.5s", done_panel
+    assert live_panel["element_id"] == "reasoning_0_live_panel", live_panel
+    assert done_panel["element_id"] == "reasoning_1_folded_panel", done_panel
+    assert adapter._cards._round_title(1, 1000) == "第 1 轮思考 · 1.0s"
+
+
+def test_v076_show_reasoning_auto_follows_hermes():
+    """`show_reasoning=auto` 跟随 Hermes；on/off 覆盖；无 delta 时按关闭并在诊断里说明。"""
+    saved_value = adapter._CONFIG.get("show_reasoning", adapter._DEFAULTS["show_reasoning"])
+    saved_show_fn = adapter._compat.hermes_show_reasoning_enabled
+    saved_deltas_fn = adapter._compat.hermes_stream_reasoning_deltas_enabled
+    saved_cache = dict(adapter._SHOW_REASONING_CACHE)
+    if isinstance(saved_cache.get("state"), dict):
+        saved_cache["state"] = dict(saved_cache["state"])
+    try:
+        adapter.configure(show_reasoning="auto")
+        adapter._SHOW_REASONING_CACHE["at"] = 0.0
+        adapter._compat.hermes_show_reasoning_enabled = lambda platform="feishu": True
+        adapter._compat.hermes_stream_reasoning_deltas_enabled = lambda: True
+        state = adapter._ld_show_reasoning_state()
+        assert (state["enabled"], state["mode"], state["source"]) == (
+            True, "auto", "hermes-on"), state
+        assert "跟随 Hermes" in adapter._ld_reasoning_diag_line()
+
+        # display 已开但 Hermes 不会送 reasoning delta ⇒ 按关闭，并点名原因
+        adapter._SHOW_REASONING_CACHE["at"] = 0.0
+        adapter._compat.hermes_stream_reasoning_deltas_enabled = lambda: False
+        state = adapter._ld_show_reasoning_state()
+        assert (state["enabled"], state["source"]) == (False, "no-deltas"), state
+        diag = adapter._ld_reasoning_diag_line()
+        assert "Hermes 未发送 reasoning delta" in diag and diag.startswith("⚠️ "), diag
+
+        # Hermes 自己关 / 读不到 ⇒ 关（不猜默认）
+        adapter._SHOW_REASONING_CACHE["at"] = 0.0
+        adapter._compat.hermes_show_reasoning_enabled = lambda platform="feishu": False
+        state = adapter._ld_show_reasoning_state()
+        assert (state["enabled"], state["source"]) == (False, "hermes-off"), state
+        assert not adapter._ld_reasoning_diag_line().startswith("⚠️ "), state
+        adapter._SHOW_REASONING_CACHE["at"] = 0.0
+        adapter._compat.hermes_show_reasoning_enabled = lambda platform="feishu": None
+        state = adapter._ld_show_reasoning_state()
+        assert (state["enabled"], state["source"]) == (False, "hermes-unreadable"), state
+        assert adapter._ld_reasoning_diag_line().startswith("⚠️ "), state
+
+        # 显式 on/off 永远赢过 auto；旧布尔值 true/false 继续接受
+        for raw, expected in (("on", True), ("off", False), (True, True), (False, False)):
+            adapter.configure(show_reasoning=raw)
+            adapter._SHOW_REASONING_CACHE["at"] = 0.0
+            state = adapter._ld_show_reasoning_state()
+            assert state["enabled"] is expected and state["source"] == "explicit", (raw, state)
+    finally:
+        adapter.configure(show_reasoning=saved_value)
+        adapter._compat.hermes_show_reasoning_enabled = saved_show_fn
+        adapter._compat.hermes_stream_reasoning_deltas_enabled = saved_deltas_fn
+        adapter._SHOW_REASONING_CACHE.clear()
+        adapter._SHOW_REASONING_CACHE.update(saved_cache)
 
 
 def test_v072_turn_end_finalizes_open_round_and_freezes_elapsed():

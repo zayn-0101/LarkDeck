@@ -131,7 +131,7 @@ else:
         got_cards = ld_mod._cfg("cards")
         print(f"settings bridge: clarify_cards={got_clarify!r} context_style={got_style!r} cards={got_cards!r}")
         for _key, _expected in (("visual_engine", "structured"), ("card_status_header", False),
-                                ("show_reasoning", False)):
+                                ("show_reasoning", "auto")):
             if ld_mod._DEFAULTS.get(_key, object()) != _expected:
                 problems.append(
                     f"v0.7.1 视觉键默认值错误：{_key}={ld_mod._DEFAULTS.get(_key)!r}（期望 {_expected!r}）")

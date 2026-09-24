@@ -1409,7 +1409,7 @@ _ELEMENT_LIMIT_RESERVE = 6
 #: （2026-09-13 审计实测：steps=190 → tier=no-panel、190 个元素的推理面板全没了）。
 _CARD_FIXED_ELEMENTS = 5
 
-#: 面板里可能出现的「…更早的 N 步已折叠」提示行，也要算进子元素预算。
+#: 面板里可能出现的「更早的 N 步已折叠」提示行，也要算进子元素预算。
 _PANEL_HINT_ELEMENTS = 1
 
 #: 面板**子元素**的可用额度：与 :func:`fit_reply_card` 的判据同源，保证「面板自认为
@@ -1557,7 +1557,7 @@ def fit_reply_card(answer: str, *, streaming: bool = False,
 
 
 def _round_title(index: int, elapsed_ms: Any) -> str:
-    """推理轮的标题行：``第 N 轮 · 6.2s``（耗时是**相对时长**，不是时刻）。
+    """推理轮的标题行：``第 N 轮思考 · 6.2s``（耗时是**相对时长**，不是时刻）。
 
     脏值不参与运算；单值封顶 24h，避免 ``/1000.0`` 溢出把面板带走（Phase 1 审计 M-1）。
     """
@@ -1823,7 +1823,7 @@ def unified_panel(*, reasoning: str = "", rounds: Sequence[Dict[str, Any]] = (),
     传了 ``rounds`` 就**按轮分段渲染**（每轮一个耗时标题行），这是 aiduPOP 的观感：
     「一轮 = 一段连续推理，被正文或工具打断」。没传就退回把 ``reasoning`` 当一整段渲染。
     每轮分到的截断额度是 ``max_reasoning_chars`` 的均分，且**渲染轮数收在
-    ``max_reasoning_chars // _MIN_ROUND_CHARS`` 以内**（更早的轮补一行「…更早的 N 轮已折叠」）
+    ``max_reasoning_chars // _MIN_ROUND_CHARS`` 以内**（更早的轮补一行「更早的 N 轮已折叠」）
     —— 这样「推理文本上限」这个配置约束的是**总量**，不会因为轮数变多而整体膨胀。
 
     所有进来的长文本都过 :func:`truncate`：面板是「收纳」不是「倾倒」，

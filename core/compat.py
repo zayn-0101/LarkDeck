@@ -151,6 +151,86 @@ def capture_bundled_platform_registration(
     return captured
 
 
+def _as_bool_or_none(value: Any) -> Optional[bool]:
+    """Hermes 配置值的三态归一：``True`` / ``False`` / ``None``（读不到或类型不认识）。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in ("1", "true", "yes", "on"):
+            return True
+        if token in ("0", "false", "no", "off", ""):
+            return False
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return bool(value)
+    return None
+
+
+def hermes_show_reasoning_enabled(platform: str = "feishu") -> Optional[bool]:
+    """Hermes 对 ``platform`` 生效的 ``display.show_reasoning``；读不到返回 ``None``。
+
+    解析顺序与 Hermes 自己的 ``gateway.display_config.resolve_display_setting`` 完全一致：
+    ``display.platforms.<platform>.show_reasoning`` → ``display.show_reasoning`` →
+    平台档位默认值 → 全局默认值。**不是**只读顶层键 —— 用户在平台上的显式覆盖必须赢。
+
+    只读探测：任何异常一律返回 ``None``，由调用方（``adapter._ld_show_reasoning_state``）
+    决定 fail-closed 方向。这里不抛、不写配置、不缓存 Hermes 的对象。
+    """
+    key = str(platform or "feishu").strip() or "feishu"
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+    except Exception:
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    try:
+        from gateway.display_config import resolve_display_setting
+        return _as_bool_or_none(
+            resolve_display_setting(cfg, key, "show_reasoning", None))
+    except Exception:
+        pass
+    # 老版本 / 模块改名时的只读回落：逐层找第一个显式值。找不到就返回 None（不猜默认）。
+    display = cfg.get("display")
+    if not isinstance(display, dict):
+        return None
+    platforms = display.get("platforms")
+    if isinstance(platforms, dict):
+        platform_cfg = platforms.get(key)
+        if isinstance(platform_cfg, dict) and platform_cfg.get("show_reasoning") is not None:
+            return _as_bool_or_none(platform_cfg.get("show_reasoning"))
+    if display.get("show_reasoning") is not None:
+        return _as_bool_or_none(display.get("show_reasoning"))
+    return None
+
+
+def hermes_stream_reasoning_deltas_enabled() -> Optional[bool]:
+    """Hermes 是否会把 ``kind="reasoning"`` 的 delta 送给插件；读不到返回 ``None``。
+
+    优先问 Hermes 自己的 ``agent.plugin_stream_hooks.stream_reasoning_deltas_enabled()``
+    （那是真正决定分发的那份配置口径）；失败时回落到 ``plugins.stream_reasoning_deltas``
+    的只读值。注意：这个开关**只说明数据到不到插件**，不决定卡片显不显示 ——
+    ``show_reasoning`` 的显隐才是卡片侧口径；本开关为 False 时即使 display 开着也没有
+    推理正文可画，所以 adapter 会隐藏正文并在 ``/larkdeck status`` 里说明原因。
+    """
+    try:
+        from agent.plugin_stream_hooks import stream_reasoning_deltas_enabled
+        return bool(stream_reasoning_deltas_enabled())
+    except Exception:
+        pass
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+    except Exception:
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    plugins = cfg.get("plugins")
+    if not isinstance(plugins, dict):
+        return None
+    return _as_bool_or_none(plugins.get("stream_reasoning_deltas"))
+
+
 def hermes_version() -> str:
     """尽力拿到 Hermes 版本号；拿不到返回 ``"unknown"``。"""
     for getter in (_version_metadata, _version_constants, _version_module):

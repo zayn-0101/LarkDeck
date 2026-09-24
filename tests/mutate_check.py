@@ -1138,10 +1138,12 @@ MUTATIONS = [
     ("R9-20-卡片不再说清数字是进程级累计（用户拿别人会话的失败原因查自己的卡）", "core/adapter.py",
      '        return "\\n".join([header, _i18n.t("cmd.scope")]\n'
      '                          + _ld_diagnosis_lines()\n'
+     '                          + [_ld_reasoning_diag_line()]\n'
      '                          + _probe_status_lines()\n'
      '                          + _context.status_lines())',
      '        return "\\n".join([header]\n'
      '                          + _ld_diagnosis_lines()\n'
+     '                          + [_ld_reasoning_diag_line()]\n'
      '                          + _probe_status_lines()\n'
      '                          + _context.status_lines())',
      "check_override"),
@@ -2141,6 +2143,7 @@ MUTATIONS = [
      "core/adapter.py",
      '        return "\\n".join([header, _i18n.t("cmd.scope")]\n'
      '                          + _ld_diagnosis_lines()\n'
+     '                          + [_ld_reasoning_diag_line()]\n'
      '                          + _probe_status_lines()\n'
      '                          + _context.status_lines())',
      '        return "\\n".join([header, _i18n.t("cmd.scope")]\n'
@@ -2244,11 +2247,34 @@ MUTATIONS = [
      "test_units"),
     # v0.7.1 V0：三配置键必须被生产读取且未实现前告警；token 表必须被 check_cardview 锁住。
 
-    ("V0-2-show_reasoning=true 告警被静默（配置被吞）", "core/adapter.py",
-     '    if enabled:\n'
-     '        _warn_visual_once("show_reasoning",',
-     '    if False:\n'
-     '        _warn_visual_once("show_reasoning",',
+    ("V0-2-show_reasoning=off 被静默（显式关闭无法生效）", "core/adapter.py",
+     '        elif token in ("0", "false", "no", "off", "hide"):\n'
+     '            explicit = False',
+     '        elif False:  # V0-2 mutated\n'
+     '            explicit = False',
+     "test_units"),
+    # 2026-09-24 用户三项口径：轮结束换 id 自动折叠、已有轮不重放 expanded、auto 跟随 Hermes。
+    ("V076-1-finalized 轮不换 element_id（同 id 改 expanded=false 真机无效）", "core/cardview.py",
+     '    state = "folded" if round_view.finalized else "live"\n'
+     '    return f"reasoning_{round_view.index}_{state}_panel"',
+     '    state = "live"\n'
+     '    return f"reasoning_{round_view.index}_{state}_panel"',
+     "test_units"),
+    ("V076-2-已有轮每帧重放 expanded（用户手动状态被顶掉）", "core/adapter.py",
+     '            if element_id in sent:\n'
+     '                element.pop("expanded", None)',
+     '            if element_id in sent:\n'
+     '                pass  # V076-2 mutated',
+     "test_units"),
+    ("V076-3-auto 不跟随 Hermes（Hermes 关闭时插件仍显示推理）", "core/adapter.py",
+     '    hermes_on = _compat.hermes_show_reasoning_enabled("feishu")',
+     '    hermes_on = True  # V076-3 mutated',
+     "test_units"),
+    ("V076-4-Hermes 无 delta 时仍显示推理（空面板骗用户）", "core/adapter.py",
+     '        if deltas is False:\n'
+     '            state = {"enabled": False, "mode": "auto", "source": "no-deltas",',
+     '        if False:  # V076-4 mutated\n'
+     '            state = {"enabled": False, "mode": "auto", "source": "no-deltas",',
      "test_units"),
     ("V0-3-card_status_header=false 告警被静默（配置被吞）", "core/adapter.py",
      '    if not enabled:\n'
@@ -3141,8 +3167,9 @@ MUTATIONS = [
      'test_units'),
     ('V075-9-心跳标题不持久化（3s tick 擦回普通标题）', 'core/adapter.py',
      '                updated = {**state, "ck_seq": seq, "ck_panel_sig": signature,\n'
-     '                           "hb_title": note}',
-     '                updated = {**state, "ck_seq": seq, "ck_panel_sig": signature}  # V075-9 mutated',
+     '                           "hb_title": note, **round_updates}',
+     '                updated = {**state, "ck_seq": seq, "ck_panel_sig": signature,\n'
+     '                           **round_updates}  # V075-9 mutated',
      'test_units'),
     ('V075-10-finalize 不清心跳标题（终卡残留 Working）', 'core/adapter.py',
      '            if state.get("hb_title"):\n'

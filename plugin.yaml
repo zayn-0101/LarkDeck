@@ -93,9 +93,9 @@ config_schema:
     default: false
     description: "是否显示卡片顶部状态条（处理中蓝 / 完成绿 / 停止黄 / 出错红；false 时不渲染卡级 header）"
   show_reasoning:
-    type: boolean
-    default: false
-    description: "是否显示推理正文（默认 false 对齐 CLS/aiduPOP：**所有车道**只留 `💭 思考 Xs` 摘要行；true 时按嵌套折叠面板展示推理全文）"
+    type: string
+    default: auto
+    description: "是否显示推理正文：auto（默认，跟随 Hermes display.show_reasoning / 平台覆盖）/ on（插件强制显示）/ off（插件强制隐藏）；旧布尔值 true/false 仍接受。Hermes 未发送 reasoning delta 时按关闭处理，并在 /larkdeck status 说明原因"
   footer:
     type: boolean
     default: true

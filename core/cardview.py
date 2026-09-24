@@ -573,6 +573,27 @@ def tool_step_elements(step: ToolStepView, icon_mode: str = "line") -> List[Dict
     return elements
 
 
+def reasoning_panel_element_id(round_view: ReasoningRoundView) -> str:
+    """轮子面板的 element_id：**定稿后换一个新 id**。
+
+    为什么 id 要跟着 ``finalized`` 变（2026-09-24 真机探针结论）：
+      * 同一 element_id 上的 ``expanded`` 在客户端会被当成**用户手动状态**，中间帧再带
+        ``expanded=false`` 顶不回去（探针：手动展开的第 1 轮在同 id + 显式 false 后仍展开）；
+      * 但把同一轮换成**新 element_id** 再带 ``expanded=false``，客户端会按新元素建，
+        折叠立刻生效（探针：第 2 轮换 id + false → 收起）。
+    所以「一轮结束 → 自动折叠」靠的是**id 换代**，而不是在同一 id 上反复改 expanded。
+    之后的中间帧对新 id 省略 ``expanded``，用户手动展开的状态就不会被后续 token 顶掉。
+    """
+    state = "folded" if round_view.finalized else "live"
+    return f"reasoning_{round_view.index}_{state}_panel"
+
+
+def reasoning_text_element_id(round_view: ReasoningRoundView) -> str:
+    """轮正文的 element_id（与 :func:`reasoning_panel_element_id` 同代）。"""
+    state = "folded" if round_view.finalized else "live"
+    return f"reasoning_{round_view.index}_{state}_text"
+
+
 def reasoning_panel(round_view: ReasoningRoundView,
                     expanded: bool = False) -> Dict[str, Any]:
     """推理轮：嵌套 collapsible_panel（FC/CLS 终态形态）。
@@ -589,7 +610,7 @@ def reasoning_panel(round_view: ReasoningRoundView,
                                   for lang, val in (title.get("i18n_content") or {}).items()}}
     return {
         "tag": "collapsible_panel",
-        "element_id": f"reasoning_{round_view.index}_panel",
+        "element_id": reasoning_panel_element_id(round_view),
         "header": {
             "title": _title_node(title, text_size=PANEL_TEXT_SIZE, text_color="grey"),
             "vertical_align": "center",
@@ -604,7 +625,7 @@ def reasoning_panel(round_view: ReasoningRoundView,
         "border": {"color": "grey", "corner_radius": PANEL_RADIUS},
         "elements": [{
             "tag": "markdown",
-            "element_id": f"reasoning_{round_view.index}_text",
+            "element_id": reasoning_text_element_id(round_view),
             "content": round_view.text,
             "text_size": PANEL_TEXT_SIZE,
             "margin": MARKDOWN_MARGIN,
@@ -707,6 +728,12 @@ def panel_partial(view: PanelView) -> Dict[str, Any]:
     建卡时的展开态 ⇒ 用户手动收起面板后，下一个 token 立刻把它顶回展开（用户真机试过）。
     省略之后「展开/收起」只剩两个真值来源：① 建卡实体（seed）那一份 ② 收尾整卡 patch；
     中间帧只换内容，不碰结构。
+
+    **嵌套轮**同一条纪律（2026-09-24 真机探针补充）：外层 partial 的 `elements` 数组里，
+    只有「这一轮第一次以某个 element_id 出现」或「轮结束换新 id」时才带 `expanded`；
+    其余帧由 ``adapter._ck_panel_partial_for_state`` 统一省略。子面板的自动折叠靠
+    ``reasoning_panel_element_id`` 在 finalized 时换代（同 id 上改 expanded=false 会被
+    客户端的手动状态覆盖；换新 id 才会按 false 重建，用户已真机确认）。
 
     因此这里的键集**是契约**：`ck_panel_sig`（去重签名）与真正发出的 partial 同源 ⇒
     签名里也不含 `expanded` ⇒ 「换了展开态但内容没变」不会被误判成「有变化要重发」。
