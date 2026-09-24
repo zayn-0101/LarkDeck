@@ -115,7 +115,7 @@ config_schema:
   theme:
     type: string
     default: "ap_lite"
-    description: "观感主题：neutral（原符号）/ ap_lite（默认，抽象 emoji）/ ap_bubble（AP 泡波风格，含人物 emoji，可选）"
+    description: "观感主题：neutral（原符号）/ ap_lite（默认，抽象 emoji）/ ap_bubble（泡波风格，含人物 emoji，可选）"
   panel_color_tags:
     type: boolean
     default: true
