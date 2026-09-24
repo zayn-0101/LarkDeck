@@ -14,6 +14,34 @@
 > 已知待验：`text_profile` / `ap_lite` 真机视觉、无网关 cron 真机投递。
 
 
+## [0.7.6] - 2026-09-24 Hermes 0.21.4 延迟平台兼容
+
+### 修复（用户可见）
+
+- **Hermes 0.21.4 升级后不再出现“插件加载超时、飞书退回纯文本”**：0.21.4 把 bundled
+  平台注册成 deferred loader；旧 `register()` 在插件加载 worker 里直接
+  `platform_registry.get("feishu")`，与主线程持有的 discovery RLock 互等到
+  `plugins.load_timeout_seconds`（默认 10s）超时，平台接管被丢弃。
+- **插件侧三分支兼容，不依赖任何 Hermes 全局配置**：
+  1. 内置 entry 已具体（老版 Hermes / 热进程）→ 直接复用；
+  2. 内置平台是 deferred（0.21.4+）→ 直接导入 bundled 模块并捕获 `register_platform`
+     全量参数，绕过 registry 锁；
+  3. 老版 registry 没有 snapshot API → 回落 `get()`（当时没有 deferred loader，不会死锁）。
+- **升级后无需改配置**：上一轮临时使用的 `plugins.load_timeout_seconds: 0` 已移除，
+  默认 10s 下 LarkDeck 约 0.6s 完成加载并接管。
+
+### 门禁与证据（2026-09-24）
+
+- 定向：`test_units 336/336`；`check_override OVERRIDE OK`、`check_hooks HOOKS OK`、
+  `check_clarify_e2e CLARIFY E2E OK`、`check_cardview CARDVIEW OK`、
+  `check_cls_alignment --require CLS ALIGN OK`。
+- `mutate_check --delta`：**25/25 red-assert + 12/12 对照全绿**（跳过 554 条锚点区域
+  未变、上轮全量已验的条目）；`--update-ledger` 已写入；`--preflight 591/591`
+  （变异 579 + 对照 12）。
+- 真机：Hermes 0.21.4 默认 10s、网关重启后自检通过
+  （`内置 'feishu' 为 deferred，已直接导入 bundled 模块捕获完整 entry`），启动卡片正常发出。
+
+
 ## [0.7.5] - 2026-09-23 心跳进面板 + seed 防闪旧
 
 ### 修复（用户可见）

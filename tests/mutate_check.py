@@ -3301,6 +3301,13 @@ MUTATIONS = [
      '        if False:',
      'test_units'),
 
+    # ---- P10：老版 Hermes 的回落路径（没有 snapshot_registration） ------------- #
+    # 撤掉 legacy 回落 ⇒ 老 Hermes（0.21.1 等）拿不到内置 entry，插件完全接管不了。
+    ('P10-老版 registry 不再回落 get()（旧 Hermes 兼容路径失效）', 'core/adapter.py',
+     '    return platform_registry.get(PLATFORM_NAME)',
+     '    return None',
+     'test_units'),
+
 
 ]
 

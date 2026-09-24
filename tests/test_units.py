@@ -15372,6 +15372,16 @@ def test_concrete_builtin_entry_is_reused_without_direct_import():
         compat.capture_bundled_platform_registration = original
 
 
+def test_legacy_registry_without_snapshot_falls_back_to_get():
+    sentinel = object()
+
+    class _LegacyRegistry:
+        def get(self, name):
+            return sentinel
+
+    assert adapter._resolve_builtin_platform_entry(_LegacyRegistry(), object) is sentinel
+
+
 def test_capture_bundled_platform_registration_reads_register_kwargs():
     module = types.ModuleType("_larkdeck_fake_bundled_platform")
 
