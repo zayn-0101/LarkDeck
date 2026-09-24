@@ -80,6 +80,13 @@ ADAPTER_CLASS_NAME = "LarkDeckFeishuAdapter"
 ACTION_KEY = "larkdeck_action"
 ACTION_CLARIFY = "clarify"
 
+#: 核心在 clarify 边界写进正文的占位文案（`gateway/run_turn_runner.py` 的
+#: `_close_native_stream_boundary("Clarify", "💬 等待你的选择...", reopen=True)`）。
+#: 2026-09-24 用户截图反馈：选完之后主卡仍停在这行字 + 面板 `clarify · Running`。
+#: 我们识别它并在结构化车道**不关流**（详情见 `_ld_stream_frame_structured_locked`），
+#: 这样点击后能原地把正文/面板改成「已收到选择」，后续 delta 继续写同一张卡。
+CLARIFY_BOUNDARY_TEXT = "💬 等待你的选择..."
+
 #: 追踪中的卡片上限，防止长跑会话无限增长。
 _MAX_TRACKED = 512
 
@@ -986,6 +993,26 @@ def _warn_visual_once(key: str, message: str) -> None:
         return
     _VISUAL_WARN_AT[key] = now
     logger.warning("[larkdeck] %s", message)
+
+
+def _is_clarify_boundary_text(text: Any) -> bool:
+    """是不是核心在 clarify 边界写入的占位正文（只认逐字相等的整段）。"""
+    return str(text or "").strip() == CLARIFY_BOUNDARY_TEXT
+
+
+def _event_chat_id(event: Any) -> str:
+    """从卡片点击事件里尽力取 chat_id（回调 response 不换主卡时，主卡刷新需要它）。"""
+    context = getattr(event, "context", None)
+    for name in ("open_chat_id", "chat_id"):
+        value = getattr(context, name, None)
+        if value:
+            return str(value)
+    if isinstance(context, dict):
+        for name in ("open_chat_id", "chat_id"):
+            value = context.get(name)
+            if value:
+                return str(value)
+    return ""
 
 
 #: **仅供单测/探针**强迫某条车道（``"legacy"`` / ``"structured"`` / ``None`` = 生产行为）。
@@ -4724,7 +4751,17 @@ class LarkDeckMixin:
             if _gen > 0:
                 state = {**state, "answer_gen": _gen}
                 self._ld_stream_put(key, state)
+        # 2026-09-24 用户截图：clarify 边界把主卡收尾成「💬 等待你的选择...」+ 面板
+        # `clarify · Running`；点击成功后核心还要等阻塞工具返回（真机 36.96s）才发
+        # `post_tool_call`，这段时间主卡永远停在那一行。修法：识别这个占位帧，**不关流**，
+        # 原地写等待文案；点击处理器随后在同一张卡上写「已收到选择」+ 面板标 ok，
+        # 后续 delta 继续更新同一张卡。见 `_ld_clarify_refresh_card`。
+        clarify_boundary = bool(finalize and _is_clarify_boundary_text(text))
+        if clarify_boundary:
+            finalize = False
         display = self._ld_body_text(text, chat, finalize=finalize, stream_state=state,)
+        if clarify_boundary:
+            display = _i18n.t("clarify.main_waiting")
         offset = int(state.get("ck_offset") or 0)
         visible = display[offset:]
         if _card_body_bytes(visible) > _CK_SPLIT_SEAL_AT:
@@ -4752,6 +4789,12 @@ class LarkDeckMixin:
             return self._ld_stream_fail("structured 状态缺 card_id")
         seq = _ck_seq(state)
         live = dict(state)
+        if clarify_boundary:
+            # 点击处理器靠这个标记确认「这张卡还停在等待澄清的边界上」，避免后续
+            # 新回合/新卡被误写「已收到选择」。
+            live["ck_clarify_waiting"] = True
+        else:
+            live.pop("ck_clarify_waiting", None)
         # 预加载提示（aiduPOP 形态）：建卡时插入，**首个正文 token 到达即删**。
         # 删不掉就下一帧再试；收尾帧一律置 False（整卡 patch 不带它）。
         if finalize:
@@ -5991,6 +6034,109 @@ class LarkDeckMixin:
             return None, "none"
         return fallback, "choice"
 
+    def _ld_note_clarify_answered(self, event: Any, *, awaiting_text: bool) -> None:
+        """点击成功后：同步标面板（乐观），异步刷主卡正文/面板。绝不抛进回调线程。"""
+        chat_id = _event_chat_id(event)
+        try:
+            _panel.mark_clarify_clicked(chat_id, awaiting_text=awaiting_text)
+        except Exception:                    # pragma: no cover - 防御性
+            logger.debug("[larkdeck] clarify 面板乐观更新失败", exc_info=True)
+        if not chat_id:
+            return
+        text_key = ("clarify.main_text_pending" if awaiting_text
+                    else "clarify.main_choice_received")
+        self._ld_schedule_clarify_refresh(chat_id, _i18n.t(text_key))
+
+    def _ld_schedule_clarify_refresh(self, chat_id: str, body_text: str) -> bool:
+        """把主卡刷新挂到网关 loop；调度失败只留 DEBUG（点击本身已生效）。"""
+        loop = getattr(self, "_loop", None)
+        if not self._loop_accepts_callbacks(loop):
+            return False
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._ld_clarify_refresh_card(str(chat_id or ""), str(body_text or "")), loop)
+            return True
+        except Exception as exc:             # pragma: no cover - 防御性
+            logger.debug("[larkdeck] clarify 主卡刷新调度失败: %s", exc)
+            return False
+
+    async def _ld_clarify_refresh_card(self, chat: str, body_text: str) -> bool:
+        """把点击结果写回**仍在等待澄清边界上**的那张主卡（结构化车道）。
+
+        只认 `ck_clarify_waiting` 标记：没有这个标记说明卡已经继续/换新，绝不能拿旧状态
+        去覆盖后续回合的正文。面板写失败不阻断正文；元素通道若已关流（300309 等）则回落
+        一次整卡 patch。
+        """
+        chat = str(chat or "").strip()
+        body_text = str(body_text or "")
+        if not chat or not body_text:
+            return False
+        keys = self._ld_hb_candidates(chat)
+        if len(keys) != 1:
+            return False
+        key = keys[0]
+        async with self._ld_card_lock(key):
+            state = self._ld_stream_get(key)
+            if not isinstance(state, dict) or not state.get("ck_clarify_waiting"):
+                return False
+            if (str(state.get("engine") or "") != "structured"
+                    or state.get("engine_stamp") == "degraded"):
+                return False
+            card_id = str(state.get("card_id") or "")
+            if not card_id:
+                return False
+            view = self._ld_cardview(chat, body_text, status="processing",
+                                     started=state.get("t0"),
+                                     message_id=state.get("message_id"))
+            self._ld_apply_hb_title(view, state)
+            view.loading_hint = False
+            partial = _cardview.panel_partial(view.panel)
+            signature = json.dumps(partial, sort_keys=True, ensure_ascii=False)
+            seq = _ck_seq(state)
+            live = dict(state)
+            panel_changed = (view.panel_enabled
+                             and signature != state.get("ck_panel_sig"))
+            if panel_changed:
+                seq += 1
+                res = await self._ld_ck_partial(card_id, "panel", partial, seq)
+                _ck_window_note(live, time.monotonic())
+                if res.ok:
+                    live["ck_panel_sig"] = signature
+                else:
+                    if int(res.code) == 300313:
+                        live["ck_panel_missing"] = True
+                    elif res.code in _CARD_DEATH_DECOR_CODES:
+                        live["ck_degrade"] = int(res.code)
+                        live["engine_stamp"] = "degraded"
+                        live["card_id"] = ""
+                    _log_ck_decor_write_failed_once(
+                        [_CkOp("panel", "", _CK_ROLE_PANEL)], res.code, msg=res.msg)
+            seq += 1
+            wrote = await self._ld_ck_write(card_id, _cards.CARDKIT_ANSWER_ID, body_text, seq)
+            if wrote.ok:
+                live["ck_seq"] = seq
+                live["last_rendered_body"] = body_text
+                # `ck_clarify_waiting` 保留：真正的下一帧到达时会清掉它；在到达之前，
+                # 再点、post_tool_call 后再次刷新仍能定位到这张卡。
+                self._ld_stream_put(key, live)
+                _context.note_frame_ok()
+                return True
+            # 元素通道不可用（会话被其它路径关闭 / 序号问题）：回落同一张卡的整卡 patch。
+            logger.info("[larkdeck] clarify 主卡元素写入失败（code=%s），整卡 patch 兜底",
+                        wrote.code)
+            card = self._ld_render_card(
+                chat, body_text, streaming=False, status="processing",
+                panel=self._ld_panel(chat, report_empty=True), footer=None,
+                started=state.get("t0"), message_id=state.get("message_id"),
+                turn_card=True, status_locked=True)
+            updated = await self._ld_update_card(
+                chat, str(state.get("message_id") or ""), card)
+            ok = updated is not None and getattr(updated, "success", False)
+            if ok:
+                live["last_rendered_body"] = body_text
+                self._ld_stream_put(key, live)
+            return bool(ok)
+
     def _ld_handle_clarify_click(self, *, event: Any, action: Any,
                                  value: Dict[str, Any]) -> Any:
         """把一次澄清点击变成 ``resolve_gateway_clarify`` 调用，并原地更新卡片。
@@ -6072,6 +6218,7 @@ class LarkDeckMixin:
                     text_key="clarify.toast_no_pending"
                     if outcome == _compat.CLARIFY_TEXT_NO_PENDING
                     else "clarify.toast_rejected")
+            self._ld_note_clarify_answered(event, awaiting_text=False)
             user_name = self._get_cached_sender_name(open_id) or open_id or "?"
             return self._ld_card_response_safe(
                 self._ld_build_resolved_card(question=question, answer=answer,
@@ -6113,8 +6260,10 @@ class LarkDeckMixin:
         if is_other:
             # 「其他」不提交答案，只把该澄清切成等待文字输入 —— 卡片保持不变（用户要在
             # 卡片上继续输入），用 toast 告诉他下一步做什么。文案按方言选（1.0 卡没有输入框）。
+            self._ld_note_clarify_answered(event, awaiting_text=True)
             return self._ld_toast_or_noop(kind="info", text_key=self._ld_typing_text_key())
 
+        self._ld_note_clarify_answered(event, awaiting_text=False)
         user_name = self._get_cached_sender_name(open_id) or open_id or "?"
         # 回填卡必须与待答卡同方言，否则飞书会**静默丢弃**这一帧（HFC 踩过）
         return self._ld_card_response_safe(

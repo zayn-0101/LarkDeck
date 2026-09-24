@@ -122,6 +122,13 @@ _STRINGS: Dict[str, Dict[str, str]] = {
                                    EN: "You are not allowed to use this card"},
     "clarify.toast_unavailable": {ZH: "卡片插件暂时不可用，请稍后再试",
                                   EN: "The card plugin is temporarily unavailable; please retry later"},
+    # 主卡片正文在 clarify 等待/已选阶段的状态文案。核心给的占位是
+    # 「💬 等待你的选择...」，选完后如果不改写，主卡会永远停在那一行（用户截图反馈）。
+    "clarify.main_waiting": {ZH: "⏳ 等待你的选择…", EN: "⏳ Waiting for your choice…"},
+    "clarify.main_choice_received": {ZH: "✅ 已收到你的选择，正在继续…",
+                                     EN: "✅ Choice received, continuing…"},
+    "clarify.main_text_pending": {ZH: "⌨️ 已切换为文字输入，请直接回复你的答案…",
+                                  EN: "⌨️ Switched to text input — reply with your answer…"},
     # /larkdeck 自检卡（R9）。三条状态行由 context.status_lines() 组装；没记录写「无记录」，
     # **绝不写「正常」** —— 一个永远说「正常」的自检与一个坏掉的自检，用户分辨不出来。
     "cmd.description":    {ZH: "larkdeck 状态 / 配置：版本 / 生效传输 / 钩子 / 心跳",

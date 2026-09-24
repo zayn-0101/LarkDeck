@@ -892,7 +892,12 @@ def record_tool_finished(session_id: str, turn_id: str, tool_name: str = "",
         tcid = str(tool_call_id or "")
         if tcid:
             for item in reversed(tools):
-                if item.get("id") == tcid and item.get("status") == "running":
+                if item.get("id") != tcid:
+                    continue
+                # 乐观更新（clarify 点击后先把面板标成已答）也允许被真实 post_tool_call
+                # **覆盖**：把 `optimistic_clarify` 一并当命中条件，否则这里会补出第二行
+                # 重复的 clarify 步骤（一条乐观 ok + 一条真实 error）。
+                if item.get("status") == "running" or item.get("optimistic_clarify"):
                     target = item
                     break
         if target is None:
@@ -906,6 +911,7 @@ def record_tool_finished(session_id: str, turn_id: str, tool_name: str = "",
             if tool_name:
                 target["name"] = str(tool_name)
         target["status"] = str(status or "ok")
+        target.pop("optimistic_clarify", None)
         ms = _as_int(duration_ms)
         if ms is not None:
             target["duration_ms"] = max(0, ms)
@@ -917,6 +923,53 @@ def record_tool_finished(session_id: str, turn_id: str, tool_name: str = "",
         if error_block:
             target["error_block"] = error_block
         _purge_locked(now)
+
+
+def mark_clarify_clicked(chat_id: str, *, awaiting_text: bool = False) -> Optional[str]:
+    """澄清点击**成功**后的乐观面板更新（在 `post_tool_call` 之前把「运行中」摘掉）。
+
+    为什么需要（2026-09-24 用户截图）：clarify 是**阻塞工具**，用户点选项后核心还要等
+    工具返回才发 `post_tool_call`（真机实测 36.96s）—— 这段时间主卡面板一直写着
+    `clarify · Running`，看起来像点击没生效。点击本身已经成功（`resolve_gateway_clarify`
+    返回 True），所以这里先按事实把面板改成 `ok`。
+
+    ``awaiting_text=True``（点了「其他」、等用户打字）时**不能**标 ok：那不是完成，
+    只是换成了文字输入。保留 running，只加一个可诊断的预览，并打 `optimistic_clarify`
+    标记，让真正的 `post_tool_call` 到达时仍然优先覆盖它（见 :func:`record_tool_finished`）。
+
+    返回被更新的 session_id；没有可更新的 clarify 步骤时返回 ``None``。绝不抛。
+    """
+    now = _now()
+    with _LOCK:
+        _purge_locked(now)
+        sid, state = _select_locked(str(chat_id or ""), now)
+        if not sid or not isinstance(state, dict):
+            return None
+        tools = state.get("tools")
+        if not isinstance(tools, list):
+            return None
+        target: Optional[Dict[str, Any]] = None
+        for item in reversed(tools):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("name") or "").strip().lower() != "clarify":
+                continue
+            if item.get("status") == "running" or item.get("optimistic_clarify"):
+                target = item
+                break
+        if target is None:
+            return None
+        target["optimistic_clarify"] = True
+        if awaiting_text:
+            preview = str(target.get("preview") or "")
+            if "等待输入" not in preview:
+                target["preview"] = (preview + " · " if preview else "") + "等待输入"
+        else:
+            target["status"] = "ok"
+            target["duration_ms"] = max(
+                0, int((now - float(target.get("t0") or now)) * 1000))
+        state["updated"] = now
+        return sid
 
 
 # --------------------------------------------------------------------------- #

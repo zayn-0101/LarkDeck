@@ -2250,6 +2250,14 @@ MUTATIONS = [
      '    if False:\n'
      '        _warn_visual_once("show_reasoning",',
      "test_units"),
+    ("V076C-1-clarify 边界仍按普通 finalize 收尾（主卡点击后无卡可刷）", "core/adapter.py",
+     '        clarify_boundary = bool(finalize and _is_clarify_boundary_text(text))',
+     '        clarify_boundary = False  # V076C-1 mutated',
+     "test_units"),
+    ("V076C-2-澄清点击后不乐观标 ok（面板一直 Running）", "core/panel.py",
+     '            target["status"] = "ok"',
+     '            pass  # V076C-2 mutated',
+     "test_units"),
     ("V0-3-card_status_header=false 告警被静默（配置被吞）", "core/adapter.py",
      '    if not enabled:\n'
      '        _warn_visual_once("card_status_header",',

@@ -3598,6 +3598,97 @@ def test_clarify_click_other_marks_awaiting_text():
         _drop_fake_clarify_gateway()
 
 
+def test_clarify_panel_mark_is_optimistic_and_real_result_overrides():
+    """点击成功后面板先标 ok；真正的 `post_tool_call` 到达时**覆盖**它且不补重复行。
+
+    判别力：把 `record_tool_finished` 的命中条件改回只看 `status == "running"`，本用例第二段
+    会看到两行 clarify（乐观 ok + 真实 error）⇒ 红；把 `mark_clarify_clicked` 去掉 ⇒ 第一段红。
+    """
+    panel.reset()
+    try:
+        panel.bind_chat_session("oc_mark", "s_mark")
+        panel.record_tool_started("s_mark", "t_mark", "clarify", {"question": "选？"}, "tc-mark")
+        assert panel.mark_clarify_clicked("oc_mark") == "s_mark"
+        snap = panel.snapshot("oc_mark") or {}
+        rows = [item for item in snap["tools"] if str(item.get("name")) == "clarify"]
+        assert len(rows) == 1 and rows[-1]["status"] == "ok", rows
+
+        # 迟到的真实结果（例如工具最终报错/被取消）必须**覆盖**乐观 ok，且复用同一行。
+        panel.record_tool_finished("s_mark", "t_mark", tool_name="clarify", status="error",
+                                   tool_call_id="tc-mark", error_message="boom")
+        snap = panel.snapshot("oc_mark") or {}
+        rows = [item for item in snap["tools"] if str(item.get("name")) == "clarify"]
+        assert len(rows) == 1 and rows[-1]["status"] == "error", rows
+
+        # 「其他」只是切文字输入，不是完成：状态必须保持 running。
+        panel.reset()
+        panel.bind_chat_session("oc_mark_wait", "s_mark_wait")
+        panel.record_tool_started("s_mark_wait", "t_mark_wait", "clarify",
+                                  {"question": "选？"}, "tc-mark-wait")
+        assert panel.mark_clarify_clicked("oc_mark_wait", awaiting_text=True) == "s_mark_wait"
+        snap = panel.snapshot("oc_mark_wait") or {}
+        row = [item for item in snap["tools"] if str(item.get("name")) == "clarify"][-1]
+        assert row["status"] == "running" and "等待输入" in str(row.get("preview") or ""), row
+    finally:
+        panel.reset()
+
+
+def test_clarify_boundary_keeps_structured_stream_and_click_rewrites_it():
+    """clarify 边界不再把主卡关掉：占位文案改写为「等待选择」，点击后同卡刷新。
+
+    真机病根（2026-09-24 用户截图）：核心在 clarify 边界把主卡 finalize 成
+    `💬 等待你的选择...`；点击后阻塞工具还要等 `post_tool_call`（实测 36.96s），
+    这段时间主卡面板仍是 `clarify · Running`，看起来像点击没生效。
+
+    判别力：删掉 `_ld_stream_frame_structured_locked` 里的 `clarify_boundary` 分支，
+    这条会看到 stream state 被 pop（或正文是核心原文）⇒ 红；删掉点击后的刷新/面板乐观更新
+    ⇒ 第二段红。
+    """
+    panel.reset()
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    saved_config = dict(adapter._CONFIG)
+    raw = _make()
+    calls, client = _mk_cardkit_fake()
+    raw._client = client
+    target_cls = type(raw)
+    old_reqs = target_cls.__dict__.get("_ld_ck_requests")
+    target_cls._ld_ck_requests = staticmethod(_fake_ck_requests)
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    adapter.configure(visual_engine="structured", native_transport="cardkit")
+    try:
+        panel.bind_chat_session("oc_cb", "s_cb")
+        assert _run(raw.send_stream_frame("", chat_id="oc_cb", turn_id="t_cb"))
+        panel.record_tool_started("s_cb", "t_cb", "clarify", {"question": "选？"}, "tc-cb")
+        assert _run(raw.send_stream_frame(adapter.CLARIFY_BOUNDARY_TEXT, finalize=True,
+                                          chat_id="oc_cb", turn_id="t_cb"))
+        state = raw._ld_stream_get("oc_cb:t_cb")
+        assert state is not None, "澄清边界必须保留主卡流状态，点击后才有人可刷新"
+        assert state.get("ck_clarify_waiting") is True, state
+        answers = [item for item in calls["content"]
+                   if item[0] == cards.CARDKIT_ANSWER_ID]
+        assert answers and adapter._i18n.t("clarify.main_waiting") in answers[-1][1], answers
+
+        # 点击成功：同步标面板 + 直接调用刷新协程（测试替身的 `_loop` 不是真 asyncio loop，
+        # 不在这里测 `run_coroutine_threadsafe` 调度；调度失败只影响即时性，不影响正确性）。
+        assert panel.mark_clarify_clicked("oc_cb") == "s_cb"
+        assert _run(raw._ld_clarify_refresh_card(
+            "oc_cb", adapter._i18n.t("clarify.main_choice_received")))
+        answers = [item for item in calls["content"]
+                   if item[0] == cards.CARDKIT_ANSWER_ID]
+        assert adapter._i18n.t("clarify.main_choice_received") in answers[-1][1], answers
+        snap = panel.snapshot("oc_cb") or {}
+        row = [item for item in snap["tools"] if str(item.get("name")) == "clarify"][-1]
+        assert row["status"] == "ok", row
+    finally:
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        adapter.configure(**saved_config)
+        if old_reqs is None:
+            delattr(target_cls, "_ld_ck_requests")
+        else:
+            target_cls._ld_ck_requests = old_reqs
+        panel.reset()
+
+
 def test_clarify_click_that_did_not_commit_must_not_refill_card():
     """提交未生效时**绝不能**把卡片换成「已答复」。
 
