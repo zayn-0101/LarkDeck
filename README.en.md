@@ -9,6 +9,8 @@
 
 [中文](README.md) | [English](README.en.md)
 
+![LarkDeck cover: the project name and four capabilities on the left (typewriter streaming, process panel, clarify cards, status and usage), and a completed weather Q&A card in Feishu on the right, with a table, a collapsible panel and a usage footer.](assets/readme-hero.png)
+
 ## Highlights
 
 - **One card per turn** — the first frame creates the card; the answer types out in place.
