@@ -6227,8 +6227,7 @@ class LarkDeckMixin:
                                      message_id=state.get("message_id"))
             self._ld_apply_hb_title(view, state)
             view.loading_hint = False
-            partial = _cardview.panel_partial(view.panel)
-            signature = json.dumps(partial, sort_keys=True, ensure_ascii=False)
+            partial, signature, round_updates = _ck_panel_partial_for_state(view.panel, state)
             seq = _ck_seq(state)
             live = dict(state)
             panel_changed = (view.panel_enabled
@@ -6239,6 +6238,7 @@ class LarkDeckMixin:
                 _ck_window_note(live, time.monotonic())
                 if res.ok:
                     live["ck_panel_sig"] = signature
+                    live.update(round_updates)
                 else:
                     if int(res.code) == 300313:
                         live["ck_panel_missing"] = True
