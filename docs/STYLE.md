@@ -7,16 +7,16 @@
 
 | 层 | 目录 | 读者 | 内容 |
 |---|---|---|---|
-| 用户文档 | `README.md`、`INSTALL.md`、`docs/guide/` | 安装和使用 LarkDeck 的人 | 是什么、怎么装、怎么配、常见问题 |
+| 用户文档 | `README.md`、`README.en.md`、`docs/guide/` | 安装和使用 LarkDeck 的人 | 是什么、怎么装、怎么配、常见问题 |
 | 开发文档 | `CONTRIBUTING.md`、`docs/development/`、`AGENTS.md` | 参与开发和发布的人 | 架构、测试、发布流程、代码规则 |
 | 内部归档 | `docs/internal/`（本地） | 维护者 | 已交付的规划、审计过程、历史证据；**只在维护者本机保留，不随仓库发布** |
 
 **规则：用户文档不出现内部审计编号、变异条数、handoff、轮次黑话、历史纠错记录。**
 这些内容一律放本机 `docs/internal/`，对外文档只给一句话说明，不给链接（链接在远端必然失效）。
 
-根目录保留 GitHub 与开发工具常用的 README、安装、贡献、更新日志和许可证入口；详细手册
-按读者归入 `docs/guide/`、`docs/development/` 与 `docs/releases/`。`docs/README.md` 是完整
-文档索引，不为追求路径整齐而搬动根目录入口。
+根目录保留 GitHub 与开发工具常用的 README、贡献、更新日志、许可证、安全政策和行为准则
+入口。详细安装和用户手册归入 `docs/guide/`，开发及发布说明归入 `docs/development/`、
+`docs/releases/`。`docs/README.md` 是完整文档索引。
 
 ## 2. 写作规则
 

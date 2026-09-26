@@ -7,7 +7,7 @@ LarkDeck 的文档分三层，按你的角色选择入口即可。
 | 文档 | 内容 |
 |---|---|
 | [项目说明](../README.md) | 项目介绍、功能、快速开始 |
-| [安装指南](../INSTALL.md) | 安装、升级、卸载、回滚 |
+| [安装指南](guide/installation.md) | 安装、升级、卸载、回滚 |
 | [快速开始](guide/quickstart.md) | 五分钟装好并发出第一张卡片 |
 | [配置参考](guide/configuration.md) | 全部配置项、默认值与示例 |
 | [命令](guide/commands.md) | `/larkdeck status|config|help` 与 `/reasoning` |

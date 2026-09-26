@@ -375,7 +375,7 @@ $PY tests/mutate_check.py --ledger-status
 
 ## 部署
 
-部署拓扑与命令见 `docs/development/release.md` 与 `INSTALL.md`；本文件不记录任何具体机器、
+部署拓扑与命令见 `docs/development/release.md` 与 `docs/guide/installation.md`；本文件不记录任何具体机器、
 地址或路径。两条要点：
 
 - 软链安装（`./install.sh`）改代码后须重启网关；先查软链是否指向 `.deploy`，开发树与部署树

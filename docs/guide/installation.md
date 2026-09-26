@@ -109,7 +109,7 @@ hermes gateway restart
 
 4. 给机器人发一句“你好”。预期只有一张卡片，回答在原地流式出现；回合结束后面板边框变绿，页脚显示状态、耗时、模型与上下文用量。
 
-自检失败时日志会打 `ERROR`，飞书仍由官方适配器以纯文本工作，不会把消息弄坏。处理见 [故障排查](docs/guide/troubleshooting.md)。
+自检失败时日志会打 `ERROR`，飞书仍由官方适配器以纯文本工作，不会把消息弄坏。处理见 [故障排查](troubleshooting.md)。
 
 ## 升级
 
@@ -168,4 +168,4 @@ hermes gateway restart
 | `/larkdeck` 敲了没反应 | 老版 Hermes 没有命令注册接口，或命令是在生成回答期间发的、被排队 | 等回合结束再试；CLI / TUI 里可直接执行。仍不行就看自检卡里的命令注册说明 | 升级 Hermes 与 LarkDeck |
 | 配置文件改了但行为没变 | 改的是官方文件，插件进程仍是旧值；启用项和代码升级本来就需要重启 | 在飞书发 `/larkdeck config` 看来源与提示，再 `/larkdeck config reload`；启用项改动重启网关 | 改完先 reload，再确认生效值 |
 
-更多卡片、点击与显示问题见 [故障排查](docs/guide/troubleshooting.md)。
+更多卡片、点击与显示问题见 [故障排查](troubleshooting.md)。

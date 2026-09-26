@@ -26,7 +26,7 @@
 
 ## 快速开始
 
-前置：Hermes Agent 0.21.x 已安装并运行，飞书 / Lark 应用凭据已配置（应用创建见[安装指南](INSTALL.md)）。
+前置：Hermes Agent 0.21.x 已安装并运行，飞书 / Lark 应用凭据已配置（应用创建见[安装指南](docs/guide/installation.md)）。
 
 安装（默认软链到本仓库；NAS / 容器加 `--copy`）：
 
@@ -60,7 +60,7 @@ hermes gateway restart
 
 启动日志里会出现一行 `[larkdeck] 启动自检通过`。自检失败会打 `ERROR`，并保持官方适配器原样工作：卡片不生效，但飞书不会被弄坏。
 
-升级：软链安装执行 `git pull && hermes gateway restart`。`--copy` 安装先 `git pull`，再把旧目录移开、重跑 `./install.sh --copy`，最后重启网关；脚本不会覆盖已有目标，完整命令见[安装指南](INSTALL.md#升级)。模块不会热重载，必须重启网关。
+升级：软链安装执行 `git pull && hermes gateway restart`。`--copy` 安装先 `git pull`，再把旧目录移开、重跑 `./install.sh --copy`，最后重启网关；脚本不会覆盖已有目标，完整命令见[安装指南](docs/guide/installation.md#升级)。模块不会热重载，必须重启网关。
 
 卸载：从 `plugins.enabled` 删除 `larkdeck`，再删除 `~/.hermes/plugins/larkdeck/`。插件没有改写 Hermes 源码，不存在残留注入。
 
@@ -112,8 +112,9 @@ plugins:
 
 ## 文档
 
-README、安装、贡献与许可证等常用入口保留在仓库根目录；详细用户手册和开发文档按读者归入
-`docs/guide/`、`docs/development/`。完整目录见[文档地图](docs/README.md)。
+README、贡献、更新日志、许可证、安全政策和行为准则等常用入口保留在仓库根目录；安装与
+使用手册和开发文档按读者归入 `docs/guide/`、`docs/development/`。完整目录见
+[文档地图](docs/README.md)。
 
 ## 致谢
 

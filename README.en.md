@@ -30,7 +30,7 @@
 
 ## Quick start
 
-Prerequisites: Hermes Agent 0.21.x running, with Feishu / Lark app credentials (see the [installation guide](INSTALL.md)).
+Prerequisites: Hermes Agent 0.21.x running, with Feishu / Lark app credentials (see the [installation guide](docs/guide/installation.md)).
 
 ```bash
 git clone https://github.com/zayn-0101/LarkDeck.git larkdeck
@@ -54,7 +54,7 @@ hermes gateway restart
 
 Verify: send `/larkdeck status` to the bot in Feishu. A seven-row summary card (`Platform takeover` and `Hooks` both `✅`) means the plugin has taken over. Send `/larkdeck status --detail` for the capability probe and the six process-wide records. The gateway log shows a `[larkdeck]` startup self-check line; on failure it logs `ERROR` and leaves the official adapter working, so Feishu never breaks.
 
-Upgrade: `git pull && hermes gateway restart` for a symlink install. For a copy install, `git pull`, move the old directory aside, re-run `./install.sh --copy`, then restart — the script never overwrites an existing target; see the [installation guide](INSTALL.md). The gateway must be restarted; modules are not hot-reloaded. Uninstall: remove `larkdeck` from `plugins.enabled`, then delete `~/.hermes/plugins/larkdeck/`.
+Upgrade: `git pull && hermes gateway restart` for a symlink install. For a copy install, `git pull`, move the old directory aside, re-run `./install.sh --copy`, then restart — the script never overwrites an existing target; see the [installation guide](docs/guide/installation.md). The gateway must be restarted; modules are not hot-reloaded. Uninstall: remove `larkdeck` from `plugins.enabled`, then delete `~/.hermes/plugins/larkdeck/`.
 
 ## Configuration
 
@@ -104,9 +104,10 @@ See [Commands](docs/guide/commands.md).
 
 ## Documentation
 
-The README, installation, contribution and license entry points stay at the repository root.
-Detailed user and developer guides are organized under `docs/guide/` and `docs/development/`; see
-the [documentation map](docs/README.md) for the full index.
+The README, contribution guide, changelog, license and GitHub community files stay at the
+repository root. The installation manual and detailed user and developer guides live under
+`docs/guide/` and `docs/development/`; see the [documentation map](docs/README.md) for the full
+index.
 
 ## Acknowledgements
 

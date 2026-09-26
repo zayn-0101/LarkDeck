@@ -24,7 +24,6 @@ README_LINE_LIMIT = 260
 USER_DOCS = [
     _REPO / "README.md",
     _REPO / "README.en.md",
-    _REPO / "INSTALL.md",
     *sorted((_REPO / "docs" / "guide").glob("*.md")),
 ]
 
@@ -32,7 +31,6 @@ USER_DOCS = [
 PUBLISHED_DOCS = [
     _REPO / "README.md",
     _REPO / "README.en.md",
-    _REPO / "INSTALL.md",
     _REPO / "CONTRIBUTING.md",
     _REPO / "SECURITY.md",
     _REPO / "CODE_OF_CONDUCT.md",
@@ -48,7 +46,6 @@ PUBLISHED_DOCS = [
 LINK_CHECKED = [
     _REPO / "README.md",
     _REPO / "README.en.md",
-    _REPO / "INSTALL.md",
     _REPO / "CONTRIBUTING.md",
     _REPO / "CHANGELOG.md",
     _REPO / "docs" / "README.md",
