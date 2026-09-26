@@ -43,7 +43,7 @@ config_schema:
   native_transport:
     type: string
     default: "cardkit"
-    description: "native 流式帧的传输：cardkit（默认，CardKit 实体 + 元素流式写入 = 真逐字打字机；任何一步失败自动切换）/ patch（旧路径，整卡替换；字是几个几个跳）"
+    description: "旧渲染路径的传输选择：cardkit / patch。当前 structured 新回合固定使用 CardKit，本键不切换该路径；状态标题仍读取配置值。建议保留默认 cardkit，停用动画用 streaming_print_ms: 0"
   clarify_dialect:
     type: string
     default: "2.0"
@@ -119,7 +119,7 @@ config_schema:
   panel_color_tags:
     type: boolean
     default: true
-    description: "markdown 面板里是否使用 <font color>（默认 true：绿色 \u2713 / 蓝色 Running / 红色 Failed / 灰色细节；官方 Card 2.0 文档已确认语法，真机视觉待确认。客户端不认时可显式 false 走纯文本降级）"
+    description: "只控制旧 markdown 函数的 font color 标签；当前 structured 面板自行生成颜色，false 对该路径无效（no-op），也不是纯文本降级开关"
   model_aliases:
     type: string
     default: ""
@@ -127,15 +127,15 @@ config_schema:
   max_reasoning_chars:
     type: integer
     default: 1200
-    description: "统一面板中推理文本上限（超出部分截断并留痕）；写 0 或负数视为用默认值，不是取消上限"
+    description: "结构化面板中每轮推理文本上限（最多保留最近 20 轮）；写 0 或负数视为用默认值，不是取消上限"
   max_tool_result_chars:
     type: integer
     default: 600
-    description: "统一面板中单条工具步骤行上限（超出部分截断并留痕）；写 0 或负数视为用默认值。面板显示的是参数预览，预览本身已截到 80 字符，所以这项实际极少触发"
+    description: "结构化面板中每条工具的 Result / Error 块上限；参数预览另行截断，不受本键控制。写 0 或负数视为用默认值"
   max_panel_steps:
     type: integer
     default: 30
-    description: "统一面板步骤数上限（超出保留最近的步骤）；写 0 或负数视为用默认值"
+    description: "请求保留的工具步数；结构化面板另有 20 步硬上限，因此默认 30 实际最多显示最近 20 步。更小值可收紧；写 0 或负数视为用默认值"
   context_max_override:
     type: integer
     default: 0

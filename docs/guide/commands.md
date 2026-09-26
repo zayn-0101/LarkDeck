@@ -7,7 +7,7 @@
 | 命令 | 归属 | 作用 |
 |---|---|---|
 | `/larkdeck` | LarkDeck | 等同 `/larkdeck status` |
-| `/larkdeck status` | LarkDeck | 运行概览：版本、生效传输、接管、钩子、推理显示与失败计数 |
+| `/larkdeck status` | LarkDeck | 运行概览：版本、传输配置、接管、钩子、推理显示与失败计数 |
 | `/larkdeck status --detail` | LarkDeck | 完整诊断：能力探测、适配器与契约细节、六条进程级记录 |
 | `/larkdeck config` | LarkDeck | 只读查看本进程生效配置与来源 |
 | `/larkdeck config reload` | LarkDeck | 从 Hermes 官方设置重读全部插件配置键 |
@@ -37,7 +37,9 @@
 - 能力探测：适配器接管、Hermes 版本、会话归属、缺失接口与契约细节。
 - 六条记录：入站心跳、最近写卡、最近写卡失败、已运行、掉回纯文本、错误码，带时刻、次数与失败原因。
 
-这些数字是**进程级累计**，多会话并发时包含其他会话，不是本对话统计。没有记录时卡片写“无记录”，不会写“正常”。默认卡不展示的技术细节会同时写入 `~/.hermes/logs/agent.log`，排障时可 `grep '[larkdeck] status'`。
+这些数字是**进程级累计**，多会话并发时包含其他会话，不是本对话统计。没有记录时卡片写“无记录”，不会写“正常”。默认卡不展示的技术细节会同时写入 `~/.hermes/logs/agent.log`，排障时可用 `grep -F '[larkdeck] status' ~/.hermes/logs/agent.log`。
+
+当前标题的“传输”读取配置值；结构化引擎始终使用 CardKit，所以手动设成 `patch` 时，标题不能作为实际传输已切换的证据，见 [配置参考](configuration.md)。
 
 ## `/larkdeck config`
 
@@ -67,7 +69,7 @@ plugins:
   stream_reasoning_deltas: true
 ```
 
-关着时执行详情（panel）只显示工具步骤与思考耗时摘要，不会显示推理正文；`/larkdeck status` 会说明“Hermes 未发送 reasoning delta”。想强制显示或隐藏，再设 `show_reasoning: on|off`。
+关着时执行详情（panel）只显示工具步骤与思考耗时摘要，不会显示推理正文；`/larkdeck status --detail` 会说明“Hermes 未发送 reasoning delta”。`show_reasoning: on|off` 可覆盖显示偏好，但不能让 Hermes 产生原本未发送的推理增量。
 
 ## `/stop`
 

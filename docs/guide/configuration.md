@@ -1,6 +1,6 @@
 # 配置参考
 
-本文面向需要调整 LarkDeck 行为的用户：以 `plugin.yaml` 的 `config_schema` 为唯一事实来源，列出全部可配置项、默认值、作用与常用示例，并说明配置优先级和 `config reload` 的边界。
+本文面向需要调整 LarkDeck 行为的用户：键名、类型与默认值以 `plugin.yaml` 的 `config_schema` 为准；实际作用以当前渲染路径为准。下文列出场景示例、已知无效项及 `config reload` 的边界。
 
 ## 配置写在哪
 
@@ -53,15 +53,18 @@ plugins:
         streaming_panel_expanded: true
 ```
 
-### 回到旧的整卡 patch 传输
+### 关闭逐字动画
 
 ```yaml
 plugins:
   entries:
     larkdeck:
       settings:
-        native_transport: patch     # 字几个几个跳；默认 cardkit 是逐字打字机
+        streaming_print_ms: 0      # 停用客户端逐字动画，仍使用 CardKit
 ```
+
+当前结构化引擎始终使用 CardKit；`native_transport: patch` 不会切换这条路径。
+若要停用 native 流式，可设 `native_streaming: false`，交由 Hermes 逐段发送 / 编辑。
 
 ### 控制长回合的面板体积
 
@@ -98,7 +101,7 @@ plugins:
 - **clarify_cards** · `boolean` · 默认 `true`
   澄清提问用交互卡；无线索或卡片失败时自动改用内置文字提问。示例：`clarify_cards: false`。
 - **native_transport** · `string` · 默认 `"cardkit"`
-  流式帧传输。`cardkit` 用 CardKit 实体加逐元素写入，带来真逐字打字机；`patch` 是旧路径，整卡替换、字跳得更粗。任何一步失败都会自动切换。示例：`native_transport: "patch"`。
+  旧渲染路径的传输选择；当前结构化引擎不读取它来选择传输，始终使用 CardKit。设为 `patch` 对该路径无效（no-op），即使状态卡标题显示 `patch`，也不代表实际已经切换。建议保留 `native_transport: "cardkit"`；自动降级到整卡替换由运行时错误决定。
 - **clarify_dialect** · `string` · 默认 `"2.0"`
   澄清卡（clarify）形态，配置键为 `clarify_dialect`。`2.0` 是下拉 / 多选 / 输入框；`1.0` 是按钮旧路径。待答卡与确认卡必须同形态。示例：`clarify_dialect: "1.0"`。
 
@@ -142,18 +145,18 @@ plugins:
 - **theme** · `string` · 默认 `"ap_lite"`
   观感主题：`neutral` 原符号 / `ap_lite` 抽象 emoji / `ap_bubble` 泡波风格（含人物 emoji）。示例：`theme: "ap_bubble"`。
 - **panel_color_tags** · `boolean` · 默认 `true`
-  面板 markdown 是否使用 `<font color>` 上色。客户端不认时可显式设 `false` 走纯文本降级。示例：`panel_color_tags: false`。
+  只控制旧 markdown 渲染函数的 `<font color>` 标签。当前结构化面板自行生成颜色，设 `false` 不会去色（对该路径为 no-op），也不是纯文本降级开关。建议保留默认值。
 
 ### 限额与高级
 
 - **model_aliases** · `string` · 默认 `""`
   模型别名。可写 `"真名=显示名, 真名2=显示名2"`，也会读 `~/.hermes/model_aliases.json` 的 `{"子串": "显示名"}`；值也可以是 `{model@base_url: 显示名}` 映射。示例：`model_aliases: "deepseek-flash=Flash"`。
 - **max_reasoning_chars** · `integer` · 默认 `1200`
-  执行详情里推理文本的上限，超出截断并留痕。写 `0` 或负数表示用默认值，不是不设限。示例：`max_reasoning_chars: 600`。
+  当前结构化面板中每轮推理文本的上限，超出截断；最多保留最近 20 轮。写 `0` 或负数表示用默认值，不是不设限。示例：`max_reasoning_chars: 600`。
 - **max_tool_result_chars** · `integer` · 默认 `600`
-  单条工具步骤行的上限。面板显示的是已截到 80 字符的参数预览，所以这项现实中很少触发。写 `0` 或负数表示用默认值。示例：`max_tool_result_chars: 300`。
+  当前结构化面板中每条工具的 Result / Error 块上限；参数预览另有截断，不由这个键控制。写 `0` 或负数表示用默认值。示例：`max_tool_result_chars: 300`。
 - **max_panel_steps** · `integer` · 默认 `30`
-  面板最多保留多少步，超出保留最近的步骤。写 `0` 或负数表示用默认值。示例：`max_panel_steps: 15`。
+  请求保留的工具步数。当前结构化面板另有 20 步硬上限，因此默认 30 实际显示最近 20 步；设得更小会生效，超出部分显示折叠提示。写 `0` 或负数表示用默认值。示例：`max_panel_steps: 15`。
 - **context_max_override** · `integer` · 默认 `0`
   非 0 时钉住上下文窗口上限，用于自动探测不准的兜底；`0` 表示按探测值。示例：`context_max_override: 200000`。
 

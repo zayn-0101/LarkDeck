@@ -22,7 +22,7 @@ import subprocess
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
-PLAN = REPO / "docs" / "plan-v0.7.1-visual.md"
+PLAN = REPO / "docs" / "internal" / "plans" / "plan-v0.7.1-visual.md"
 
 REFS = {
     "cls_builder": "/private/tmp/ref-cls/hermes_lark_streaming/cardkit/builder.py",
@@ -90,7 +90,7 @@ def main() -> int:
     tree = _run(["git", "write-tree"])
     worktree_commit = _run(["git", "stash", "create"]) or "clean"
     out = pathlib.Path(args.out) if args.out else (
-        REPO / "docs" / "audits" / "v0.7.1-visual" / f"freeze-{args.stage}.json")
+        REPO / "docs" / "internal" / "audits" / "v0.7.1-visual" / f"freeze-{args.stage}.json")
     try:
         out_rel = str(out.resolve().relative_to(REPO.resolve()))
     except ValueError:

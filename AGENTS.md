@@ -17,101 +17,35 @@
    宁可退回纯文本，也不能因为卡片报错而丢消息。改 `adapter.py` 时逐条保住这个性质。
    native streaming（`SUPPORTS_NATIVE_STREAMING` + `send_stream_frame`）的帧失败由核心
    自动回退 edit/send —— 这条 fail-open 链是官方契约，别绕过、别在帧里吞掉回落。
-3. **Hermes 私有接口只允许出现在 `compat.py`。** 目前分八组登记
-   （会话归属与澄清网关另见 `SESSION_ATTRIBUTION_API` 与「约定」里的归属条目）：
-   适配器必需 3 个（`REQUIRED_ADAPTER_ATTRS`，`probe_adapter_class()` 运行时校验，
-   缺了拒绝覆盖）；适配器可选 1 个（`OPTIONAL_ADAPTER_ATTRS` —— `edit_message`，
-   有则用、无则退回内置）；**显示 chrome 1 个**（`DISPLAY_CHROME_ATTRS` —— `format_tool_event`：
-   我们**覆盖它并允许返回 `None`**（基类 docstring 明写的官方扩展点）。
-   ⚠️ **2026-09-14 实测更正：这条覆盖在 0.21.1 里根本不在这条路上** ——
-   `format_tool_event` 的唯一调用点是 `gateway/stream_dispatch.py`，而那个
-   `GatewayEventDispatcher` **只在测试里被构造**（全树 grep：生产侧零引用）。
-   真机上的工具进度行由 `gateway/run_turn_runner.py` 的 `_progress_build_message` 生成，
-   在 native 流式下由 `gateway/stream_consumer.py` 的
-   `"\n\n---\n".join((accumulated, progress))` **合成进同一帧**。
-   所以这条覆盖只是**向前兼容的保险**（哪天核心把它接回来就自动生效），
-   **不是**「正文干净」的活杠杆 —— 后者是 R11-A7 的正文净化（下一节）。
-   探测照旧上报：缺了不致命，但那时连保险也没了）；
-   点击回调路径 5 个类属性（`CALLBACK_ADAPTER_ATTRS`）+ 2 个实例属性
-   （`CALLBACK_INSTANCE_ATTRS` —— ⚠️ **2026-09-16 实测更正**：这组**根本没有探测键**
-   （`probe_report` 不读它，全仓只有 `compat.py:50` 的定义、一条测试、和本行），
-   且 `_loop` 在 `adapter.py:3562` 是**裸访问、无局部回落** ——
-   旧文「只在运行时 `AttributeError` 时回落」**对 `_loop` 不成立**）；
-   **信号型契约 1 个**（`SIGNAL_ADAPTER_ATTRS` ——
-   核心在 `/stop`、`/new` 路径**主动调我们**的 `interrupt_session_activity`，
-   缺了不致命但「中止后卡片不变色」是静默失灵 —— ⚠️ **2026-09-16 补充：探的是基类有没有它，
-   而真正的契约是核心的查找名（`gateway/run_agent_cache.py:415` 的
-   `getattr(type(adapter), "interrupt_session_activity", None)`）—— 那个名字改了，合并类属性
-   探测结构上看不见。P1b 已加**静态 best-effort 源码字面量探测**（status「信号契约」行 +
-   False 时 WARNING），但运行期派发仍未由它验证；核心等价重构/局部变量改名会误报 False，
-   残余盲区仍在 `docs/internal/compare/plugins-compare.md` §7.6 如实登记**）；**处理生命周期 1 个**
-   （`REACTION_ADAPTER_ATTRS` —— `_reactions_enabled`，覆盖它必须**尊重父类**语义，
-   缺了 `reactions: false` 静默失效）；澄清网关内部结构
-   （`_lock` / `_entries` / `entry.multi_select` / `mark_awaiting_text` / `resolve_gateway_clarify`，
-   已封装成 `clarify_multi_select()` 等函数）；会话归属公开面
-   （`SESSION_ATTRIBUTION_API`）。订阅的钩子清单也在本文件（`OBSERVED_HOOKS`，
-   文档/门禁/自检都读它，同步规矩见「约定」）。新增依赖一律先登记。
-   🔴 **2026-09-16 独立复核：本条里的「探测上报」比实际强得多，别按字面读。**
-   已核实（完整清单见 `docs/internal/compare/plugins-compare.md` §7.6）：
-   * **历史核对（P1a 之前）**：探测结论的**唯一出口是被动日志**（`~/.hermes/logs/agent.log`）；
-     启动自检写的 `SELFCHECK` 在**生产代码里没有任何读者**（读者只有 `tests/check_override.py`）；
-     `/larkdeck status` 卡上**一个 `probe_report` 键都没有**（当时只有 6 个账本计数 + 「钩子 N/7」）。
-   * ⇒ 当时上面每一处「探测上报」，实际含义都是「**往日志里写一行**」，**不是**「用户能问出来」；
-     唯一真正上到用户可见渠道的是 `OBSERVED_HOOKS`（状态卡显示 `钩子 N/7`）。
-   * 已登记 **7 条静默路径（S1–S7）**，其中 S7（`interrupt_session_activity` 的**核心查找名**）
-     原先连日志都没有。**P1b 已加静态 best-effort 源码字面量探测 + `/larkdeck status`
-     「信号契约」行 + False 时 WARNING；但运行期派发仍未由它验证，残余盲区如实保留**。
-     修复项与优先级见 §7.8 —— **登记不等于开工**。
-   * ✅ **2026-09-16 P1a 更新（已实现并过门禁）**：`probe_report` 的 10 个契约键
-     已按「状态 / 缺失 / 探测契约」三行摘要上到 `/larkdeck status`；`build_adapter()` 存
-     进程级只读快照，状态卡区分「未探测」「已接管」「必需接口缺失」「覆盖层构造失败」
-     「报告缺键」，且**从不写「正常」**。S1（`session_attribution_ok` 算了不报）随之上卡解决；
-     S2（`CALLBACK_INSTANCE_ATTRS` 无探测键）、S7（核心查找名）与 S6 仍不在本批。
+3. **Hermes 私有接口统一在 `compat.py` 登记与隔离。** 新增依赖先登记，按能力探测，
+   不把已有兼容债务当成允许继续裸访问的先例。适配器必需 / 可选、点击类属性 / 实例属性、
+   显示 chrome、信号契约、reaction 与会话归属分别见该模块的契约清单。
+   - 必需接口缺失时拒绝覆盖；可选能力缺失时保留消息回落，并如实报告缺失。
+   - `format_tool_event` 覆盖只是兼容保险，不能据此证明正文没有核心进度行；正文来源见下文。
+   - `CALLBACK_INSTANCE_ATTRS` 只有登记，**没有类级探测键**；点击路径仍有裸 `self._loop`
+     访问，不能宣称实例属性缺失已全面回落。
+   - `interrupt_session_activity` 的核心查找名另有静态 best-effort 源码探测；它不能验证
+     运行期派发，等价重构也可能误报。覆盖 `_reactions_enabled` 必须尊重父类语义。
+   - `build_adapter()` 保存进程级探测快照；现役默认状态卡只显示接管摘要，完整契约与缺失项
+     在 `/larkdeck status --detail` 和日志里。未探测、报告缺键与覆盖失败必须可区分，不能写“正常”。
+   - 钩子登记清单是 `compat.OBSERVED_HOOKS`，与 `hooks.SUBSCRIPTIONS` 同步；不要另抄字面量。
+   历史静默路径与证据边界见本地 `docs/internal/compare/plugins-compare.md` §7.6–7.8；
+   登记项不等于已实现，也不等于真机验收。
 4. **不假设版本。** 开发机与部署环境可能跑不同 Hermes 版本（容器 / NAS 常是镜像内固定版本），
    升级随时会发生，判据要按当前进程实际值来。
    能力一律运行时探测，不写死版本号分支。
-5. **卡片方言不可混用 —— 但「2.0 的回调到不了服务端」是错的，2026-09-12 更正。**
-   正确规则：**要接服务端点击的组件，必须在它所属的方言里用对应的声明**。
-   - **1.0**：`{"tag":"action","actions":[...]}` 按钮行 + 按钮**顶层** `value`；
-   - **2.0**：**组件级** `behaviors: [{"type":"callback","value":{...}}]` —— `value` 会原样成为
-     `event.action.value`；组件可以是 `button`、`select_static`（回调带 `action.option`）、
-     `input`（回调带 `action.input_value`）。
-   在 2.0 卡里放 1.0 的 `action` 行、或只有顶层 `value` 的按钮 → 飞书**拒收**（IM API `230099`）。
-   混用后果是**静默失灵**（点了没反应），所以这条纪律照旧要守。
-
-   ✅ **四格现在全都真机证过了（2026-09-16 16:12 补齐最后一格）**：
-   `select_static` / `multi_select_static` / `input` 由探针 ⑫⑬⑭ 的「探针点击到达」日志
-   ＋ `check_clarify_e2e.py` 全绿证明；**`button`** 这一格由探针 ⑮ 补上 ——
-   真机点击后 `agent.log` 出现
-   `[larkdeck] 探针点击到达 ✅ tag=button … value={'kind': 'button', 'larkdeck_probe': True}`
-   ⇒ **「2.0 卡里组件级 `behaviors` 的 `button` 能把点击送到服务端」现在是实测事实**
-   （在那之前它**只有官方文档**）。判定协议见 `docs/internal/handoff/handoff-route.md` §12（**点击前**写死的）。
-   ⚠️ 这段措辞本身有历史，别把升格当成理所当然：R11 做同类插件对照时发现它写得**比手上的
-   证据更强**，于是按证据强度**降级**并留了探针 ⑮ 去补 —— **补完才升回来**。
-   这条纪律的通用形态（**结论要标证据强度**：谁量的、怎么量的；
-   「官方文档写了」≠「真机验过」；**别人的代码注释不算证据**）见 `docs/internal/lessons.md` 推论 38。
-
-   > **旧结论错在哪（别再重蹈）**：原表述是「2.0 的 `behaviors` 回调到不了
-   > `p2.card.action.trigger`，所以澄清卡只能是 1.0」。这是**误诊** —— 当时那张「2.0 澄清卡」
-   > 实际用的是**没有 `behaviors`、只有顶层 `value` 的 1.0 按钮**放进 2.0 的 `body.elements`，
-   > 那是「2.0 卡里放 1.0 组件」这个病；而且论据抄自第三方插件的**代码注释**，不是真机实验
-   > （该插件自己的代码还与那句注释自相矛盾）。
-   > **认证据的规矩：官方文档 + 真机探针为准，不抄别人注释。**
-   > 2.0 澄清卡（`select_static` + `input`）是可行的，见 `docs/internal/plans/plan-6-effects.md` 阶段 4。
-
-   澄清卡现在**默认用 2.0**（`select_static` / `multi_select_static` / `input` + 组件级
-   `behaviors`）—— **2026-09-13 翻的，两条前提都满足并留了一手证据**：
-   ① 真机点一次：探针 ⑫（2.0 `select_static`）点下去后网关日志（**本机实测在 `~/.hermes/logs/agent.log`** —— `gateway.log` 里只有内置 feishu 平台的行，插件的 `[larkdeck]` 行在 `agent.log`）出现
-   `[larkdeck] 探针点击到达 ✅ tag=select_static option='opt_a'`；探针 ⑬⑭（真 2.0 澄清卡）
-   点下去后出现 `澄清提交未生效（clarify=probe-c2）` —— 探针卡没在网关登记澄清，所以
-   「没东西可解」是预期，而它证明**点击到达并正确解析出了 clarify id**；
-   ② `check_clarify_e2e.py` 的 2.0 场景全绿。
-   想回到旧路径就配 `clarify_dialect: "1.0"`（那条路径仍然可用、仍有测试锁它的形状，
-   `check_clarify_e2e.py` 的每条场景现在**自己声明方言**，不再偷偷依赖默认值）。
-   `cards.clarify_card_2()` / `clarify_card()` 就是两个版本，由配置选。
-   多选走 `multi_select_static` 且**不给**自由输入框（与编号/标签解析打架）。
-   元素级方言差异见 `README.md` 的表。真正的红线是**方言不许混用**：
-   1.0 的 `action` 行放进 2.0 卡会被飞书拒（`230099`），2.0 组件不带 `behaviors` 则点击到不了服务端。
+5. **卡片方言不可混用。** 要接服务端点击，必须使用所属方言的声明：
+   - **1.0**：`{"tag":"action","actions":[...]}` 按钮行 + 按钮顶层 `value`。
+   - **2.0**：组件级 `behaviors: [{"type":"callback","value":{...}}]`；回调值进入
+     `event.action.value`，下拉另带 `action.option`，输入框另带 `action.input_value`。
+   2.0 卡里放 1.0 的 `action` 行 / 仅顶层 `value` 的按钮会被拒；不要把方言混用误诊成
+   “2.0 回调到不了服务端”。默认澄清方言是 2.0，1.0 仍可配置回退，测试必须显式声明方言。
+   单选可带自由输入；多选使用 `multi_select_static` + 提交按钮，不加自由输入框。
+   待答卡与确认卡必须保持同一方言。形态说明见 `docs/guide/card-capabilities.md`。
+   `button` / `select_static` / `multi_select_static` / `input` 的回调到达已有历史真机记录，
+   其中 button 于 2026-09-16 补齐；原始凭据见本地 `docs/internal/handoff/handoff-route.md` §12。
+   **官方文档、历史探针与本轮真机验证分开标注**；第三方注释不能充当实测证据。
+   通用证据纪律见本地 `docs/internal/lessons.md` 推论 38。
 
 ## 目录
 
@@ -124,6 +58,7 @@ core/         插件本体（Hermes 加载器以 hermes_plugins.larkdeck.core.* 
                 也放 CardKit 实体卡与面板 markdown 的构造（`cardkit_entity_card` /
                 `panel_rounds_markdown` + `panel_tools_markdown`（R3 收窄版：面板两块）/
                 `panel_markdown`（普通卡与 `patch` 传输：两块拼成一个 markdown））
+  cardview.py   现役结构化元素树、面板局部更新载荷、图标与字号契约
   i18n.py       双语文案（飞书原生 i18n_content）
   compat.py     版本 / 能力探测 —— Hermes 私有名的唯一存放处
   context.py    运行时指标（钩子写入 → 页脚读取的进程内全局快照）；
@@ -132,8 +67,8 @@ core/         插件本体（Hermes 加载器以 hermes_plugins.larkdeck.core.* 
   panel.py      面板数据层（推理轮 / 工具 / 回合结局写入 → 卡片面板读取；
                 按会话分桶 + chat_id→session_id 确定性归属，拿不到才退回「最近活跃」）；
                 R11-A7 起还持有**正文累积**（单独的小仓库 + 自己的「最近活跃」盒子，
-                只服务正文净化的前缀判据，**不参与**面板的回合切换与归属回退）
-  hooks.py      官方钩子订阅（7 个观察型钩子，清单见 compat.OBSERVED_HOOKS）：
+                服务 own 正文与 legacy 净化判据，**不参与**面板的回合切换与归属回退）
+  hooks.py      官方钩子订阅（8 个观察型钩子，清单见 compat.OBSERVED_HOOKS）：
                 只写内存、异常自吞、永不返回 directive
 install.sh    安装脚本（默认软链；NAS 用 --copy，其 FILES 数组是手动的，新增模块要同步）
 docs/         文档地图见 docs/README.md：用户文档在 guide/、开发文档在 development/、
@@ -168,7 +103,7 @@ tests/        见「验证」
   `_apply_ctx_settings()` 经官方 `ctx.get_config()` 读入。Hermes **从不**调用
   `configure()`（它只是自有运行时入口，单测在用）。取值优先级：环境变量
   `LARKDECK_<KEY>` > config.yaml settings > `_DEFAULTS`。新增配置项必须同时加到
-  `_DEFAULTS` 和 `plugin.yaml` 的 `config_schema`；未接入业务的配置项要在 README 标 no-op。
+  `_DEFAULTS` 和 `plugin.yaml` 的 `config_schema`；不作用于现役路径的配置项要在 README / 配置参考 / config_schema 描述里标 no-op。
   P2 起配置有**热刷新**通道：`/larkdeck config` 只读展示，`/larkdeck config reload` 从官方
   `ctx.get_config()` 重读进内存（**异常时全有全无**，不是文件系统事务）。聊天侧**没有**写入
   命令：handler 拿不到发送者身份，无法安全授权（安全审计 B1）⇒ 插件**从不**直接写
@@ -178,7 +113,7 @@ tests/        见「验证」
   **已退役**：设了只留一条 WARNING，行为仍是 structured；真正回退要 revert 到 v0.7.0）、
   `card_status_header=false`（用户口径「顶栏默认不显示」）、`show_reasoning="auto"`
   （跟随 Hermes `display.show_reasoning` / 平台覆盖；也接受 `on`/`off` 与旧布尔 `true`/`false`）。
-  Hermes 未开启 `plugins.stream_reasoning_deltas` 时 auto 按关闭处理，并在 `/larkdeck status` 说明。
+  Hermes 未开启 `plugins.stream_reasoning_deltas` 时 auto 按关闭处理，并在 `/larkdeck status --detail` 说明原因。
   改这三项口径必须同提交改 README / plugin.yaml / CHANGELOG。
 
 - **平台 entry 字段从 dataclass 派生透传**（`_IDENTITY_ENTRY_FIELDS` 除外），新增字段自动跟随；
@@ -194,127 +129,57 @@ tests/        见「验证」
   这种静默失灵。清单本身是唯一事实来源，别在别处再抄一份字面量。
 - 运行时只 import 标准库与 Hermes 环境；不新增第三方依赖。
 - native 流式是官方契约：`send_stream_frame(text, ...)` 的 `text` 是**累积全文**
-  （不是增量），整卡替换到同一张卡；回合状态挂 `self._ld_streams`
-  （key = `chat:turn_id`），帧间有节流（`_STREAM_MIN_INTERVAL`）。
-- **native 帧有两条传输**（配置 `native_transport`，**默认 `cardkit`** —— 2026-09-13 翻的，
-  前置是「一轮对抗审计 + 真机生产路径探针」；`tests/test_units.py` 的
-  `test_declared_defaults_are_an_explicit_decision` 钉住这个默认值）：
-  * `patch`：普通卡 + `message.patch` 整卡替换。字是**几个几个跳**（用户实测语）。
-  * `cardkit`：CardKit 实体（`card.create` + 发实体卡）+ 每帧 **至多一次 `card.batch_update`
-    写装饰（面板**两块** + 页脚）+ 一次 `card_element.content` 写正文** ⇒ **真逐字打字机**（用户实测语）。
-    ⚠️ **面板是两块**（R3 收窄版，2026-09-14）：`panel_body`（推理轮）+ `panel_tools`（工具行列表），
-    **都在建实体时建好**（结构仍然「建实体时定死」，没破那条不变量），两块走**同一次** batch
-    ⇒ **逻辑写次数一次都不增加**。拆开的目的可以写成两条**与时钟无关**的不变量：
-    ① **工具结束那一帧不重发推理块**；② **推理增长那一帧不重发工具块**
-    （推理逐字在长时不再把那几十行工具摘要一起重发，量级 ≈2.7KB/帧）。
-    ⚠️ **工具开始那一帧通常两块都写** —— 工具会打断当前推理轮，轮次标题要补耗时
-    （`**第 1 轮**` → `**第 1 轮 · 0.4s**`）⇒ 推理块内容真的变了；别把「工具事件只写工具块」
-    当成通则（2026-09-14 R3 代码审计实测：真实时钟下开局那一帧就是两块）。
-    判据是 `test_units` 的 `㉕/㉖` 两条（字面量 id 列表 + `⏳/✅` 字面量 + **反向**搜索
-    「工具名不许出现在推理块里」），变异 `R3-1..R3-6` 六条全红。
-    ⚠️ **收尾/降级/`/stop` 重绘走的是普通卡**（`unified_panel` = `auxiliary_timeline`），
-    那三条路径**没有** `panel_body`/`panel_tools`（有反向断言钉住）—— 所以「面板两块」是
-    **实体卡流式期间**的形态，收尾那一刻整卡一换就回到一个 markdown（今天本来就是这样）。
-    ⚠️ **观感摘要（2026-09-17，向 CLS 看齐）**：折叠面板摘要行是
-    `💭 思考 {耗时} · 🛠️ 工具执行 · {n} 步`（i18n 节点，中英文各一份）；展开后正文里
-    同样有 `💭 思考` / `🛠️ 工具执行` 两个灰色分区小标题。工具行 = **飞书官方线性图标**
-    做**文本前缀**（`markdown.icon` + `color:"grey"`；放法是用户 2026-09-22 真机三臂对照选的：
-    元素级 `div.icon` 实测图标高 3px、`column_set` 横向空 179px，前缀图标 0px）+
-    加粗**英文动作名**（Read file / Run command / Load skill …）+ 耗时（`25 ms` / `1.2 s`）+
-    **带颜色的状态词**（成功 `✓` 绿 / 运行中 `Running` 蓝 / `Failed`、`Blocked`·`Timed out` 红 /
-    `Cancelled`·`Skipped` 灰；2026-09-22 C1 + 默认②），命令或 skill 名另起一行（灰色 +
-    `tool-indent_outlined` 前缀图标）。
-    ⚠️ **图标四条纪律**：① 默认**线性 `_outlined` + 统一灰**（彩色 `_colorful` 只有 13 个、
-    颜色写死，不用）；② token 必须**逐个对飞书官方枚举页查证存在**（`enumerations-for-icons`，
-    写错客户端不渲染且不报错）—— 白名单冻结在 `test_units.py::_VERIFIED_LINEAR_TOKENS`；
-    ③ `ICON_ALIASES`（28 条逐条等于 CLS）是**对齐判据的唯一真相**（`check_cls_alignment` 只读它），
-    `tool_icon_token(name, token)` 只是渲染层精化；想回 emoji 形态配 `tool_row_icon: "emoji"`；
-    ④ **字段表纪律**（2026-09-22 真机 `200621` 的产物）：服务端对**未知字段**是**整卡被拒**
-    （不是忽略，而且一次只报一个）——`markdown` 没有 `text_color`（灰色只能写进 content：
-    `<font color='grey'>…</font>`，见 `cardview._grey`），`div` 的前缀 `icon` 在**组件级**
-    （`div.text` 里没有这个字段）。新增/改元素前先核官方 2.0 字段表，并登记进
-    `check_cardview._assert_panel_element_fields()` 的白名单（未登记 tag 直接红）。
-    ⚠️ **v0.7.3 注册项**：`text_weight` 写在 `plain_text` 上会被服务端回 `200621` **整卡拒**
-    （真机探针；不要试图加粗工具名）；十六进制颜色（`#B0B0B0` / `#C8C8C8`）服务端接受但
-    **客户端忽略**，灰色统一写 `color:"grey"`；`text_size` 对 `div.text=lark_md` 与 fenced code
-    block **不生效**（客户端固定字号），工具细节行用 `markdown`/`plain_text` 两宿主，Error/Result
-    块用 `markdown` + 逐行 inline code（`_inline_code_lines`）；已知系统提示（Gateway online/
-    restarting 等，`_LD_SYSTEM_NOTICE_PREFIXES`/`_LD_SYSTEM_NOTICE_LINES`）整卡不渲染面板/
-    状态头/页脚，真实回合卡不受影响。**v0.7.4** 起还覆盖 Hermes 本地化命令回复（`/reset`、`/new`、
-    `/reload-*`、`/stop`、`/reasoning`、title/footer/model/approve-deny）与 `/larkdeck` 自诊卡；
-    纯词模板（如「没有可停止的活跃任务。」）只允许**整段完全相等**。负清单仍有漏网：未登记命令
-    回执可能带 `✅ 已完成`，发现即登记并重跑全量。
-    ⚠️ **notify 边界**：`notify=True` 是上游**所有最终回复**的通用标记，真实模型 non-native 终稿
-    也带它 ⇒ 不能据此判非回合；命令回复只能按内容 header/整段相等登记，误杀（真实回答首行命中
-    已登记 header）是**终态不可逆**的残余风险，靠 `send 判定 turn=` 日志发现并重跑全量收紧。
-    ⚠️ **心跳/seed 边界（v0.7.5）**：上游默认 `⏳ Working — `（`_interim_send`）由 `send()` 返回
-    `success=True, message_id=""`，绝不把主卡 mid 交回上游以免落在无元数据的 `edit_message`
-    整卡 patch 上；有 active structured 主卡时只合入 panel header，无 active 时只建一张专用
-    静默卡并复用，多条 active/degraded/无 panel/刚终态的安静窗口内一律抑制。默认心跳字面量
-    之外（generic 模式）不识别。新 consumer seed 不读上一回合 panel 快照；seed 后、begin_turn
-    前的 3s tick/上游心跳走 `_ld_panel_is_stale` 窄闸门，live 帧不做 capture-only 闸门（会误判
-    seed 晚于 begin_turn 的当前回合），毫秒级 live 竞态登记为已知限制。不同入站回合各自一张卡，
-    不做跨回合答案卡合并；同轮 fallback 合卡需上游 `_stream_turn_id`/`get_stream_message_id`。
-    ⚠️ **i18n 边界**：`markdown` element.content 不承载 `i18n_content` ⇒ 工具行动作词/
-    状态词固定英文、分区小标题固定中文；完整句子提示仍走 `i18n.t()`。不要把它写成
-    “动作词双语”。
-    参数预览被上游 80 字符截断时走 `_preview_value()` 的有界提取，**绝不把 JSON 原文
-    倒回卡上**。CardKit 实体卡的外层折叠面板 header 建卡时定死；Phase 1 header
-    局部更新探针的最终结论是 **c：不实现生产代码**，收尾/降级/`/stop` 仍走整卡替换
-    （见 `docs/internal/audits/cls-ui/phase-1/consensus.md`）。`<font color='…'>` 是给
-    `markdown`/`lark_md` 正文上色的**唯一**合法写法（官方富文本「彩色文本样式」；`markdown`
-    没有 `text_color` 字段，写了整卡被拒），生产自 v0.6.2 起默认开（`panel_color_tags: true`）；
-    ⚠️ 但这个开关**只作用 legacy 文本函数**（`core/cards.py::_colorize`），结构化卡（v0.7.1 起
-    唯一在跑的引擎）**无条件**写 `<font>` ⇒ 关掉它不会去色，有的客户端反而会把字面标签显示出来
-    （v0.7.4 未做，v0.7.5 登记项，见 `docs/internal/plans/plan-v0.7.4.md` §5：要么让 cardview 吃这个开关，要么删键）。
-    每帧**元素写**预算 2 次（常量 `_CK_WRITES_PER_FRAME`；卡级上限 10 次/秒 × 帧窗口 0.25s）；
-    R7 起再加一次**会话预览**写（`card.settings`，`_CK_SUMMARY_INTERVAL = 5s` 限频 ⇒ 平均
-    ≈0.2 次/秒，且**不重试**）⇒ 折算 ≈8.2 逻辑写/秒 < 卡级上限 10 次/秒；
-    ⚠️ 不是 HTTP 调用数：元素写撞限流时同一请求退避重发最多 4 次，而预览**不重试**
-    ⇒ **单帧最坏 9 次调用 / 退避 2.0s**（切卡帧另算：封卡 patch + 建实体 + 发实体卡也都能重试）；
-    ⚠️ **滑窗写入守卫**（R11-B1，`_ck_window_*`）：1 秒窗口内已经写满 10 次逻辑写时，
-    **本帧让出那次装饰 batch**（可重放 ⇒ 下一帧补写；**跳过 ≠ 失败**，帧照旧返回 True），
-    **不置 `ck_decor`**（记了就等于把没写说成写了 = 去重逻辑永久跳过 = 装饰静默冻结）。
-    **正文（提交点）与预览永不跳过** ⇒ 它不是硬限速器，极端情况下窗口仍可能被正文顶破
-    （有意的取舍：宁可多花一次配额，也不能让卡片停在半截）。窗口挂**回合状态**上
-    （不是进程级共享盒子 —— 口径是**每张卡** 10 次/秒，且进程级窗口会让测试按执行顺序漂移），
-    记账口径是**配额消耗**（调用发出去了就计，含限流重试与失败响应），与 `/larkdeck status` 的
-    「只统计真的写出去的帧」**故意不同**。⚠️ 它**当前稳态不可达** —— 但那句话有**两个前提**
-    （B1 审计实验验证）：`_STREAM_MIN_INTERVAL` 是常量（成功帧 ≤4 帧/秒）、核心在 definitive
-    `False` 后停用本回合 native；前提一变守卫就复活（审计反事实实验：1 秒内顶满、让出 68 次）。
-    ⚠️ **「≈8.2 次/秒」是摊还均值，不是「任何 1 秒窗口都 ≤10」**：正文与预览不查 allow ⇒
-    记账口径下 1 秒窗口理论峰 **12** 条（第 10 条放行 + 正文 + 预览），别把 8.2 写成硬上界。
-    它是 Phase C 的前置之一，但**单独一件不够**（审计中-3）：守卫每帧最多让出一次装饰，
-    ≥2 次 `create`/帧 时还要补 plan-v1 §193 的另一半「含创建的帧不发装饰 batch」。
-    ⚠️ 喂养侧也有门禁（B1 审计高-1 的收口）：窗口里这一帧新增的条目数必须**逐帧等于**
-    这一帧真的发出的逻辑写数（`test_ck_write_window_guard_never_trips_at_production_cadence`
-    用假时钟逐帧对账），窗口长度/容量常量由 `test_ck_write_window_semantics_*` 用**字面量**钉住；
-    变异 `B1-0/4/5/6/7` 分别钉「守卫被整体撤掉」「只修剪不记账」「跳过帧顺手连正文也不写」
-    「窗口长度被改小」「预览那一笔不入账」—— 审计实测这五种改法原来**四门禁全绿**。
-    **装饰内容没变就不发那次 batch**（稳态下每帧 1 次）；**正文最后写**（提交点在后）；
-    装饰失败只标死 + 留痕（不 fail-open）；正文失败 fail-open —— **但有两条例外（R5）**：
-    ① 元素通道拿到**卡级死法**（`300309`/`300313`/`300317`）⇒ **降级成整卡 `message.patch`
-    续写同一张卡**（清 `card_id`，之后每帧走 patch；`300313` 落在装饰上时例外：只标死被点名的
-    那个元素、保住打字机）；② 撤回类码（`230011`/`99992354`，只可能在**整卡写入**拿到）⇒
-    标死 + 清追踪 + **不补发**。码表与处置见 `docs/internal/plans/plan-v1.md` 附录 A。
-    硬约束（全部真机实测）：**我们的实现**把结构在建实体时定死，因为**整卡替换**
-    （`message.patch` / `card.update`）会**关闭流式会话**（之后写元素得 `300309`）。
-    ⚠️ 2026-09-13 更正：**不是「任何结构性写入」都会关** —— CardKit 自己的元素级/批量接口
-    （`card_element.patch` / `card_element.create` / `card_element.update` /
-    `card.batch_update`）在流式期间**实测可用且不关会话**（见 `docs/internal/plans/plan-6-effects.md`
-    的「重大更正」一节）。想做「流式期间加元素/改面板/上状态色」时别被旧结论挡住；
-    序号必须**单调递增**（重开会话后没对齐得 `300317`）；收尾那一帧才用 `message.patch`
-    整卡替换（补面板与状态色 —— 那一刻流式本来就结束）。**失败的分档见上面那两条例外**：
-    确定性失败 fail-open 返回 `False` 交核心回落 edit/send（不变量 2）；卡级死法走降级车道
-    （返回 `True`、续写同一张卡）；撤回类码标死 + 清追踪（不补发）。
-    `unified_panel: false` 时面板元素**不进卡** —— 这个结构决定由**元素表**（`ck_elems`，
-    从建出来的卡 JSON 抽的）承载，`_ck_plan` 只对表里的 id 发写入（写不在卡里的 id 会得
-    `300313` ⇒ 每帧失败 ⇒ 整回合被打回纯文本）。⚠️ 别再写 `ck_panel`：那是 R1 之前用过的
-    布尔字段，**已经删了**（2026-09-14 审计发现文档还在引用它，照文档写就会造一个没人读的字段）。
-  * 想翻默认：先过一轮对抗性审计 + 真机 `probe_render.py --cardkit-prod`，
-    再改 `_DEFAULTS` + `plugin.yaml` + `docs/guide/configuration.md`（三处同步有机械门禁：
-    `test_config_schema_matches_defaults_exactly` 连配置参考的完整样例键集一起核对，
-    另有 `test_declared_defaults_are_an_explicit_decision` 专门钉默认值）。
+  （不是增量）；CardKit 更新元素、patch 路径整卡替换。回合状态挂 `self._ld_streams`
+  （key = `chat:turn_id`），现役结构化帧与心跳共用回合写锁。
+- **现役 native 路径是 structured + CardKit。** `_ld_visual_engine()` 始终返回 structured；
+  `_ld_stream_frame()` 在旧传输分流之前进入 `_ld_stream_frame_structured()`，新回合直接建实体。
+  `native_transport: patch` **不会切换现役路径**；状态标题仍读这个配置值，不能拿标题证明
+  实际传输。旧 markdown 渲染器和 patch 车道留作兼容 / 降级；`visual_engine: legacy`
+  只留退休告警，真正回退旧引擎需回到 v0.7.0。改默认值须先对抗审计与真机生产路径探针，
+  同步 `_DEFAULTS` / `plugin.yaml` / `docs/guide/configuration.md`，保留默认值门禁。
+  **当前流程与传输边界以 `docs/development/architecture.md` 为开发入口。**
+  - seed 不画上一回合过程数据，正文留空，建 `panel` 与加载提示；首段正文到达后删除提示。
+    `ck_elems` 从真实 JSON 抽出正文 / 页脚等流式 id；外层面板用 `ck_has_panel`，提示用
+    `ck_loading`，不能拿不含它们的 `ck_elems` 判存在性，也不能恢复旧 `ck_panel` 布尔字段。
+  - 面板通过 `card.batch_update` 的 `partial_update_element` 更新 header / 子树；页脚另走
+    batch，正文最后用 `card_element.content` 写入。旧 `panel_body` / `panel_tools` 两块
+    markdown **不是现役面板形态**，也不再有“所有结构只能建实体时定死”的约束。
+  - 要保持流式就不能整卡替换：`message.patch` / `card.update` 会关闭流式会话，随后元素写
+    可得 `300309`；元素级局部更新可以改结构。收尾先取消心跳，再整卡替换、关闭 streaming。
+    澄清等待边界例外：不关流，成功点击后同卡继续。`/stop` 清状态后，在飞帧不得把它插回去。
+  - 所有同回合写者（帧、3 秒面板心跳、澄清刷新）共用回合锁；序号单调递增，UUID 不复用。
+    心跳锁忙就跳过，不排队；新回合 seed 的旧快照窄闸门只作用于 seed 后的 tick / 心跳，
+    不能直接套到 live 帧。外层面板中间更新不写 expanded；推理子面板只在首次出现时发
+    展开态，后续保留用户选择。详细行为由 `check_cardview` 与真机探针共同验证。
+  - 正文失败无法恢复时返回 `False` 交核心 edit/send；卡级死法可同卡降级（标 degraded、清
+    `card_id`、整卡续写）；装饰失败不能吞正文。撤回类错误停止写入并清追踪，不由插件补发。
+    不同入站回合各自一张主卡；同轮 fallback 合卡依赖上游回合标识，不能跨回合拼答案。
+  - 上游默认 `⏳ Working — ` 心跳由 `send()` 返回 `success=True, message_id=""`；
+    不把主卡 mid 交给无元数据的上游 edit。唯一 active structured 主卡只更新面板标题；
+    无 active 时复用专用静默卡。多 active、已降级、无 panel 或刚终态窗口内抑制；
+    generic 心跳不识别。毫秒级 live 归属竞态仍是已知限制。
+  - 结构化面板保留最近最多 20 步 / 20 轮；`max_panel_steps` 可进一步收紧。
+    `max_reasoning_chars` 按轮截断，`max_tool_result_chars` 截断 Result / Error 块。
+    参数预览先脱敏；上游 80 字符截断时用 `_preview_value()` 有界提取，绝不回显 JSON 原文。
+  - **写入预算必须分车道。** 旧 markdown CardKit 的装饰 batch + 正文、限频预览和滑窗守卫
+    由 `_ck_plan` / `_ld_ck_maybe_summary` 等实现；结构化路径另有面板局部更新、页脚 batch、
+    正文及加载提示删除，**不能宣称现役只有 2+1 次写或有统一 8.2 次/秒上界**。
+    改旧守卫时仍须保留：跳过装饰不记已写 / 不跳正文与预览、失败重试计入配额、每帧逐笔对账；
+    配额口径与状态卡的写卡帧数不同。`B1-*` 变异与 `_ck_window_*` 用例是这些边界的判据。
+- **卡片字段与观感纪律。** 新增元素先核对官方 2.0 字段表与图标枚举，再同步
+  `check_cardview._assert_panel_element_fields()` 白名单。未知字段会整卡被拒，不是被忽略。
+  - 静态工具图标默认 `_outlined` + 统一灰；运行中用自研动图。`ICON_ALIASES` 与 CLS 对齐，
+    `_VERIFIED_LINEAR_TOKENS` 是已核实 token 白名单；`tool_row_icon: emoji` 保留降级选择。
+  - `markdown` 没有 `text_color`；正文上色用 `<font color='…'>`。`div.icon` 在组件级；
+    `plain_text.text_weight` 会被拒；客户端忽略部分十六进制颜色，灰色用 `grey`。
+    工具细节用 markdown / plain_text；错误与结果块用逐行 inline code，不能指望 fenced
+    code 或 `div.text=lark_md` 接受 text_size。语言边界按本文件 i18n 条款。
+  - `panel_color_tags` 只作用旧 markdown 函数；structured 自行生成颜色，false 对其无效。
+    不能再把它写成现役去色开关。这个限制已在 README / 配置参考 / 清单描述对齐。
+  - 已知系统提示与命令回执不渲染回合面板 / 状态头 / 页脚。header 匹配与整段相等清单
+    见 `_LD_SYSTEM_NOTICE_PREFIXES` / `_LD_SYSTEM_NOTICE_LINES`；纯句模板只允许整段相等。
+    `notify=True` 也用于真实模型终稿，不能据此判非回合；负清单仍可能漏回执，真实回答
+    首行误命中 header 则可能被误判。排查用 `send 判定 turn=` 日志，不能扩大匹配来掩盖问题。
 - **markdown 卫生只作用在「完整文本」的写入上**（`cards.sanitize_markdown`，R6a）。核心契约是
   「流式帧的 `text` 是**累积全文**」⇒ 任何一帧改写前缀都会让用户看到文字**跳变**（核心自己只在
   收尾那一帧补未闭合围栏）。**判据是「这份文本是不是完整文本」**，不是「这是哪条调用路径」：
@@ -336,15 +201,16 @@ tests/        见「验证」
   「卫生前过闸、卫生后超限」的窄带（审计构造过 `128000 → 128080`），而收尾帧原本
   **一道闸门都没有** ⇒ 超限的卡被拒 ⇒ fail-open ⇒ 用户从「一张卡」掉成「若干条纯文本」。
   判据与守卫必须同口径，否则两个都对、合起来还是漏（`docs/internal/lessons.md` 推论 13）。
-- **`/larkdeck status` 是自检的唯一入口**（`ctx.register_command`，公开 API）：报版本
-  （**现读 `plugin.yaml`，不复制常量** —— 抄一份就会漂；**读不到就写「版本读不到」**，
-  不许让版本段静默消失）、生效传输、钩子挂载数、**P2 的两行聚合诊断**（能力/链路 + 运行/账本；
-  有明确异常才带 `⚠️`，绝不写「正常/健康」），以及**六条记录**（入站心跳 / 写卡 / 写卡失败 / 运行时长 / 掉回纯文本 / 错误码 top-N）。
+- **`/larkdeck status` 是自检入口**（`ctx.register_command`，公开 API）。默认七行概览：
+  接管、钩子、推理显示、最近写卡、失败 / 回落、错误码与运行时长；`--detail` 展开能力 / 链路、
+  契约与六条完整记录。两种视图同源，每次查询都把详细事实写日志；解析不到概览所需字段时
+  回退完整视图。版本现读 `plugin.yaml`，读不到就明说，不能复制常量或让版本段消失。
+  未知参数明确报错；有明确异常才带 `⚠️`，无记录与零计数分开，绝不写“正常 / 健康”。
   `/larkdeck config` 是同一条命令里的**只读**配置视图（见上面的配置刷新纪律）。四条纪律：
   ① **没记录就写「无记录」，绝不写「正常」**（永远说健康的自检 = 绿而无判别力）；
   ② **只统计真的写出去的动作** —— 节流跳过的帧与文本没变的去重帧不算（一个字节都没写）；
-  ③ **口径是「帧」不是「次」**：cardkit 一帧最多 3 次逻辑写（装饰 batch + 正文 content +
-     限频预览）、seed 帧是 2 次网络调用、一次逻辑写撞限流最多重发 4 次 HTTP ⇒ 卡片与文档一律说
+  ③ **口径是「帧」不是「次」**：结构化帧可能包含面板、页脚、正文和提示删除等写入，
+     seed 是建实体 + 发消息，失败还可能重试；旧车道另有限频预览 ⇒ 卡片与文档一律说
      「**帧真的有写出**」，绝不说「写了 N 次 API」；
   ④ **记账挂在低层写卡收口点**（`_ld_send_card` / `_ld_update_card` 成功处）+ **两条帧路径特例**
      （cardkit 的 seed 建实体、每帧元素写 —— 它们不经那两个原语），并且**同一帧不许记两次**
@@ -365,8 +231,7 @@ tests/        见「验证」
     **同点同帧各 +1**；它**不含**「没有活跃流可收尾 ⇒ 按契约交还核心」那条**正常路径**
     （一个写请求都没发）。**两数当前不可分辨**这件事如实写在这里，别让文档比代码乐观：
   * `错误码 top-N` 只数**非零**码（`0` 是成功、`None` 是没拿到响应），不同码有上限
-    （超出并进 `other`，坏上游撑不大这张表）；计数挂在 `_ld_stream_fail` **一个**收口点，
-    不在它那 **11** 个调用点各记一遍（数法：`self._ld_stream_fail(` 的出现次数；加上 `def` 那一行才是 12 —— 2026-09-15 审计实测纠正）（那是「同一件事两处真相」的标准入口）；
+    （超出并进 `other`）；计数挂在 `_ld_stream_fail` 一个收口点，不在各调用方重复记账；
   * 卡片**短码**只出现在**日志自检行**（`卡片=xxxxxx`，v0.7.2 起；用户 2026-09-21 口径：
     「我从来没有提过这个要求」—— 页脚、面板、正文、卡头**一律不出现**）。它取自**本帧的卡**
     （`message_id`/`card_id` 后 6 位），**不是**进程级快照 —— 页脚指标串台是已知取舍，
@@ -411,43 +276,18 @@ tests/        见「验证」
   其余分叉 → core 整段；绝不按分隔符 split/rsplit。F4 异常重发帧在 own 下拒绝持久化并交回
   core edit/send 回落（防 terminal 命令/参数进正文）。绑定漂移/回合漂移严格 fail-open。
   下面的「有证据地剥帧」是 **legacy 回退路径**，仅 `body_source: legacy` 生效，P2b 归档后删除。
-- **正文净化 = 有证据地剥掉核心叠加的工具进度块**（legacy 回退；R11-A7，`adapter._strip_core_progress`）。
-  起因：native 流式下核心会把工具进度行**合成进同一帧**
-  （`"\n\n---\n".join((accumulated, progress))`），而我们按契约渲染整帧 ⇒ 那几行出现在卡片正文里。
-  用户明确要求**一个核心配置都不动**（不改 `display.platforms.feishu.tool_progress`）⇒ 只能在插件侧做。
-  判据是**证明**不是猜：`帧文本 == 我们的正文累积 + "\n\n---\n" + 尾巴` ⇒ 尾巴只可能是核心加的
-  （模型写下的每个字节——**包括它自己写的 `---`**——都在累积里）。**五个条件缺一不可**：
-  ⓪ **收尾帧一律不剥**（R11-A7 尾巴，**这条最强**）—— 它是**证明**而不是保险：核心的收尾帧发的
-     是**纯累积正文**（`gateway/stream_consumer.py` 里 `display_text = self._accumulated` 之后
-     **只有 `tick.is_interim`** 才走 `_compose_frame_content()` 合成进度块；而 `finalize` 只可能是
-     `got_done` 或 `got_segment_break`，两者都让 `is_interim` 为假 ⇒ finalize 发送点里
-     **除一处例外**（下条）传的都是纯累积）。⇒ 在**这些**收尾帧上，「累积之后还有内容」
-     **只可能是模型自己写的**（含它自己写的 `---`）。
-     ⚠️ **例外（审计 2026-09-15 实测抓出，别再把「所有」写回来）**：
-     `gateway/stream_consumer_transport.py:391` —— 某一帧**确定性失败**后、关流前，核心会用
-     **同一个合成文本**（累积 + 进度行 + 光标）再发一帧 `finalize=True`。那条路上条件 0 会把
-     本该剥的进度行留在收尾正文里。**这是有意的取舍**：可见的进度行 vs **不可逆地吞正文**；
-     要做对需要「形状判据」（尾巴逐行符合核心进度行形状，tool_name 用我们 `pre_tool_call`
-     见过的名字比对）—— **未做**。⚠️ **登记处 = `docs/internal/plans/plan-v1.md` 附录 F 末尾那一条**
-     （2026-09-16 审计实测：这句原本写的是「登记在附录 F」，而附录 F 里**并没有它** ——
-     一个指路到空处的引用。现在两端都补上了；改这一条时**两处一起看**）。
-     为什么非加不可：累积来自**钩子队列**（异步投递），收尾帧完全可能**早于**最后一个正文增量到达
-     ⇒ 累积是一个**陈旧的完整前缀**（`complete` 仍为真）⇒ 旧版四个条件**全部成立**，它会在
-     **唯一不可逆**的那一帧上把模型的续写剥掉，而核心对 finalize 是**乐观记账、不会再补发**。
-     ⚠️ 残留（如实登记）：同样的滞后在**中间帧**上仍可能剥掉一小段，但那只是**一帧** ——
-     累积追上后下一帧就渲染出来（自愈）；收尾帧没有「下一帧」，所以只有它必须挡。
-  ① 有工具窗口（自上次正文增量以来有过 `pre_tool_call`，与核心 `_tool_progress_lines` 同生命周期）；
-  ② 累积**完整**（没被 `_MAX_ANSWER_CHARS` 冻结——残缺的累积仍可能是前缀，拿它当证据会吞正文）；
-  ③ 累积非空且是帧文本的前缀（归属错/回合错/核心换了累积都对不上）；
-  ④ 尾巴以分隔符开头**且分隔符之后还有内容**。
-  任何一条不成立 ⇒ **原样渲染**（fail-open：那一次进度行短暂可见，核心下个正文增量到达时自己会清）。
-  ⚠️ **只剥后缀**：`ck_offset` 等偏移都指向正文内部，剥后缀不会让任何偏移失效（R4 卡链的前提）。
-  ⚠️ 旧版（`8f81b4d` 移除）是**按分隔符切**——那是猜，模型写一条 markdown 分隔线就会把后半段答案
-  吞掉、而且核心对 finalize 是乐观记账、不会再补发。判别力由变异 `R11-1..R11-9` 九条守住
-  （含「按分隔符切」「不完整也剥」「没有工具窗口也剥」「**撤掉收尾帧护栏**」四条反例），
-  真机凭据是自检行里的 `正文剥进度=N`（卡片读不回来，这是唯一凭据；没有它真机没法验）。
-  ⚠️ 这个 N 数的是**中间帧**（收尾帧自 R11-A7 尾巴起**永不剥**）⇒「N=0 而用户回看正文干净」
-  是可能的（工具先行那种回合就是），别把 N=0 一律当成失灵。
+- **legacy 正文净化必须有证据**（`adapter._strip_core_progress`），不能按分隔符 split/rsplit，
+  也不能为了去进度行改 Hermes 的 `display.platforms.feishu.tool_progress`。
+  - 收尾帧一律不剥；`tool_pending` 与累积完整性必须成立。非空累积还必须是帧文本的前缀，
+    后缀以 `_CORE_PROGRESS_SEP` 开头且其后有内容，才允许只剥后缀、不改变正文内部偏移。
+  - 空白累积有独立分支：用已见工具名、运行状态与核心进度行形状证明整段是进度，才返回空串；
+    上游新增 verb 或任一判据不成立就原样返回，不能把空累积当作所有文本的证明。
+  - 钩子异步队列可能滞后。中间帧短暂截短可被下一帧修复，finalize 没有下一帧，必须挡住
+    不可逆吞正文。核心失败后同一合成文本重发 finalize 的例外在 legacy 下可能保留进度行；
+    own 路径另用 F4 护栏拒绝持久化。剩余前提盲区见本地 `docs/internal/plans/plan-v1.md` 附录 F。
+  - `正文剥进度=N` 只属于 legacy 净化计数；N=0 不证明失灵，own 本来就不靠剥帧。
+    判据与变异见 `check_own_body.py`、`check_hooks.py` 与 `R11-*` / `PA-*`；历史分析见
+    本地 `docs/internal/lessons.md` 推论 37，改外部前提时要独立核对核心实现。
 - **进程内状态清点（R11-A0）——「共享」不只是容器。** 真机根因（同进程两遍插件发现 ⇒ 两份模块
   对象）逼我们把状态搬到进程级共享盒子（`builtins._larkdeck_shared_state`），但**第一批只搬了容器**，
   漏了三类：
@@ -492,181 +332,54 @@ tests/        见「验证」
 
 ## 验证
 
+命令、九步分工、通过标志与变异协议的现役入口是 `docs/development/testing.md`。
+公开 CI 只运行 `tests/check_docs.py`；插件完整门禁仍在开发机执行，没有 lint / formatter。
+
 ```bash
-python3 tests/run_fast.py --full   # 官方门禁入口（9 步，必须全部 [OK]）
-python3 tests/check_docs.py        # 文档守卫：版本/链接/内部归档边界，必须打印 DOCS OK
-python3 tests/test_units.py        # 纯单测，零网络、零 Hermes 依赖，必须全绿
-python3 tests/check_override.py    # 真跑 Hermes 插件加载器（临时 HERMES_HOME），必须打印 OVERRIDE OK
-python3 tests/check_hooks.py       # 真钩子派发器验证指标采集 + 面板数据层，必须打印 HOOKS OK
-python3 tests/check_clarify_e2e.py # 澄清卡端到端，必须打印 CLARIFY E2E OK
-python3 tests/check_cardview.py    # 视觉表 golden + 独立字面量（图标表/真实工具名/spinner 三字段）
-python3 tests/check_own_body.py    # own 模式正文净化与归属
-python3 tests/mutate_check.py --preflight   # 锚点对账（0.1 秒级）；见下
-python3 tests/check_cls_alignment.py --require  # 图标表 vs CLS 源码逐条（缺席即 FAIL）
-python3 tests/mutate_check.py      # 变异验证器：撤掉每条修复必须变红（改断言后必跑）
-# ↑ 正式门禁以 `run_fast.py --full` 为准（恰好 9 步）；逐项说明见 docs/development/testing.md
+PY="${HERMES_HOME:-$HOME/.hermes}/hermes-agent/venv/bin/python3"
+$PY tests/check_docs.py                 # 文档修改先跑，必须 DOCS OK
+$PY tests/run_fast.py --full            # 官方门禁入口，恰好 9 步全部 [OK]
+$PY tests/mutate_check.py --preflight   # 改锚点后先对账；不代表门禁或变异通过
+$PY tests/mutate_check.py --delta       # 改过断言必须跑；未改区域可按三重指纹跳过
+$PY tests/mutate_check.py               # 合并 / 变基 / git apply --3way / 大改后全量
+$PY tests/mutate_check.py --ledger-status
 ```
 
-**改完锚点先跑 `--preflight`（0.1 秒），别等 65 分钟的全量**（2026-09-16 加）。
-它把 `MUTATIONS` + `CONTROLS` 每条的锚点在目标文件里数一次，要求**恰好 1 次**，有问题就逐条
-打印并退出码 1。判据抽成 `_anchor_problem()`，**变异循环 / 对照循环 / 预检三处共用**（以前两处
-各写一遍 —— 预检再抄一遍就是三处真相）；条目**形状**校验同理（`_shape_error()`）。
-⚠️ **分类器与留档口径（2026-09-17）**：`test_units.py` 输出里只要有行首 `ERROR `，
-即使同一次运行还有 `FAIL  `，也一律判 `red-crash`；`-k` 只命中对照时直接 EXIT=2，
-对照不能替代变异证据。审计日志与见证材料现在**一律不进仓库**：它们属于内部过程材料，
-随 `docs/internal/` 一起 gitignore，只在维护者本机留存。
-⚠️ **它的边界要记牢**：它只回答「锚点还在不在、唯不唯一」**这一个**问题 ——
-**没跑门禁、也没做基线自校验**，所以「锚点 ✅ + exit 0」与「这棵树根本跑不了」**可以同时成立**
-（实测：把 `core/i18n.py` 弄成语法错误，它照样 `--preflight` ✅、exit 0，而全量跑立刻
-`EXIT=2`「基线不是绿的」；当时对账 318/318，2026-09-17 已是 390/390）。它**看不出**：锚点落在注释里、落在用例不经过的分支上、
-或撤掉后压根不会变红。⇒ **别拿它当提交前的绿灯**，它是**前置筛子 + `-k` 子集跑的补盲**
-（它有意**不受 `-k` 影响**，这样 `-k` 子集跑看不到的坏锚点它也查）。
-最后两类「变异没生效」现在会被**如实归因**（不再打印 🟢「断言没有判别力」—— 那会把结论写反）：
-替换串与原文**逐字节等价**、或锚点整段落在**注释**里，都打印
-`⚪ 变异没生效（原因）`。⚠️ 这条判据**只对 `MUTATIONS` 用** —— `CONTROLS` 里那条「纯注释改动」
-是**故意的**等价对照。
-
-**改了任何断言，都要跑 `tests/mutate_check.py --delta`（增量：只跑锚点区域变过的 + 新增的）。**
-跳过判据是**三重指纹**：`代码区域`（锚点 ±15 行，按**完整 old** 定位）× `用例名集合`
-（当年抓它的 `def test_*` 今天是否都还在；只新增用例不算失效）× `helper/fixture`
-（`write_golden_trace.py` + golden 夹具 + 两份契约 JSON）。三者任一变了就重跑。
-⚠️ `MUTATIONS` 里**不许**留 `expect==`（那是**对照**，写进 `CONTROLS`）——否则它永远不跑、
-还会被算成「已跳过」；`--preflight` 会直接报错。
-全量直跑**不再是每版必跑**（实测：分 2 片并行 **≈18 分钟**，旧口径 60–90 分钟）：协议见
-`docs/internal/verify-log.md` 的「09-21 协议变更」——`--seed-inherited <上次全绿的 tag>` 标继承、
-`--ledger-status` 看覆盖率、`full_audit_at` 为空或过期时在低负载后台补一次全量直跑。
-⚠️ 继承只对生产代码区域做指纹、**不对测试套件**做 —— 别把 inherited 念成「跑过了」。
-⚠️ **`--shard i/n`（任何 n，含 `1/1`）分片跑都不会自己盖 `full_audit_at`**：v0.7.2 起
-`_is_full_run` 对任何非空 `--shard` 直接返回 False（`tests/mutate_check.py`）。分片账本要按
-「当日 🔴 名字并集覆盖全部条目 + 对照 0 假红 + 三重指纹一致」合并后才能盖章；合并器已固化进仓
-（`tools/merge_ledger4.py`，v0.7.2 `fc15e6c` 起）。
-⚠️ **测试里的等待必须有界**：用例里写无界的 `await <Event>.wait()`，一旦被测分支被变异短路，
-事件永不 set ⇒ 整支门禁挂到 90s 硬超时（`_GATE_TIMEOUT_S`） ⇒ 被记 💥「只有崩溃」，一条**有牙的变异**就被记成
-「没有证据」（`V1-2` 实测踩到）—— 用 `_await_event(event, timeout, what)`（超时转断言）。
-存量还有 3 处无界 `await release.wait()`（`tests/test_units.py`，行号随重构漂移，用 grep 定位；
-都在带 `_await_event` 或 `finally: release.set()` 的同用例里，当前不会实际挂死），
-已登记 v0.7.5 全仓扫描 + 静态门禁（v0.7.4 §5 明确继续 defer）。
-
-**改了任何断言，都要跑 `tests/mutate_check.py`。** 它是本仓库「先写变异，再写断言」的落点：
-清单里每条变异 = 一处「把某条修复撤掉」的定向改动，判定标准是**至少一个门禁变红**。
-四门禁全绿、却没有对应变异变红 ⇒ 那条断言**没有判别力**（本项目头号缺陷类型；**这一族的形态
-清单只有一处**：`docs/internal/lessons.md` 推论 34，8 种形态 + 各自病根）。三条已固化的历史形态：
-改常量口径后被同文件旧赋值覆盖、「真对象返回空列表」型断言（被观测对象要**真的缺东西**才有
-判别力）、`isinstance(x, int)` 这类恒真断言。`-k <子串>` 只跑一部分。
-⚠️ 它自己踩过的坑：快照目录**必须叫 `larkdeck`**，否则 `import larkdeck` 会解析到未变异的
-基线（曾导致一批假绿）。
-⚠️ **它退出码非 0 有两种，都算红**：① 变异跑完了但没被门禁抓住（断言假绿）；
-② **锚点失效**（`❓ 锚点没找到` —— 源码改了、清单里那条变异的原文串已不存在）。
-第 ② 种**不是**「跳过一条」，而是「清单与源码脱节」：跑不到的变异等于没验，
-所以必须把锚点重新对准当前源码，**绝不允许把跑不到当通过**。
-⚠️ **锚点还必须唯一**（同属第 ② 种）：清单里那条原文串在目标文件里出现多次时，
-`replace(..., 1)` 只换**第一处** ⇒ 变异打到别处去，而报告照常打印「🟢 断言没有判别力」，
-**结论正好写反**（真发生的是「变异没生效」）。所以 `count(old) != 1` 也一律算红，
-锚点要带足够上下文让它唯一。（2026-09-13 实测：`if panel:` 在 `cards.py` 里有两处。）
-⚠️ **「锚点唯一」还不够 —— 它必须落在「那条用例真的会经过的语句」上**（2026-09-15 实测）：
-`G2-11` 的锚点 `if self._ld_transport() == "cardkit":` 在源码里**恰好唯一**，但它在
-`state is None` 的**非 finalize** 支上，而对应用例喂的是 `finalize=True` —— 它在更早的
-`if finalize: return False` 就返回了 ⇒ 变异插进去的那句**从来没被执行过**，报告照常打出
-🟢。`count(old) != 1` 只防「歧义」，防不住「找对了文件、**打错了分支**」。
-⇒ 改完锚点必须用 `-k` 逐条重跑，而且**只认 `🔴 断言失败`**：`❓ 锚点没找到` 与
-`💥 只有崩溃` **都不算判别力证据**（前者是清单脱节，后者是「把代码弄坏了」）。
-（这一条的完整形态与它的邻居「锚点撞车」「分类器看错」见 `docs/internal/lessons.md` 推论 35。）
-⚠️ **「无牙」的又一种形态：输入构造让错误分支不可达**（`G1-22` 实测）。
-⚠️ 这一族的**形态清单只有一处**：`docs/internal/lessons.md` **推论 34**（8 种形态 + 各自病根）。
-以前这里写的是「第五种形态……前四种见推论 6/7/8」—— **三个编号对四种形态**，
-而对不上的引用本身就是这一族的病（2026-09-16 收口，**别在别处再重新编号**）。
-用例 `⑨` 想证明「条件③是**前缀**判据、不是**子串**判据」，
-探针写的是 `"宋" + 累积 + 分隔符 + 进度` —— 看着对，但条件④那一行按**长度**切片
-（`text[len(accumulated):]`），多出来的 `"宋"` 让切片**错位一个字符** ⇒ 尾巴不以分隔符开头
-⇒ **连错误实现也原样返回** ⇒ 断言两边都成立（把 `startswith` 放宽成 `not in`，四门禁全绿）。
-同型还有 `X20`：判据直接读「已经建好的那个账本格子」，而**初始化分支**在进程启动时就跑完了
-⇒ 撤掉那行初始化代码照样成立，必须先把那一格删掉、逼初始化再跑一次。
-⇒ 判据是：**用例必须能证明「错误实现会走进那条分支」**。拿不准就把这条自证也写成断言
-（`G1-22` 就是这么做的：先断言构造本身能把错误实现推到剥离分支，再断言行为）。
-⚠️ **写「已修」前先写出可复现的缺陷现场**；「这个参数没人读」用 AST / `grep` 数一遍；
-生产代码与判据同次引入时，先问「撤掉生产代码那一行，判据会红吗」。完整病根与三个
-反例见 `docs/internal/lessons.md` 推论 36，别在别处重新编号。
-⚠️ **注释里的「为什么」必须是推导，不能是同义反复；外部前提要有独立判据**。当前同源
-    前提由 `tests/check_hooks.py` 的前提核对与 `PA-1`/`PA-2` 钉住；仍未覆盖 `run()` 自身分支、
-    传输层与 `_adopt_final_text`（fail-open，只可能不剥、不会吞正文），登记在
-    `docs/internal/plans/plan-v1.md` 附录 F。完整形态与反例见 `docs/internal/lessons.md` 推论 37。关键性质
-    **单独成条**：判据放大用例里会被前面的具体断言遮住，永远无法证明它有没有判别力。
-⚠️ **合并 / 变基 / `git apply --3way` 之后必须重跑全量变异**（不是只跑 `-k`）：
-2026-09-14 实测 `--3way` 在一个「删除死代码」的补丁上静默取了他们的版本、把已删掉的恒假门禁
-**还原回来** ⇒ 对应变异 `CK23` 又变 🟢，而四门禁照旧全绿。冲突解决得再干净也不能替代重跑
-（见 `docs/internal/lessons.md` 推论 26）。
-
-没有 CI / lint / formatter，这五个脚本就是全部验证。**一律用 Hermes 自带解释器**
-`${HERMES_HOME:-$HOME/.hermes}/hermes-agent/venv/bin/python3`（系统 `python3` 少了 Hermes 的依赖：
-`lark_oapi` 导不进来 ⇒ CardKit 那几条用例会**假红** —— 它们的前提断言（「拿不到 SDK 就
-fail-open」）被顺带满足，报出来的失败信息与真实原因无关。2026-09-14 实测踩过一次）。
-⚠️ 这几个脚本必须用**它们自己的 `__main__` runner** 跑；`pytest -q tests/test_units.py` 不是
-支持的入口：pytest 的 logging/全局状态让一批 CardKit/ledger 用例出现**既有**失败（与本次改动
-无关，HEAD 同样复现；审计从 `git archive` 到 /tmp 验证过）。看到 pytest 失败先换回
-`python3 tests/...` 再判断，别把运行器差异当成代码回归。
-
-- **门禁先自证「测的就是这份代码」**（R11-B2 审计高-1）：`test_units.py` 开跑时会比对
-  `larkdeck.core.adapter.__file__` 是否在本仓库目录下，不在就 `SystemExit`。为什么必须有：
-  这个脚本靠 `sys.path` 找 `larkdeck` —— 搜索路径上更靠前的地方只要有**另一份同名目录**
-  （`/tmp` 下前一次导出的镜像、旧拷贝、陈旧 `__pycache__`），门禁就会去测那份代码，而
-  **四门禁照常全绿**（审计实测：把 `capacity_exceeded()` 整条改坏，在镜像目录里 184/184 全绿；
-  我自己起临时拷贝时也当场踩到）。这与「`mutate_check` 的快照目录必须叫 `larkdeck`」同源，
-  都属于**二类假绿**（跑是跑了，跑的不是这份代码）的入口。
-- `check_override.py` 是唯一能证明「注册表覆盖生效」的手段 —— 单测用替身，证明不了运行时行为。
-  它还负责验证插件配置桥接：临时 config.yaml 里写 `plugins.entries.larkdeck.settings`，
-  断言 `_CONFIG` 生效且未配置的键保持默认。
-- 测试里要用加载器那份 `context` 模块（`hermes_plugins.larkdeck.core.context`）；
-  直接 `import larkdeck.core.context` 会拿到第二个模块对象，读写状态对不上（`check_hooks.py` 盯这个）。
-- **改 `cards.py` 或任何卡片结构后必须跑 `tests/probe_render.py`**：唯一连真实飞书的测试
-  （从 `~/.hermes/.env` 读凭据，把探针卡真发到自己的飞书 DM：功能卡 + 双语互换实验 +
-  页脚样式对照，自动先清理上次的探针卡）。
-  本地单测只能验结构，卡片合法性由飞书 API 返回码说了算。它只验渲染，不验点击。
-  带参数的几种模式各答一个「只有真机能答」的问题：`--typing`（打字机 A/B，动画只能肉眼判）、
-  `--bytes`（字节上限阶梯，create + patch 都打）、`--elements`（元素数阶梯，官方硬上限 200）、
-  `--rate-limit`（连续 patch 的限流实证）、`--stop-redraw`（**中止重绘真机端到端**：
-  正文超预算但发得出去时 `/stop` 必须真的把卡重绘成中止色，断言**载荷里有颜色**；
-  **两条路径都跑** —— 非 native 与真 native 流式）、
-  `--clean-only` / `--no-clean`（清理控制）、
-  `--button-2`（**只发 ⑮ 一张**：2.0 `button` + **组件级** `behaviors`。不变量 5 里 `button` 是
-  唯一**只有官方文档**的一格，只能**真机点一次**判定 —— 而「请人点一次」是全项目唯一消耗用户
-  时间的动作，所以它**先本地自检再发**（`probe_card_problems()`：方言混用（**整棵树**扫，
-  嵌套在 `column_set` 里的 1.0 `action` 行照样拒收）/ 缺组件级 `behaviors` / `config.summary` 形态 /
-  `button.text` 必须是 `plain_text` / 回调 value **必须让 `cards.is_probe_value()` 为真** /
-  元素与字节超限），自检不过就**不发**，免得白费那一击）。
-  ⚠️ 那条 value 判据**必须与适配器共用 `cards.is_probe_value()`**：审计实测过两者分叉的后果 ——
-  自检按「键存在」放行、适配器按「真值性」不派发 ⇒ `{"larkdeck_probe": False}` 的卡
-  **一行日志都不会有**，用户一次**成功**的点击被读成「飞书没投递」。变异 `Y23` 钉这一条。
-  ⚠️ **探针发消息的 `uuid` 必须每次都不同**（2026-09-14 实测）：飞书按 `uuid` 去重，
-  用固定 uuid 时「删掉再重发」会拿到**同一个已删的 `message_id`** —— 接口回 `code=0`，
-  而 DM 里什么都没有（我因此让用户白找了一次）。同理，`--cardkit-prod` 建出来的卡
-  **必须记进探针账本**（否则 `--clean-only` 删不掉它，只能靠人长按）。
-  ⚠️ **清理只许按 `message_id` 删**（探针自己的账本 / `card_id` 精确匹配）。**绝不许按「最近 N 分钟」的时间窗盲删** —— 2026-09-13 实测：那样会把用户那一回合的**真实回答卡**一起删掉（时间窗分不清「我的探针卡」和「用户的卡」）。
-  ⚠️ 改 `cards.py` 的**降载档位**或状态色载体后，`--stop-redraw` 与默认模式都要跑一遍。
-- **`tests/probe_ck_stream_ops.py`（独立探针）**：回答「CardKit **流式会话进行中**做元素级/批量写入
-  会不会关会话」。每个操作之后紧跟一次 `card_element.content` 写，**以返回码为判据**
-  （`0` = 没关，`300309` = 关了）。实测结论：关会话的只有**整卡替换**与**显式关流式**；
-  `card_element.patch` / `card_element.create` / `card_element.update` / `card.batch_update`
-  在流式期间**可用且不关会话**（更正了「任何结构性写入都关」那句旧话）。
-  `--lanes` 答 R5 的两个问题（**都以返回码为判据，不需要眼睛**）：① `batch_update` 混一个
-  卡里不存在的 id ⇒ 返回码是卡级的、且 **msg 点名坏 id**（实测 `300313` +
-  `ErrMsg: not find elementID : <id>;`，之后写元素仍 `code=0`）；② 整卡 `message.patch`
-  **能覆盖 CardKit 实体卡的消息**（`code=0`，随后写元素得 `300309`）⇒ `DEGRADE` 车道可做。
-  `--capacity-codes` 答 R11-B2 的两个码（**以返回码 + msg 字面为判据，自带断言、自动删消息**）：
-  运行时 `card_element.create` 撞 200 墙（`append(panel)` 与 `insert_after(answer)` **同形**）⇒
-  `code=300315` + msg 尾部内层 `code: 300305`；复用已存在的元素 id ⇒ 同样外层 `300315`，
-  但尾部内层是 `code: 300301`（方括号里的 `Code 1001` 只是**描述码**）⇒ 这就是「`300315` 是
-  **包装码**、`capacity_exceeded()` 必须解析内层码」的实测出处。⚠️ 它只删**消息**，
-  `card.create` 建出来的实体卡本体留在远端（DM 里看不见，既有探针同此行为）。
-  `--visual` 出**一张给人看的卡**（流式期间新增元素 + 面板边框改黄 + 面板内容更新）——
-  「接口收下了」与「客户端画出来了」是两件事，后者只有眼睛能判（2026-09-13 已确认过一次）。
-  默认自动删卡，`--visual --delete` 同样不留下卡片。
+- 一律用 Hermes 自带解释器、脚本自己的 `__main__` runner。系统 Python 缺 SDK 会假红，
+  pytest 的 logging / 全局状态不适配这些脚本；先换回受支持入口再判断回归。
+- `test_units.py` 必须证明加载的是本仓库；变异快照目录必须叫 `larkdeck`，防止测到另一份
+  未变异代码。钩子集成用加载器命名空间 `hermes_plugins.larkdeck.core.context`。
+  `check_override.py` 才能证明真注册表覆盖、配置桥接与字段透传；单测替身不能替代它。
+- 改锚点先 `--preflight`，再 `-k` 定向复跑；锚点必须存在且唯一、落在用例会走的语句上。
+  只有至少一个门禁 **red-assert** 才证明判别力；green、red-crash、找不到锚点都不能算已验。
+  `ERROR ` 优先于同次 `FAIL` 判崩溃；只命中对照的 `-k` 退出 2，不能冒充变异证据。
+- “先写变异，再写断言”：先复现缺陷，证明错误实现能进入错误分支，再验证修复。
+  恒真断言、前面失败遮住后面判据、注释替换与等价替换均不能充数；关键性质单独成条。
+  `MUTATIONS` 不许放对照 `expect==`；变异未生效要如实归因。历史形态见本地
+  `docs/internal/lessons.md` 推论 34–38，本文不再复制事故叙事。
+- 增量账本按 **代码区域（完整 old 定位、±15 行）× 当年命中用例名集合 × helper/fixture**
+  三重指纹判跳过。`inherited(ref)` 不等于实跑；`--seed-inherited` 不能证明测试套件未变。
+  不必每版重复全量，但 `full_audit_at` 缺失 / 过期时需补全量；合并后的全量不能用 `-k` 替代。
+  所有 `--shard`（含 1/1）都不自行盖全量章；用 `tools/merge_ledger4.py` 核对当日 red-assert
+  名字并集、对照零假红与现场三指纹后合并。账本 / 运行日志只在本机，不提交。
+- 测试等待必须有界，用 `_await_event(event, timeout, what)` 把超时转断言。
+  存量 `await release.wait()` 仍有 3 处，处于带有界等待或 finally 释放的用例中；全仓静态
+  门禁尚未实现，不得写成已完成。变更这些用例时复核短路后是否仍能释放。
+- 改 `cards.py` 或卡片结构，须跑 `tests/probe_render.py` 真机渲染；降载档位 / 状态色变化
+  还要跑 `--stop-redraw`。本地断言验结构，飞书返回码验接收，客户端观感与点击到达另验，
+  三者不能互相替代。其他探针参数与分工见测试文档。
+- 探针必须先本地自检：方言、字段、字节 / 元素预算、回调 value 共用 `cards.is_probe_value()`。
+  每次发送使用新 UUID；CardKit 生产探针也要记入消息账本。清理只按账本 `message_id` /
+  精确 card_id，不按时间窗删“最近消息”；实体卡对象可能仍在远端，不能宣称已全部清掉。
+  真机发送与清理遵循本会话授权边界，不因脚本存在而自动获得权限。
 
 ## 部署
 
 部署拓扑与命令见 `docs/development/release.md` 与 `INSTALL.md`；本文件不记录任何具体机器、
 地址或路径。两条要点：
 
-- 软链安装（`./install.sh`）改代码即生效；容器 / NAS 用 `--copy`，升级时要先移开旧目录。
+- 软链安装（`./install.sh`）改代码后须重启网关；先查软链是否指向 `.deploy`，开发树与部署树
+  不可混淆。容器 / NAS 用 `--copy`，升级时要先移开旧目录。
 - 容器镜像内的 Hermes 源码是**非持久**层，重建即回滚；容器启动脚本如果会重装旧插件，
   必须先拆掉，否则每次重建都会顶掉 LarkDeck。
 

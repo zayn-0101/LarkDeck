@@ -29,7 +29,7 @@ hermes gateway setup
 git clone https://github.com/zayn-0101/LarkDeck.git larkdeck && cd larkdeck && ./install.sh
 ```
 
-默认是 `--link`（软链到当前仓库，改代码立即生效）。NAS / 容器不想留软链，把末尾换成 `./install.sh --copy`。
+默认是 `--link`（软链到当前仓库，改代码后重启网关生效）。NAS / 容器不想留软链，把末尾换成 `./install.sh --copy`。
 
 ### 路径二：手动 git
 
@@ -50,8 +50,8 @@ cd larkdeck
 ```text
 请安装 LarkDeck（Hermes 的飞书卡片插件），遵守以下步骤：
 1. 先确认 `hermes --version` 输出 0.21.x；不满足就停下来告诉我。
-2. `git clone https://github.com/zayn-0101/LarkDeck.git /tmp/larkdeck`。目录已存在就换一个，不要删除已有目录。
-3. `cd /tmp/larkdeck && ./install.sh`。NAS / 容器改用 `./install.sh --copy`；不要加其他参数。
+2. 把仓库克隆到持续保留的目录：`git clone https://github.com/zayn-0101/LarkDeck.git ~/larkdeck`。目录已存在就换一个，不要删除已有目录；软链安装不要放在会被清理的临时目录。
+3. `cd ~/larkdeck && ./install.sh`（若上一步换了目录，这里保持一致）。NAS / 容器改用 `./install.sh --copy`；不要加其他参数。
 4. 编辑 `~/.hermes/config.yaml`：把 `larkdeck` 加进 `plugins.enabled` 列表，保留原有内容；改前备份文件。
 5. 运行 `hermes gateway restart`。
 6. 查看网关日志（通常是 `~/.hermes/logs/agent.log`）里最后一行以 `[larkdeck] 启动自检` 开头的记录；失败就把原文发给我，不要删除 `~/.hermes/plugins/larkdeck`。

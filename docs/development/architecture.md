@@ -40,8 +40,9 @@ platform_registry ─── 最后写入者胜 ───► LarkDeck 工厂
 
 1. 先解析内置 entry。Hermes 新版本可能把 bundled 平台注册成延迟加载器，因此要避开
    插件加载线程里的注册表锁；`_resolve_builtin_platform_entry()` 负责这三条路径。
-2. 内置 entry 的字段整条透传 —— `register_platform()` 是替换而非合并，少传一个字段
-   等于关掉一项能力。
+2. 内置 entry 的字段从 dataclass 派生透传，身份字段除外。`standalone_sender_fn` 有意换成
+   卡片 sender，带媒体附件的块回落内置 sender；`register_platform()` 是替换而非合并，
+   遗漏其他字段可能关掉上游能力。
 3. 工厂是 `build_adapter(base_factory, config)`：先造一个内置实例问出它的真实类，
    再用 `type("LarkDeckFeishuAdapter", (LarkDeckMixin, 内置类), {})` 直接构造。
    实例的内存布局和 MRO 都保持干净，零参 `super()` 正常工作。
@@ -84,31 +85,42 @@ send_stream_frame("") ──► 中间帧（累积全文）──► send_stream
         seed                     panel + body                   整卡收尾
 ```
 
-1. **seed（空文本）**：建卡并记下 `message_id`。CardKit 车道建实体卡 + 发消息，
-   元素骨架一次定死；patch 车道发一张普通卡片。此时正文为空，面板只有空壳。
+1. **seed（空文本）**：建 CardKit 实体卡并发消息，记下 `message_id`。此时正文为空，
+   面板只有空壳，另有加载提示；不读取上一回合的过程快照。
    没有活跃流可收尾时返回 `False` 是正常路径，不算写卡失败。
 2. **面板 / 正文更新**：每一帧的 `text` 是累积全文。正文的 own 来源是
    `on_stream_delta(kind="text")`，面板来自 `panel.snapshot()`，页脚来自 `context`。
-   CardKit 期间只按 id 写元素内容；patch 期间整卡替换。帧按回合串行、按最小间隔节流。
+   当前结构化引擎用 `card.batch_update` 的 `partial_update_element` 更新 `panel` 的
+   header / 子元素；页脚另走 batch，正文最后走 `card_element.content`。首段正文到达时
+   删除加载提示。帧、心跳与澄清刷新共用回合写锁，避免序号 / UUID 冲突。
 3. **收尾**：`finalize=True` 时做 markdown 卫生、读权威结局（完成 / 报错 / 中止）给状态色，
-   CardKit 用整卡 patch 关掉 `streaming_mode`；patch 同样整卡替换。随后清流状态与追踪。
+   先取消面板心跳，再用整卡 patch 关闭 `streaming_mode`，随后清流状态与追踪。
    澄清边界是例外：识别到等待选择时不关流，原地写等待文案，点击后继续更新同一张卡。
 
-任何一帧失败都返回 `False`，核心自动关掉本回合 native 并回落 `send/edit`。
-这条 fail-open 链是官方契约：卡片是增强，绝不能因为卡片报错而丢消息。
+正文未增长时，约 3 秒一次的心跳仍可刷新面板；锁忙、归属快照过期、面板关闭或已降级时
+会跳过或停止。中间帧不重放外层面板的 `expanded`；推理子面板只在元素首次出现时发
+展开态，之后保留用户选择。
+
+无法继续的正文写入失败返回 `False`，由核心停用本回合 native 并回落 `send/edit`。
+装饰失败、同卡降级与撤回各有独立处理，不能把所有失败都写成“立即退纯文本”。
 
 ## CardKit 与 patch 的边界
 
-`native_transport` 决定本回合走哪条线，认不出的值按 patch 处理。
+`_ld_visual_engine()` 在生产中始终返回 `structured`。`_ld_stream_frame()` 先进入结构化
+分支，新卡直接建 CardKit 实体；**这一步不按 `native_transport` 分流**。旧传输选择函数
+仍被配置展示与兼容路径使用，因此配置 / 状态标题里的 `patch` 不等于新回合实际走 patch。
 
-| | CardKit | patch |
+| | 现役结构化 CardKit | 同卡 patch 降级 |
 |---|---|---|
-| 默认 | `native_transport: "cardkit"` | 配置为 `"patch"` 或值无法识别 |
-| seed | 建实体卡 + 发消息，固定元素骨架 | `send()` 发一张卡片 |
-| 流式更新 | 只写元素内容 / batch_update，**不做整卡替换** | `message.patch` 整卡替换 |
-| 收尾 | 整卡 patch，关闭流式会话并上最终状态色 | 整卡 patch |
-| 失败 | 任一步失败 → 核心回落；元素级死法 → 同卡降级到 patch 车道；容量墙 → 封旧卡开新卡 | 瞬态码退避重试；否则核心回落 |
+| 进入方式 | 新的 native 回合 | 卡级错误触发 `_ld_structured_degrade()` |
+| 流式更新 | 局部替换面板、更新页脚与正文，**不整卡替换** | 清 `card_id`、标记 degraded，再整卡续写同一消息 |
+| 收尾 | 取消心跳后整卡 patch，关闭流式并补状态色 | 整卡 patch |
+| 失败 | 可降级则同卡续写；正文无法恢复时交回核心 | 瞬态码退避重试；无法恢复时交回核心 |
 
-边界只有一条：**CardKit 流式期间不能整卡替换**，整卡替换会关闭流式会话，后续元素写会
-得到 `300309`。需要结构变化时只能在 seed 建好，或另建一张卡。元素 id 一律从建卡 JSON
-里抽出来，避免「卡里没有但代码以为有」的 300313 错误。
+要保留 CardKit 流式会话，就不能做整卡替换；它会关闭流式，后续元素写会得到 `300309`。
+**元素级局部更新可以改变面板子树**，现役结构化面板就是这样更新的；不能再把旧版
+`panel_body` / `panel_tools` 两块 markdown 的固定骨架当作现役约束。
+
+正文 / 页脚 id 从建卡 JSON 提取；外层 `panel` 与加载提示另记存在性。超长正文按
+`ck_offset` 分卡，封卡、降级与收尾都只渲染本卡对应后缀。旧 markdown 车道的“每帧两次
+元素写 + 限频预览”预算不适用于结构化车道；修改写入策略时要按实际 API 调用重新核算。

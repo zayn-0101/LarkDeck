@@ -1,11 +1,11 @@
 # 发布流程
 
 > 读者：维护者与执行发布的 AI coding agent。
-> 结论先行：版本号唯一来源是 `plugin.yaml`；发布是本地固定顺序的脚本动作，没有 CI 代劳。
+> 结论先行：版本号唯一来源是 `plugin.yaml`；发布由维护者按固定顺序执行。公开 CI 只检查文档，不执行插件完整门禁或部署。
 
 ## 版本与变更记录
 
-1. 只改 `plugin.yaml` 的 `version:`。README、CHANGELOG、release note 都不维护第二份版本常量。
+1. 在 `plugin.yaml` 的 `version:` 确定版本，并同步中英文 README 徽章、CHANGELOG 顶部版本与发布说明索引。它们引用同一版本，不能只改清单后留下旧徽章。
 2. `CHANGELOG.md` 按 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 倒序维护：
    - 标题格式 `## [X.Y.Z] - YYYY-MM-DD 一句话主题`；
    - 只写**用户可见**的变化，一条一句话；证据和门禁数字放 `docs/releases/` 发布说明或
@@ -66,8 +66,9 @@ tail -n 50 ~/.hermes/logs/agent.log      # 找最新一条「启动自检通过�
 pgrep -f "hermes_cli.main gateway run"   # 进程必须在
 ```
 
-部署拓扑：开发树是 `~/Code/larkdeck`；`.deploy` 是同一仓库的一个 git worktree（Git 工作树）；
-`~/.hermes/plugins/larkdeck` 软链到 `.deploy`，所以线上跑的是部署树，不是开发树。
+采用部署 worktree 时，`.deploy` 是仓库内的独立 Git 工作树；
+`~/.hermes/plugins/larkdeck` 应软链到它。先用 `readlink` 确认实际安装目标：普通 `install.sh`
+默认链接执行安装的目录，并不会自动创建或切到 `.deploy`。
 NAS / 容器用 `./install.sh --copy`，其 `FILES` 清单手写，新增运行模块时必须同步。
 
 ## 回滚

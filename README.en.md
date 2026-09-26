@@ -1,7 +1,10 @@
 # LarkDeck
 
-> **Replies are typed out live in Feishu, with reasoning and tool calls kept in the card's bottom panel — expand it anytime.**
-> LarkDeck is a [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin built on Feishu CardKit 2.0: it never patches Hermes source, and the answer, the process, and clarify choices all live in one card.
+> **Replies appear character by character in Feishu, with tool steps in a collapsible panel.**
+> When reasoning display is enabled and Hermes emits reasoning deltas, the panel can show them too.
+> LarkDeck is a [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin built on
+> Feishu CardKit 2.0, with no Hermes source patches. The main reply streams in its card; long
+> answers continue in follow-up cards, and clarify prompts use separate interactive cards.
 
 [![version](https://img.shields.io/badge/version-0.7.12-blue.svg)](https://github.com/zayn-0101/LarkDeck/releases)
 [![AH (Hermes Agent) 0.21.x](https://img.shields.io/badge/AH-0.21.x-blueviolet.svg)](https://github.com/NousResearch/hermes-agent)
@@ -11,21 +14,26 @@
 
 ![LarkDeck cover: the project name and four capabilities on the left (typewriter streaming, process panel, clarify cards, status and usage), and a completed weather Q&A card in Feishu on the right, with a table, a collapsible panel and a usage footer.](assets/readme-hero.png)
 
-## Highlights
+## Features
 
-- **One card per turn** — the first frame creates the card; the answer types out in place.
-- **Panel** — reasoning and tool calls stay in a collapsible panel at the bottom, grouped by round.
-- **Clarify cards** — answer with a dropdown, multi-select, text input, or buttons.
+- **Streaming and long answers** — text grows in the main card; answers that exceed one card continue in follow-up cards without replaying earlier text.
+- **Process panel** — tool steps stay in a collapsible bottom panel, grouped by round; reasoning
+  appears when display is enabled and Hermes emits reasoning deltas. Argument previews are shortened
+  and obvious credentials are masked.
+- **Clarify cards** — answer with a dropdown, multi-select, text input, or buttons on a card separate from the main reply.
 - **Status and usage** — green / red / yellow border for done / failed / stopped; the footer shows elapsed time, model and context usage.
-- **Bilingual UI** — card chrome follows the Feishu client language; model output is never translated.
-- **Safe fallback** — if a card step fails, the reply falls back to plain text or edit; messages are never lost.
+- **Bilingual UI** — localized card labels follow the Feishu client language; model output is never translated.
+- **Fallback** — when card updates cannot continue, send/edit operations return to Hermes' official
+  implementation; some CardKit errors can degrade to full-card replacement on the same message. If
+  a message is withdrawn or deleted, Hermes decides whether to resend it.
+- **Text formatting** — unmatched `**` markers are removed and H1–H3 headings are converted to bold text to avoid oversized headings in cards.
 
 ## Quick start
 
 Prerequisites: Hermes Agent 0.21.x running, with Feishu / Lark app credentials (see the [installation guide](INSTALL.md)).
 
 ```bash
-git clone https://github.com/zayn-0101/LarkDeck.git
+git clone https://github.com/zayn-0101/LarkDeck.git larkdeck
 cd larkdeck
 ./install.sh          # add --copy for NAS / containers
 ```
@@ -48,19 +56,6 @@ Verify: send `/larkdeck status` to the bot in Feishu. A seven-row summary card (
 
 Upgrade: `git pull && hermes gateway restart` for a symlink install. For a copy install, `git pull`, move the old directory aside, re-run `./install.sh --copy`, then restart — the script never overwrites an existing target; see the [installation guide](INSTALL.md). The gateway must be restarted; modules are not hot-reloaded. Uninstall: remove `larkdeck` from `plugins.enabled`, then delete `~/.hermes/plugins/larkdeck/`.
 
-## Features
-
-| Capability | What you get |
-|---|---|
-| Streaming card | One main card per turn; text appears character by character, tool progress stays in the same card |
-| Process panel | Reasoning and tool steps in a collapsible bottom panel, split by round with timing |
-| Tool details | Tool name, argument preview, elapsed time and status per step; obvious credentials are masked |
-| Clarify cards | Answer directly on the card with dropdown, multi-select, input or buttons |
-| Turn status | Green / red / yellow border on done / failed / stopped; footer shows elapsed time, model and context usage |
-| Long answers | Split into follow-up cards automatically, without replaying earlier text |
-| Bilingual UI | Card chrome follows the client language; model output is not translated |
-| Safe fallback | Any failure falls back to official plain text / edit; messages and content are never lost |
-
 ## Configuration
 
 Minimal `~/.hermes/config.yaml`:
@@ -79,11 +74,13 @@ plugins:
 
 `LARKDECK_<KEY>` environment variables override config values (e.g. `LARKDECK_CARDS=0`); precedence is environment > `config.yaml` > default. See [Configuration](docs/guide/configuration.md) for every key, default and example; `/larkdeck config` shows effective values and `/larkdeck config reload` re-reads them.
 
+The current structured engine always uses CardKit: `native_transport: patch` does not switch this path, and `panel_color_tags: false` does not remove its panel colors. These settings are no-ops for this path. Set `streaming_print_ms: 0` to disable the typing animation.
+
 ## Commands
 
 | Command | Purpose |
 |---|---|
-| `/larkdeck status` | Overview: version, active transport, takeover, hooks, reasoning display and failure counts |
+| `/larkdeck status` | Overview: version, configured transport, takeover, hooks, reasoning display and failure counts |
 | `/larkdeck status --detail` | Full diagnostics: capability probe, adapter/contract details, six process-wide records |
 | `/larkdeck config` | Read-only view of effective settings and their source |
 | `/larkdeck config reload` | Re-read settings from Hermes; aborts as a whole if any key fails |
@@ -95,26 +92,21 @@ See [Commands](docs/guide/commands.md).
 ## Compatibility and limits
 
 - **Environment**: Hermes Agent 0.21.x (verified on 0.21.1 / 0.21.4), with the official `feishu` platform available in the same process; cannot coexist with plugins that also take over the same `feishu` platform or patch Hermes source.
-- **Fallback and client differences**: cards are an enhancement. Any card, streaming or interaction failure falls back to official plain text / edit, so no message is lost; styling or animation may be missing for that reply. Clients that do not support card 2.0 may render fewer components or simpler forms; card chrome follows the client language, while model output and some markdown labels are language-fixed. See [Card capabilities](docs/guide/card-capabilities.md).
+- **Fallback and client differences**: cards are an enhancement. When card updates cannot continue,
+  send/edit operations return to Hermes' official implementation; some CardKit errors degrade to
+  full-card replacement on the same message. If a message is withdrawn or deleted, Hermes decides
+  whether to resend it. Clients that do not support card 2.0 may render fewer components or simpler
+  forms; card chrome follows the client language, while model output and some markdown labels are
+  language-fixed. See [Card capabilities](docs/guide/card-capabilities.md).
 - **Reasoning text**: requires Hermes `plugins.stream_reasoning_deltas` (off by default); without it the panel shows tool steps only, and `/larkdeck status --detail` says why.
 - **Command timing**: in the Feishu gateway, commands sent while a reply is streaming are queued until the turn ends; the CLI / TUI runs them immediately.
 - **Scope of counters**: footer metrics and `/larkdeck status` records are process-wide, not per conversation; after a long answer splits cards, `/stop` recolors only the newest card.
 
 ## Documentation
 
-| Document | Contents |
-|---|---|
-| [Installation](INSTALL.md) | Install, upgrade, uninstall, rollback |
-| [Quickstart](docs/guide/quickstart.md) | First card in five minutes |
-| [Configuration](docs/guide/configuration.md) | All settings, defaults and examples |
-| [Commands](docs/guide/commands.md) | Command reference |
-| [Card capabilities](docs/guide/card-capabilities.md) | Supported and unsupported card features |
-| [Troubleshooting](docs/guide/troubleshooting.md) | Symptom → cause → fix |
-| [Architecture](docs/development/architecture.md) | Module layers, hooks, transport |
-| [Release notes](docs/releases/README.md) | Full notes per release |
-| [Changelog](CHANGELOG.md) | User-visible changes |
-| [Contributing](CONTRIBUTING.md) | Development, tests, release flow |
-| [License](LICENSE) | MIT license |
+The README, installation, contribution and license entry points stay at the repository root.
+Detailed user and developer guides are organized under `docs/guide/` and `docs/development/`; see
+the [documentation map](docs/README.md) for the full index.
 
 ## Acknowledgements
 

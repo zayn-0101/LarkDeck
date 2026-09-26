@@ -6,7 +6,7 @@
 ## 开发环境
 
 ```bash
-git clone https://github.com/zayn-0101/LarkDeck.git
+git clone https://github.com/zayn-0101/LarkDeck.git larkdeck
 cd larkdeck
 
 # 软链安装：改代码后重启网关即可生效
@@ -29,7 +29,8 @@ $PY tests/run_fast.py
 - 任何卡片路径失败都必须回落到官方 `super()` 实现；宁可退回纯文本，也不能丢消息。
 - 新增配置项同时写进 `adapter._DEFAULTS` 与 `plugin.yaml` 的 `config_schema`；
   行为、默认值和文档在同一提交里更新。
-- 界面文案走 `core/i18n.py`，不硬编码中文字符串；AI 正文不翻译。
+- 可本地化的界面文案走 `core/i18n.py`；markdown 中的工具动作 / 状态词及部分中文提示
+  语言固定，边界见 `AGENTS.md`。AI 正文不翻译。
 
 ## 跑门禁
 
