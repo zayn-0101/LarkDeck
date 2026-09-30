@@ -116,7 +116,7 @@ plugins:
 - **streaming_panel_expanded** · `boolean` · 默认 `true`
   **运行中**面板是否展开。只有新建卡那一刻生效；流式中间帧不会重放展开态，所以你手动收起后不会被下一个 token 顶开。示例：`streaming_panel_expanded: false`。
 - **streaming_print_ms** · `integer` · 默认 `15`
-  客户端打字机的逐字间隔（毫秒），只对流式帧有效。`0` 关闭打字机；超出 `[1, 2000]` 退回默认并留日志 WARNING。示例：`streaming_print_ms: 30`。
+  客户端打字机的逐字间隔（毫秒），只对流式帧有效。`0` 或负数关闭打字机；超过 `2000` 或无法解析为整数时退回默认并留日志 WARNING。示例：`streaming_print_ms: 30`。
 - **reactions** · `boolean` · 默认 `true`
   在用户消息上打“处理中”表情，相当于飞书的输入提示。关掉更接近无表情的即时响应观感。示例：`reactions: false`。
 - **progress_lines_in_body** · `boolean` · 默认 `false`
@@ -128,7 +128,7 @@ plugins:
 - **card_status_header** · `boolean` · 默认 `false`
   卡片顶部状态条：处理中蓝 / 完成绿 / 停止黄 / 出错红。默认不显示。示例：`card_status_header: true`。
 - **show_reasoning** · `string` · 默认 `auto`
-  推理正文是否显示。`auto` 跟随 Hermes 的 `display.show_reasoning` 与平台覆盖；`on` / `off` 由插件强制。旧布尔 `true` / `false` 仍接受。Hermes 未发 reasoning delta 时按关闭处理，`/larkdeck status --detail` 会说明原因。示例：`show_reasoning: "on"`。
+  推理正文是否显示。`auto` 跟随 Hermes 的 `display.show_reasoning` 与平台覆盖；未开启推理增量时不显示推理正文，`/larkdeck status --detail` 会说明当前关闭原因。`on` / `off` 强制显示偏好，状态显示“插件显式设置”，但不能补出 Hermes 未发送的增量。旧布尔 `true` / `false` 仍接受。示例：`show_reasoning: "on"`。
 
 ### 页脚与外观
 

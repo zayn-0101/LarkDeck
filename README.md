@@ -106,7 +106,7 @@ plugins:
   官方实现；部分 CardKit 错误会在同一张卡上降级为整卡替换。消息被撤回或删除时，是否补发
   由 Hermes 核心决定。
 - **客户端差异**：客户端不支持卡片 2.0 能力时，部分组件可能不渲染或降级；卡片界面文案跟随客户端语言，AI 正文与部分 markdown 文案（工具动作 / 状态词等）语言固定。能力边界与替代形态见[卡片能力](docs/guide/card-capabilities.md)。
-- **推理正文**：需要 Hermes 开启 `plugins.stream_reasoning_deltas`（默认关闭）；未开启时过程面板只显示工具步骤，`/larkdeck status --detail` 会说明原因。
+- **推理正文**：需要 Hermes 开启 `plugins.stream_reasoning_deltas`（默认关闭）；未开启时过程面板只显示工具步骤。默认 `auto` 模式下，`/larkdeck status --detail` 会说明关闭原因。
 - **命令时机**：在飞书网关里，生成回答期间发送的命令会排队到回合结束；CLI / TUI 中会立即执行。
 - **统计口径**：页脚指标与 `/larkdeck status` 的记录是进程级累计，多会话并发时不区分会话；超长回答分卡后，`/stop` 只重绘最新一张卡。
 

@@ -1,6 +1,6 @@
 # LarkDeck 文档风格规范
 
-本规范适用于 README、INSTALL、`docs/guide/`、`docs/development/`、`docs/releases/` 和 CHANGELOG。
+本规范适用于 README、`docs/guide/`、`docs/development/`、`docs/releases/` 和 CHANGELOG。
 目标只有四个词：**简洁、清晰、易懂、有品味**。
 
 ## 1. 三层读者

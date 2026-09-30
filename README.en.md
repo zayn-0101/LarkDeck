@@ -98,7 +98,7 @@ See [Commands](docs/guide/commands.md).
   whether to resend it. Clients that do not support card 2.0 may render fewer components or simpler
   forms; card chrome follows the client language, while model output and some markdown labels are
   language-fixed. See [Card capabilities](docs/guide/card-capabilities.md).
-- **Reasoning text**: requires Hermes `plugins.stream_reasoning_deltas` (off by default); without it the panel shows tool steps only, and `/larkdeck status --detail` says why.
+- **Reasoning text**: requires Hermes `plugins.stream_reasoning_deltas` (off by default); without it the panel shows tool steps only. In the default `auto` mode, `/larkdeck status --detail` explains why reasoning is disabled.
 - **Command timing**: in the Feishu gateway, commands sent while a reply is streaming are queued until the turn ends; the CLI / TUI runs them immediately.
 - **Scope of counters**: footer metrics and `/larkdeck status` records are process-wide, not per conversation; after a long answer splits cards, `/stop` recolors only the newest card.
 

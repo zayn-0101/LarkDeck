@@ -67,7 +67,7 @@ config_schema:
   streaming_print_ms:
     type: integer
     default: 15
-    description: "客户端打字机的逐字间隔（毫秒，只对流式帧有效）；写 0 关闭打字机；超出 [1,2000] 退回默认并留 WARNING"
+    description: "客户端打字机的逐字间隔（毫秒，只对流式帧有效）；0 或负数关闭打字机；超过 2000 或无法解析为整数时退回默认并留 WARNING"
   reactions:
     type: boolean
     default: true
@@ -95,7 +95,7 @@ config_schema:
   show_reasoning:
     type: string
     default: auto
-    description: "是否显示推理正文：auto（默认，跟随 Hermes display.show_reasoning / 平台覆盖）/ on（插件强制显示）/ off（插件强制隐藏）；旧布尔值 true/false 仍接受。Hermes 未发送 reasoning delta 时按关闭处理，并在 /larkdeck status 说明原因"
+    description: "是否显示推理正文：auto（默认，跟随 Hermes display.show_reasoning / 平台覆盖；未开启推理增量时关闭，在 /larkdeck status --detail 说明当前原因）/ on / off（插件强制显示偏好，状态报告插件显式设置，不能补出 Hermes 未发送的增量）；旧布尔值 true/false 仍接受"
   footer:
     type: boolean
     default: true

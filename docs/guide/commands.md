@@ -69,7 +69,7 @@ plugins:
   stream_reasoning_deltas: true
 ```
 
-关着时执行详情（panel）只显示工具步骤与思考耗时摘要，不会显示推理正文；`/larkdeck status --detail` 会说明“Hermes 未发送 reasoning delta”。`show_reasoning: on|off` 可覆盖显示偏好，但不能让 Hermes 产生原本未发送的推理增量。
+关着时执行详情（panel）只显示工具步骤与思考耗时摘要，不会显示推理正文。默认 `auto` 模式下，Hermes 显示已打开但增量未开时，`/larkdeck status --detail` 会说明“Hermes 未发送 reasoning delta”。`show_reasoning: on|off` 可覆盖显示偏好，状态只报告“插件显式设置”，不能让 Hermes 产生原本未发送的推理增量。
 
 ## `/stop`
 

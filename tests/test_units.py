@@ -563,7 +563,7 @@ def test_ld_click_display_name_never_falls_back_to_open_id():
     raw = _make()
     raw._get_cached_sender_name = lambda open_id: ""
     assert adapter.LarkDeckMixin._ld_click_display_name(
-        raw, "ou_a1e3c4b33e2d924f561196325a9678c0") == ""
+        raw, "ou_test_user") == ""
     raw._get_cached_sender_name = lambda open_id: "汪老师"
     assert adapter.LarkDeckMixin._ld_click_display_name(raw, "ou_x") == "汪老师"
 
