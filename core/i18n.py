@@ -40,6 +40,15 @@ _STRINGS: Dict[str, Dict[str, str]] = {
                                  EN: "💭 Thought · 🛠️ Tools · {n} steps"},
     "panel.summary_both_plain_one": {ZH: "💭 思考 · 🛠️ 工具执行 · 1 步",
                                      EN: "💭 Thought · 🛠️ Tools · 1 step"},
+    # V081：上游长任务心跳（`⏳ Working — 9 min — iteration 5, waiting for provider response…`）
+    # 归一化后的面板标题备注。上游原文只进日志；卡面只出这几条短句，且**逐语言**合并
+    # （面板标题是 plain_text 节点，能带 i18n_content ⇒ 中英文客户端各显示各的）。
+    # 时长（`9 min`）故意不显示：页脚有实时耗时，上游那个是整分钟、最长滞后 180s。
+    "hb.wait_model":      {ZH: "等待模型响应", EN: "Waiting for the model"},
+    "hb.run_tool":        {ZH: "正在执行 {tool}", EN: "Running {tool}"},
+    "hb.working":         {ZH: "处理中", EN: "Working"},
+    "hb.line_round":      {ZH: "⏳ {phase} · 第 {n} 轮", EN: "⏳ {phase} · round {n}"},
+    "hb.line_plain":      {ZH: "⏳ {phase}", EN: "⏳ {phase}"},
     # 溢出保护：内容被截断 / 步骤被裁掉时补一行说明，让用户知道「还有东西但没显示」
     "panel.overflow":     {ZH: "…已省略 {n} 字符", EN: "…{n} chars omitted"},
     # 2026-09-24 用户口径：折叠提示自己不带前导省略号（它是提示，不是被截断的尾巴）。

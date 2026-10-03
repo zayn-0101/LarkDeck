@@ -14984,6 +14984,11 @@ def _v075_heartbeat(minutes: int = 3, detail: str = "iteration 11, terminal") ->
     return f"⏳ Working — {minutes} min — {detail}"
 
 
+def _v075_hb_note(minutes: int = 3, detail: str = "iteration 11, terminal") -> Dict[str, Any]:
+    """上游原文 → 归一化后的双语备注节点（走生产同一个函数，V081）。"""
+    return adapter._ld_hb_note(_v075_heartbeat(minutes, detail))
+
+
 def test_v075_heartbeat_merges_into_active_panel_without_new_card():
     """V075 P0：心跳 send 合入 active 主卡 panel，返回空 mid，不新建/不整卡 patch/不碰 answer。"""
     chat, turn = "oc_v075hb", "t-hb"
@@ -15017,10 +15022,12 @@ def test_v075_heartbeat_merges_into_active_panel_without_new_card():
         partials = _v075_panel_partials(calls)
         assert partials, calls["batch"]
         panel_blob = json.dumps(partials[-1], ensure_ascii=False)
-        assert _v075_heartbeat(3) in panel_blob, panel_blob
+        assert _v075_hb_note(3)["content"] in panel_blob, panel_blob
+        assert _v075_heartbeat(3) not in panel_blob, "上游英文原文不许上卡面"
         state2 = raw._ld_stream_get(key) or {}
         assert state2.get("message_id") == mid
-        assert str(state2.get("hb_title") or "").startswith("⏳ Working"), state2
+        hb_node = state2.get("hb_title")
+        assert isinstance(hb_node, dict) and hb_node.get("content", "").startswith("⏳"), state2
         assert _run(raw._ld_heartbeat_tick(chat, key)) == "unchanged",\
             "插件 3s tick 必须保留心跳标题（不能擦回普通摘要）"
 
@@ -15035,6 +15042,7 @@ def test_v075_heartbeat_merges_into_active_panel_without_new_card():
                                           chat_id=chat, turn_id=turn))
         final_blob = json.dumps(calls["patch_cards"][-1], ensure_ascii=False)
         assert "⏳ Working" not in final_blob, final_blob
+        assert "⏳ 正在执行" not in final_blob, final_blob
         assert "正文完" in final_blob, final_blob
 
         # finalize 后在飞心跳落进安静窗口：不得再补一张中间卡。
@@ -15475,13 +15483,15 @@ def test_v075_progress_frame_keeps_hb_title():
         assert _run(raw.send(chat, _v075_heartbeat(3),
                              metadata={"_interim_send": True})).message_id == ""
         state_hb = raw._ld_stream_get(key) or {}
-        assert str(state_hb.get("hb_title") or "").startswith("⏳ Working"), state_hb
+        hb_node = state_hb.get("hb_title")
+        assert isinstance(hb_node, dict) and hb_node.get("content", "").startswith("⏳"), state_hb
 
         # 只带工具进度的 raw 帧：own 可见正文没变，hb_title 必须保留。
         assert _run(raw.send_stream_frame("⚙️ terminal: df -h",
                                           chat_id=chat, turn_id=turn))
         state2 = raw._ld_stream_get(key) or {}
-        assert str(state2.get("hb_title") or "").startswith("⏳ Working"), state2
+        hb_node2 = state2.get("hb_title")
+        assert isinstance(hb_node2, dict) and hb_node2.get("content", "").startswith("⏳"), state2
         assert _run(raw._ld_heartbeat_tick(chat, key)) == "unchanged",\
             "进度帧后 tick 又擦回了普通标题"
     finally:
@@ -15580,14 +15590,84 @@ def test_v075_plain_final_records_quiet_window():
 
 
 def test_v075_title_with_note_merges_i18n():
-    """V075：Working note 必须逐语言合并进 panel header，不能只改默认 content。"""
-    node = adapter._cardview.title_with_note(
-        {"tag": "plain_text", "content": "摘要",
-         "i18n_content": {"zh_cn": "摘要", "en_us": "Summary"}},
-        _v075_heartbeat(3))
-    assert node["content"].startswith("⏳ Working"), node
-    assert node["i18n_content"]["en_us"].startswith("⏳ Working"), node
-    assert node["i18n_content"]["zh_cn"].startswith("⏳ Working"), node
+    """V075/V081：备注必须逐语言合并进 panel header；双语节点各写各的语言。"""
+    title = {"tag": "plain_text", "content": "🛠️ 工具执行 · 6 步",
+             "i18n_content": {"zh_cn": "🛠️ 工具执行 · 6 步",
+                              "en_us": "🛠️ Tools · 6 steps"}}
+    node = adapter._cardview.title_with_note(title, _v075_hb_note(3, "iteration 11, terminal"))
+    assert node["content"] == "⏳ 正在执行 terminal · 第 11 轮 · 🛠️ 工具执行 · 6 步", node
+    assert node["i18n_content"]["zh_cn"] == node["content"], node
+    assert node["i18n_content"]["en_us"] ==\
+        "⏳ Running terminal · round 11 · 🛠️ Tools · 6 steps", node
+    # 裸字符串备注（老状态/兼容路径）：两种语言同一句，行为与 V075 一致。
+    legacy = adapter._cardview.title_with_note(dict(title), "⏳ 等待模型响应")
+    assert legacy["i18n_content"]["en_us"].startswith("⏳ 等待模型响应"), legacy
+    # 空备注 / 标题已含备注：原样返回，不叠第二遍。
+    assert adapter._cardview.title_with_note(title, "") is title
+    once = adapter._cardview.title_with_note(title, _v075_hb_note(3, "iteration 11, terminal"))
+    twice = adapter._cardview.title_with_note(once, _v075_hb_note(3, "iteration 11, terminal"))
+    assert twice["content"] == once["content"], twice
+
+
+def test_v081_heartbeat_note_is_short_localized_and_never_raw_english():
+    """V081：上游心跳归一化——时长丢掉、活动映射短句、认不出退通用，卡面绝无英文原文。"""
+    note = adapter._ld_hb_note(
+        "⏳ Working — 9 min — iteration 5, waiting for provider response (streaming)")
+    assert note["content"] == "⏳ 等待模型响应 · 第 5 轮", note
+    assert note["i18n_content"]["en_us"] == "⏳ Waiting for the model · round 5", note
+    assert "min" not in note["content"] and "Working" not in note["content"], note
+    # 关掉轮数细节后的形状：裸工具名、无轮数。
+    bare = adapter._ld_hb_note("⏳ Working — 3 min — terminal")
+    assert bare["content"] == "⏳ 正在执行 terminal", bare
+    assert bare["i18n_content"]["en_us"] == "⏳ Running terminal", bare
+    # 带前缀的工具活动与 `N/M` 形式都要收。
+    tool = adapter._ld_hb_note("⏳ Working — 3 min — iteration 4/50, executing tool: read_file")
+    assert tool["content"] == "⏳ 正在执行 read_file · 第 4 轮", tool
+    seq = adapter._ld_hb_note(
+        "⏳ Working — 3 min — iteration 2, sequential tool running (2.3s): terminal")
+    assert seq["content"] == "⏳ 正在执行 terminal · 第 2 轮", seq
+    # 无活动 / 上游改词 / 形状变了 / 压根不是心跳：一律退通用短语，绝不回显上游原词。
+    # 注意「Working」不是判据 —— 通用短语的英文译文本身就是 `⏳ Working`。
+    for text in ("⏳ Working — 2 min",
+                 "⏳ Working — 2 min — iteration 3, brand new wording",
+                 "⏳ Working — 2 min — iteration 3, unknown",
+                 "⏳ Working — 2 min — iteration",
+                 "完全不是心跳"):
+        fallback = adapter._ld_hb_note(text)
+        assert fallback["content"].startswith("⏳ 处理中"), (text, fallback)
+        assert fallback["i18n_content"]["en_us"].startswith("⏳ Working"), fallback
+        blob = json.dumps(fallback, ensure_ascii=False).lower()
+        for raw_word in ("waiting for", "iteration", "brand new wording", "unknown"):
+            assert raw_word not in blob, (text, fallback)
+
+
+def test_v081_heartbeat_raw_text_goes_to_log():
+    """V081：卡面归一化，但上游原文必须落日志（上游改词时能追溯）。"""
+    raw = _make()
+    lines: list = []
+
+    class _Sink(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            lines.append(record.getMessage())
+
+    sink = _Sink(level=logging.INFO)
+    lg = logging.getLogger("larkdeck")
+    old_level = lg.level
+    lg.addHandler(sink)
+    lg.setLevel(logging.INFO)
+
+    def _boom(*_a: Any, **_k: Any):
+        raise RuntimeError("日志之后停住，不碰卡片")
+
+    raw_text = "⏳ Working — 9 min — iteration 5, waiting for provider response (streaming)"
+    raw._ld_hb_candidates = _boom          # type: ignore[assignment]
+    try:
+        res = _run(raw._ld_hb_dispatch("oc_v081log", raw_text))
+    finally:
+        lg.removeHandler(sink)
+        lg.setLevel(old_level)
+    assert getattr(res, "success", False) is True, res
+    assert any(raw_text in line for line in lines), lines
 
 
 def test_v075_quiet_window_boundary_is_90s():
@@ -15616,16 +15696,17 @@ def test_v075_split_does_not_inherit_hb_title():
     try:
         assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
         state = dict(raw._ld_stream_get(key) or {})
-        state["hb_title"] = _v075_heartbeat(3)
+        state["hb_title"] = _v075_hb_note(3)
         state["ck_panel_dead"] = 300309      # 旧卡元素级死法不得跨卡继承
         raw._ld_stream_put(key, state)
         adapter._ck_split_point = lambda *a, **k: 3   # type: ignore[assignment]
         new_state = _run(raw._ld_ck_split(chat, "abcdef", state, 0, None,
                                           time.monotonic()))
         assert new_state is not None, "切卡失败（测试前提不成立）"
-        assert not str(new_state.get("hb_title") or ""), new_state
+        assert not new_state.get("hb_title"), new_state
         assert not new_state.get("ck_panel_dead"), new_state
         entity_blob = json.dumps(_v075_entity(calls, -1), ensure_ascii=False)
+        assert "正在执行 terminal" not in entity_blob, entity_blob
         assert "Working" not in entity_blob, entity_blob
     finally:
         adapter._ck_split_point = old_cut

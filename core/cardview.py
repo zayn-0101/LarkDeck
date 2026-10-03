@@ -660,34 +660,46 @@ def panel_elements(view: PanelView) -> List[Dict[str, Any]]:
     return elements
 
 
-def title_with_note(title: Any, note: str) -> Any:
-    """把心跳/状态 note 合并进面板 header 标题（V075）。
+def _merge_note_text(base: str, note: str) -> str:
+    """``<note> · <base>``；note 为空原样返回，标题已以 note 开头则不再重复。"""
+    note = str(note or "").strip()
+    base = str(base or "")
+    if not note:
+        return base
+    if base.startswith(note):
+        return base
+    return f"{note} · {base}" if base else note
+
+
+def title_with_note(title: Any, note: Any) -> Any:
+    """把心跳/状态 note 合并进面板 header 标题（V075；V081 起支持**双语节点**）。
 
     标题可能是裸字符串或 ``i18n_text`` 节点（``content`` + ``i18n_content``）。
-    合并规则：``<note> · <原摘要>``，逐语言合并；空 note 或标题已含 note 时原样返回。
-    纯函数，不碰 IO；``panel_shell`` 的 ``_title_node`` 会把它变成 ``plain_text``。
+    ``note`` 可以是裸字符串（旧调用点/测试，两种语言同一句），或
+    ``{"content": …, "i18n_content": {loc: …}}`` 节点 —— 节点形式**逐语言**合并，
+    中英文客户端各显示各的语言（上游心跳归一化后走的就是这条路，见
+    ``adapter._ld_hb_note``）。合并规则：``<note> · <原摘要>``；空 note 或标题已含
+    note 时原样返回。纯函数，不碰 IO；``panel_shell`` 的 ``_title_node`` 会把它变成
+    ``plain_text``。
     """
-    text = str(note or "").strip()
-    if not text:
+    if isinstance(note, dict):
+        default = str(note.get("content") or "").strip()
+        mapping = note.get("i18n_content")
+        mapping = mapping if isinstance(mapping, dict) else {}
+    else:
+        default, mapping = str(note or "").strip(), {}
+    if not default:
         return title
     if isinstance(title, dict):
         out = dict(title)
-        base = str(out.get("content") or "")
-        if not base.startswith(text):
-            out["content"] = f"{text} · {base}" if base else text
+        out["content"] = _merge_note_text(out.get("content"), default)
         i18n = out.get("i18n_content")
         if isinstance(i18n, dict):
-            merged: Dict[str, Any] = {}
-            for lang, value in i18n.items():
-                seg = str(value or "")
-                merged[lang] = (f"{text} · {seg}" if seg and not seg.startswith(text)
-                                else (text if not seg else seg))
-            out["i18n_content"] = merged
+            out["i18n_content"] = {
+                lang: _merge_note_text(value, str(mapping.get(lang) or default))
+                for lang, value in i18n.items()}
         return out
-    base = str(title or "")
-    if base.startswith(text):
-        return base
-    return f"{text} · {base}" if base else text
+    return _merge_note_text(title, default)
 
 
 def panel_shell(view: PanelView) -> Dict[str, Any]:

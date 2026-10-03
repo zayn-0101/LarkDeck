@@ -99,6 +99,9 @@ tests/        见「验证」
   「⏳ 正在生成…」、轮标题「第 N 轮」、`…更早的 N 轮/步已折叠`、`（续下一条）`
   均为固定中文默认，不得被声明成“随客户端语言切换”。**只有走 `i18n_content` 的
   plain_text / 面板摘要节点才跟随客户端语言。**
+  V081 补充：长回合心跳备注（`⏳ 等待模型响应 · 第 5 轮` / `⏳ Waiting for the model ·
+  round 5`）挂在**面板标题的 plain_text 节点**上、逐语言合并，中英文客户端各显示各的
+  （`adapter._ld_hb_note` → `cardview.title_with_note`）；上游英文原文只进日志，不上卡面。
 - 插件配置路径是 `plugins.entries.larkdeck.settings.<key>`，由 `register()` 里的
   `_apply_ctx_settings()` 经官方 `ctx.get_config()` 读入。Hermes **从不**调用
   `configure()`（它只是自有运行时入口，单测在用）。取值优先级：环境变量

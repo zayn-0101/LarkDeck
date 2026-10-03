@@ -2333,6 +2333,100 @@ def _ld_is_working_heartbeat(content: str,
     return text.startswith(_LD_WORKING_PREFIX)
 
 
+#: V081：上游心跳活动原文 → 归一化阶段的**前缀表**（按顺序取第一条命中）。
+#: 认不出的活动（包括上游改词）一律退到 `hb.working` —— 卡面**绝不**回显英文原文。
+_LD_HB_PROVIDER_PREFIXES = (
+    "waiting for provider response",
+    "waiting for stream response",
+    "waiting for non-streaming api response",
+    "receiving stream response",
+)
+_LD_HB_TOOL_PREFIXES = ("executing tool:", "sequential tool running")
+#: 裸工具名（core 的 `current_tool`）形状：单个 ASCII 标识符；sentinel 不算工具。
+_LD_HB_TOOL_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.\-]*$")
+_LD_HB_NOT_TOOL = frozenset({"unknown", "none", "n/a", "idle", "ready"})
+#: `⏳ Working — {n} min[ — {rest}]`；`rest` 再分 `iteration N[/M][, {活动}]`。
+_LD_HB_HEAD_RE = re.compile(r"^\s*⏳\ufe0f?\s*Working\s*—\s*(?P<mins>\d+)\s*min(?:ute)?s?"
+                            r"(?:\s*—\s*(?P<rest>.+))?$")
+_LD_HB_ITER_RE = re.compile(r"^iteration\s+(?P<n>\d+)(?:/\d+)?\s*(?:,\s*(?P<rest>.*))?$")
+
+
+def _ld_hb_parse(content: str) -> Optional[Tuple[int, int, str]]:
+    """拆上游心跳原文 → ``(已运行整分钟, 轮数, 活动原文)``；认不出返回 ``None``。
+
+    上游三种形状（`gateway/run_turn.py::_run_agent_notify_long_running`）都要收：
+
+      * ``⏳ Working — 3 min``                               —— 无活动、无轮数；
+      * ``⏳ Working — 3 min — terminal``                    —— 关掉轮数细节时的裸工具名；
+      * ``⏳ Working — 9 min — iteration 5, waiting for …``   —— 默认形态。
+
+    解析失败**不是异常**：调用方退通用短语（:func:`_ld_hb_note`），原文仍进日志。
+    """
+    head = _LD_HB_HEAD_RE.match(str(content or "").strip())
+    if not head:
+        return None
+    try:
+        minutes = int(head.group("mins") or 0)
+    except (TypeError, ValueError):      # pragma: no cover - 正则已保证是数字
+        minutes = 0
+    rest = str(head.group("rest") or "").strip()
+    iteration, activity = 0, rest
+    if rest:
+        match = _LD_HB_ITER_RE.match(rest)
+        if match:
+            try:
+                iteration = int(match.group("n") or 0)
+            except (TypeError, ValueError):   # pragma: no cover - 同上
+                iteration = 0
+            activity = str(match.group("rest") or "").strip()
+        elif rest.lower().startswith("iteration"):
+            # 形状变了（`/上限` 之外的写法）：只尽力取轮数，活动**整段丢掉**，
+            # 绝不把英文字符串当活动回显到卡面。
+            found = re.search(r"iteration\s+(\d+)", rest)
+            iteration = int(found.group(1)) if found else 0
+            activity = ""
+    return minutes, iteration, activity
+
+
+def _ld_hb_phase(activity: str) -> Tuple[str, Dict[str, Any]]:
+    """活动原文 → ``(i18n key, 格式化参数)``；认不出退 ``hb.working``（绝不回显原文）。"""
+    text = str(activity or "").strip()
+    low = text.lower()
+    for prefix in _LD_HB_PROVIDER_PREFIXES:
+        if low.startswith(prefix):
+            return "hb.wait_model", {}
+    for prefix in _LD_HB_TOOL_PREFIXES:
+        if low.startswith(prefix):
+            tail = text.split(":", 1)[1].strip() if ":" in text else ""
+            return ("hb.run_tool", {"tool": tail}) if tail else ("hb.working", {})
+    if _LD_HB_TOOL_NAME_RE.match(text) and low not in _LD_HB_NOT_TOOL:
+        return "hb.run_tool", {"tool": text}
+    return "hb.working", {}
+
+
+def _ld_hb_note(content: str) -> Dict[str, Any]:
+    """上游心跳原文 → **双语**面板标题备注节点（V081）。
+
+    只取「阶段 + 轮数」；时长丢掉 —— 页脚有实时耗时，上游那个是整分钟且最长滞后 180s。
+    认不出的格式 / 活动退通用短语：卡面**绝不**出现上游英文原文（原文由
+    :meth:`_ld_hb_dispatch` 写进日志）。返回 ``{"content": <默认语言>, "i18n_content": …}``，
+    :func:`larkdeck.core.cardview.title_with_note` 会**逐语言**合并进面板标题。
+    """
+    parsed = _ld_hb_parse(content)
+    if parsed is None:
+        iteration, activity = 0, ""
+    else:
+        _minutes, iteration, activity = parsed
+    key, fmt = _ld_hb_phase(activity)
+    i18n: Dict[str, str] = {}
+    for loc in _i18n.DEFAULT_LOCALES:
+        phase = _i18n.t(key, loc, **fmt)
+        line_key = "hb.line_round" if iteration > 0 else "hb.line_plain"
+        i18n[loc] = _i18n.t(line_key, loc, phase=phase, n=iteration)
+    default = i18n.get(_i18n.DEFAULT_LOCALES[0]) or next(iter(i18n.values()), "")
+    return {"content": default, "i18n_content": i18n}
+
+
 def _ld_view_status(chat_id: str, *, default: str = "processing") -> str:
     """面板快照的结局词汇（``ok``/``error``/``stopped``）→ **卡级状态词汇**。
 
@@ -3425,7 +3519,11 @@ class LarkDeckMixin:
             return self._ld_hb_result()
 
     async def _ld_hb_merge_stream(self, chat: str, content: str) -> Any:
-        """把心跳写进 active structured 主卡的 panel header；绝不碰 answer。"""
+        """把心跳写进 active structured 主卡的 panel header；绝不碰 answer。
+
+        V081：写进去的不是上游原文，而是 :func:`_ld_hb_note` 归一化后的双语短句
+        （`⏳ 等待模型响应 · 第 5 轮` / `⏳ Waiting for the model · round 5`）。
+        """
         keys = self._ld_hb_candidates(chat)
         if len(keys) != 1:
             self._ld_hb_log(chat, "无/多 active 主卡抑制")
@@ -3462,10 +3560,10 @@ class LarkDeckMixin:
                     status="processing", started=state.get("t0"), message_id=mid)
                 if not getattr(view, "panel_enabled", False):
                     return self._ld_hb_result()
-                view.panel.title = _cardview.title_with_note(view.panel.title, content)
+                note = _ld_hb_note(content)
+                view.panel.title = _cardview.title_with_note(view.panel.title, note)
                 partial, signature, round_updates = _ck_panel_partial_for_state(
                     view.panel, state)
-                note = str(content)
                 if signature == state.get("ck_panel_sig"):
                     self._ld_stream_put(key, {**state, "hb_title": note})
                     self._ld_hb_log(chat, "面板未变", mid=mid)
@@ -3505,6 +3603,9 @@ class LarkDeckMixin:
     async def _ld_hb_dispatch(self, chat: str, content: str) -> Any:
         """心跳 send 的总入口；不抛、不回落 `super().send`、不新建中间卡（除唯一专用卡）。"""
         chat = str(chat or "").strip()
+        # V081：上游原文只在这里落日志（每 180s 一拍）；卡面一律用归一化短句，
+        # 排障要看原词（例如上游改了活动文案）就 grep 这一行。
+        logger.info("[larkdeck] 上游心跳原文：%s", str(content or "").strip())
         try:
             keys = self._ld_hb_candidates(chat)
         except Exception:
@@ -4810,8 +4911,15 @@ class LarkDeckMixin:
 
         所有会重建 view 的路径（结构化帧、插件 3s tick、心跳合卡）都必须走这里，
         否则 3s tick 会把上游 Working 标题擦回普通摘要，用户只能看到一闪。
+
+        V081：`hb_title` 是 :func:`_ld_hb_note` 的双语节点（老状态里可能是裸字符串，
+        兼容保留）；两种形状都交给 `cardview.title_with_note` 逐语言合并。
         """
-        note = str((state or {}).get("hb_title") or "").strip() if isinstance(state, dict) else ""
+        note = (state or {}).get("hb_title") if isinstance(state, dict) else None
+        if isinstance(note, str):
+            note = note.strip()
+        elif not isinstance(note, dict):
+            note = None
         panel = getattr(view, "panel", None)
         if note and panel is not None:
             panel.title = _cardview.title_with_note(getattr(panel, "title", ""), note)
