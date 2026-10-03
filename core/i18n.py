@@ -66,6 +66,11 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "panel.status_ok":    {ZH: "✅ 已完成", EN: "✅ Completed"},
     "panel.status_error": {ZH: "❌ 执行出错", EN: "❌ Failed"},
     "panel.status_stopped": {ZH: "⛔ 已中止", EN: "⛔ Stopped"},
+    # V082：**交互边界**（审批 / 澄清）—— 上游在回合中途就会给流式卡发 finalize=True
+    # （`stream_consumer._handle_approval_boundary`，注释原文「The stream is never kept
+    # open across a prompt」），此刻面板里还挂着 running 工具。说「已完成」是假话，
+    # 说「处理中」也不准（等的是**人**），所以单给一个状态词。
+    "panel.status_waiting": {ZH: "⏸ 等待中", EN: "⏸ Waiting"},
     # clarify
     "clarify.header":     {ZH: "需要你确认", EN: "Needs your input"},
     "clarify.other":      {ZH: "其他（我直接输入）", EN: "Other (I'll type it)"},

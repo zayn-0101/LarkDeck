@@ -427,6 +427,11 @@ _LD_HB_LOG_INTERVAL_S = 30.0
 #: 窗口内 tick/上游心跳都不写 panel；等 panel turn_id 变化/清空，或 TTL 兜底 fail-open。
 _LD_PANEL_GATE_TTL_S = 30.0
 
+#: V082：边界续写登记的兜底 TTL。**主判据不是时间而是 turn_id**（审批可能等很久，
+#: 但同一个 turn 的 hook turn_id 不变）；只有 turn_id 两边都拿不到时它才独自兜底，
+#: 所以给得宽松：6 小时足够覆盖任何「挂着等审批」的真实场景，又能让长跑进程不积累。
+_LD_BOUNDARY_CARD_TTL_S = 6 * 3600.0
+
 #: V075 心跳日志限流戳（`chat|reason` -> monotonic，有界清理）。
 _LD_HB_LOGGED: Dict[str, float] = {}
 
@@ -1030,6 +1035,39 @@ def _panel_has_running_clarify(chat_id: str) -> bool:
             continue
         return str(item.get("status") or "").strip().lower() == "running"
     return False
+
+
+def _panel_running_tool(chat_id: str) -> str:
+    """面板快照里最后一个**仍在运行**的工具名；没有运行中的工具返回空串。
+
+    V082（2026-10-04 用户真机截图）：上游的**交互边界**会在回合中途给流式卡发
+    ``finalize=True`` —— ``stream_consumer._handle_approval_boundary`` →
+    ``_finalize_boundary_stream``（注释原文「The stream is never kept open across a
+    prompt」）。那一刻面板里还挂着 `running` 工具（它正卡在等审批），而我们把
+    ``finalize=True`` 一律当回合终态 ⇒ 页脚写「✅ 已完成」，同一张卡上却写着
+    `terminal · Running` —— 自相矛盾（用户 2026-10-04 截图）。
+
+    所以这个函数只服务一条展示纪律：**工具还在跑，就不许说「已完成」**
+    （→ `panel.status_waiting`）。它**不改任何数据** —— 工具状态照旧由
+    `post_tool_call` 收口，这里只是别把「还没结束」渲染成「已结束」。
+
+    与 :func:`_panel_has_running_clarify` 的分工：那个是**边界识别**（只认 clarify，
+    用来决定「关不关流」），这个是**状态文案判据**（任何工具都算，只影响页脚）。
+    """
+    try:
+        snap = _panel.snapshot(str(chat_id or "")) or {}
+    except Exception:                        # pragma: no cover - 防御性
+        return ""
+    tools = snap.get("tools")
+    if not isinstance(tools, list):
+        return ""
+    for item in reversed(tools):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("status") or "").strip().lower() != "running":
+            continue
+        return str(item.get("name") or "").strip()
+    return ""
 
 
 def _event_chat_id(event: Any) -> str:
@@ -2427,20 +2465,36 @@ def _ld_hb_note(content: str) -> Dict[str, Any]:
     return {"content": default, "i18n_content": i18n}
 
 
+#: V082：卡级状态词 —— 「回合还活着（工具在跑 / 在等人）」，页脚不许写「已完成」。
+#: 与 ``completed`` 共用中性边框色，唯一的区别是页脚那一段文案。
+_LD_STATUS_WAITING = "waiting"
+
+
 def _ld_view_status(chat_id: str, *, default: str = "processing") -> str:
     """面板快照的结局词汇（``ok``/``error``/``stopped``）→ **卡级状态词汇**。
 
     两套词汇的映射只放一处（V4.5，审计 B 的「结构化错误色不可达」）：结构化路径过去在
     finalize 时写死 ``"completed"``，于是**失败回合的收尾卡照样是绿头**、`error`/`stopped`
     这两种状态在结构化车道上根本走不到（只有 `/stop` 的重绘那条路显式传了 stopped）。
+
+    V082 再加一条展示纪律：结局是 ok 但面板里**还有 running 工具** ⇒ 返回
+    ``waiting``（不是 completed）—— 上游交互边界的 finalize 与工具的真实状态不可兼得时，
+    以「工具还在跑」为准（理由与截图见 :func:`_panel_running_tool`）。
     """
     try:
         snap = _panel.snapshot(chat_id) or {}
         raw = str(snap.get("status") or "")
     except Exception:      # pragma: no cover - 防御性：状态是装饰，绝不许把帧搞失败
         raw = ""
-    return {"ok": "completed", "completed": "completed",
-            _panel.STATUS_ERROR: "error", _panel.STATUS_STOPPED: "stopped"}.get(raw, default)
+    status = {"ok": "completed", "completed": "completed",
+              _panel.STATUS_ERROR: "error", _panel.STATUS_STOPPED: "stopped"}.get(raw, default)
+    if status == "completed" and _panel_running_tool(chat_id):
+        # V082：面板里还有 running 工具 ⇒ 这个回合**没结束**（上游的交互边界会在回合
+        # 中途发 finalize=True，见 `_panel_running_tool`）。此时写「✅ 已完成」与同一张卡
+        # 上的 `terminal · Running` 直接打架，用户 2026-10-04 截图反馈过。
+        # 只换文案，**不改任何数据**：真正的收尾仍由 post_tool_call / on_session_end 决定。
+        return _LD_STATUS_WAITING
+    return status
 
 
 def _ld_status_text(status: Any) -> str:
@@ -2458,6 +2512,8 @@ def _ld_status_text(status: Any) -> str:
         _panel.STATUS_STOPPED: "panel.status_stopped",
         #: 结构化视图的卡级状态词汇（``CardView.header_status``）
         "completed": "panel.status_ok",
+        #: V082：回合还没结束（工具在跑 / 在等人）—— 绝不显示成「已完成」
+        _LD_STATUS_WAITING: "panel.status_waiting",
     }.get(str(status or ""))
     return _i18n.t(key) if key else ""
 
@@ -2496,6 +2552,12 @@ class LarkDeckMixin:
         #: V075 P2：最近一次成功 seed 的 `chat:consumer_turn_id`（chat -> (key, at)）。
         #: 只用于区分「同回合 boundary 重开」与「新回合」，绝不与 hook turn_id join。
         self._ld_seed_keys: Dict[str, Any] = {}
+        #: V082：刚被**上游交互边界**收尾、但回合其实还没结束的那张卡
+        #: （chat -> {message_id, turn, t0, at}）。审批边界之后上游把 native 流降级成
+        #: 「got_done 时一次 send()」（`_degrade_native_to_buffered_send`），那一条终稿
+        #: 必须**落回同一张卡**，否则用户看到两张卡、面板在同一批工具上各画一遍
+        #: （2026-10-04 真机截图）。有界 + TTL，换回合即失效。
+        self._ld_boundary_cards: Dict[str, Any] = {}
         self._ld_lock = threading.Lock()
 
     def _ld_track(self, message_id: str, chat_id: str,
@@ -2750,7 +2812,7 @@ class LarkDeckMixin:
                 snap = None
             raw = snap.get("status") if isinstance(snap, dict) else None
         norm = str(raw or "")
-        if norm in ("ok", "completed", "error", "stopped"):
+        if norm in ("ok", "completed", "error", "stopped", _LD_STATUS_WAITING):
             status = norm                      # 两套词汇都收（`_ld_status_text` 认）
         else:
             status = default_status            # processing/缺失 ⇒ 收尾 default，绝不脑补
@@ -3137,6 +3199,47 @@ class LarkDeckMixin:
         return card
 
     # ---------------------------------------------------------------- 发送原语
+    async def _ld_reuse_boundary_card(self, chat_id: str, content: str, *, status: str,
+                                      panel: Optional[Dict[str, Any]], footer: Optional[str],
+                                      rec: Dict[str, Any]) -> Any:
+        """把**同一回合**的终稿整卡写回边界那张卡（V082）；任何一步不成就返回 ``None``。
+
+        调用方（``send()``）在拿到 ``None`` 时照旧新开一张 —— 这是**绝不丢消息**的底线：
+        整卡 patch 失败 / 卡片被撤回 / 卡片结构不兼容，都退化成今天的行为，不会更坏。
+
+        为什么只 patch 不「续流」：审批边界之后上游把 native 流降级为一次性 ``send()``
+        （`stream_consumer._degrade_native_to_buffered_send`），没有后续帧可续；
+        整卡 patch 一次性把正文 + 面板 + 页脚 + 状态色全部对齐（与 structured 收尾帧
+        走的是**同一个** ``_ld_update_card``，那条路已在生产里跑）。
+        """
+        message_id = str(rec.get("message_id") or "")
+        if not message_id:
+            return None
+        try:
+            card = self._ld_render_card(
+                chat_id, content, streaming=False, status=status, panel=panel,
+                footer=footer, started=rec.get("t0"), message_id=message_id,
+                turn_card=True, status_locked=True)
+            result = await self._ld_update_card(chat_id, message_id, card)
+        except Exception as exc:             # pragma: no cover - 卡片失败绝不能丢消息
+            logger.warning("[larkdeck] 边界续写整卡 patch 异常，回落新建: %s", exc,
+                           exc_info=True)
+            self._ld_boundary_card_drop(chat_id)
+            return None
+        if result is None or not getattr(result, "success", False):
+            logger.warning("[larkdeck] 边界续写整卡 patch 未成功（%s），回落新建",
+                           getattr(result, "error", "unknown"))
+            self._ld_boundary_card_drop(chat_id)
+            return None
+        self._ld_boundary_card_drop(chat_id)
+        self._ld_track(message_id, chat_id, turn_card=True)
+        self._ld_note_text(message_id, content)
+        self._ld_hb_note_final(chat_id)
+        _log_outbound("card", chat_id, content, message_id)
+        logger.info("[larkdeck] 边界续写：本回合终稿写回原卡（chat=%s mid=%s 长度=%d）"
+                    "—— 未新开卡片", chat_id, message_id[-6:] or "-", len(str(content or "")))
+        return result
+
     async def _ld_send_card(self, chat_id: str, card: Dict[str, Any], *,
                             reply_to: Optional[str] = None,
                             metadata: Optional[Dict[str, Any]] = None) -> Any:
@@ -3318,6 +3421,82 @@ class LarkDeckMixin:
     def _ld_any_stream_for_chat(self, chat: str) -> bool:
         """该 chat 是否还有任何 active native 流（含 degraded / patch 车道）。"""
         return self._ld_stream_count_for_chat(chat) > 0
+
+    # ------------------------------------------------- V082 边界续写（回合没结束）
+    def _ld_note_boundary_card(self, chat: str, state: Dict[str, Any], *, status: str) -> None:
+        """记下「被上游边界收尾、但回合还没结束」的那张卡（V082）。
+
+        只在 ``status == waiting`` 时登记 —— 也就是 :func:`_panel_running_tool` 判定
+        「面板里还有 running 工具」的那一帧。上游的**审批边界**就是这样：它给流式卡发
+        finalize=True（`stream_consumer._handle_approval_boundary`），然后把 native 流
+        降级成「got_done 时一次 send()」。那一条终稿如果没有这张登记就只能新开一张卡 ——
+        用户看到的正是「两张卡 + 同一批工具步骤各画一遍」（2026-10-04 截图）。
+
+        登记的是 **hook turn_id**（``panel_gate_turn`` / 面板快照同源），续写时用它比
+        「还是不是同一个回合」；比时间可靠（审批可能等很久），所以 TTL 只当兜底。
+        """
+        chat = str(chat or "").strip()
+        mid = str(state.get("message_id") or "")
+        if not chat or not mid or status != _LD_STATUS_WAITING:
+            return
+        try:
+            snap = _panel.snapshot(chat) or {}
+        except Exception:                    # pragma: no cover - 防御性
+            snap = {}
+        rec = {
+            "message_id": mid,
+            # ⚠️ 回合身份取**此刻快照**的 hook turn_id，`panel_gate_turn` 只当兜底：
+            #    seed 帧早于 `on_stream_start`（实测约 8s，见 `_LD_PANEL_GATE_TTL_S` 的注释），
+            #    所以 seed 时记下的 `panel_gate_turn` 常常还是**上一回合**的 id —— 拿它登记
+            #    会让续写复核必然对不上（登记成 turn0、此刻快照是 turn1）⇒ 修复静默失效。
+            "turn": str(snap.get("turn_id") or state.get("panel_gate_turn") or ""),
+            "t0": state.get("t0"),
+            "at": time.monotonic(),
+        }
+        with self._ld_lock:
+            table = getattr(self, "_ld_boundary_cards", None)
+            if not isinstance(table, dict):
+                table = self._ld_boundary_cards = {}
+            if len(table) > 256:             # 有界（长跑不许积累）
+                for stale in sorted(table, key=lambda k: float(table[k].get("at") or 0))[:64]:
+                    table.pop(stale, None)
+            table[chat] = rec
+
+    def _ld_boundary_card_target(self, chat: str) -> Optional[Dict[str, Any]]:
+        """该 chat 还在**同一回合**里的续写目标卡；没有/已换回合/超时 → ``None``。
+
+        fail-closed：两边 turn_id 只要有一个是空串就**不**复用（老版本 Hermes 没有
+        hook turn_id 时退回「新开一张」的旧行为，绝不把别的回合的正文写进旧卡）。
+        失效的登记当场清掉，不留给下一回合误用。
+        """
+        chat = str(chat or "").strip()
+        if not chat:
+            return None
+        with self._ld_lock:
+            table = getattr(self, "_ld_boundary_cards", None)
+            rec = table.get(chat) if isinstance(table, dict) else None
+        if not isinstance(rec, dict):
+            return None
+        if not rec.get("message_id") or time.monotonic() - float(rec.get("at") or 0) > \
+                _LD_BOUNDARY_CARD_TTL_S:
+            self._ld_boundary_card_drop(chat)
+            return None
+        want = str(rec.get("turn") or "")
+        try:
+            snap = _panel.snapshot(chat) or {}
+        except Exception:                    # pragma: no cover - 防御性
+            snap = {}
+        if not want or str(snap.get("turn_id") or "") != want:
+            # 换回合（或两边都拿不到 turn_id）⇒ 这张卡不是本回合的续写目标。
+            self._ld_boundary_card_drop(chat)
+            return None
+        return rec
+
+    def _ld_boundary_card_drop(self, chat: str) -> None:
+        with self._ld_lock:
+            table = getattr(self, "_ld_boundary_cards", None)
+            if isinstance(table, dict):
+                table.pop(str(chat or "").strip(), None)
 
     def _ld_hb_note_final(self, chat: str) -> None:
         """记录一次真实终态/`/stop`：在安静窗口内，在飞心跳不再补中间卡。"""
@@ -3685,6 +3864,17 @@ class LarkDeckMixin:
             else:
                 turn_status, turn_footer, turn_panel = "completed", None, None
                 _preview = False
+            # V082：这张卡要是「被上游边界收过尾、但回合还没结束」的那一张，终稿就写回去。
+            # 审批边界之后上游把 native 流降级成「got_done 时一次 send()」，不落回原卡
+            # 就会多出一张卡 + 同一批工具步骤在新卡上再画一遍（2026-10-04 真机截图）。
+            if turn_card and not _preview:
+                _rec = self._ld_boundary_card_target(chat_id)
+                if isinstance(_rec, dict):
+                    _reused = await self._ld_reuse_boundary_card(
+                        chat_id, content, status=turn_status, panel=turn_panel,
+                        footer=turn_footer, rec=_rec)
+                    if _reused is not None:
+                        return _reused
             card = self._ld_render_card(
                 chat_id, content, streaming=guarded, status=turn_status,
                 panel=turn_panel, footer=turn_footer, turn_card=turn_card,
@@ -4902,7 +5092,8 @@ class LarkDeckMixin:
             header_status=status,
             header_title=_i18n.i18n_text(
                 {"processing": "card.status_processing", "completed": "panel.status_ok",
-                 "stopped": "panel.status_stopped", "error": "panel.status_error"}.get(
+                 "stopped": "panel.status_stopped", "error": "panel.status_error",
+                 _LD_STATUS_WAITING: "panel.status_waiting"}.get(
                      status, "card.status_processing")))
 
     @staticmethod
@@ -5280,6 +5471,9 @@ class LarkDeckMixin:
                 live["ck_seq"] = seq
                 self._ld_stream_put(key, live)
                 return self._ld_stream_fail("structured 收尾整卡 patch 失败")
+            # V082：边界帧（面板里还有 running 工具）留一条续写登记 —— 回合还没结束，
+            # 后续那条「审批后 got_done 的 send()」必须落回这张卡，而不是新开一张。
+            self._ld_note_boundary_card(chat, state, status=status)
             self._ld_stream_pop(key)
             self._ld_forget(str(state.get("message_id") or ""))
             self._ld_hb_note_final(chat)
@@ -5487,6 +5681,8 @@ class LarkDeckMixin:
             if result is None or not getattr(result, "success", False):
                 return self._ld_stream_fail(
                     f"收尾帧失败（{getattr(result, 'error', 'unknown')}）")
+            # V082：与 structured 同一口径 —— 边界帧（还有 running 工具）留续写登记。
+            self._ld_note_boundary_card(chat, state, status=frame_status)
             self._ld_stream_pop(key)
             self._ld_forget(message_id)
             self._ld_hb_note_final(chat)

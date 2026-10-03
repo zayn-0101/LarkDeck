@@ -3055,11 +3055,11 @@ MUTATIONS = [
      '                view = self._ld_cardview(chat_id, content, status=status,',
      'test_units'),
     ('V073-2r-帧 footer 收尾 default_status 兜底失效', 'core/adapter.py',
-     '        if norm in ("ok", "completed", "error", "stopped"):\n'
+     '        if norm in ("ok", "completed", "error", "stopped", _LD_STATUS_WAITING):\n'
      '            status = norm                      # 两套词汇都收（`_ld_status_text` 认）\n'
      '        else:\n'
      '            status = default_status            # processing/缺失 ⇒ 收尾 default，绝不脑补',
-     '        if norm in ("ok", "completed", "error", "stopped"):\n'
+     '        if norm in ("ok", "completed", "error", "stopped", _LD_STATUS_WAITING):\n'
      '            status = norm                      # 两套词汇都收（`_ld_status_text` 认）\n'
      '        else:\n'
      '            status = ""                        # V073-2r mutated',
@@ -3368,6 +3368,37 @@ MUTATIONS = [
      '    return None',
      'test_units'),
 
+    # ---- V082：交互边界（审批 / 澄清）的页脚诚实 + 同回合续写（2026-10-04 用户截图）--- #
+    # ① 面板里还有 running 工具却说「✅ 已完成」；② 边界之后另开一张卡（同批工具步骤画两遍）。
+    ('V082-1-工具还在跑也渲染「✅ 已完成」（页脚与面板自相矛盾）', 'core/adapter.py',
+     '    if status == "completed" and _panel_running_tool(chat_id):',
+     '    if False and status == "completed" and _panel_running_tool(chat_id):  # V082-1 mutated',
+     'test_units'),
+    ('V082-2-边界续写目标恒不命中（边界后的终稿又新开一张卡）', 'core/adapter.py',
+     '        if not want or str(snap.get("turn_id") or "") != want:',
+     '        if True:  # V082-2 mutated（一律不复用）',
+     'test_units'),
+    ('V082-3-续写不复核回合（新回合的正文写进上一回合的卡）', 'core/adapter.py',
+     '        if not want or str(snap.get("turn_id") or "") != want:',
+     '        if not want:  # V082-3 mutated（不看 turn_id）',
+     'test_units'),
+    ('V082-4-续写 patch 失败不回落到新卡（消息直接丢）', 'core/adapter.py',
+     '        if result is None or not getattr(result, "success", False):\n'
+     '            logger.warning("[larkdeck] 边界续写整卡 patch 未成功（%s），回落新建",\n'
+     '                           getattr(result, "error", "unknown"))\n'
+     '            self._ld_boundary_card_drop(chat_id)\n'
+     '            return None',
+     '        if result is None or not getattr(result, "success", False):\n'
+     '            logger.warning("[larkdeck] 边界续写整卡 patch 未成功（%s），回落新建",\n'
+     '                           getattr(result, "error", "unknown"))\n'
+     '            self._ld_boundary_card_drop(chat_id)\n'
+     '            return result  # V082-4 mutated（不回落）',
+     'test_units'),
+    ('V082-5-续写登记用 seed 时的旧 turn_id（seed 早于 on_stream_start ⇒ 修复静默失效）', 'core/adapter.py',
+     '            "turn": str(snap.get("turn_id") or state.get("panel_gate_turn") or ""),',
+     '            "turn": str(state.get("panel_gate_turn") or snap.get("turn_id") or ""),'
+     '  # V082-5 mutated',
+     'test_units'),
 
 ]
 

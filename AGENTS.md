@@ -102,6 +102,16 @@ tests/        见「验证」
   V081 补充：长回合心跳备注（`⏳ 等待模型响应 · 第 5 轮` / `⏳ Waiting for the model ·
   round 5`）挂在**面板标题的 plain_text 节点**上、逐语言合并，中英文客户端各显示各的
   （`adapter._ld_hb_note` → `cardview.title_with_note`）；上游英文原文只进日志，不上卡面。
+  V082 补充：**卡面状态词不许跑到工具事实前面** —— 上游交互边界（审批 / 澄清）会在回合
+  中途给流式卡发 `finalize=True`（`stream_consumer._handle_approval_boundary`，注释原文
+  "The stream is never kept open across a prompt"），那一刻面板里还挂着 `running` 工具；
+  只要还有运行中的工具，状态就渲染 `⏸ 等待中`（`panel.status_waiting`，`_panel_running_tool`
+  → `_ld_view_status`），**不许**写 `✅ 已完成`。同一纪律的另一半：**同一回合的续写必须落回
+  原卡** —— 审批边界后上游把 native 流降级成一次性 `send()`（
+  `stream_consumer._degrade_native_to_buffered_send`），插件按 `_ld_boundary_cards`
+  （只在边界收尾帧登记，含 `message_id` + 回合身份）把它整卡 patch 回原卡；登记对不上
+  （换了回合 / 超时 / patch 失败）才新开一张 —— 回落可以退，消息不许丢。
+  改动这两条时请连带 `V082-1..5` 五条变异与 `test_v082_*` 一起看。
 - 插件配置路径是 `plugins.entries.larkdeck.settings.<key>`，由 `register()` 里的
   `_apply_ctx_settings()` 经官方 `ctx.get_config()` 读入。Hermes **从不**调用
   `configure()`（它只是自有运行时入口，单测在用）。取值优先级：环境变量

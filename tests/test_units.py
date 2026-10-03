@@ -1107,6 +1107,12 @@ def _golden_trace() -> dict:
                                    duration_ms=2300, tool_call_id="tc-golden-1")
         returns.append(_run(raw.send_stream_frame("第一段，第二段。", chat_id="oc_golden",
                                                   turn_id="t-golden")))
+        # ⚠️ V082：**收尾前必须把所有工具收口** —— 面板里还有 running 工具时，卡面渲染成
+        #    `⏸ 等待中`（灰色）而不是「✅ 已完成」（上游交互边界的形状，见
+        #    `_panel_running_tool`）。这条夹具要冻的是**正常回合终态**（页脚 ✅ + 绿色边框），
+        #    所以 `terminal`（tc-golden-0）也必须 post_tool_call —— 边界形状另有单测守着。
+        panel.record_tool_finished("oc_golden", "s-golden-new", "terminal", status="ok",
+                                   duration_ms=400, tool_call_id="tc-golden-0")
         # 用户 2026-09-17 的观感要求：结局状态在最前、模型名在页脚（不再进面板标题）。
         # 把这两样塞进夹具的**定义域**，否则「状态/模型整段丢掉」在 golden trace 里逐字不变。
         context.record_api_call(model="test-model", provider="test",
@@ -12043,7 +12049,7 @@ def test_v1_structured_seed_and_panel_update():
         assert "standard_icon" in json.dumps(entity), entity
 
         panel.bind_chat_session("oc_v1", "sess1")
-        panel.record_tool_started("sess1", "turn1", "read_file", {"path": "/tmp/a.txt"})
+        panel.record_tool_started("sess1", "turn1", "read_file", {"path": "/tmp/a.txt"}, "tc-v1")
         assert _run(raw.send_stream_frame("hello world", chat_id="oc_v1", turn_id="t1"))
         actions = []
         for item in calls["batch"]:
@@ -12075,6 +12081,11 @@ def test_v1_structured_seed_and_panel_update():
         cancelled = []
         orig_cancel = raw._ld_heartbeat_cancel
         raw._ld_heartbeat_cancel = lambda key: (cancelled.append(key), orig_cancel(key))
+        # ⚠️ V082：收尾前必须把工具收口。面板里还挂着 running 工具时**不再**渲染绿色
+        #    「✅ 已完成」（那是上游交互边界的形状，见 `_panel_running_tool`）——
+        #    这条用例要冻的是「正常收尾卡长什么样」，所以这里补上 post_tool_call。
+        panel.record_tool_finished("sess1", "turn1", "read_file", status="ok",
+                                   duration_ms=120, tool_call_id="tc-v1")
         assert _run(raw.send_stream_frame("hello world!", finalize=True,
                                           chat_id="oc_v1", turn_id="t1"))
         assert "oc_v1:t1" in cancelled, cancelled
@@ -16014,6 +16025,148 @@ def test_capture_bundled_platform_registration_reads_register_kwargs():
 
 def test_capture_bundled_platform_registration_returns_none_for_missing_module():
     assert compat.capture_bundled_platform_registration(("_no_such_larkdeck_bundled_platform",)) is None
+
+
+# --------------------------------------------------------------------------- #
+# V082：交互边界（审批 / 澄清）—— 页脚不许说「已完成」；回合没结束就别另开卡
+# 用户 2026-10-04 真机截图三点里的前两点：
+#   ① 选完/审批后卡片页脚写「✅ 已完成」，同一张卡上面板却写着 `terminal · Running`；
+#   ② 回合还没结束，上游边界后的终稿另开了一张卡（同批工具步骤画两遍）。
+# --------------------------------------------------------------------------- #
+def _v082_boundary_case(chat: str):
+    """公共脚手架：结构化 + cardkit 车道跑出「边界帧」——seed → 工具 running → finalize 帧。
+
+    返回 ``(raw, calls, teardown)``。``calls["patch_cards"]`` 的最后一项就是那张收尾卡。
+    """
+    panel.reset()
+    context.reset()
+    saved_config = dict(adapter._CONFIG)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    raw = _make()
+    calls, client = _mk_cardkit_fake()
+    raw._client = client
+    target_cls = type(raw)
+    old_reqs = target_cls.__dict__.get("_ld_ck_requests")
+    # card_status_header=True：页脚/顶栏都要能断言（默认 false 会把状态条整条去掉）。
+    adapter.configure(visual_engine="structured", native_transport="cardkit",
+                      card_status_header=True)
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    target_cls._ld_ck_requests = staticmethod(_fake_ck_requests)
+    # hook 侧的面板数据：**chat 即 session_id**（与 golden trace 同形），这样
+    # `snapshot()` 一定能取到这一份。顺序照真机：seed 帧**早于** `on_stream_start`
+    # （实测约 8s）⇒ seed 那一刻快照里还是**上一回合**的残留，新回合的 turn_id 与工具
+    # 事件随后才到。这条顺序很关键：它让「续写登记记的是哪一份 turn_id」有判别力。
+    panel.record_tool_started(chat, "turn0", "old_tool", {"command": "old"}, "tc0")
+    assert _run(raw.send_stream_frame("第一段", chat_id=chat, turn_id="t1"))
+    panel.begin_turn(chat, "turn1")                 # on_stream_start：新回合，清上一回合面板
+    panel.record_tool_started(chat, "turn1", "terminal", {"command": "ls"}, "tc1")
+    assert _run(raw.send_stream_frame("第一段。", finalize=True, chat_id=chat, turn_id="t1"))
+
+    def teardown():
+        if old_reqs is None:
+            delattr(target_cls, "_ld_ck_requests")
+        else:
+            target_cls._ld_ck_requests = old_reqs
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_config)
+        panel.reset()
+        context.reset()
+
+    return raw, calls, teardown
+
+
+def test_v082_boundary_finalize_is_waiting_not_completed():
+    """V082①：面板里还有 running 工具 ⇒ 卡面**不许**写「✅ 已完成」，收尾登记留给续写。"""
+    chat = "oc_v82a"
+    # 纯数据层：结局说 ok 但工具没结束 ⇒ waiting；工具收口后立刻回到 completed。
+    panel.reset()
+    panel.record_tool_started(chat, "turn1", "terminal", {"command": "ls"}, "tc1")
+    panel.record_turn_end(chat, "turn1", completed=True)
+    assert adapter._ld_view_status(chat, default="completed") == "waiting", panel.snapshot(chat)
+    assert adapter._ld_status_text("waiting") == "⏸ 等待中"
+    assert i18n.i18n_text("panel.status_waiting")["i18n_content"]["en_us"] == "⏸ Waiting"
+    panel.record_tool_finished(chat, "turn1", "terminal", status="ok", duration_ms=10,
+                               tool_call_id="tc1")
+    assert adapter._ld_view_status(chat, default="completed") == "completed"
+    assert adapter._ld_status_text("completed") == "✅ 已完成"
+    panel.reset()
+
+    # 卡面层：边界帧的收尾卡必须落成 ⏸ 等待中（蓝头），且登记了这张卡。
+    raw, calls, teardown = _v082_boundary_case("oc_v82b")
+    try:
+        finals = calls.get("patch_cards") or []
+        assert finals, calls
+        blob = json.dumps(finals[-1], ensure_ascii=False)
+        assert "⏸ 等待中" in blob, blob
+        assert "✅ 已完成" not in blob, blob
+        assert finals[-1]["header"]["template"] == "blue", finals[-1]["header"]
+        rec = raw._ld_boundary_cards.get("oc_v82b")
+        assert isinstance(rec, dict), raw._ld_boundary_cards
+        assert rec["message_id"] == "om_ck_1", rec
+        assert rec["turn"] == "turn1", rec
+        # 正常收尾不受影响：工具收口后仍是「✅ 已完成」。
+        panel.record_tool_finished("oc_v82b", "turn1", "terminal", status="ok",
+                                   duration_ms=10, tool_call_id="tc1")
+        assert adapter._ld_view_status("oc_v82b", default="completed") == "completed"
+    finally:
+        teardown()
+
+
+def test_v082_boundary_continuation_lands_on_same_card():
+    """V082②：边界之后的同回合终稿必须**写回原卡**（不新开卡）。"""
+    chat = "oc_v82c"
+    raw, calls, teardown = _v082_boundary_case(chat)
+    try:
+        cards_before = len(calls.get("patch_cards") or [])
+        sends_before = len([c for c in raw.calls if c[0] == "send"])
+        res = _run(raw.send(chat, "审批通过后的终稿正文", metadata={"notify": True}))
+        assert res is not None and getattr(res, "success", False), res
+        cards = calls.get("patch_cards") or []
+        assert len(cards) == cards_before + 1, cards
+        assert calls["patch_mids"][-1] == "om_ck_1", calls["patch_mids"]
+        blob = json.dumps(cards[-1], ensure_ascii=False)
+        assert "审批通过后的终稿正文" in blob, blob
+        assert "✅ 已完成" not in blob, blob        # 工具还在跑 ⇒ 不许说已完成
+        # **没有**新开卡片（这正是截图里那第二张卡）。
+        assert len([c for c in raw.calls if c[0] == "send"]) == sends_before, raw.calls
+        assert chat not in raw._ld_boundary_cards, raw._ld_boundary_cards
+    finally:
+        teardown()
+
+
+def test_v082_new_turn_never_reuses_boundary_card():
+    """V082②的边界条件：换了回合（hook turn_id 变了）⇒ 绝不把正文写进旧卡。"""
+    chat = "oc_v82d"
+    raw, calls, teardown = _v082_boundary_case(chat)
+    try:
+        cards_before = len(calls.get("patch_cards") or [])
+        sends_before = len([c for c in raw.calls if c[0] == "send"])
+        panel.begin_turn(chat, "turn2")            # 新回合开始：面板清空、turn_id 换代
+        panel.record_tool_started(chat, "turn2", "read_file", {"path": "/tmp/b"}, "tc2")
+        res = _run(raw.send(chat, "新回合的回答", metadata={"notify": True}))
+        assert res is not None and getattr(res, "success", False), res
+        # 旧卡一个字节都没动，正文走新卡；失效登记当场清掉。
+        assert len(calls.get("patch_cards") or []) == cards_before, calls.get("patch_cards")
+        assert len([c for c in raw.calls if c[0] == "send"]) == sends_before + 1, raw.calls
+        assert chat not in raw._ld_boundary_cards, raw._ld_boundary_cards
+    finally:
+        teardown()
+
+
+def test_v082_boundary_continuation_falls_back_when_patch_fails():
+    """V082 底线：续写整卡 patch 失败 ⇒ 回落新开卡 —— **绝不丢消息**。"""
+    chat = "oc_v82e"
+    raw, calls, teardown = _v082_boundary_case(chat)
+    try:
+        sends_before = len([c for c in raw.calls if c[0] == "send"])
+        raw._client.im.v1.message.patch = lambda request: {"code": 230001, "msg": "nope"}
+        res = _run(raw.send(chat, "审批后仍然要送达的正文", metadata={"notify": True}))
+        assert res is not None and getattr(res, "success", False), res
+        assert len([c for c in raw.calls if c[0] == "send"]) == sends_before + 1, raw.calls
+        assert chat not in raw._ld_boundary_cards, raw._ld_boundary_cards
+    finally:
+        teardown()
 
 
 def main() -> int:
