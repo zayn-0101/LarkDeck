@@ -3950,6 +3950,12 @@ class LarkDeckMixin:
                 self._ld_note_text(message_id, content)
                 if turn_card and not _preview:
                     self._ld_hb_note_final(chat_id)   # V075：非预览终稿也进安静窗口
+                # P5 留痕：**正常**卡片出站已经在 `_ld_send_card()` 里记过一笔（同 kind 同 chat
+                # ⇒ 限流键相同，这里必然被吃掉 —— ledger 里 `P5-出站留痕…` 那条变异「撤掉后
+                # 四门禁全绿」就是这么来的，已按等价改动搬进对照表）。这行只为一种形态保留：
+                # `success` 为真但**没拿到 message_id** —— 那种「脚本说成功、用户其实什么都
+                # 没看到」的情况上面那条不记（它的判据是「真的发出去了」），只有这里能留下
+                # 可 grep 的证据（`mid=` 为空即命中）。
                 _log_outbound("card", chat_id, content, message_id)
                 if guarded:
                     self._ld_clear_seed_failure(str(chat_id or ""))

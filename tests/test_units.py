@@ -3751,6 +3751,10 @@ def test_clarify_boundary_detected_even_with_accumulated_body():
         assert state.get("ck_clarify_waiting") is True, state
         answers = [item for item in calls["content"]
                    if item[0] == cards.CARDKIT_ANSWER_ID]
+        # ⚠️ 先断言「确实写了 answer 元素」再取下标：否则「结构化帧不写正文」那条变异
+        # 会让本用例抛 IndexError，门禁看到的是**崩溃**而不是断言失败（`V1-3` 实测如此，
+        # 那条变异因此被判「不算判别力证据」）。下标越界不是判据，断言才是。
+        assert answers, f"结构化帧必须真的写 answer 元素（打字机靠它）：{calls['content']}"
         assert "先给你一段背景。" in answers[-1][1], answers
     finally:
         adapter._STREAM_MIN_INTERVAL = old_interval

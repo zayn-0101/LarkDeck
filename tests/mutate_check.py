@@ -2649,8 +2649,6 @@ MUTATIONS = [
      '                        "options", "option", "input_value"):',
      '            for key in (ACTION_KEY, "clarify_id"):  # V4-39 mutated',
      'test_units'),
-    ('P5-出站留痕不再记录卡片成功分支（「这条以什么形态发出去」不可证伪）', 'core/adapter.py',
-     '                _log_outbound("card", chat_id, content, message_id)\n', '', 'test_units'),
     ('P5-edit_message 成功分支不留痕（用户看到的每一次改写都查不到）', 'core/adapter.py',
      '                _log_outbound("edit", chat_id, content, message_id)\n', '', 'test_units'),
     ('P5-出站限流的 key 不含 chat（多会话并发时证据被吃掉）', 'core/adapter.py',
@@ -3419,6 +3417,16 @@ MUTATIONS = [
 #: **对照项**：行为等价的改动（合法 YAML 变体等），期望四门禁**全绿**。
 #: 与 MUTATIONS 分开成两张表 —— 判断依据是它属于哪张表，不是名字里有没有某个字。
 CONTROLS = [
+    # 从 MUTATIONS 搬来（`P5-出站留痕不再记录卡片成功分支`）：这条留痕**必然**被上一条
+    # 吃掉，撤掉它四门禁全绿是**预期**而不是缺陷。证据链：`send()` 的卡片成功分支里，
+    # `_ld_send_card()` 刚刚用同一个 `outbound-card-<chat>` 限流键记过一笔（同 kind 同
+    # chat），30 秒窗口内这行不可能输出。它唯一可观测的形态是「success 但没有
+    # message_id」（那种情况上面那条按判据不记），而该状态在替身适配器里**不可达**
+    # （`_finalize_send_result` 只在有 mid 时给 success）⇒ 造用例去断言它等于自证循环
+    # （lessons 推论 8）。把它固化成对照，是为了让「这行是不是死代码」的结论可复核 ——
+    # 源码那一行现在也带着同样的注释（core/adapter.py 的 P5 留痕处）。
+    ('C-对照：卡片出站的第二笔留痕被撤（同一限流键 ⇒ 必被前一笔吃掉）', 'core/adapter.py',
+     '                _log_outbound("card", chat_id, content, message_id)\n', '', ''),
     # 等价变异（2026-09-21 收口复核实测）：`reasoning` 与 `rounds` 在数据层是**同时非空**的
     # （`panel.record_reasoning()` 会立刻产生一个推理轮）⇒ 判据里 `or reasoning` 对
     # **可到达的状态**没有影响（实测：删掉它，那条「只有 reasoning」的断言照样绿）。
