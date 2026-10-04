@@ -16169,6 +16169,149 @@ def test_v082_boundary_continuation_falls_back_when_patch_fails():
         teardown()
 
 
+#: V083 真机样本：核心给 ``terminal`` 工具生成的进度气泡（``_progress_terminal_blocks``）。
+V083_TERMINAL_BUBBLE = "💻 terminal\n```\ncd /opt/data; echo '== 0) 备份 config'\n```"
+#: 连续 terminal 时核心**不发头**（``last_was_terminal_block``）⇒ 只剩裸围栏块。
+V083_TERMINAL_BUBBLE_BARE = "```\ncd /opt/data; echo '== 0) 备份 config'\n```"
+
+
+def _v083_plain_case(chat: str, *, running: bool = True):
+    """V083 公共脚手架：结构化 + cardkit 车道，面板里有一个 terminal（running 或已收口）。"""
+    panel.reset()
+    context.reset()
+    saved_config = dict(adapter._CONFIG)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    raw = _make()
+    calls, client = _mk_cardkit_fake()
+    raw._client = client
+    target_cls = type(raw)
+    old_reqs = target_cls.__dict__.get("_ld_ck_requests")
+    adapter.configure(visual_engine="structured", native_transport="cardkit",
+                      card_status_header=True)
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    target_cls._ld_ck_requests = staticmethod(_fake_ck_requests)
+    panel.record_tool_started(chat, "turn1", "terminal", {"command": "ls"}, "tc1")
+    if not running:
+        panel.record_tool_finished(chat, "turn1", "terminal", status="ok",
+                                   duration_ms=10, tool_call_id="tc1")
+
+    def teardown():
+        if old_reqs is None:
+            delattr(target_cls, "_ld_ck_requests")
+        else:
+            target_cls._ld_ck_requests = old_reqs
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_config)
+        panel.reset()
+        context.reset()
+
+    return raw, calls, teardown
+
+
+def test_v083_progress_bubble_never_becomes_a_card():
+    """V083①：审批边界之后的工具进度气泡**不许**出站成卡片。
+
+    真机 2026-10-03 23:58 用户按下审批 → 23:59:27 ``pre_tool_call(terminal)`` →
+    ``send 判定 turn=True keys=[]`` → ``出站=card … 前置="``` echo '== A. opencode_affinity 源码（看 H"``：
+    上游气泡没有 ``_interim_send``，插件把它当成了回合终稿 ⇒ 正文里出现命令行 + 多一张卡。
+    同一批工具行本来就在面板里（钩子 + 心跳），所以正确行为是**不出站**。
+    """
+    chat = "oc_v83a"
+    raw, calls, teardown = _v082_boundary_case(chat)
+    try:
+        # 前提钉住：形状判据的交叉验证项（面板里**确实**有一个 running 的 terminal）。
+        assert adapter._panel_tool_names(chat) == (["terminal"], ["terminal"]), \
+            adapter._panel_tool_names(chat)
+        cards_before = (calls["create"], calls["send"], calls["patch"])
+        sends_before = len([c for c in raw.calls if c[0] == "send"])
+        for content in (V083_TERMINAL_BUBBLE, V083_TERMINAL_BUBBLE_BARE):
+            res = _run(raw.send(chat, content))     # 上游气泡：metadata 里一个标记都没有
+            assert res is not None and getattr(res, "success", False), res
+            # 成功但**故意不给 message_id**：上游不会进 edit 路径（同心跳语义）。
+            assert getattr(res, "message_id", None) == "", res
+        assert (calls["create"], calls["send"], calls["patch"]) == cards_before, calls
+        assert len([c for c in raw.calls if c[0] == "send"]) == sends_before, raw.calls
+        # 也不许「回落纯文本」蒙混过关：这类消息对卡片平台是纯重复，不该以任何形态出站。
+        assert not [c for c in raw.calls if c[0] == "SUPER.send"], raw.calls
+    finally:
+        teardown()
+
+
+def test_v083_progress_bubble_never_overwrites_boundary_card():
+    """V083②：气泡撞上 V082 登记的边界卡 ⇒ **不许**把原卡正文改成命令行（回归用例）。
+
+    V082 的续写只按 turn_id 匹配、不看内容：审批后核心发来的工具进度气泡会被当成终稿
+    写回原卡正文（真终稿到达前用户看到的就是那段命令行）。这条用例钉死这个组合。
+    """
+    chat = "oc_v83b"
+    raw, calls, teardown = _v082_boundary_case(chat)
+    try:
+        assert chat in raw._ld_boundary_cards, raw._ld_boundary_cards
+        cards_before = json.dumps(calls["patch_cards"], ensure_ascii=False)
+        res = _run(raw.send(chat, V083_TERMINAL_BUBBLE, metadata={"notify": True}))
+        assert getattr(res, "message_id", None) == "", res
+        assert json.dumps(calls["patch_cards"], ensure_ascii=False) == cards_before, \
+            "工具进度气泡被当成终稿写回了原卡"
+        # 登记仍然有效：真终稿到的时候还要写回这张卡。
+        assert chat in raw._ld_boundary_cards, raw._ld_boundary_cards
+    finally:
+        teardown()
+    chat2 = "oc_v83b2"
+    raw, calls, teardown = _v082_boundary_case(chat2)
+    try:
+        cards_before = len(calls["patch_cards"])
+        res = _run(raw.send(chat2, "审批之后的真终稿正文", metadata={"notify": True}))
+        assert getattr(res, "message_id", "") == "om_ck_1", res
+        assert len(calls["patch_cards"]) == cards_before + 1, calls["patch_cards"]
+        blob = json.dumps(calls["patch_cards"][-1], ensure_ascii=False)
+        assert "审批之后的真终稿正文" in blob, blob
+    finally:
+        teardown()
+
+
+def test_v083_progress_like_bare_fence_without_running_terminal_still_renders():
+    """V083③：terminal **已收口** ⇒ 裸围栏块证明不了是核心进度 ⇒ 照常出卡（fail-open）。
+
+    模型自己在回答里写代码块是完全合法的：证明不了就一个字都不许吞。
+    """
+    chat = "oc_v83c"
+    raw, calls, teardown = _v083_plain_case(chat, running=False)
+    try:
+        assert adapter._panel_tool_names(chat)[1] == [], adapter._panel_tool_names(chat)
+        sends_before = len([c for c in raw.calls if c[0] == "send"])
+        res = _run(raw.send(chat, V083_TERMINAL_BUBBLE_BARE))
+        assert getattr(res, "message_id", ""), "证明不了是进度块时必须照常出卡"
+        sends = [c for c in raw.calls if c[0] == "send"]
+        assert len(sends) == sends_before + 1, raw.calls
+        assert "备份 config" in json.dumps(sends[-1][2], ensure_ascii=False), sends[-1][2]
+    finally:
+        teardown()
+
+
+def test_v083_model_answer_containing_a_command_block_is_never_swallowed():
+    """V083④：模型正文（散文 + 命令块）一个字都不许吞 —— 即使有 terminal 在 running。"""
+    chat = "oc_v83d"
+    raw, calls, teardown = _v083_plain_case(chat)          # running=True：最坏前提
+    try:
+        answer = ("先说结论：这一步要清掉旧副本。\n\n"
+                  "```bash\ncd /opt/data; echo '== 0) 备份 config'\n```\n\n"
+                  "跑完我再核对一遍。")
+        sends_before = len([c for c in raw.calls if c[0] == "send"])
+        res = _run(raw.send(chat, answer))
+        assert getattr(res, "message_id", ""), res
+        # ① 判据本身：散文 + 命令块**不是**气泡（「一个字都不吞」的那道闸）。
+        assert adapter._is_core_progress_bubble(chat, answer) is False, answer
+        # ② 端到端：这张卡照常发出去，而且两端句子都在载荷里（没有被截掉/吞掉）。
+        sends = [c for c in raw.calls if c[0] == "send"]
+        assert len(sends) == sends_before + 1, raw.calls
+        blob = json.dumps(sends[-1][2], ensure_ascii=False)
+        assert "先说结论" in blob, blob[:600]
+        assert "跑完我再核对一遍" in blob, blob[:600]
+    finally:
+        teardown()
+
+
 def main() -> int:
     # `--only <子串>`：只跑名字里含该子串的用例。**专供变异判读**（审计 A：单条变异 idle 28s、
     # 重载 89s，秒级判读只能靠「preflight + 只跑受影响的那几条用例」）。不是发布门禁 ——

@@ -112,6 +112,14 @@ tests/        见「验证」
   （只在边界收尾帧登记，含 `message_id` + 回合身份）把它整卡 patch 回原卡；登记对不上
   （换了回合 / 超时 / patch 失败）才新开一张 —— 回落可以退，消息不许丢。
   改动这两条时请连带 `V082-1..5` 五条变异与 `test_v082_*` 一起看。
+  V083 补充：**上游的工具进度气泡不是回合产出** —— 审批 / 澄清边界关掉 native 流之后，
+  核心把工具进度改走「进度气泡」通道（`run_turn_runner.send_progress_messages` → `adapter.send`），
+  内容形如 `💻 terminal` + 围栏 + 命令，且那条 metadata **不带 `_interim_send`**
+  （`ctx._progress_metadata` 只装线程/路由）⇒ 光看 `_ld_send_is_turn` 会判成回合、把命令写进正文，
+  还会被 V082 的续写当成终稿写回原卡。`send()` 里因此加了一道**可证伪**的闸：
+  `_is_core_progress_bubble` = 形状（`_looks_like_core_progress_only`）+ 面板里确实有同名工具
+  在 running（工具名单统一走 `_panel_tool_names`，与正文净化同源）；命中就不出站、不碰原卡；
+  证明不了照常出卡（fail-open，绝不吞模型正文）。改动这里请连带 `V083-1..3` 与 `test_v083_*` 一起看。
 - 插件配置路径是 `plugins.entries.larkdeck.settings.<key>`，由 `register()` 里的
   `_apply_ctx_settings()` 经官方 `ctx.get_config()` 读入。Hermes **从不**调用
   `configure()`（它只是自有运行时入口，单测在用）。取值优先级：环境变量

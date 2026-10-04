@@ -6,7 +6,7 @@
 > Feishu CardKit 2.0, with no Hermes source patches. The main reply streams in its card; long
 > answers continue in follow-up cards, and clarify prompts use separate interactive cards.
 
-[![version](https://img.shields.io/badge/version-0.7.14-blue.svg)](https://github.com/zayn-0101/LarkDeck/releases)
+[![version](https://img.shields.io/badge/version-0.7.15-blue.svg)](https://github.com/zayn-0101/LarkDeck/releases)
 [![AH (Hermes Agent) 0.21.x](https://img.shields.io/badge/AH-0.21.x-blueviolet.svg)](https://github.com/NousResearch/hermes-agent)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 

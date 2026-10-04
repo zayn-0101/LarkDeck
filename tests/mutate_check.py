@@ -685,8 +685,8 @@ MUTATIONS = [
      '            content = _sanitize_for_send(content)',
      'test_units'),
     ('R6a-11-`send()` 不做卫生（同一段文本两条路径长得不一样）', 'core/adapter.py',
-     '            # 判据是「这份文本是不是**完整文本**」，不是「这是哪条路径」（见 cards.sanitize_markdown）。\n            content = _sanitize_for_send(content)',
-     '            # 判据是「这份文本是不是**完整文本**」，不是「这是哪条路径」（见 cards.sanitize_markdown）。\n            content = content',
+     '            raw_content = content          # 形状判据只看**上游原样文本**（markdown 卫生会改写它）\n            content = _sanitize_for_send(content)',
+     '            raw_content = content          # 形状判据只看**上游原样文本**（markdown 卫生会改写它）\n            content = content',
      'test_units'),
     ('R6a-12-`/stop` 重绘不做卫生（中止的回合看不到任何卫生）', 'core/adapter.py',
      '            card = self._ld_build_card(_sanitize_for_send(text) or " ", streaming=False,',
@@ -1998,8 +1998,8 @@ MUTATIONS = [
      "test_units"),
     ("CLS-37-正文净化改用 snapshot 的其他会话工具名单（跨会话误剥模型正文）",
      "core/adapter.py",
-     '            for item in _panel.answer_tools(chat):',
-     '            for item in (_panel.snapshot(chat) or {}).get("tools") or []:',
+     '    for item in _panel.answer_tools(chat):',
+     '    for item in (_panel.snapshot(chat) or {}).get("tools") or []:',
      "test_units"),
     ("CLS-38-任意 emoji+ASCII 词+冒号被当核心工具行（模型 Note/Plan 首行被吞）",
      "core/adapter.py",
@@ -3398,6 +3398,20 @@ MUTATIONS = [
      '            "turn": str(snap.get("turn_id") or state.get("panel_gate_turn") or ""),',
      '            "turn": str(state.get("panel_gate_turn") or snap.get("turn_id") or ""),'
      '  # V082-5 mutated',
+     'test_units'),
+    ('V083-1-上游工具进度气泡又被渲染成卡片（真机 2026-10-03 23:59 正文里的命令行）', 'core/adapter.py',
+     '            if not guarded and _is_core_progress_bubble(chat_id, raw_content):',
+     '            if False:  # V083-1 mutated（不判气泡）',
+     'test_units'),
+    ('V083-2-气泡判定不再要求面板里有 running 的 terminal（模型自己写的裸代码块被吞）', 'core/adapter.py',
+     '    return _looks_like_core_progress_only(content, tools, running)',
+     '    return _looks_like_core_progress_only(content, tools, ["terminal"])  # V083-2 mutated',
+     'test_units'),
+    ('V083-3-进度气泡改走纯文本回落（用户看到的仍是一段命令行气泡）', 'core/adapter.py',
+     '                    chat_id, raw_content.strip()[:40])\n'
+     '                return self._ld_hb_result()',
+     '                    chat_id, raw_content.strip()[:40])\n'
+     '                return await fallback()  # V083-3 mutated',
      'test_units'),
 
 ]

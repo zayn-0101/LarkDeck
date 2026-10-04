@@ -668,6 +668,58 @@ def _looks_like_core_progress_only(text: str, tools: Any = None,
     return saw_header or "terminal" in running_names
 
 
+def _panel_tool_names(chat: str) -> Tuple[List[str], List[str]]:
+    """这个 chat **正文累积选中的会话桶**里的工具名单：``(全部, 仍在 running 的)``。
+
+    ⚠️ 必须走 ``_panel.answer_tools(chat)``，**不能**用 ``snapshot(chat)`` 的「最近活跃」
+    桶：两者归属不一致时，拿别的会话的工具名单去判本会话的文本，会把真实正文当成核心
+    进度（变异 ``CLS-37``）。
+
+    这里**不吞异常**：取不到由调用方决定 fail-open（正文净化原样渲染、进度气泡判定按
+    「不是气泡」处理）—— 两处都不能因为状态层异常而改动用户可见的文本。
+    """
+    tools: List[str] = []
+    running: List[str] = []
+    for item in _panel.answer_tools(chat):
+        name = str(item.get("name") or "")
+        if not name:
+            continue
+        tools.append(name)
+        if str(item.get("status") or "") == "running":
+            running.append(name)
+    return tools, running
+
+
+def _is_core_progress_bubble(chat_id: str, content: str) -> bool:
+    """``send()`` 收到的这段文本，是不是**上游的工具进度气泡**（不是回合产出）。
+
+    v0.7.15：审批/澄清边界会**关掉本回合的 native 流**，而核心的工具进度这时改走
+    「进度气泡」通道（``gateway/run_turn_runner.py::send_progress_messages`` →
+    ``_send_progress_text`` → ``adapter.send``）。那条 metadata 只装会话/线程路由
+    （``ctx._progress_metadata``），**不带 ``_interim_send``** ⇒ ``_ld_send_is_turn``
+    只认 ``_interim_send`` + 已知系统提示前缀，于是默认判它「是回合」⇒ 卡片正文变成
+    ``💻 terminal`` + 围栏 + 命令（连续 terminal 时连头都不带），还带页脚与面板。
+
+    真机证据（2026-10-03 23:58 用户按下审批之后）：
+      ``23:59:27 pre_tool_call(terminal)`` → ``23:59:27 send 判定 turn=True keys=[]`` →
+      ``23:59:28 出站=card … 前置="``` echo '== A. opencode_affinity 源码（看 H"``；
+      ``00:00:19`` 同一条消息被 ``edit``（气泡的后续刷新），``00:03:51`` 再来一次。
+      同一批工具行本来就在面板里（钩子 + 心跳）⇒ 这些消息是**纯重复**。
+
+    判据复用正文净化那套形状检查 :func:`_looks_like_core_progress_only`：整段只能是
+    进度头 + **闭合**围栏块，且「只有裸围栏块」时面板里必须确实有 ``terminal`` 在
+    running。证明不了就返回 False（fail-open）：宁可多一张卡，也绝不吞模型正文。
+    """
+    if not str(content or "").strip():
+        return False
+    try:
+        tools, running = _panel_tool_names(chat_id)
+    except Exception:  # pragma: no cover - 防御性：状态层异常绝不能让正文被吞
+        logger.debug("[larkdeck] 进度气泡判定取工具名单失败，按原样渲染", exc_info=True)
+        return False
+    return _looks_like_core_progress_only(content, tools, running)
+
+
 def _strip_core_progress(text: str, accumulated: str, tool_pending: bool,
                          complete: bool, *, finalize: bool,
                          tools: Any = None, running: Any = None) -> str:
@@ -3847,9 +3899,21 @@ class LarkDeckMixin:
             # 所以卫生在这里安全 —— 不做的后果是「同一段模型输出在两条路径上长得不一样」：
             # 走 native 收尾的回合看到降级后的标题，掉到 `send()` 的回合还露着字面 `**` 与 H1。
             # 判据是「这份文本是不是**完整文本**」，不是「这是哪条路径」（见 cards.sanitize_markdown）。
+            raw_content = content          # 形状判据只看**上游原样文本**（markdown 卫生会改写它）
             content = _sanitize_for_send(content)
             turn_card = self._ld_send_is_turn(chat_id, content, metadata, guarded)
             _log_turn_decision_once(chat_id, turn_card, guarded, metadata)
+            # V083：审批/澄清边界之后上游把工具进度改走「进度气泡」（适配器 send），
+            # 而那条 metadata **不带 `_interim_send`** ⇒ 会被判成回合、把命令块写进正文，
+            # 还会被 V082 的续写写回原卡正文。形状 + 面板交叉验证命中就不出站：同一批
+            # 工具行本来就在面板里（钩子 + 心跳），这条消息是**纯重复**。
+            # 返回同心跳语义：成功但**故意不给 message_id** ⇒ 上游不会再去 edit 它。
+            if not guarded and _is_core_progress_bubble(chat_id, raw_content):
+                _log_body_diag_once(
+                    "core-progress-bubble",
+                    "[larkdeck] 上游工具进度气泡不建卡（chat=%s 前置=%r）",
+                    chat_id, raw_content.strip()[:40])
+                return self._ld_hb_result()
             if turn_card:
                 _md = metadata if isinstance(metadata, dict) else {}
                 # 预览（expect_edits 且不是终稿）⇒ processing 并锁状态；其余（终稿/无标记
@@ -4798,21 +4862,14 @@ class LarkDeckMixin:
         except Exception:  # pragma: no cover - 防御性：状态层异常绝不能让整帧失败
             logger.debug("[larkdeck] 正文净化取状态失败，按原样渲染", exc_info=True)
             return text
-        tools: list = []
-        running: list = []
         try:
             # 必须与 `answer_state` 取**同一个会话**的工具桶：`snapshot(chat)` 走的是
             # 面板的「最近活跃/绑定」选择，可能与正文累积选中的会话不同（审计 A-P2）。
             # 归属不一致时拿别的会话的工具名单去剥本会话的正文，会把真实文本剥空。
-            for item in _panel.answer_tools(chat):
-                name = str(item.get("name") or "")
-                if not name:
-                    continue
-                tools.append(name)
-                if str(item.get("status") or "") == "running":
-                    running.append(name)
+            tools, running = _panel_tool_names(chat)
         except Exception:  # pragma: no cover - 同上：取不到工具名单就不做空累积剥离
             logger.debug("[larkdeck] 正文净化取工具名单失败，按原样渲染", exc_info=True)
+            tools, running = [], []
         display = _strip_core_progress(text, accumulated, tool_pending, complete,
                                        finalize=finalize, tools=tools, running=running)
         if (display == text and not accumulated and tool_pending and complete

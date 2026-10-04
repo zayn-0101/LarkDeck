@@ -5,7 +5,7 @@
 > CardKit 2.0 的 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 插件，不修改
 > Hermes 源码。主回复在卡内流式更新；长回答会接续到后续卡片，澄清问题使用独立交互卡。
 
-[![version](https://img.shields.io/badge/version-0.7.14-blue.svg)](https://github.com/zayn-0101/LarkDeck/releases)
+[![version](https://img.shields.io/badge/version-0.7.15-blue.svg)](https://github.com/zayn-0101/LarkDeck/releases)
 [![AH (Hermes Agent) 0.21.x](https://img.shields.io/badge/AH-0.21.x-blueviolet.svg)](https://github.com/NousResearch/hermes-agent)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
