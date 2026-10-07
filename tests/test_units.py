@@ -17106,8 +17106,27 @@ def test_v084_same_turn_frame_after_finalize_rewrites_footer_on_same_card():
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
 
-def main() -> int:
-    # `--only <子串>`：只跑名字里含该子串的用例。**专供变异判读**（审计 A：单条变异 idle 28s、
+def test_v084_no_turn_id_never_resumes_finalized_card():
+    """V084㉑（P2 C5 · 审计 B 反例）：**没有 turn_id 时绝不恢复收尾卡**。
+
+    key 会退化成 `chat`（"一个 chat 一个 key"的旧口径），此时无法区分"同一回合继续"与
+    "新回合开始"。实测反例（修前）：新回合的帧被恢复进上一回合的旧卡 —— `create` 仍是 1、
+    message_id 复用、正文写成空格。修后必须**另建卡**。
+    """
+    chat = "oc_v84noturn"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    try:
+        assert _run(raw.send_stream_frame("A 的正文", chat_id=chat, turn_id=""))
+        assert _run(raw.send_stream_frame("A 完", finalize=True, chat_id=chat, turn_id=""))
+        assert chat in raw._ld_finalized, "收尾仍要暂存（只是这种 key 不允许恢复）"
+        assert _run(raw.send_stream_frame("B 的正文", chat_id=chat, turn_id=""))
+        assert calls["create"] == 2, f"新回合必须另建卡，实际建了 {calls['create']} 张"
+        assert chat in raw._ld_streams, "新回合的流状态必须是它自己那一份"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def main() -> int:    # `--only <子串>`：只跑名字里含该子串的用例。**专供变异判读**（审计 A：单条变异 idle 28s、
     # 重载 89s，秒级判读只能靠「preflight + 只跑受影响的那几条用例」）。不是发布门禁 ——
     # 它跑完打印的是 `N/M passed`，而 `mutate_check._classify` 要的正是这个收尾语。
     only = ""

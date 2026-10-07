@@ -3664,6 +3664,10 @@ MUTATIONS = [
      '            self._ld_heartbeat_start(chat, key, str(turn_id or ""))',
      '            pass  # 变异：不重启心跳',
      'test_units'),
+    ('V0716-41-没有 turn_id 也恢复（新回合被写进上一回合的旧卡）', 'core/adapter.py',
+     '        if not chat or not turn:',
+     '        if not chat:',
+     'test_units'),
 
 ]
 

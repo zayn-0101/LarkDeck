@@ -6452,8 +6452,19 @@ class LarkDeckMixin:
         收尾那一刻心跳已经收工（tick 见流状态没了即 `"stop"`），不重启页脚的耗时又冻住。
         """
         chat = str(chat_id or "").strip()
-        if not chat:
+        turn = str(turn_id or "").strip()
+        if not chat or not turn:
+            # ⚠️ **没有 turn_id 时绝不恢复**（审计 B 实测的反例）：key 会退化成 `chat`，
+            # 那是"一个 chat 一个 key"的旧口径 —— 此时**无法区分**"同一回合继续"与
+            # "新回合开始"，贸然恢复会把新回合的正文写进上一回合的旧卡
+            # （实测：`create` 仍是 1、message_id 复用、正文写成空格）。
+            # 有 turn_id 时 key 天然按回合隔离，恢复才是安全的。
             return False
+        # ⚠️ key 的形状必须与**暂存时**（`_ld_stream_finalize` 的调用方算出来的 key）
+        # 完全一致：收尾那边是 `f"{chat}:{turn_id}" if turn_id else chat`。走到这里
+        # `turn` 必非空，所以两种写法等价 —— 但保留原形状，好让"去掉 `not turn` 守卫"
+        # 这个变异**真的**能复现串回合（否则 key 变成 `chat:`、压根匹配不上暂存键，
+        # 变异会变成空真：审计 B 反例的变异第一版就是栽在这里）。
         key = f"{chat}:{turn_id}" if turn_id else chat
         now = time.monotonic()
         with self._ld_lock:
