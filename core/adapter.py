@@ -1342,6 +1342,14 @@ def _stale_after_s() -> int:
          比默认值激进 200 倍，且**没有任何日志**；
       2. **非整数浮点/字符串必须在 `_as_int` 之前判掉** —— ``_as_int("1.9") == 1``
          （截断），同样会静默变成 1 秒。
+
+    ⚠️ **字符串校验必须是 ASCII 的**（审计 A 的边缘反例）：`str.isdigit()` 与 `float()`
+    都认 **Unicode 数字** —— 全角 ``"１"``、阿拉伯-印度数字 ``"١"`` 都能过 `isdigit()`，
+    然后被 `_as_int` 变成 1 秒；``Decimal("1.9")`` / ``Fraction(19, 10)`` 这类"数值型
+    但不是 float"也会绕过上面的整值检查被截断。所以：
+      * 字符串一律走 :data:`_STALE_INT_RE`（ASCII 正则），不认 Unicode 数字；
+      * **非 `int`/`float`/`str` 的数值型**（Decimal / Fraction / 自定义 `__int__`）一律
+        当非法值退回默认 —— 宁可不认，也不静默截断。
     """
     default = _STALE_AFTER_S_DEFAULT
     raw = _cfg_raw("stale_after_s")
@@ -1354,12 +1362,14 @@ def _stale_after_s() -> int:
         _log_stale_once(f"{raw!r} 不是整数秒", default)
         return default
     if isinstance(raw, str):
-        text = raw.strip()
-        # 只接受"看起来就是整数"的写法（"200" / " 200 "）；"1.9"/"abc" 一律非法
-        body = text[1:] if text[:1] in ("+", "-") else text
-        if not body.isdigit():
+        # ⚠️ 必须 ASCII（审计 A 反例）：`"１".isdigit()` 为真、`float("１")` 也能转，
+        # 全角数字会被静默当成 1 秒。正则只认 ASCII 十进制整数。
+        if not _STALE_INT_RE.fullmatch(raw.strip()):
             _log_stale_once(f"{raw!r} 不是整数秒", default)
             return default
+    elif not isinstance(raw, (int, float)):   # bool 已判掉；Decimal/Fraction/bytes 一律不认
+        _log_stale_once(f"{raw!r} 既不是整数也不是整数字符串", default)
+        return default
     value = _as_int(raw)
     if value is None:
         _log_stale_once(f"{raw!r} 转不成整数秒", default)
@@ -2602,6 +2612,11 @@ _LD_STATUS_WAITING = "waiting"
 #: 正常情况下 `activity_at` 会被 3s 心跳/上游心跳/工具钩子不断刷新，只有
 #: **真的没有新活动**（上游卡住、进程被挂起）时才会走到降级。
 _STALE_AFTER_S_DEFAULT = 200
+
+#: `stale_after_s` 字符串取值的**唯一合法形状**：ASCII 十进制整数（可带正负号）。
+#: ⚠️ 绝不能用 `str.isdigit()` —— 它认全角 `"１"` 与阿拉伯-印度数字 `"١"`，而这些都能被
+#: `float()`/`int()` 转成 1 ⇒ 用户写个全角数字就静默变成"1 秒"（审计 A 反例）。
+_STALE_INT_RE = re.compile(r"[+-]?[0-9]+")  # 用 fullmatch：match 只认前缀，"1.9" 会被放过
 
 _LD_STATUS_GENERATING = "generating"          # 回合存活、无 running 工具（模型在写）
 _LD_STATUS_TOOL_RUNNING = "tool_running"      # 回合存活、有 running 工具
@@ -6451,6 +6466,13 @@ class LarkDeckMixin:
         # 不必先撞一次 300309 再靠 `_ld_structured_degrade` 兜（审计 B 的 B-3 实测：不标
         # 就会吃一次 300309 + 强制降级 + 日志噪声）。
         live_state["engine_stamp"] = "degraded"
+        # ⚠️ **必须同时清 `card_id`**（审计 B 第二遍实测：只标 degraded **不够**）：
+        # 帧路径"元素车道 vs 整卡 patch"的**唯一**判据是 `card_id 在不在`
+        # （`_ld_stream_frame` 里 `card_id = str(state.get("card_id") or "")` + `if card_id:`），
+        # 而 `engine_stamp="degraded"` 只负责把 structured 外壳换成 legacy 车道 —— legacy
+        # 照样按 `card_id` 去写元素，于是续写帧**仍然先吃一次 300309** 再降级。
+        # 清掉 card_id 后实测：元素写 0 次、整卡 patch 1 次、`ck_degrade` 为 None。
+        live_state.pop("card_id", None)
         # ⚠️ **页脚整串去重的账本必须作废**：收尾写的是「✅ 已完成」，续写要写进行中词 ——
         # 若带着收尾前那份 `ck_footer`（很可能就是同一个进行中词）回去，续写帧会认为
         # "整串没变"而**跳过写**，卡片就永远停在 ✅ —— 正是 M5 要修的病（审计 B 的 B-2）。

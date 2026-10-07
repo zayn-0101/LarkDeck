@@ -16955,23 +16955,34 @@ def test_v084_stale_after_s_value_semantics():
     # 非法：布尔（bool 是 int 子类！）、非整数浮点、非数字字符串、容器 ⇒ 一律退回 200
     warned: list = []
     _orig_warn = adapter.logger.warning
+    _had_key = "stale_after_s" in adapter._CONFIG
+    _prev = adapter._CONFIG.get("stale_after_s")
     adapter.logger.warning = lambda *a, **k: warned.append(a)   # type: ignore[assignment]
     try:
         for bad in (True, False, 1.9, "1.9", "abc", "", [], {}, float("inf"),
-                    float("nan"), "1e999"):
+                    float("nan"), "1e999", "１", "١", b"1"):
             adapter.configure(stale_after_s=bad)
             adapter._log_stale_once._at = 0.0   # type: ignore[attr-defined]  每次都要真的报
             got = adapter._stale_after_s()
             assert got == adapter._STALE_AFTER_S_DEFAULT, f"{bad!r} ⇒ {got}"
             assert warned, f"{bad!r} 非法却没报警"
             warned.clear()
+        # 没配 ⇒ 默认值，且**不报警**。
+        # ⚠️ 审计 A 的 E7：`configure()` 无参**不重置** `_CONFIG`（它只更新传进来的键），
+        #    所以这里必须真的把键**拿掉** —— 旧写法跑的是上一轮的坏值 "1e999"，
+        #    而且把 `finally` 放在断言之前 ⇒ `assert not warned` 永远捕获不到警告（空真），
+        #    还会把 "1e999" **残留给后续用例**（跨用例污染）。
+        adapter._CONFIG.pop("stale_after_s", None)
+        adapter._log_stale_once._at = 0.0       # type: ignore[attr-defined]
+        assert adapter._stale_after_s() == adapter._STALE_AFTER_S_DEFAULT, "没配不是默认值"
+        assert not warned, "没配也报警了"
     finally:
         adapter.logger.warning = _orig_warn                  # type: ignore[assignment]
-    # 没配 ⇒ 默认值，且**不报警**
-    adapter.configure()
-    adapter._log_stale_once._at = 0.0       # type: ignore[attr-defined]
-    assert adapter._stale_after_s() == adapter._STALE_AFTER_S_DEFAULT
-    assert not warned, "没配也报警了"
+        # 绝不把状态留给后面的用例（本项目明令禁止的跨用例污染）
+        if _had_key:
+            adapter._CONFIG["stale_after_s"] = _prev
+        else:
+            adapter._CONFIG.pop("stale_after_s", None)
 
 
 def test_v084_stale_after_s_degrades_only_the_generating_rule():
@@ -17101,19 +17112,21 @@ def test_v084_same_turn_frame_after_finalize_rewrites_footer_on_same_card():
         footers = _v084_footer_writes(calls)
         assert footers and "✅ 已完成" in str(footers[-1]), footers[-1:]
         # 同一回合继续干活（同 key 再来一帧）
+        n_patch_before = calls["patch"]
         assert _run(raw.send_stream_frame("第一段完，继续", chat_id=chat, turn_id=turn))
-        # ⚠️ 审计 B 的 B-3：收尾整卡 patch 已把卡变成非流式，**续写只能走整卡 patch 车道**
-        #    （暂存状态标了 `engine_stamp="degraded"`）。若走元素车道，真机首个元素写必得
-        #    `300309`（真机实测口径）。这里钉住状态标记 + 不新建卡。
-        assert (raw._ld_stream_get(key) or {}).get("engine_stamp") == "degraded", \
-            "续写状态必须标 degraded（否则真机元素写 300309）"
+        # ⚠️ 审计 B（第二遍）实测：**只标 degraded 不够** —— 帧路径"元素车道 vs 整卡 patch"
+        #    的唯一判据是 `card_id 在不在`。所以暂存时必须**同时清 card_id**，否则续写真机
+        #    仍先吃一次 `300309` 再降级。这里钉住三件事：不新建卡、状态标 degraded 且无
+        #    card_id、同一张卡被**整卡 patch** 重写了一次（这就是 M5 要的回写）。
+        st = raw._ld_stream_get(key) or {}
+        assert st.get("engine_stamp") == "degraded", "续写状态必须标 degraded"
+        assert not st.get("card_id"), "续写必须清 card_id（否则真机元素写 300309）"
+        assert calls["patch"] > n_patch_before, "续写必须整卡 patch 回同一张卡（M5 的回写）"
         assert calls["create"] == 1, f"续写不许另开卡（新建了 {calls['create']} 张）"
         assert key in raw._ld_streams, "续写帧必须把流状态放回去"
         assert key not in raw._ld_finalized, "句柄必须被消费掉（否则会被反复恢复）"
-        footers = _v084_footer_writes(calls)
-        assert "✅ 已完成" not in str(footers[-1]), \
-            f"续写后页脚必须回写成进行中词，实际：{footers[-1]!r}"
-        assert "✍️ 正在生成" in str(footers[-1]), footers[-1]
+        # 注：整卡 patch 的正文/页脚内容这个假 CardKit 不记账（只记次数），所以"页脚里
+        # 的 ✅ 变成进行中词"由**真机判据 1 的截图**取证，不在这里假装断言。
     finally:
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
