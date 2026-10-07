@@ -2911,8 +2911,8 @@ class LarkDeckMixin:
     def _ld_note_activity(chat_id: str) -> None:
         """V084（v0.7.16）C9：刷新「进展证据」时间戳（`panel.activity_at`）。
 
-        四个来源里 adapter 侧只有两个：① 流式帧入口、③ 上游心跳。工具钩子与
-        `post_api_request` 在 panel 侧自己刷（都经 ``panel._touch_locked``）。
+        adapter 侧只有两个调用点：① 流式帧入口、③ 上游心跳。begin_turn / 工具钩子 /
+        推理增量 / `post_api_request` 在 panel 侧经 ``panel._touch_locked`` 自己刷。
         失败一律吞掉 —— 状态是装饰，绝不许把渲染搞失败（与 `_ld_view_status` 同纪律）。
         """
         try:
@@ -2966,7 +2966,7 @@ class LarkDeckMixin:
         6) 无正向信号 ⇒ `""`（**不说假话**：宁可少说一句）。
 
         降级（`⏳ 等待响应`）在 P2 接入 `stale_after_s`，只作用于第 5 条，且只认
-        `last_activity_at`（独立字段，四来源显式刷新，读路径绝不刷新）。
+        `activity_at`（独立字段，显式入口刷新，读路径绝不刷新）。
         """
         try:
             snap = _panel.snapshot(chat_id) or {}
@@ -3923,7 +3923,7 @@ class LarkDeckMixin:
                 view = self._ld_cardview(
                     chat, str(state.get("last_rendered_body") or ""),
                     # V084：上游心跳也是**中间态**（`segment_final=False`）—— 状态词走唯一判据，
-                    # 不再硬编码 processing（心跳只写标题，但面板/页脚要跟判据一致）。
+                    # 不再硬编码 processing（心跳只写面板标题/边框，页脚状态词不在这里写）。
                     status=self._ld_live_status(
                         chat_id=chat, key=key, message_id=mid,
                         segment_final=False) or "processing",
@@ -4739,7 +4739,8 @@ class LarkDeckMixin:
             # V084（B′ 路高-1）：封旧卡**不许写 ✅** —— 触发封卡的条件是正文超字节预算，
             # 而**同一回合还在新卡上继续跑**（B′ 实测：封旧卡 ✅、新卡 ✍️，同一回合两张卡
             # 自相矛盾）。封卡只该表示"这张卡不再更新"，不该表示"回合结束了"。
-            # `entity_skeleton` 不带 `streaming_mode` ⇒ 改状态词**不影响**"终态/折叠"语义。
+            # status 只进 `_ld_cardview` 的颜色/文案；`entity_skeleton` 的结构与
+            # `streaming_mode` 不随它变 ⇒ 改状态词**不影响**"终态/折叠"语义。
             sealed_view = self._ld_cardview(
                 chat, sealed + "\n\n" + _i18n.t("stream.continued"),
                 status=self._ld_live_status(chat_id=chat, segment_final=False) or "processing",

@@ -342,7 +342,7 @@ def _touch_locked(session_id: str, turn_id: str, now: float) -> Optional[Dict[st
     state["updated"] = now
     # V084（v0.7.16）：同一次「本回合真的在动」也刷新**进展证据**。
     # ⚠️ 只有 `_touch_locked` 的**五个调用点**会走到这里（begin_turn / note_turn /
-    # 工具开始 / 工具结束 / 回合清理），`record_answer_delta` **不走** —— 这正是
+    # 推理增量 / 工具开始 / 工具结束），`record_answer_delta` **不走** —— 这正是
     # 「读路径绝不刷新」的纪律：`_ld_stream_get` 的 `alive_at` 就是被 3s 心跳读刷新的
     # 反例，拿它判降级会永不触发（A 路 10 实测）。
     state["activity_at"] = now
@@ -1022,12 +1022,12 @@ def bound_session_id(chat_id: str) -> str:
 def note_activity(chat_id: str = "") -> None:
     """V084（v0.7.16）：把「这张卡刚刚有过进展证据」记进面板桶。
 
-    调用方（**只有这四个来源**，其余一律不许调）：
-      ① 流式帧写入（`adapter._ld_stream_frame` 入口）
-      ② 工具钩子（`record_tool_started` / `record_tool_finished`，经 ``_touch_locked``）
-      ③ 上游心跳（`adapter._ld_hb_merge_stream`；⚠️ `_ld_hb_dedicated` **没接**
-        —— 那条车道没有活跃主卡，页脚状态词也无从更新，别按 docstring 以为它算了）
-      ④ `post_api_request`（经 :func:`note_turn` → ``_touch_locked``）
+    ``activity_at`` 的刷新入口只有两类（其余一律不许碰）：
+      * **本函数**（adapter 侧显式调用）：① 流式帧写入（`adapter._ld_stream_frame` 入口）
+        与 ③ 上游心跳（`adapter._ld_hb_merge_stream`）；⚠️ `_ld_hb_dedicated` **没接**
+        —— 那条车道没有活跃主卡，页脚状态词也无从更新，别按 docstring 以为它算了；
+      * **:func:`_touch_locked`**（面板侧事件入口）：begin_turn / note_turn
+        （`post_api_request`）/ 推理增量 / 工具开始 / 工具结束；`record_answer_delta` 不走。
 
     归属走 :func:`_select_locked` —— 与 :func:`snapshot` **同一套**口径（绑定会话优先），
     否则「状态算在 A 会话、卡片是 B 那条」的静默错位会重演（见 ``_select_locked`` 注释）。
