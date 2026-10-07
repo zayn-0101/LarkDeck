@@ -2413,7 +2413,8 @@ MUTATIONS = [
      '            self._ld_note_boundary_card(chat, state, status=status)\n'
      '            # V084 P2（C5）：收尾按原样 pop，但暂存一份状态 —— 同一回合若继续干活，\n'
      '            # 后续帧要回到**同一张卡**把页脚回写成进行中词（见 `_ld_stream_finalize`）。\n'
-     '            self._ld_stream_finalize(key, state, chat)',
+     '            # ⚠️ 必须把这一帧用掉的 `seq` 一起带过去（否则续写帧重号 ⇒ 真机 300317）。\n'
+     '            self._ld_stream_finalize(key, state, chat, seq=seq)',
      '            self._ld_note_boundary_card(chat, state, status=status)\n'
      '            pass  # V1-8 mutated',
      "test_units"),
@@ -3657,16 +3658,26 @@ MUTATIONS = [
      '        pass  # 变异：不再尝试恢复收尾卡',
      'test_units'),
     ('V0716-39-收尾不再暂存状态（续写只能另开一张卡）', 'core/adapter.py',
-     '            self._ld_finalized[key] = {"state": dict(state), "at": now}',
-     '            _ = dict(state), now',
+     '            self._ld_finalized[key] = {"state": live_state, "at": now}',
+     '            _ = live_state, now',
      'test_units'),
-    ('V0716-40-恢复收尾流时不重启心跳（页脚耗时冻住）', 'core/adapter.py',
-     '            self._ld_heartbeat_start(chat, key, str(turn_id or ""))',
-     '            pass  # 变异：不重启心跳',
+    ('V0716-40-暂存状态带着收尾前的 ck_footer（续写被整串去重跳过 ⇒ 永远停在 ✅）',
+     'core/adapter.py',
+     '        live_state.pop("ck_footer", None)',
+     '        pass  # 变异：不作废页脚去重账本',
+     'test_units'),
+    ('V0716-43-续写不标 degraded（真机元素写 300309 ⇒ 强制降级 + 失败写）',
+     'core/adapter.py',
+     '        live_state["engine_stamp"] = "degraded"',
+     '        pass  # 变异：不标 degraded',
      'test_units'),
     ('V0716-41-没有 turn_id 也恢复（新回合被写进上一回合的旧卡）', 'core/adapter.py',
      '        if not chat or not turn:',
      '        if not chat:',
+     'test_units'),
+    ('V0716-42-收尾不把用掉的 seq 落账进暂存（续写帧重号 ⇒ 真机 300317）', 'core/adapter.py',
+     '            self._ld_stream_finalize(key, state, chat, seq=seq)',
+     '            self._ld_stream_finalize(key, state, chat)',
      'test_units'),
 
 ]

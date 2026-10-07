@@ -5880,7 +5880,8 @@ class LarkDeckMixin:
             self._ld_note_boundary_card(chat, state, status=status)
             # V084 P2（C5）：收尾按原样 pop，但暂存一份状态 —— 同一回合若继续干活，
             # 后续帧要回到**同一张卡**把页脚回写成进行中词（见 `_ld_stream_finalize`）。
-            self._ld_stream_finalize(key, state, chat)
+            # ⚠️ 必须把这一帧用掉的 `seq` 一起带过去（否则续写帧重号 ⇒ 真机 300317）。
+            self._ld_stream_finalize(key, state, chat, seq=seq)
             self._ld_hb_note_final(chat)
             _context.note_frame_ok()
             return True
@@ -6419,7 +6420,8 @@ class LarkDeckMixin:
         # 只是从锁表里摘掉：下一回合重建一把新的，绝不与旧回合共用）。
         self._ld_card_lock_drop(key)
 
-    def _ld_stream_finalize(self, key: str, state: Dict[str, Any], chat: str) -> None:
+    def _ld_stream_finalize(self, key: str, state: Dict[str, Any], chat: str, *,
+                            seq: Optional[int] = None) -> None:
         """V084 P2（C5）：收尾按原样 pop，但把状态**暂存**一份，供同回合续写回到原卡。
 
         为什么（B′ 路实测）：收尾帧乐观写了 ✅ 之后，同一回合**可能继续干活**（审批后
@@ -6433,9 +6435,30 @@ class LarkDeckMixin:
         """
         self._ld_stream_pop(key)
         self._ld_forget(str(state.get("message_id") or ""))
+        live_state = dict(state)
+        if seq is not None:
+            # ⚠️ **收尾帧用掉的序号必须落账**（`_ld_stream_finalize` 存在的第二个理由）：
+            # 非收尾帧在成功路径上都会 `live["ck_seq"] = seq` 落账（见
+            # `_ld_stream_frame_structured_locked` 末尾），只有收尾帧以前不需要 —— 因为
+            # 状态马上就丢了。现在状态要留给续写，若带着**旧号**回去，续写帧就会从旧号
+            # 开始写、与收尾帧已用过的号重复 ⇒ 飞书 `300317 sequence number compare
+            # failed` ⇒ 被误判成卡级死法。这条**假 CardKit 测不出来**（假实现不校验序号
+            # 单调性），只能靠账本断言钉住（用例 ⑲）。
+            live_state["ck_seq"] = int(seq)
+        # ⚠️ **收尾已经把整卡 patch 成非流式**（`streaming_mode=False`，见 structured 收尾
+        # 分支），而同仓多处真机结论写死："整卡 patch 之后再写元素得 `300309`"。所以续写
+        # **必须走整卡 patch 车道**：这里主动标 `degraded`，帧路径据此绕开元素车道，
+        # 不必先撞一次 300309 再靠 `_ld_structured_degrade` 兜（审计 B 的 B-3 实测：不标
+        # 就会吃一次 300309 + 强制降级 + 日志噪声）。
+        live_state["engine_stamp"] = "degraded"
+        # ⚠️ **页脚整串去重的账本必须作废**：收尾写的是「✅ 已完成」，续写要写进行中词 ——
+        # 若带着收尾前那份 `ck_footer`（很可能就是同一个进行中词）回去，续写帧会认为
+        # "整串没变"而**跳过写**，卡片就永远停在 ✅ —— 正是 M5 要修的病（审计 B 的 B-2）。
+        live_state.pop("ck_footer", None)
+        live_state.pop("ck_footer_missing", None)
         now = time.monotonic()
         with self._ld_lock:
-            self._ld_finalized[key] = {"state": dict(state), "at": now}
+            self._ld_finalized[key] = {"state": live_state, "at": now}
             # 有界 + TTL：先丢过期的，再丢最旧的（防止长跑进程里越攒越多）。
             for other, entry in list(self._ld_finalized.items()):
                 if now - float(entry.get("at") or 0.0) > _STREAM_FINALIZED_TTL_S:
@@ -6448,8 +6471,13 @@ class LarkDeckMixin:
     def _ld_resume_finalized_stream(self, chat_id: str, turn_id: str) -> bool:
         """V084 P2（C5）：同一回合又来帧 ⇒ 把暂存的收尾卡状态放回去，回到**原卡**上写。
 
-        返回是否真的恢复了（调用方只用来留痕，不改变写路径）。注意**必须重启心跳**：
-        收尾那一刻心跳已经收工（tick 见流状态没了即 `"stop"`），不重启页脚的耗时又冻住。
+        返回是否真的恢复了（调用方只用来留痕，不改变写路径）。
+
+        ⚠️ 两条来自审计 B 的硬约束（都是**真机才炸**、假 CardKit 测不出来的）：
+        ① 暂存状态必须带 `engine_stamp="degraded"` —— 收尾整卡 patch 已把卡变成非流式，
+           续写若走元素车道必得 `300309`；标 degraded 后帧路径直接走整卡 patch 车道。
+        ② **不重启心跳** —— degraded 状态下 tick 立刻 `"stop"`，重启只是起一个马上自杀的
+           任务，还会留下"页脚耗时继续跳"这种做不到的承诺。
         """
         chat = str(chat_id or "").strip()
         turn = str(turn_id or "").strip()
@@ -6477,10 +6505,10 @@ class LarkDeckMixin:
         if not isinstance(state, dict) or not state.get("message_id"):
             return False
         self._ld_stream_put(key, dict(state))
-        try:
-            self._ld_heartbeat_start(chat, key, str(turn_id or ""))
-        except Exception:         # pragma: no cover - 心跳是装饰，绝不许把帧路径炸掉
-            logger.debug("[larkdeck] 恢复收尾流时重启心跳失败", exc_info=True)
+        # ⚠️ **不重启心跳**（审计 B 的 B-3 结论）：收尾已经把整卡 patch 成非流式，续写只能走
+        # 整卡 patch 车道（暂存状态已标 `engine_stamp="degraded"`），而心跳 tick 见 degraded
+        # 立刻 `"stop"` —— 重启它等于起一个马上自杀的任务，还会让"页脚耗时继续跳"这个
+        # **做不到的承诺**留在代码里。耗时会在每一帧整卡 patch 时重算并写出去。
         # 可 grep 的留痕（P3 C8 会把这一类观测行统一成固定 key=value 字段）
         logger.info("[larkdeck] 收尾后同回合继续：回到原卡继续写，页脚将回写进行中词"
                     "（chat=%s turn=%s）", chat[:16], str(turn_id or "")[:16])

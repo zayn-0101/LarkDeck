@@ -17052,6 +17052,9 @@ def test_v084_finalize_stashes_resume_handle_and_keeps_old_contract():
         assert _run(raw.send_stream_frame("正文", chat_id=chat, turn_id=turn))
         mid = str((raw._ld_stream_get(key) or {}).get("message_id") or "")
         assert mid, "seed 必须建出卡"
+        # 模拟"收尾前心跳刚写过同一个进行中词"：这份 `ck_footer` 是**页脚整串去重**的账本。
+        st = raw._ld_stream_get(key) or {}
+        raw._ld_stream_put(key, {**st, "ck_footer": "✍️ 正在生成 · 5.0s"})
         assert _run(raw.send_stream_frame("正文完", finalize=True,
                                           chat_id=chat, turn_id=turn))
         assert key not in raw._ld_streams, "收尾后活跃流必须消失（既有口径不变）"
@@ -17060,6 +17063,19 @@ def test_v084_finalize_stashes_resume_handle_and_keeps_old_contract():
         assert str((handle.get("state") or {}).get("message_id") or "") == mid, \
             "必须留下能回到原卡的续写句柄"
         assert float(handle.get("at") or 0.0) > 0.0, "句柄必须带收尾时刻（TTL 用）"
+        # ⚠️ 收尾帧**用掉的序号必须落账进暂存状态**：否则续写帧从旧号开始写、与收尾帧
+        #    重号 ⇒ 真机 `300317 sequence number compare failed`（假 CardKit 不校验序号，
+        #    这条只能靠账本断言钉住）。取账本里出现过的最大序号来对。
+        used = [c[2] for c in calls["content"]] + [item[1] for item in calls["batch"]]
+        assert int((handle.get("state") or {}).get("ck_seq") or 0) == max(used), \
+            f"暂存状态没把收尾帧用掉的序号落账：ck_seq={(handle.get('state') or {}).get('ck_seq')} used={used}"
+        # ⚠️ 页脚整串去重的账本必须作废（审计 B 的 B-2）：收尾前那份 `ck_footer` 很可能
+        #    就是同一个进行中词，带回去会让续写帧"整串没变 ⇒ 跳过写" ⇒ 卡片永远停在 ✅。
+        assert "ck_footer" not in (handle.get("state") or {}), \
+            "暂存状态带着收尾前的 ck_footer（续写会被整串去重跳过，卡片永远停在 ✅）"
+        # ⚠️ 续写只能走整卡 patch 车道（审计 B 的 B-3）：收尾已把卡变成非流式。
+        assert (handle.get("state") or {}).get("engine_stamp") == "degraded", \
+            "暂存状态没标 degraded（续写真机元素写 300309）"
     finally:
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
@@ -17085,16 +17101,12 @@ def test_v084_same_turn_frame_after_finalize_rewrites_footer_on_same_card():
         footers = _v084_footer_writes(calls)
         assert footers and "✅ 已完成" in str(footers[-1]), footers[-1:]
         # 同一回合继续干活（同 key 再来一帧）
-        hb_started: list = []
-        _orig_hb_start = raw._ld_heartbeat_start
-        raw._ld_heartbeat_start = lambda *a, **k: (hb_started.append(a), _orig_hb_start(*a, **k))
-        try:
-            assert _run(raw.send_stream_frame("第一段完，继续", chat_id=chat, turn_id=turn))
-        finally:
-            raw._ld_heartbeat_start = _orig_hb_start
-        # 收尾那一刻心跳已经收工（tick 见流状态没了即 stop）⇒ 恢复时必须**重启**它，
-        # 否则页脚的耗时那一段又冻住了（用户看到的"卡住"）。
-        assert hb_started, "恢复收尾流必须重启心跳"
+        assert _run(raw.send_stream_frame("第一段完，继续", chat_id=chat, turn_id=turn))
+        # ⚠️ 审计 B 的 B-3：收尾整卡 patch 已把卡变成非流式，**续写只能走整卡 patch 车道**
+        #    （暂存状态标了 `engine_stamp="degraded"`）。若走元素车道，真机首个元素写必得
+        #    `300309`（真机实测口径）。这里钉住状态标记 + 不新建卡。
+        assert (raw._ld_stream_get(key) or {}).get("engine_stamp") == "degraded", \
+            "续写状态必须标 degraded（否则真机元素写 300309）"
         assert calls["create"] == 1, f"续写不许另开卡（新建了 {calls['create']} 张）"
         assert key in raw._ld_streams, "续写帧必须把流状态放回去"
         assert key not in raw._ld_finalized, "句柄必须被消费掉（否则会被反复恢复）"
