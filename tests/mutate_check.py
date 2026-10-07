@@ -2467,16 +2467,32 @@ MUTATIONS = [
      '        if False:  # V4-3 mutated\n            return "skip"',
      "test_units"),
     ("V4-4-心跳序号不加一（原地重写旧号）", "core/adapter.py",
-     '            seq = _ck_seq(state) + 1',
-     '            seq = _ck_seq(state)  # V4-4 mutated',
+     '            if panel_changed:\n                seq += 1\n'
+     '                res = await self._ld_ck_partial(\n',
+     '            if panel_changed:\n                seq = _ck_seq(state)  # V4-4 mutated\n'
+     '                res = await self._ld_ck_partial(\n',
      "test_units"),
     ("V4-5-心跳不回写账本（下一拍复用同一号）", "core/adapter.py",
-     '            updated["ck_seq"] = seq',
-     '            updated["ck_seq"] = state.get("ck_seq")  # V4-5 mutated',
+     '            updated["ck_seq"] = seq\n'
+     '            _ck_window_note(updated, time.monotonic())\n'
+     '            self._ld_stream_put(key, updated)\n'
+     '            return "wrote"',
+     '            updated["ck_seq"] = state.get("ck_seq")  # V4-5 mutated\n'
+     '            _ck_window_note(updated, time.monotonic())\n'
+     '            self._ld_stream_put(key, updated)\n'
+     '            return "wrote"',
      "test_units"),
     ("V4-6-装饰失败日志不带 msg（真机只剩一个码）", "core/adapter.py",
-     '                    [_CkOp("panel", "", _CK_ROLE_PANEL)], res.code, msg=res.msg)\n                return "failed"',
-     '                    [_CkOp("panel", "", _CK_ROLE_PANEL)], res.code, msg="")  # V4-6 mutated\n                return "failed"',
+     '                    _log_ck_decor_write_failed_once(\n'
+     '                        [_CkOp("panel", "", _CK_ROLE_PANEL)], res.code, msg=res.msg)\n'
+     '                    # ⚠️ 这一笔已经消费掉 seq ⇒ 必须落账（与页脚失败同一条纪律）：\n'
+     '                    # 不落账 ⇒ 下一拍复用同号 ⇒ 飞书 300317 ⇒ 被当成卡级死法整卡降级。\n'
+     '                    updated["ck_seq"] = seq',
+     '                    _log_ck_decor_write_failed_once(\n'
+     '                        [_CkOp("panel", "", _CK_ROLE_PANEL)], res.code, msg="")  # V4-6 mutated\n'
+     '                    # ⚠️ 这一笔已经消费掉 seq ⇒ 必须落账（与页脚失败同一条纪律）：\n'
+     '                    # 不落账 ⇒ 下一拍复用同号 ⇒ 飞书 300317 ⇒ 被当成卡级死法整卡降级。\n'
+     '                    updated["ck_seq"] = seq',
      "test_units"),
     # ---------------------------------------------------------- V4.2 页脚（时长 / 短码 / 状态词汇）
     # 真机截图（2026-09-21 10:2x）：`✅ 已完成 · 🧠 deepseek-flash · ctx 20.5k/1m · 2%` ——
@@ -2518,7 +2534,9 @@ MUTATIONS = [
      "test_units"),
     # ------------------------------------------------- V4.5 结局色 / 配置开关 / 状态表（审计 B）
     ("V4-14-结构化收尾写死 completed（失败回合绿头）", "core/adapter.py",
-     '        status = _ld_view_status(chat, default="processing" if not finalize else "completed")',
+     '        status = self._ld_live_status(\n'
+     '            chat_id=chat, key=key, message_id=state.get("message_id"),\n'
+     '            segment_final=bool(finalize)) or ("processing" if not finalize else "completed")',
      '        status = "completed" if finalize else "processing"  # V4-14 mutated',
      "test_units"),
     ("V4-15-工具状态表缺 blocked/timeout（红变灰、词漂移）", "core/cardview.py",
@@ -2542,8 +2560,9 @@ MUTATIONS = [
      '        if False:  # V4-19 mutated',
      "test_units"),
     ("V4-20-心跳把写失败伪装成 unchanged/stop", "core/adapter.py",
-     '                if res.code in _CARD_DEATH_DECOR_CODES:\n                    self._ld_stream_put(key, dict(',
-     '                if False:\n                    self._ld_stream_put(key, dict(',
+     '                    if res.code in _CARD_DEATH_DECOR_CODES:\n'
+     '                        self._ld_stream_put(key, dict(',
+     '                    if False:\n                        self._ld_stream_put(key, dict(',
      "test_units"),
     ("V4-21-面板 partial 与 settings 共用 uuid 命名空间", "core/adapter.py",
      'f"ld-{card_id}-p{seq}"',
@@ -3053,11 +3072,15 @@ MUTATIONS = [
      '                view = self._ld_cardview(chat_id, content, status=status,',
      'test_units'),
     ('V073-2r-帧 footer 收尾 default_status 兜底失效', 'core/adapter.py',
-     '        if norm in ("ok", "completed", "error", "stopped", _LD_STATUS_WAITING):\n'
+     '        if norm in ("ok", "completed", "error", "stopped", _LD_STATUS_WAITING,\n'
+     '                    _LD_STATUS_GENERATING, _LD_STATUS_TOOL_RUNNING,\n'
+     '                    _LD_STATUS_WAITING_UPSTREAM, _LD_STATUS_CLARIFY_WAITING):\n'
      '            status = norm                      # 两套词汇都收（`_ld_status_text` 认）\n'
      '        else:\n'
      '            status = default_status            # processing/缺失 ⇒ 收尾 default，绝不脑补',
-     '        if norm in ("ok", "completed", "error", "stopped", _LD_STATUS_WAITING):\n'
+     '        if norm in ("ok", "completed", "error", "stopped", _LD_STATUS_WAITING,\n'
+     '                    _LD_STATUS_GENERATING, _LD_STATUS_TOOL_RUNNING,\n'
+     '                    _LD_STATUS_WAITING_UPSTREAM, _LD_STATUS_CLARIFY_WAITING):\n'
      '            status = norm                      # 两套词汇都收（`_ld_status_text` 认）\n'
      '        else:\n'
      '            status = ""                        # V073-2r mutated',
@@ -3097,7 +3120,9 @@ MUTATIONS = [
      '                    view.footer = None',
      'test_units'),
     ('V073-2u-结构化收尾状态写死 processing（收尾丢 ✅）', 'core/adapter.py',
-     '        status = _ld_view_status(chat, default="processing" if not finalize else "completed")',
+     '        status = self._ld_live_status(\n'
+     '            chat_id=chat, key=key, message_id=state.get("message_id"),\n'
+     '            segment_final=bool(finalize)) or ("processing" if not finalize else "completed")',
      '        status = "processing"  # V073-2u mutated',
      'test_units'),
     ('V073-2v-legacy 收尾 footer 不注入 frame_status（丢 ✅）', 'core/adapter.py',
@@ -3218,11 +3243,9 @@ MUTATIONS = [
      '        return await self._ld_hb_dedicated(chat, content)',
      '        return self._ld_hb_result()  # V075-14 mutated',
      'test_units'),
-    ('V075-15-心跳对无 panel 的卡仍写/误判（不 no-op）', 'core/adapter.py',
-     '            if state.get("ck_panel_missing") or not state.get("ck_has_panel"):\n'
-     '                return "unchanged"          # V075：没有 panel 元素，心跳没有可写的东西',
-     '            if False:  # V075-15 mutated\n'
-     '                return "unchanged"          # V075：没有 panel 元素，心跳没有可写的东西',
+    ('V075-15-心跳对无 panel 的卡仍写 panel 元素（真机 300313）', 'core/adapter.py',
+     '            panel_changed = bool(panel_usable and signature != state.get("ck_panel_sig"))',
+     '            panel_changed = bool(signature != state.get("ck_panel_sig"))  # V075-15 mutated',
      'test_units'),
     ('V075-16-panel 300313 不标 missing（每拍重复写不存在元素）', 'core/adapter.py',
      '                    if int(res.code) == 300313:\n'
@@ -3313,10 +3336,10 @@ MUTATIONS = [
      '                    and False  # V075-31 mutated',
      'test_units'),
     ('V075-32-tick 300313 不标 missing（每拍重复写不存在元素）', 'core/adapter.py',
-     '                if int(res.code) == 300313:\n'
-     '                    # 元素不存在：标死即可，别把它当车道死法、也别每 3 秒重试同号。',
-     '                if False:  # V075-32 mutated\n'
-     '                    # 元素不存在：标死即可，别把它当车道死法、也别每 3 秒重试同号。',
+     '                    if int(res.code) == 300313:\n'
+     '                        # 元素不存在：标死即可，别把它当车道死法、也别每 3 秒重试同号。',
+     '                    if False:  # V075-32 mutated\n'
+     '                        # 元素不存在：标死即可，别把它当车道死法、也别每 3 秒重试同号。',
      'test_units'),
     ('V075-33-专用卡表不再裁剪（无界增长）', 'core/adapter.py',
      '            if chat not in cards and len(cards) >= _LD_HB_CARD_MAX:',
@@ -3410,6 +3433,191 @@ MUTATIONS = [
      '                return self._ld_hb_result()',
      '                    chat_id, raw_content.strip()[:40])\n'
      '                return await fallback()  # V083-3 mutated',
+     'test_units'),
+    # ------------------------------------------------- V0.7.16 回合进行中状态（V084）
+    ('V0716-1-存活回合不再给进行中词（页脚又变空）', 'core/adapter.py',
+     '        if alive:\n            if running_tool:\n                return _LD_STATUS_TOOL_RUNNING',
+     '        if False:\n            if running_tool:\n                return _LD_STATUS_TOOL_RUNNING',
+     'test_units'),
+    ('V0716-2-收尾帧也要求流已 pop（正常收尾永久卡在「正在生成」）', 'core/adapter.py',
+     '        if segment_final and not running_tool and not running_clarify:',
+     '        if segment_final and not running_tool and not running_clarify and not alive:',
+     'test_units'),
+    ('V0716-3-失败/中止不再最先判（失败回合被乐观 ✅ 变绿）', 'core/adapter.py',
+     '        if raw == _panel.STATUS_ERROR and (segment_final or not alive):\n'
+     '            return "error"',
+     '        if False:  # V0716-3 mutated\n            return "error"',
+     'test_units'),
+    ('V0716-4-clarify 等待被当成普通生成', 'core/adapter.py',
+     '        if running_clarify:\n            return _LD_STATUS_CLARIFY_WAITING',
+     '        if False:\n            return _LD_STATUS_CLARIFY_WAITING',
+     'test_units'),
+    ('V0716-5-页脚文案表丢掉进行中三词（页脚静默少一段）', 'core/adapter.py',
+     '        #: V084（v0.7.16）：回合进行中的三个新词（中间帧页脚首段不再为空）\n'
+     '        _LD_STATUS_GENERATING: "panel.status_generating",\n',
+     '        #: V084（v0.7.16）：回合进行中的三个新词（中间帧页脚首段不再为空）\n',
+     'test_units'),
+    ('V0716-6-帧页脚白名单吞掉进行中词（页脚又变空）', 'core/adapter.py',
+     '        if norm in ("ok", "completed", "error", "stopped", _LD_STATUS_WAITING,\n'
+     '                    _LD_STATUS_GENERATING, _LD_STATUS_TOOL_RUNNING,\n'
+     '                    _LD_STATUS_WAITING_UPSTREAM, _LD_STATUS_CLARIFY_WAITING):',
+     '        if norm in ("ok", "completed", "error", "stopped", _LD_STATUS_WAITING):',
+     'test_units'),
+    ('V0716-7-心跳不写页脚（模型不出字时状态词/耗时冻结）', 'core/adapter.py',
+     '            if footer_changed:\n                seq += 1\n                fres = await self._ld_ck_batch(',
+     '            if False:\n                seq += 1\n                fres = await self._ld_ck_batch(',
+     'test_units'),
+    ('V0716-8-活动时间戳不再被显式刷新（降级永不触发）', 'core/panel.py',
+     '    state["activity_at"] = now\n    _LAST_ACTIVE_BOX[0] = sid',
+     '    _LAST_ACTIVE_BOX[0] = sid',
+     'test_units'),
+    ('V0716-9-未知活动时间戳当 0（每张卡都会被判降级）', 'core/panel.py',
+     '    if at is None:\n        return None',
+     '    if at is None:\n        return 0.0  # V0716-9 mutated',
+     'test_units'),
+    # ---- C 路审计（2026-10-07）实测「零判别力」的 8 条真实缺陷 + A 路接线缺口 ----
+    # 每一条都先有**断言**（tests/test_units.py 的 `test_v084_*` / `test_v075_*`）再有变异。
+    ('V0716-10-陈旧 ok 漏进存活回合（上一回合的 ✅ 覆盖正在跑的卡）', 'core/adapter.py',
+     '        if segment_final and not running_tool and not running_clarify:',
+     '        if (segment_final or raw == _panel.STATUS_OK) and not running_tool and not running_clarify:',
+     'test_units'),
+    ('V0716-11-陈旧 error 漏进存活回合（上一回合的 ❌ 染红正在跑的卡）', 'core/adapter.py',
+     '        if raw == _panel.STATUS_ERROR and (segment_final or not alive):',
+     '        if raw == _panel.STATUS_ERROR:',
+     'test_units'),
+    ('V0716-12-未知 key 被当成存活（非收尾也敢说进行中）', 'core/adapter.py',
+     '            if key:\n'
+     '                with self._ld_lock:\n'
+     '                    state = self._ld_streams.get(key)\n'
+     '                if not isinstance(state, dict):\n'
+     '                    return False',
+     '            if key:\n                return True',
+     'test_units'),
+    ('V0716-13-点击澄清后不刷新页脚（卡面继续写「等待你的选择」）', 'core/adapter.py',
+     '                if (_cards.CARDKIT_FOOTER_ID in self._ld_ck_elems(state)\n'
+     '                        and live.get("ck_footer") != footer_text):',
+     '                if False:',
+     'test_units'),
+    ('V0716-14-流式帧入口不记活跃度（降级判据缺一个来源）', 'core/adapter.py',
+     '        self._ld_note_activity(chat)\n        key = f"{chat}:{turn_id}" if turn_id else chat',
+     '        key = f"{chat}:{turn_id}" if turn_id else chat',
+     'test_units'),
+    ('V0716-15-上游心跳不记活跃度（降级判据缺一个来源）', 'core/adapter.py',
+     '        self._ld_note_activity(chat)\n        key = keys[0]',
+     '        key = keys[0]',
+     'test_units'),
+    ('V0716-16-edit_message 收尾帧按非收尾判（终稿页脚退回进行中词）', 'core/adapter.py',
+     '                turn_status = (self._ld_live_status(\n'
+     '                    chat_id=chat_id, message_id=message_id, segment_final=True)',
+     '                turn_status = (self._ld_live_status(\n'
+     '                    chat_id=chat_id, message_id=message_id, segment_final=False)',
+     'test_units'),
+    ('V0716-17-顶栏丢掉进行中四词（一开顶栏就显示「处理中」）', 'core/adapter.py',
+     '                 _LD_STATUS_GENERATING: "panel.status_generating",\n'
+     '                 _LD_STATUS_TOOL_RUNNING: "panel.status_tool_running",\n'
+     '                 _LD_STATUS_WAITING_UPSTREAM: "panel.status_waiting_upstream",\n'
+     '                 _LD_STATUS_CLARIFY_WAITING: "panel.status_clarify_waiting"}.get(',
+     '                 }.get(',
+     'test_units'),
+    ('V0716-18-心跳页脚写失败谎报 wrote（卡面冻在旧状态词且账本不记）', 'core/adapter.py',
+     '                    # 其它失败（A 路 2）：**不许**落尾谎报 `wrote`，与面板那一拍一致；\n'
+     '                    # 但**必须**把这一拍已经消费掉的 seq 落账（否则下一拍重发同一个\n'
+     '                    # `seq` ⇒ 飞书 `300317 sequence number compare failed` ⇒ 误判卡级死法）。\n'
+     '                    updated["ck_seq"] = seq\n'
+     '                    _ck_window_note(updated, time.monotonic())\n'
+     '                    self._ld_stream_put(key, updated)\n'
+     '                    return "failed"',
+     '                    pass  # V0716-18 mutated：落尾谎报 wrote',
+     'test_units'),
+    ('V0716-19-页脚撞 300313 不标死（每 3 秒重试不存在的元素）', 'core/adapter.py',
+     '                    if int(fres.code) == 300313:',
+     '                    if False:',
+     'test_units'),
+    ('V0716-20-面板缺失连页脚一起跳过（unified_panel=false 时状态词冻结）', 'core/adapter.py',
+     '            panel_usable = not (state.get("ck_panel_missing") or not state.get("ck_has_panel"))\n'
+     '            if not panel_usable and _cards.CARDKIT_FOOTER_ID not in self._ld_ck_elems(state):\n'
+     '                return "unchanged"          # 面板与页脚都没有 ⇒ 真的没东西可写',
+     '            if state.get("ck_panel_missing") or not state.get("ck_has_panel"):\n'
+     '                return "unchanged"\n'
+     '            panel_usable = True',
+     'test_units'),
+    ('V0716-21-processing 又落成空串（seed/非 native 页脚首段空白）', 'core/adapter.py',
+     '        "processing": "panel.status_generating",',
+     '        "processing": "",',
+     'test_units'),
+    # ---- A′/B′ 路审计（2026-10-07）发现并已修的序号纪律 / 跨卡继承 / 封旧卡撒谎 ----
+    ('V0716-22-页脚 300313 回滚同拍已成功的 panel 账本（下一拍复用同号 ⇒ 200770/300317）',
+     'core/adapter.py',
+     '                        self._ld_stream_put(key, dict(\n'
+     '                            updated, ck_footer_missing=True, ck_seq=seq))',
+     '                        self._ld_stream_put(key, dict(state, ck_footer_missing=True))',
+     'test_units'),
+    ('V0716-23-心跳 panel 普通失败不落账 seq（下一拍复用同号 ⇒ 300317 整卡降级）',
+     'core/adapter.py',
+     '                    # ⚠️ 这一笔已经消费掉 seq ⇒ 必须落账（与页脚失败同一条纪律）：\n'
+     '                    # 不落账 ⇒ 下一拍复用同号 ⇒ 飞书 300317 ⇒ 被当成卡级死法整卡降级。\n'
+     '                    updated["ck_seq"] = seq\n'
+     '                    _ck_window_note(updated, time.monotonic())\n'
+     '                    self._ld_stream_put(key, updated)\n'
+     '                    return "failed"',
+     '                    return "failed"',
+     'test_units'),
+    ('V0716-24-分卡新状态继承页脚元素级死法（新卡页脚永远不写）', 'core/adapter.py',
+     '            "ck_footer_missing": False,',
+     '            "ck_footer_missing": bool(state.get("ck_footer_missing")),',
+     'test_units'),
+    ('V0716-25-帧路径不认页脚元素级死法（每帧重写不存在的元素 + 每帧 300313）',
+     'core/adapter.py',
+     '                and not state.get("ck_footer_missing")\n'
+     '                and state.get("ck_footer") != footer_text):',
+     '                and state.get("ck_footer") != footer_text):',
+     'test_units'),
+    ('V0716-26-同 key 换卡后旧 message_id 仍算存活（旧 mid 能拿到进行中词）',
+     'core/adapter.py',
+     '                return not (mid and own and own != mid)',
+     '                return True',
+     'test_units'),
+    ('V0716-27-封旧卡又写 ✅（同一回合两张卡自相矛盾）', 'core/adapter.py',
+     '                status=self._ld_live_status(chat_id=chat, segment_final=False) or "processing",\n'
+     '                started=state.get("t0"), message_id=old_message_id)',
+     '                status="completed",\n'
+     '                started=state.get("t0"), message_id=old_message_id)',
+     'test_units'),
+    # ---- C′ 路审计（2026-10-07）自造变异里「应该被抓却全绿」的四条，已补用例后收编 ----
+    ('V0716-29-活动度刷到「最近活跃」的会话而不是本 chat 绑定的会话（降级判据看错会话）',
+     'core/panel.py',
+     '        _sid, state = _select_locked(chat_id, now)\n'
+     '        if state is None:\n'
+     '            return\n'
+     '        state["activity_at"] = now',
+     '        state = _STATE.get(_LAST_ACTIVE_BOX[0]) if _LAST_ACTIVE_BOX[0] else None\n'
+     '        if state is None:\n'
+     '            return\n'
+     '        state["activity_at"] = now',
+     'test_units'),
+    ('V0716-30-判据里的 running 工具/澄清丢掉 chat 归属（跨会话串台：A 的卡显示 B 的工具）',
+     'core/adapter.py',
+     '                running_tool = bool(_panel_running_tool(chat_id))\n'
+     '                running_clarify = bool(_panel_has_running_clarify(chat_id))',
+     '                running_tool = bool(_panel_running_tool(""))\n'
+     '                running_clarify = bool(_panel_has_running_clarify(""))',
+     'test_units'),
+    ('V0716-31-心跳页脚丢掉整串去重（每拍重写页脚：写入预算/限流退化）', 'core/adapter.py',
+     '                and state.get("ck_footer") != footer_text)\n'
+     '            if not panel_changed and not footer_changed:',
+     '                )\n'
+     '            if not panel_changed and not footer_changed:',
+     'test_units'),
+    ('V0716-32-mid 反查分支失效（只拿得到 mid 的 edit_message 车道判不出存活）', 'core/adapter.py',
+     '            if mid:\n'
+     '                return self._ld_stream_key_for_message(mid) is not None',
+     '            if mid:\n'
+     '                return False',
+     'test_units'),
+    ('V0716-28-页脚写失败不落账 seq（连拍复用同号）', 'core/adapter.py',
+     '                    # `seq` ⇒ 飞书 `300317 sequence number compare failed` ⇒ 误判卡级死法）。\n'
+     '                    updated["ck_seq"] = seq',
+     '                    # `seq` ⇒ 飞书 `300317 sequence number compare failed` ⇒ 误判卡级死法）。',
      'test_units'),
 
 ]

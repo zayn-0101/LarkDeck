@@ -71,6 +71,15 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     # open across a prompt」），此刻面板里还挂着 running 工具。说「已完成」是假话，
     # 说「处理中」也不准（等的是**人**），所以单给一个状态词。
     "panel.status_waiting": {ZH: "⏸ 等待中", EN: "⏸ Waiting"},
+    # V084（v0.7.16）：**回合进行中**的页脚状态词（用户 2026-10-07 拍板 A 套文案）。
+    # 背景：回合存活时页脚首段原本是空串（`_ld_status_text("processing") == ""`），
+    # 用户看到"一段中间回答 + 空状态词"会以为已经完成。
+    # ⚠️ 页脚是 `markdown` 元素、**不承载 `i18n_content`** ⇒ 用户可见文案**固定中文**；
+    # EN 只用于内部一致，**不得**宣称随客户端语言切换（AGENTS.md 明文纪律）。
+    "panel.status_generating": {ZH: "✍️ 正在生成", EN: "✍️ Generating"},
+    "panel.status_tool_running": {ZH: "⚙️ 正在执行工具", EN: "⚙️ Running tool"},
+    "panel.status_waiting_upstream": {ZH: "⏳ 等待响应", EN: "⏳ Waiting for response"},
+    "panel.status_clarify_waiting": {ZH: "⏸ 等待你的选择", EN: "⏸ Waiting for your choice"},
     # clarify
     "clarify.header":     {ZH: "需要你确认", EN: "Needs your input"},
     "clarify.other":      {ZH: "其他（我直接输入）", EN: "Other (I'll type it)"},

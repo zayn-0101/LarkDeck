@@ -274,6 +274,9 @@ def _new_state_locked(sid: str, now: float) -> Dict[str, Any]:
     state: Dict[str, Any] = {
         "turn_id": "", "rounds": [], "current_round": None, "reasoning_len": 0,
         "tools": [], "started": now, "updated": now, "status": None,
+        # V084（v0.7.16）：**进展证据**时间戳（状态降级专用）。与 ``updated`` 刻意分开：
+        # ``updated`` 管 TTL / 最近活跃路由，``activity_at`` 只管「这张卡最近有没有动过」。
+        "activity_at": now,
         "closed": deque(maxlen=_MAX_CLOSED_TURNS),
     }
     _STATE[sid] = state
@@ -337,6 +340,12 @@ def _touch_locked(session_id: str, turn_id: str, now: float) -> Optional[Dict[st
             state["status"] = None
         state["turn_id"] = tid
     state["updated"] = now
+    # V084（v0.7.16）：同一次「本回合真的在动」也刷新**进展证据**。
+    # ⚠️ 只有 `_touch_locked` 的**五个调用点**会走到这里（begin_turn / note_turn /
+    # 工具开始 / 工具结束 / 回合清理），`record_answer_delta` **不走** —— 这正是
+    # 「读路径绝不刷新」的纪律：`_ld_stream_get` 的 `alive_at` 就是被 3s 心跳读刷新的
+    # 反例，拿它判降级会永不触发（A 路 10 实测）。
+    state["activity_at"] = now
     _LAST_ACTIVE_BOX[0] = sid
     return state
 
@@ -1008,6 +1017,49 @@ def bound_session_id(chat_id: str) -> str:
             _CHAT_SESSION.pop(chat, None)
             return ""
         return str(bound[0])
+
+
+def note_activity(chat_id: str = "") -> None:
+    """V084（v0.7.16）：把「这张卡刚刚有过进展证据」记进面板桶。
+
+    调用方（**只有这四个来源**，其余一律不许调）：
+      ① 流式帧写入（`adapter._ld_stream_frame` 入口）
+      ② 工具钩子（`record_tool_started` / `record_tool_finished`，经 ``_touch_locked``）
+      ③ 上游心跳（`adapter._ld_hb_merge_stream`；⚠️ `_ld_hb_dedicated` **没接**
+        —— 那条车道没有活跃主卡，页脚状态词也无从更新，别按 docstring 以为它算了）
+      ④ `post_api_request`（经 :func:`note_turn` → ``_touch_locked``）
+
+    归属走 :func:`_select_locked` —— 与 :func:`snapshot` **同一套**口径（绑定会话优先），
+    否则「状态算在 A 会话、卡片是 B 那条」的静默错位会重演（见 ``_select_locked`` 注释）。
+    """
+    now = _now()
+    with _LOCK:
+        _purge_locked(now)
+        _sid, state = _select_locked(chat_id, now)
+        if state is None:
+            return
+        state["activity_at"] = now
+
+
+def activity_age(chat_id: str = "") -> Optional[float]:
+    """V084：距上次「进展证据」的秒数；**没有记录返回 ``None``**。
+
+    ``None`` 的语义是「不知道」—— 调用方（状态降级）**不得**据此判 stale：
+    把未知当成 0 会让每一张卡都被降级（A 路 10）。
+    """
+    now = _now()
+    with _LOCK:
+        _purge_locked(now)
+        _sid, state = _select_locked(chat_id, now)
+        if state is None:
+            return None
+        at = state.get("activity_at")
+    if at is None:
+        return None
+    try:
+        return max(0.0, now - float(at))
+    except (TypeError, ValueError):
+        return None
 
 
 def snapshot(chat_id: str = "") -> Optional[Dict[str, Any]]:

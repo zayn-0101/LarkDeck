@@ -1560,11 +1560,16 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         # ── 下面两帧专门验 R2 的「**未变化不重写**」：装饰只在内容真的变了时才发那一次 batch。
         #    驱动用的是**真的数据层**（页脚走 `context`、面板走 `panel`），不是替身 ——
         #    这条规则唯一的失败形态是「装饰静默冻结」，只有在真数据层上才验得出来。
-        footer_before = raw._ld_footer(turn_card=True) or ""
+        footer_before = raw._ld_footer(status=adapter._LD_STATUS_GENERATING,
+                                       turn_card=True) or ""
         context.record_api_call(model="test-model",
                                 usage={"input_tokens": 4242, "output_tokens": 8})
         context.set_context_override(10000)
-        footer_after = raw._ld_footer(turn_card=True) or ""
+        # V084（v0.7.16）：中间帧的页脚**多了状态词**（`✍️ 正在生成`）—— 期望值必须跟着带上，
+        # 否则这条「变了就重写」的断言会因为少了前缀而假红。状态词仍**显式**拼在这里，
+        # 不是调 `_ld_frame_footer`（那样等于"函数等于它自己"，零判别力）。
+        footer_after = raw._ld_footer(status=adapter._LD_STATUS_GENERATING,
+                                      turn_card=True) or ""
         assert footer_after and footer_after != footer_before, \
             f"⑱ 前提：这一帧的页脚必须真的变了，否则证不了「变了就重写」：{footer_before!r} → {footer_after!r}"
         assert _run(raw.send_stream_frame("正文一，正文二，正文三",
@@ -2427,11 +2432,29 @@ def test_cardkit_transport_writes_elements_and_falls_open():
             panel.record_reasoning("oc_r3", "s-r3", "再看一眼测试目录。")
             assert _run(raw25.send_stream_frame("正文五", chat_id="oc_r3", turn_id="t-r3"))
             frames = [[a["params"]["element_id"] for a in b[0]] for b in calls["batch"]]
-            assert frames == [["panel_body", "panel_tools", "footer"], ["panel_tools"],
-                              ["panel_tools"], ["panel_tools"], ["panel_body"]], \
-                f"工具事件只该重写工具块、推理增长只该重写推理块：{frames}"
+            # V084（v0.7.16）：工具事件帧现在**还会写页脚** —— 状态词要在
+            # 「✍️ 正在生成」↔「⚙️ 正在执行工具」之间切换，这正是用户要的 M2 信号
+            # （旧行为下工具帧只写工具块、页脚一直是空的，看起来像已完成）。
+            # 推理增长帧不切状态词，所以仍然只写推理块。
+            assert frames == [["panel_body", "panel_tools", "footer"],
+                              ["panel_tools", "footer"],
+                              ["panel_tools", "footer"],
+                              ["panel_tools", "footer"],
+                              ["panel_body"]], \
+                f"工具事件只该重写工具块 + 状态词页脚、推理增长只该重写推理块：{frames}"
             written = [{a["params"]["element_id"]: a["params"]["partial_element"]["content"]
                         for a in b[0]} for b in calls["batch"]]
+            assert "⚙️ 正在执行工具" in written[1]["footer"], \
+                f"工具开始那一帧的页脚必须是「正在执行工具」：{written[1]['footer']!r}"
+            # 审计 C 1.2：正向 `in` 会漏过「✅ 已完成 · ⚙️ 正在执行工具」这种拼接 ——
+            # 中间帧的页脚**绝不许**带终态词。
+            assert all("✅ 已完成" not in (w.get("footer") or "")
+                       for w in written), \
+                f"中间帧页脚不许出现终态词：{[w.get('footer') for w in written]}"
+            assert "✍️ 正在生成" in written[2]["footer"], \
+                f"工具结束、模型接着写 ⇒ 页脚回到「正在生成」：{written[2]['footer']!r}"
+            assert "⚙️ 正在执行工具" in written[3]["footer"], \
+                f"第二个工具开始那一帧的页脚也要是「正在执行工具」：{written[3]['footer']!r}"
             assert "read_file" not in written[0]["panel_body"], \
                 f"推理块里不许出现工具行（两块其实是同一块时这条会红）：{written[0]['panel_body']!r}"
             assert "先看目录结构。" in written[0]["panel_body"], \
@@ -5180,7 +5203,17 @@ def test_markdown_hygiene_covers_every_whole_text_writer_not_just_native_finaliz
         ck_updates = _wire_patch(raw_c)
         assert _run(raw_c.send_stream_frame("", chat_id="oc_md_stop", turn_id="t-md"))
         assert _run(raw_c.send_stream_frame(raw, chat_id="oc_md_stop", turn_id="t-md"))
-        assert _markdown_of(ck_updates[-1]["content"]) == [raw], "流式中间帧必须原样（同上）"
+        # V084（v0.7.16）：中间帧现在多一条**页脚** markdown（状态词 + 实时耗时）——
+        # 它不是正文。判据 = **恰好两条 markdown**（正文 + 页脚），正文**逐字原样**、
+        # 页脚必须是进行中词（审计 C：原来 `== [raw]` 会被新页脚打红；但放宽成
+        # "列表里含 raw" 会让"正文被复制一份 / 被加料 / 多出别的 markdown"漏过）。
+        _ck_card = ck_updates[-1]["content"]
+        _ck_card = json.loads(_ck_card) if isinstance(_ck_card, str) else _ck_card
+        _mds = [e for e in _ck_card["body"]["elements"] if e.get("tag") == "markdown"]
+        assert len(_mds) == 2, f"中间帧 markdown 只允许正文+页脚两条：{_mds}"
+        assert _mds[0]["content"] == raw, f"正文必须逐字原样：{_mds[0]['content']!r}"
+        assert "✍️ 正在生成" in _mds[1]["content"], _mds[1]["content"]
+        assert "✅ 已完成" not in _mds[1]["content"], _mds[1]["content"]
         _run(raw_c.interrupt_session_activity("sk-md", "oc_md_stop"))
         stopped_texts = _markdown_of(ck_updates[-1]["content"])
         # ⚠️ 不能断言「列表里只有正文」：中止态面板自己也是一段 markdown（`⛔ 已中止`）。
@@ -12364,8 +12397,16 @@ def test_v4_1_heartbeat_tick_skips_while_frame_write_in_flight():
         skipped, wrote, second = _run(_flow())
         assert skipped == "skip", f"持锁时心跳必须跳过，实际 {skipped!r}"
         assert wrote == "wrote", f"锁释放后心跳应当写出去，实际 {wrote!r}"
-        hb_seqs = [item[1] for item in calls["batch"]][-2:]
-        assert hb_seqs == [8, 9], f"心跳序号必须接着账本走（8、9），实际 {hb_seqs}"
+        hb_seqs = [item[1] for item in calls["batch"]][-4:]
+        # V084（v0.7.16）：心跳现在**每拍两笔**（panel + footer：状态词/实时耗时），
+        # 两拍共 4 笔，序号仍必须**连续接着账本**走：8、9（第一拍）→ 10、11（第二拍）。
+        assert hb_seqs == [8, 9, 10, 11],\
+            f"心跳序号必须接着账本走（8..11），实际 {hb_seqs}"
+        # 审计 C 1.1：只钉序号会漏掉"两拍都写 panel"这种退化 —— 必须同时钉**元素构成**
+        hb_elems = [[a["params"]["element_id"] for a in item[0]]
+                    for item in calls["batch"]][-4:]
+        assert hb_elems == [["panel"], ["footer"], ["panel"], ["footer"]],\
+            f"心跳每拍必须恰好 panel+footer 两笔：{hb_elems}"
         assert second == "wrote", second
     finally:
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
@@ -14755,6 +14796,9 @@ def test_v074_command_reply_notices_are_silent_but_real_turns_keep_status() -> N
             "当前：`", "Current: `",
             "✅ 命令已批准", "✅ Command approved",
             "❌ 命令已拒绝", "❌ Command denied",
+            # V084（B 路 2 / B′ 路 10）：**非回合**的系统通知族 —— 早先没登记 ⇒ 被判成回合卡
+            # ⇒ `send()` 非预览 ⇒ 判据第 1 条 ⇒ 卡上写「✅ 已完成」（还在跑的提示写成完成）。
+            "⏳ Background task", "[ASYNC DELEGATION",
         )
         lines_only = (
             "会话数据库不可用。", "Session database not available.",
@@ -15043,8 +15087,13 @@ def test_v075_heartbeat_merges_into_active_panel_without_new_card():
         assert state2.get("message_id") == mid
         hb_node = state2.get("hb_title")
         assert isinstance(hb_node, dict) and hb_node.get("content", "").startswith("⏳"), state2
-        assert _run(raw._ld_heartbeat_tick(chat, key)) == "unchanged",\
-            "插件 3s tick 必须保留心跳标题（不能擦回普通摘要）"
+        # V084（v0.7.16）：tick 现在也为「状态词 + 实时耗时」写页脚 ⇒ 返回值可能是 "wrote"
+        # （原来只可能是 "unchanged"）。本用例的本意是**心跳标题不被擦回普通摘要**，
+        # 所以改成核「最后一次写出的面板载荷」仍带 ⏳ 心跳标题（断言没有放宽，只换了载体）。
+        tick_res = _run(raw._ld_heartbeat_tick(chat, key))
+        assert tick_res in ("unchanged", "wrote"), tick_res
+        panel_blob_after_tick = json.dumps(_v075_panel_partials(calls)[-1], ensure_ascii=False)
+        assert "⏳" in panel_blob_after_tick, panel_blob_after_tick
 
         # 第二拍仍然只更新同卡 panel；上游拿不到 mid，所以只能继续 send。
         res2 = _run(raw.send(chat, _v075_heartbeat(6),
@@ -15150,7 +15199,7 @@ def test_v075_heartbeat_panel_missing_is_noop_not_degrade():
         assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
         state = raw._ld_stream_get(key) or {}
         assert state.get("ck_has_panel") is False, state
-        # 配置改回 true：心跳/3s tick 仍必须以 ck_has_panel=False 为判据 no-op；
+        # 配置改回 true：心跳/3s tick 仍必须以 ck_has_panel=False 为判据**不写 panel**；
         # 否则会去写一个卡里根本不存在的 panel 元素（真机 300313）。
         adapter.configure(unified_panel=True)
         panel.bind_chat_session(chat, "s-v075nopanel")
@@ -15166,8 +15215,15 @@ def test_v075_heartbeat_panel_missing_is_noop_not_degrade():
         state2 = raw._ld_stream_get(key) or {}
         assert state2.get("card_id") == state.get("card_id") and state2.get("engine") == "structured",\
             f"心跳不得把无面板主卡降级：{state2}"
-        assert _run(raw._ld_heartbeat_tick(chat, key)) == "unchanged"
-        assert len(calls["batch"]) == batch_before, "tick 对无 panel 的卡仍发起了写"
+        # V084（A 路 4）：面板缺失**只跳过 panel 那一笔**，页脚仍必须跟着心跳走
+        # （`unified_panel=false` 时它是模型不出字期间**唯一**还在动的东西）。
+        # 把 t0 拨旧 5s：页脚是「状态 · 实时耗时 · …」整串去重，耗时不变时本来就无需写。
+        raw._ld_stream_put(key, {**state2, "t0": time.monotonic() - 5.0})
+        assert _run(raw._ld_heartbeat_tick(chat, key)) == "wrote"
+        assert len(calls["batch"]) == batch_before + 1, "面板缺失时心跳没写页脚"
+        wrote_elems = [a["params"]["element_id"] for a in calls["batch"][-1][0]]
+        assert wrote_elems == ["footer"], f"无 panel 的卡上写了别的元素：{wrote_elems}"
+        assert "⚙️ 正在执行工具" in calls["batch"][-1][0][0]["params"]["partial_element"]["content"]
     finally:
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
@@ -15507,8 +15563,13 @@ def test_v075_progress_frame_keeps_hb_title():
         state2 = raw._ld_stream_get(key) or {}
         hb_node2 = state2.get("hb_title")
         assert isinstance(hb_node2, dict) and hb_node2.get("content", "").startswith("⏳"), state2
-        assert _run(raw._ld_heartbeat_tick(chat, key)) == "unchanged",\
-            "进度帧后 tick 又擦回了普通标题"
+        # V084（v0.7.16）：tick 现在也为「状态词 + 实时耗时」写页脚 ⇒ 返回值可能是 "wrote"
+        # （原来只可能是 "unchanged"）。本用例的本意是**心跳标题不被擦回普通摘要**，
+        # 所以改成核「最后一次写出的面板载荷」仍带 ⏳ 心跳标题（断言没有放宽，只换了载体）。
+        tick_res = _run(raw._ld_heartbeat_tick(chat, key))
+        assert tick_res in ("unchanged", "wrote"), tick_res
+        panel_blob_after_tick = json.dumps(_v075_panel_partials(calls)[-1], ensure_ascii=False)
+        assert "⏳" in panel_blob_after_tick, panel_blob_after_tick
     finally:
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
@@ -15572,8 +15633,16 @@ def test_v075_tick_300313_marks_missing_without_repeat():
         state = raw._ld_stream_get(key) or {}
         assert state.get("ck_panel_missing") is True, state
         assert len(writes) == 1, writes
-        assert _run(raw._ld_heartbeat_tick(chat, key)) == "unchanged"
-        assert len(writes) == 1, f"300313 后仍重复写：{writes}"
+        # V084（A 路 4）：标死的是 **panel 元素**，不是整张卡 —— 页脚仍要跟着心跳走。
+        # 断言必须精确到元素构成，否则"页脚也一起停写"这种退化会被漏过。
+        # ⚠️ 先断"确实发生了一笔写"再取 `[-1]`：否则"一笔都没写"会变成 IndexError
+        # （未捕获异常 ⇒ 变异门禁只能记成「💥 只有崩溃」，**没有判别力证据**）。
+        batch_before = len(calls["batch"])
+        assert _run(raw._ld_heartbeat_tick(chat, key)) == "wrote"
+        assert len(writes) == 1, f"300313 后仍重复写 panel：{writes}"
+        assert len(calls["batch"]) == batch_before + 1, "标死后页脚那一笔没写出去"
+        wrote_elems = [a["params"]["element_id"] for a in calls["batch"][-1][0]]
+        assert wrote_elems == ["footer"], f"panel 缺失后写了别的元素：{wrote_elems}"
     finally:
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
@@ -15713,13 +15782,32 @@ def test_v075_split_does_not_inherit_hb_title():
         state = dict(raw._ld_stream_get(key) or {})
         state["hb_title"] = _v075_hb_note(3)
         state["ck_panel_dead"] = 300309      # 旧卡元素级死法不得跨卡继承
+        state["ck_footer_missing"] = True    # V084（A′ 路 3）：页脚元素级死法同样不得跨卡继承
         raw._ld_stream_put(key, state)
         adapter._ck_split_point = lambda *a, **k: 3   # type: ignore[assignment]
+        # V084（B′ 路高-1）：封旧卡不许写 ✅ —— 同一回合还在新卡上继续跑。
+        # 直接钉住 `_ld_cardview` 收到的 status（封旧卡 + 开新卡两次调用）。
+        seen_status: list = []
+        _orig_view = raw._ld_cardview
+
+        def _spy_view(*a, **kw):
+            seen_status.append(kw.get("status"))
+            return _orig_view(*a, **kw)
+
+        raw._ld_cardview = _spy_view            # type: ignore[assignment]
         new_state = _run(raw._ld_ck_split(chat, "abcdef", state, 0, None,
                                           time.monotonic()))
         assert new_state is not None, "切卡失败（测试前提不成立）"
         assert not new_state.get("hb_title"), new_state
         assert not new_state.get("ck_panel_dead"), new_state
+        # 新卡是全新实体、footer 元素刚建出来 ⇒ 继承 `ck_footer_missing` 会让新卡页脚
+        # **永远不写**（用户看到的就是"和完整回复生成时差不多"的原抱怨）。
+        assert not new_state.get("ck_footer_missing"), new_state
+        assert cards.CARDKIT_FOOTER_ID in (new_state.get("ck_elems") or []), new_state
+        # 封旧卡那一笔的 status 必须是**进行中**词（不是 completed/ok）
+        assert seen_status, "没抓到 _ld_cardview 调用（测试前提不成立）"
+        assert "completed" not in seen_status and "ok" not in seen_status, \
+            f"封旧卡/开新卡里出现了终态词：{seen_status}"
         entity_blob = json.dumps(_v075_entity(calls, -1), ensure_ascii=False)
         assert "正在执行 terminal" not in entity_blob, entity_blob
         assert "Working" not in entity_blob, entity_blob
@@ -16314,6 +16402,524 @@ def test_v083_model_answer_containing_a_command_block_is_never_swallowed():
         assert "跑完我再核对一遍" in blob, blob[:600]
     finally:
         teardown()
+
+
+# --------------------------------------------------------------------------- #
+# V084（v0.7.16）：回合进行中的状态词（页脚）+ 进展证据时间戳
+# --------------------------------------------------------------------------- #
+
+def _v084_seed_stream(raw, chat: str, turn: str = "t1") -> str:
+    """给 chat 建一条 active structured 流状态（`_ld_live_status` 的**存活**判据）。"""
+    key = f"{chat}:{turn}"
+    raw._ld_stream_put(key, {"engine": "structured", "t0": time.monotonic(),
+                             "message_id": "om_v084", "chat_id": chat})
+    return key
+
+
+def _v084_footer_writes(calls: Dict[str, Any]) -> list:
+    """假 CardKit 账本里所有 `partial_update_element("footer")` 的 content。"""
+    out: list = []
+    for item in calls.get("batch", []):
+        actions = item[0] if isinstance(item[0], list) else json.loads(item[0])
+        for action in actions if isinstance(actions, list) else [actions]:
+            if (action.get("action") == "partial_update_element"
+                    and action.get("params", {}).get("element_id") == "footer"):
+                out.append(action["params"]["partial_element"].get("content"))
+    return out
+
+
+def test_v084_i18n_live_status_words_are_exact():
+    """V084①：四个新状态词逐字钉住；页脚是 `markdown` ⇒ 用户可见文案**固定中文**。"""
+    assert i18n.t("panel.status_generating") == "✍️ 正在生成"
+    assert i18n.t("panel.status_tool_running") == "⚙️ 正在执行工具"
+    assert i18n.t("panel.status_waiting_upstream") == "⏳ 等待响应"
+    assert i18n.t("panel.status_clarify_waiting") == "⏸ 等待你的选择"
+    # EN 只为内部一致（`markdown` 元素不承载 i18n_content ⇒ 卡面不会跟着切）
+    assert i18n.i18n_text("panel.status_generating")["i18n_content"]["en_us"] == "✍️ Generating"
+    # `_ld_status_text` 是页脚**唯一**文案出口：四个新词都必须有映射（否则页脚静默少一段）
+    assert adapter._ld_status_text(adapter._LD_STATUS_GENERATING) == "✍️ 正在生成"
+    assert adapter._ld_status_text(adapter._LD_STATUS_TOOL_RUNNING) == "⚙️ 正在执行工具"
+    assert adapter._ld_status_text(adapter._LD_STATUS_WAITING_UPSTREAM) == "⏳ 等待响应"
+    assert adapter._ld_status_text(adapter._LD_STATUS_CLARIFY_WAITING) == "⏸ 等待你的选择"
+
+
+def test_v084_live_status_matrix_is_the_single_judgement():
+    """V084②：唯一判据的完整矩阵（含三路审计的阻断项：陈旧 ok / 正常收尾 / 失败最先判）。"""
+    panel.reset()
+    chat = "oc_v84m"
+    raw = _make()
+    try:
+        # ① 没有任何正向信号 ⇒ 空串（不猜、不说假话）
+        assert raw._ld_live_status(chat_id=chat) == "", "无信号必须返回空串"
+        # ② **陈旧 ok** + 存活 + 非收尾帧 ⇒ 必须是 live 词（A 路阻断项：不许 completed）
+        # ⚠️ C 路审计：`record_turn_end` 对**不存在的桶**是 no-op（`panel.py:683`）⇒ 早先
+        # 这行什么都没写、`raw` 是空串，于是走第 5 条（存活）也能通过 —— **空真**。
+        # 现在先建桶 + 显式断言前置条件，确保真的在考"陈旧 ok 不许变 completed"。
+        panel.note_turn(chat, "turn-old")
+        # 桶里必须有**内容**，否则 `snapshot()` 的归属回退（`_select_locked` ②③）
+        # 根本不会选中它 ⇒ 下面的前置断言会暴露"什么都没写"。
+        panel.record_tool_started(chat, "turn-old", "terminal", {"command": "ls"}, "tc-old")
+        panel.record_tool_finished(chat, "turn-old", "terminal", status="ok", duration_ms=10,
+                                   tool_call_id="tc-old")
+        panel.record_turn_end(chat, "turn-old", completed=True)
+        assert (panel.snapshot(chat) or {}).get("status") == panel.STATUS_OK, \
+            "前置条件没成立：桶里没有陈旧 ok"
+        key = _v084_seed_stream(raw, chat)
+        assert raw._ld_live_status(chat_id=chat, key=key) == adapter._LD_STATUS_GENERATING, \
+            "上一回合的 ok 漏进了存活的新回合"
+        # ②′ **陈旧 error/stopped** + 存活 + 非收尾帧 ⇒ 也必须是 live 词（C 路 N7：
+        # 判据第 0 条的 `(segment_final or not alive)` 不许被去掉，否则一个早已报错的
+        # 上一回合会把**正在跑**的这一回合染红）。
+        panel.record_turn_end(chat, "turn-old", failed=True)
+        assert (panel.snapshot(chat) or {}).get("status") == panel.STATUS_ERROR, "前置：陈旧 error"
+        assert raw._ld_live_status(chat_id=chat, key=key) == adapter._LD_STATUS_GENERATING, \
+            "上一回合的 error 漏进了存活的新回合（非收尾渲染）"
+        panel.record_turn_end(chat, "turn-old", interrupted=True)
+        assert raw._ld_live_status(chat_id=chat, key=key) == adapter._LD_STATUS_GENERATING, \
+            "上一回合的 stopped 漏进了存活的新回合（非收尾渲染）"
+        panel.record_turn_end(chat, "turn-old", completed=True)   # 复位成 ok 再继续
+        # ②″ 未知 key（流里没有）+ 非收尾 ⇒ 空串（C 路 N10：`_ld_turn_alive` 不许乱判 True）
+        assert raw._ld_live_status(chat_id=chat, key=f"{chat}:nope") == "", \
+            "流里不存在的 key 被当成存活"
+        # ②‴ 同 key 但 **message_id 对不上**（切卡/降级后旧 mid 又来了）⇒ 不算存活。
+        # A′ 路 MC：生产调用点目前 key/mid 同源 ⇒ 这条是**防御性**判据、当前不可达，
+        # 但必须直接钉住（否则它会被当死代码删掉，而删掉后旧 mid 能拿到 live 词）。
+        assert raw._ld_turn_alive(key=key, message_id="om_v084_other") is False, \
+            "同 key 换了卡，旧 mid 仍被当成存活"
+        assert raw._ld_turn_alive(key=key, message_id="om_v084") is True, \
+            "同一个 mid 必须仍算存活"
+        # 反查分支（`edit_message` 车道的真实形态：**只给 mid、不给 key**）。
+        # C′ 路低-2：这一条必须单独钉 —— 只给 key 的调用**永远不会走到**反查分支。
+        _mid_real = str((raw._ld_stream_get(key) or {}).get("message_id") or "")
+        assert _mid_real, "前置：native 流没拿到卡片 id"
+        assert raw._ld_turn_alive(message_id=_mid_real) is True, "mid 反查分支失效"
+        assert raw._ld_turn_alive(message_id="om_v084_absent") is False, \
+            "不存在的 mid 不许判存活"
+        assert raw._ld_turn_alive() is False, "既没 key 也没 mid ⇒ 不许判存活"
+        # ③ 存活 + running 工具 ⇒ 正在执行工具
+        panel.record_tool_started(chat, "t1", "terminal", {"command": "ls"}, "tc1")
+        assert raw._ld_live_status(chat_id=chat, key=key) == adapter._LD_STATUS_TOOL_RUNNING
+        # ④ 收尾型渲染 + running 工具 ⇒ 等待中（V082 语义，不回退）
+        assert raw._ld_live_status(chat_id=chat, key=key, segment_final=True) \
+            == adapter._LD_STATUS_WAITING
+        # ⑤ 工具收口 + 收尾型渲染 ⇒ ✅（**不许**要求流已 pop —— B/C 路阻断项）
+        panel.record_tool_finished(chat, "t1", "terminal", status="ok", duration_ms=10,
+                                   tool_call_id="tc1")
+        assert raw._ld_live_status(chat_id=chat, key=key, segment_final=True) == "completed"
+        # ⑥ 同一状态但**不是**收尾渲染 ⇒ 仍是「正在生成」
+        assert raw._ld_live_status(chat_id=chat, key=key) == adapter._LD_STATUS_GENERATING
+        # ⑦ clarify 在等**人** ⇒ 专门的词（与「等工具」区分）
+        panel.record_tool_started(chat, "t1", "clarify", {"question": "选哪个"}, "tc2")
+        assert raw._ld_live_status(chat_id=chat, key=key) \
+            == adapter._LD_STATUS_CLARIFY_WAITING
+        assert raw._ld_live_status(chat_id=chat, key=key, segment_final=True) \
+            == adapter._LD_STATUS_CLARIFY_WAITING
+        panel.record_tool_finished(chat, "t1", "clarify", status="ok", duration_ms=10,
+                                   tool_call_id="tc2")
+        # ⑧ 失败 / 中止**最先判**（不许被乐观 ✅ 抢走）
+        panel.record_turn_end(chat, "t1", failed=True)
+        assert raw._ld_live_status(chat_id=chat, key=key, segment_final=True) == "error"
+        panel.record_turn_end(chat, "t1", interrupted=True)
+        assert raw._ld_live_status(chat_id=chat, key=key, segment_final=True) == "stopped"
+        # ⑨ 流状态没了（回合真结束）+ 结局 ok ⇒ ✅
+        raw._ld_streams.pop(key, None)
+        panel.record_turn_end(chat, "t1", completed=True)
+        assert raw._ld_live_status(chat_id=chat, segment_final=True) == "completed"
+    finally:
+        raw._ld_streams.clear()
+        panel.reset()
+
+
+def test_v084_frame_footer_carries_live_word_and_finalize_keeps_completed():
+    """V084③：中间帧页脚必须有**进行中**的词；收尾帧照旧 ✅（**流可能还没 pop**）。"""
+    chat, turn = "oc_v84f", "t-f"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        assert _run(raw.send_stream_frame("第一段", chat_id=chat, turn_id=turn))
+        footers = _v084_footer_writes(calls)
+        assert footers and "✍️ 正在生成" in footers[-1], footers
+        # 工具开始 ⇒ 页脚换成「正在执行工具」
+        panel.record_tool_started(chat, turn, "terminal", {"command": "ls"}, "tc1")
+        assert _run(raw.send_stream_frame("第一段，工具开始", chat_id=chat, turn_id=turn))
+        assert "⚙️ 正在执行工具" in _v084_footer_writes(calls)[-1], _v084_footer_writes(calls)
+        # 收尾帧：**流状态仍然在** 也必须 ✅（不许把正常收尾写成「正在生成」）
+        assert raw._ld_stream_get(f"{chat}:{turn}"), "前提：收尾这一刻流状态还在"
+        panel.record_tool_finished(chat, turn, "terminal", status="ok", duration_ms=10,
+                                   tool_call_id="tc1")
+        assert _run(raw.send_stream_frame("第一段，工具开始，收尾", finalize=True,
+                                          chat_id=chat, turn_id=turn))
+        # C′ 路：先断"收尾整卡 patch 真的发生了"（否则去掉它 ⇒ KeyError ⇒ 门禁只能记 💥）
+        assert calls.get("patch_cards"), "收尾没走整卡 patch（测试前提不成立）"
+        final_blob = json.dumps(calls["patch_cards"][-1], ensure_ascii=False)
+        assert "✅ 已完成" in final_blob, final_blob
+        assert "✍️ 正在生成" not in final_blob, final_blob
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v084_heartbeat_tick_writes_status_footer():
+    """V084④：3s 心跳也要写页脚（状态词 + 实时耗时）—— 模型不出字时它是唯一还在动的东西。"""
+    chat, turn = "oc_v84hb", "t-hb"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    key = f"{chat}:{turn}"
+    try:
+        assert _run(raw.send_stream_frame("正文", chat_id=chat, turn_id=turn))
+        before = len(_v084_footer_writes(calls))
+        # 面板签名不变（没有新工具/推理），但**耗时必然变** ⇒ 页脚仍必须写出去
+        state = raw._ld_stream_get(key) or {}
+        raw._ld_stream_put(key, {**state, "t0": time.monotonic() - 5.0,
+                                 "ck_panel_sig": state.get("ck_panel_sig")})
+        res = _run(raw._ld_heartbeat_tick(chat, key))
+        assert res == "wrote", res
+        footers = _v084_footer_writes(calls)
+        assert len(footers) > before, "心跳没有写页脚（状态词/耗时被冻结）"
+        assert "✍️ 正在生成" in footers[-1], footers
+        assert "5.0s" in footers[-1], footers
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v084_activity_age_is_explicit_and_reads_never_refresh_it():
+    """V084⑤：`activity_at` 只由**四个来源**显式刷新；读路径绝不刷新（A 路 10 反例）。"""
+    panel.reset()
+    chat = "oc_v84a"
+    try:
+        assert panel.activity_age(chat) is None, "没有记录必须返回 None（不得据此降级）"
+        # 桶在、但**没有** activity_at（模拟 V084 之前的旧桶 / 非四个来源建的桶）：
+        # 语义同样是「不知道」⇒ 必须返回 None（返回 0 会让每一张卡都被判降级）。
+        with panel._LOCK:
+            panel._STATE["s-v84-legacy"] = {
+                "turn_id": "t1", "rounds": [], "current_round": None, "reasoning_len": 0,
+                # 必须有**内容**，否则 `_select_locked` 的归属回退根本不会选它
+                "tools": [{"name": "terminal", "status": "ok", "duration_ms": 1,
+                           "preview": "", "tool_call_id": "tc-legacy"}],
+                "started": time.monotonic(), "updated": time.monotonic(),
+                "status": None, "closed": deque(maxlen=4)}
+            panel._LAST_ACTIVE_BOX[0] = "s-v84-legacy"
+        assert panel.activity_age("s-v84-legacy") is None, \
+            "未知活动时间戳必须返回 None（不得当成 0）"
+        panel.reset()
+        panel.bind_chat_session(chat, "s-v84a")
+        panel.note_turn("s-v84a", "t1")
+        age = panel.activity_age(chat)
+        assert isinstance(age, float) and age >= 0.0, age
+        # 读路径（snapshot / 多次读 age）都不许把活动时间往前推
+        time.sleep(0.03)
+        for _ in range(3):
+            panel.snapshot(chat)
+            panel.activity_age(chat)
+        assert panel.activity_age(chat) >= 0.03, "读路径把 activity_at 刷新了"
+        # 工具钩子（来源②）刷新 —— 钩子回调传的是 **session_id**（生产口径）
+        time.sleep(0.03)
+        before = panel.activity_age(chat)
+        panel.record_tool_started("s-v84a", "t1", "terminal", {"command": "ls"}, "tc1")
+        assert panel.activity_age(chat) < before, "工具钩子没有刷新活动时间戳"
+        # adapter 侧显式入口（来源①/③）刷新
+        time.sleep(0.03)
+        before2 = panel.activity_age(chat)
+        panel.note_activity(chat)
+        assert panel.activity_age(chat) < before2, "note_activity 没有刷新"
+    finally:
+        panel.reset()
+
+
+def test_v084_edit_message_status_words():
+    """V084⑥：`edit_message` 车道 —— 收尾必须 ✅、非收尾**不许**写 ✅（C 路 N9）。
+
+    ⚠️ 必须用 **native 车道**：非 native 车道上判据恒空、会被 `or "completed"` 兜底掩盖，
+    那样 N9 变异（`segment_final` True→False）就测不出来。
+    ⚠️ 如实说明（C′ 路低-2）：本用例真正钉住的是**收尾命中判据第 1 条 ⇒ ✅** 与
+    **非收尾 `processing` ⇒ 进行中词**这两件事；`edit_message` 收尾并不需要
+    `_ld_turn_alive(message_id=...)` 反查（第 1 条不看存活），所以这里**没有**覆盖反查分支。
+    反查分支的单元级判据钉在 `test_v084_live_status_matrix_is_the_single_judgement`。
+    """
+    chat, turn = "oc_v84e", "t-e"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    key = f"{chat}:{turn}"
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        mid = str((raw._ld_stream_get(key) or {}).get("message_id") or "")
+        assert mid, "前置：native 流没拿到卡片 id"
+        requests = _wire_patch(raw)
+        # 非收尾：页脚不许出现终态词（上一回合 ok 漏进预览 = A3-2/B3-2 老阻断项）
+        _run(raw.edit_message(chat, mid, "更新", finalize=False))
+        # C′ 路：先断"这一笔真的写出去了" —— 否则把 edit_message 非收尾改成 no-op 时
+        # `requests[-1]` 直接 IndexError ⇒ 门禁只能记 💥（无判别力证据）。
+        assert requests, "edit_message 非收尾那一笔没写出去（测试前提不成立）"
+        blob = json.dumps(requests[-1]["content"], ensure_ascii=False)
+        assert "✅ 已完成" not in blob, blob
+        assert "✍️ 正在生成" in blob, blob          # 中间态要有**明确**的进行中词
+        # 收尾：判据第 1 条 ⇒ ✅（C 路 N9 变异就钉在这条上）
+        before_final = len(requests)
+        _run(raw.edit_message(chat, mid, "终稿", finalize=True))
+        assert len(requests) > before_final, "edit_message 收尾那一笔没写出去"
+        blob2 = json.dumps(requests[-1]["content"], ensure_ascii=False)
+        assert "✅ 已完成" in blob2, blob2
+        assert "✍️ 正在生成" not in blob2, blob2
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v084_clarify_click_rewrites_footer_to_live_word():
+    """V084⑦：点击澄清后主卡页脚必须从「等待你的选择」变成 live 词（A 路 1）。"""
+    chat, turn = "oc_v84cl", "t-cl"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    key = f"{chat}:{turn}"
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        panel.bind_chat_session(chat, f"s-{chat}")
+        panel.record_tool_started(f"s-{chat}", turn, "clarify",
+                                  {"question": "选哪个"}, tool_call_id="tc-cl")
+        # 边界帧（面板里 clarify 还在 running）⇒ 页脚写「⏸ 等待你的选择」+ 登记等待标记
+        assert _run(raw.send_stream_frame("先问一句", finalize=True,
+                                          chat_id=chat, turn_id=turn))
+        st = raw._ld_stream_get(key) or {}
+        assert st.get("ck_clarify_waiting") is True, st
+        assert "等待你的选择" in (st.get("ck_footer") or ""), st.get("ck_footer")
+        # 用户点了选项：面板乐观摘掉 running ⇒ 主卡刷新必须把页脚一起改掉
+        assert panel.mark_clarify_clicked(chat) == f"s-{chat}", "前置：clarify 点击没落到面板"
+        before = len(calls["batch"])
+        assert _run(raw._ld_clarify_refresh_card(chat, "我选 A")) is True
+        footers = _v084_footer_writes(calls)
+        assert len(calls["batch"]) > before, "点击后主卡刷新没有写任何元素"
+        assert footers, calls["batch"]
+        assert "等待你的选择" not in footers[-1], footers
+        assert "✍️ 正在生成" in footers[-1], footers
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v084_activity_at_is_refreshed_by_frame_and_upstream_heartbeat():
+    """V084⑧：C9 来源①（流式帧入口）与③（上游心跳）必须真的刷新（C 路 M2/M3）。"""
+    chat, turn = "oc_v84act", "t-act"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    sid = f"s-{chat}"
+    try:
+        panel.bind_chat_session(chat, sid)
+        panel.note_turn(sid, turn)
+        with panel._LOCK:
+            panel._STATE[sid]["activity_at"] = time.monotonic() - 30.0
+        assert _run(raw.send_stream_frame("正文", chat_id=chat, turn_id=turn))
+        age = panel.activity_age(chat)
+        assert age is not None and age < 5.0, f"流式帧没有刷新 activity_at：{age}"
+        with panel._LOCK:
+            panel._STATE[sid]["activity_at"] = time.monotonic() - 30.0
+        assert _run(raw._ld_hb_merge_stream(chat, "⏳ 等待模型响应 · 第 1 轮"))
+        age2 = panel.activity_age(chat)
+        assert age2 is not None and age2 < 5.0, f"上游心跳没有刷新 activity_at：{age2}"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v084_header_title_registers_live_words():
+    """V084⑨：顶栏登记四个新词（默认关，但登记丢了将来一开就显示「处理中」——C 路 M5）。"""
+    raw = _make()
+    for word in (adapter._LD_STATUS_GENERATING, adapter._LD_STATUS_TOOL_RUNNING,
+                 adapter._LD_STATUS_WAITING_UPSTREAM, adapter._LD_STATUS_CLARIFY_WAITING):
+        view = raw._ld_cardview("oc_v84h", "正文", status=word)
+        assert view.header_status == word, view.header_status
+        # 顶栏文案与页脚文案必须**同源同义**（两处独立映射，任何一处漏登记都会在这里红）
+        assert view.header_title["content"] == adapter._ld_status_text(word), \
+            (view.header_title, adapter._ld_status_text(word))
+    # 未知状态仍退回「处理中」（不是新词）
+    assert raw._ld_cardview("oc_v84h", "正文", status="??").header_title["content"] \
+        != adapter._ld_status_text(adapter._LD_STATUS_GENERATING)
+
+
+def test_v084_heartbeat_footer_failure_is_reported_not_hidden():
+    """V084⑩：心跳**只改页脚**那一笔失败时不许谎报 `wrote`（A 路 2）。"""
+    chat, turn = "oc_v84ff", "t-ff"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    key = f"{chat}:{turn}"
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        state = raw._ld_stream_get(key) or {}
+        raw._ld_stream_put(key, {**state, "t0": time.monotonic() - 5.0, "ck_panel_sig": ""})
+
+        async def _fail_batch(card_id, ops, seq):
+            return adapter._CkResult(False, 500, "ErrMsg: boom")
+
+        raw._ld_ck_batch = _fail_batch          # type: ignore[assignment]
+        seq0 = int(state.get("ck_seq") or 0)
+        assert _run(raw._ld_heartbeat_tick(chat, key)) == "failed"
+        st = raw._ld_stream_get(key) or {}
+        assert st.get("ck_footer") is None, "写失败不许把页脚记成已写"
+        assert st.get("ck_degrade") is None, "普通失败不是卡级死法"
+        # A′ 路 MA：这一笔已消费的 seq 必须落账（不落账 ⇒ 下一拍复用同号 ⇒ 300317）
+        assert int(st.get("ck_seq") or 0) == seq0 + 2, f"页脚失败没落账 seq：{st.get('ck_seq')}"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v084_heartbeat_footer_300313_marks_missing_and_stops():
+    """V084⑪：只改页脚撞 300313 ⇒ 标 missing、下一拍不再重试（A 路 3）。"""
+    chat, turn = "oc_v84f3", "t-f3"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    key = f"{chat}:{turn}"
+    writes: list = []
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        state = raw._ld_stream_get(key) or {}
+        raw._ld_stream_put(key, {**state, "t0": time.monotonic() - 5.0, "ck_panel_sig": ""})
+
+        async def _not_found(card_id, ops, seq):
+            writes.append(seq)
+            return adapter._CkResult(False, 300313,
+                                     "ErrMsg: not find elementID : footer; ")
+
+        _orig_batch = raw._ld_ck_batch          # 帧路径那一段要用真替身记账
+        raw._ld_ck_batch = _not_found          # type: ignore[assignment]
+        assert _run(raw._ld_heartbeat_tick(chat, key)) == "failed"
+        st = raw._ld_stream_get(key) or {}
+        assert st.get("ck_footer_missing") is True, st
+        assert st.get("ck_degrade") is None, "元素缺失不是卡级死法"
+        assert len(writes) == 1, writes
+        _run(raw._ld_heartbeat_tick(chat, key))
+        assert len(writes) == 1, f"300313 后仍重复写页脚：{writes}"
+        # A′ 路 4：**帧路径也必须认这个标记** —— 否则每帧重写一个不存在的元素
+        # （每帧一次 300313 + 一条日志）。恢复靠收尾帧的整卡 patch，不是元素级重试。
+        # 把 ck_footer 设成哨兵 + 拨旧 t0：确保"若没有守卫就一定会尝试写"（否则
+        # 整串去重会让这条断言空真 —— 探针实测过）。
+        # ⚠️ 还要把 `_ld_ck_batch` 换回真替身：`_not_found` 是 monkeypatch 上去的，
+        # 它**绕过**替身的记账 ⇒ 帧路径就算真的写了也数不到（第一版断言就是这样空真的）。
+        raw._ld_ck_batch = _orig_batch          # type: ignore[assignment]
+        raw._ld_stream_put(key, {**st, "ck_footer": "SENTINEL",
+                                 "t0": time.monotonic() - 5.0})
+        footers_before = len(_v084_footer_writes(calls))
+        assert _run(raw.send_stream_frame("又出字了", chat_id=chat, turn_id=turn))
+        assert len(_v084_footer_writes(calls)) == footers_before, \
+            "帧路径仍在重写已判死的 footer 元素"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v084_footer_300313_keeps_same_tick_panel_accounted():
+    """V084⑫：页脚撞 300313 时，**同一拍已成功的 panel 写入**不许被回滚（A′ 路 1）。"""
+    chat, turn = "oc_v84k1", "t-k1"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    key = f"{chat}:{turn}"
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        state = raw._ld_stream_get(key) or {}
+        seq0 = int(state.get("ck_seq") or 0)
+        raw._ld_stream_put(key, {**state, "t0": time.monotonic() - 5.0, "ck_panel_sig": ""})
+
+        panel_seqs: list = []
+
+        async def _ok_partial(card_id, element_id, partial, seq):
+            panel_seqs.append(seq)
+            return adapter._CkResult(True, 0, "")
+
+        async def _not_found(card_id, ops, seq):
+            return adapter._CkResult(False, 300313, "ErrMsg: not find elementID : footer; ")
+
+        _orig_batch = raw._ld_ck_batch
+        raw._ld_ck_partial = _ok_partial       # type: ignore[assignment]
+        raw._ld_ck_batch = _not_found          # type: ignore[assignment]
+        assert _run(raw._ld_heartbeat_tick(chat, key)) == "failed"
+        st = raw._ld_stream_get(key) or {}
+        assert st.get("ck_footer_missing") is True, st
+        # panel 那一拍真的成功了 ⇒ 序号与签名都必须落账；回滚会让下一拍**复用刚成功的同号**
+        assert int(st.get("ck_seq") or 0) == seq0 + 2, f"序号被回滚：{st.get('ck_seq')}"
+        assert st.get("ck_panel_sig"), "同拍成功的 panel 签名被回滚了"
+        # 判别力落点：下一拍 panel 签名已落账 ⇒ **不许再写 panel**（回滚版会重发同号）
+        assert panel_seqs == [seq0 + 1], f"panel 被重发/复用同号：{panel_seqs}"
+        assert _run(raw._ld_heartbeat_tick(chat, key)) == "unchanged", "标死后这一拍不该再写"
+        assert panel_seqs == [seq0 + 1], f"回滚导致 panel 重发：{panel_seqs}"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v084_heartbeat_panel_failure_does_not_reuse_seq():
+    """V084⑬：心跳 panel 普通失败也必须落账 seq（连拍复用同号 ⇒ 300317 整卡降级）。"""
+    chat, turn = "oc_v84k2", "t-k2"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    key = f"{chat}:{turn}"
+    seqs: list = []
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        state = raw._ld_stream_get(key) or {}
+        raw._ld_stream_put(key, {**state, "ck_panel_sig": ""})
+
+        async def _fail(card_id, element_id, partial, seq):
+            seqs.append(seq)
+            return adapter._CkResult(False, 500, "ErrMsg: boom")
+
+        raw._ld_ck_partial = _fail           # type: ignore[assignment]
+        assert _run(raw._ld_heartbeat_tick(chat, key)) == "failed"
+        assert _run(raw._ld_heartbeat_tick(chat, key)) == "failed"
+        assert len(seqs) == 2, seqs
+        assert seqs[0] != seqs[1], f"失败后复用了同一个序号：{seqs}"
+        st = raw._ld_stream_get(key) or {}
+        assert st.get("ck_degrade") is None, f"复用同号被当成卡级死法：{st}"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v084_activity_attribution_is_per_chat_not_last_active():
+    """V084⑭（C′ 路 5）：`note_activity(chat)` 必须刷**这个 chat 绑定的会话**，不是"最近活跃那个"。"""
+    chat_a, chat_b = "oc_v84attr_a", "oc_v84attr_b"
+    panel.bind_chat_session(chat_a, "s-attr-a")
+    panel.bind_chat_session(chat_b, "s-attr-b")
+    try:
+        panel.record_tool_started("s-attr-a", "t-a", "TOOL_A", {}, tool_call_id="tc-a")
+        # b 变成"最近活跃"的那个桶，再把 a 的活动时间拨旧
+        panel.record_tool_started("s-attr-b", "t-b", "TOOL_B", {}, tool_call_id="tc-b")
+        with panel._LOCK:
+            panel._STATE["s-attr-a"]["activity_at"] = time.monotonic() - 100.0
+            panel._STATE["s-attr-b"]["activity_at"] = time.monotonic() - 100.0
+        panel.note_activity(chat_a)
+        assert panel.activity_age(chat_a) < 5.0, "chat A 的活动没被刷新"
+        assert panel.activity_age(chat_b) > 50.0, "刷到别的会话去了（归属错）"
+    finally:
+        panel.reset()
+
+
+def test_v084_live_status_reads_running_state_of_that_chat_only():
+    """V084⑮（C′ 路 12）：判据里的 running 工具/澄清必须按 **chat** 归属取，不能取"最近活跃"。"""
+    chat_a, chat_b = "oc_v84own_a", "oc_v84own_b"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat_a)
+    try:
+        # chat_a 有活跃回合 + running 工具；chat_b 是"最近活跃"的桶但**没有** running 工具。
+        assert _run(raw.send_stream_frame("", chat_id=chat_a, turn_id="t-own"))
+        panel.bind_chat_session(chat_a, "s-own-a")
+        panel.record_tool_started("s-own-a", "t-own", "TOOL_A", {}, tool_call_id="tc-a")
+        panel.bind_chat_session(chat_b, "s-own-b")
+        panel.record_tool_started("s-own-b", "t-b", "TOOL_B", {}, tool_call_id="tc-b")
+        panel.record_tool_finished("s-own-b", "t-b", "TOOL_B", status="ok", duration_ms=1,
+                                   tool_call_id="tc-b")
+        # 若判据丢掉了 chat 归属（取"最近活跃"的 s-own-b）⇒ 这里会退化成 generating
+        # ⚠️ 必须同时给 key（存活判据在 key/mid 上，不给 key ⇒ 第 4 条直接不成立）
+        assert raw._ld_live_status(chat_id=chat_a, key=f"{chat_a}:t-own",
+                                   segment_final=False) == \
+            adapter._LD_STATUS_TOOL_RUNNING, "A 的 running 工具没被算上（归属丢了）"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat_a)
+
+
+def test_v084_heartbeat_footer_whole_string_dedupe():
+    """V084⑯（C′ 路 7）：页脚**整串**没变就不许重写（写预算/限流），变了才写。"""
+    chat, turn = "oc_v84dedup", "t-dd"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    key = f"{chat}:{turn}"
+    try:
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        state = raw._ld_stream_get(key) or {}
+        raw._ld_stream_put(key, {**state, "t0": time.monotonic() - 5.0})
+        assert _run(raw._ld_heartbeat_tick(chat, key)) == "wrote"
+        n = len(_v084_footer_writes(calls))
+        assert n >= 1, "第一拍就该写页脚"
+        # 第二拍：t0 没动、面板没变 ⇒ 整串一致 ⇒ 不许再写
+        assert _run(raw._ld_heartbeat_tick(chat, key)) == "unchanged", "整串没变却重写了"
+        assert len(_v084_footer_writes(calls)) == n, "整串没变却重写了页脚"
+        # 拨旧 t0（耗时那一段变了）⇒ 必须写
+        st = raw._ld_stream_get(key) or {}
+        raw._ld_stream_put(key, {**st, "t0": time.monotonic() - 9.0})
+        assert _run(raw._ld_heartbeat_tick(chat, key)) == "wrote", "耗时变了却不写"
+        assert len(_v084_footer_writes(calls)) > n, "耗时变了却不写页脚"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
 
 def main() -> int:

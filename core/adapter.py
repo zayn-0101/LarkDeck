@@ -2335,6 +2335,15 @@ _LD_SYSTEM_NOTICE_PREFIXES: Tuple[str, ...] = (
     "♻ Gateway", "⚠ Gateway", "⚠ Session database",
     "✅ Hermes update", "❌ Hermes update", "⚠ Cron job",
     "✅ Background task", "❌ Background task", "[Background process", "[IMPORTANT:",
+    # V084（B 路 2）：`gateway/run_notifications.py:2000` 的**长任务仍在跑**提示
+    # （`⏳ Background task still running — \`cmd\``）早先没登记 ⇒ 被判成回合卡 ⇒
+    # `send()` 非预览 ⇒ 判据第 1 条 ⇒ 卡上写「✅ 已完成」（既有缺陷，不是 P1 回归；
+    # 但本批主题就是"不许撒谎"，一并收口）。
+    "⏳ Background task",
+    # V084（B′ 路 10）：`tools/process_registry_notifications.py` 的异步委派通知族
+    # （`[ASYNC DELEGATION COMPLETE — …]` / `… BATCH COMPLETE — …` / `… TASK FAILED — …`）
+    # 同样不是回合卡；它们都以这个前缀开头 ⇒ 一条前缀覆盖三族（字面量已在核心源码确认）。
+    "[ASYNC DELEGATION",
     "⏳ Gateway", "⚕ **Update needs your input:**", "◐ Session reset",
     "⚠ Agent session", "⚠ Context compression aborted",
     "ℹ Configured compression", "ℹ Context compression deferred",
@@ -2521,6 +2530,17 @@ def _ld_hb_note(content: str) -> Dict[str, Any]:
 #: 与 ``completed`` 共用中性边框色，唯一的区别是页脚那一段文案。
 _LD_STATUS_WAITING = "waiting"
 
+#: V084（v0.7.16）：**回合进行中**的三个新状态词。用户 2026-10-07 拍板（A 套文案）：
+#: 中间帧的页脚首段原本是空串 ⇒ 与收尾卡只差「少了 ✅」，看起来像已完成。
+#: 判据见 :func:`_ld_live_status`（唯一出口），文案见 `core/i18n.py` 的
+#: ``panel.status_generating`` / ``panel.status_tool_running`` / ``panel.status_waiting_upstream``。
+#: ⚠️ 页脚是 ``markdown`` 元素、不承载 ``i18n_content`` ⇒ 用户可见文案**固定中文**。
+_LD_STATUS_GENERATING = "generating"          # 回合存活、无 running 工具（模型在写）
+_LD_STATUS_TOOL_RUNNING = "tool_running"      # 回合存活、有 running 工具
+_LD_STATUS_WAITING_UPSTREAM = "waiting_upstream"  # 存活但长时间无任何活动证据（降级）
+#: V084：澄清卡在等**人**（不是等工具）—— 与 ``waiting`` 区分：卡上有选项/输入框。
+_LD_STATUS_CLARIFY_WAITING = "clarify_waiting"
+
 
 def _ld_view_status(chat_id: str, *, default: str = "processing") -> str:
     """面板快照的结局词汇（``ok``/``error``/``stopped``）→ **卡级状态词汇**。
@@ -2566,6 +2586,16 @@ def _ld_status_text(status: Any) -> str:
         "completed": "panel.status_ok",
         #: V082：回合还没结束（工具在跑 / 在等人）—— 绝不显示成「已完成」
         _LD_STATUS_WAITING: "panel.status_waiting",
+        #: V084（v0.7.16）：`processing` 是**中间态**的旧口径（seed 建卡 / 非 native
+        #: 预览 / 非收尾 `send()`/`edit_message()` / 判据兜底），过去在这里落成**空串**
+        #: ⇒ 页脚首段空白（B 路 3 + A 路 11：用户原抱怨在非 native 车道原样存在）。
+        #: 映射到 `✍️ 正在生成`：这些调用点的语义就是「回合在跑、还没终稿」，是**诚实**的。
+        "processing": "panel.status_generating",
+        #: V084（v0.7.16）：回合进行中的三个新词（中间帧页脚首段不再为空）
+        _LD_STATUS_GENERATING: "panel.status_generating",
+        _LD_STATUS_TOOL_RUNNING: "panel.status_tool_running",
+        _LD_STATUS_WAITING_UPSTREAM: "panel.status_waiting_upstream",
+        _LD_STATUS_CLARIFY_WAITING: "panel.status_clarify_waiting",
     }.get(str(status or ""))
     return _i18n.t(key) if key else ""
 
@@ -2864,7 +2894,11 @@ class LarkDeckMixin:
                 snap = None
             raw = snap.get("status") if isinstance(snap, dict) else None
         norm = str(raw or "")
-        if norm in ("ok", "completed", "error", "stopped", _LD_STATUS_WAITING):
+        # V084：白名单必须与 `_ld_status_text` 的词表同步 —— 只放行结局词时，新词会被
+        # 当成"未知"替换成 `default_status`（通常空串），页脚又变回空白（C 路审计点名）。
+        if norm in ("ok", "completed", "error", "stopped", _LD_STATUS_WAITING,
+                    _LD_STATUS_GENERATING, _LD_STATUS_TOOL_RUNNING,
+                    _LD_STATUS_WAITING_UPSTREAM, _LD_STATUS_CLARIFY_WAITING):
             status = norm                      # 两套词汇都收（`_ld_status_text` 认）
         else:
             status = default_status            # processing/缺失 ⇒ 收尾 default，绝不脑补
@@ -2872,6 +2906,103 @@ class LarkDeckMixin:
                                started=state.get("t0"),
                                status=status or None,
                                turn_card=True)
+
+    @staticmethod
+    def _ld_note_activity(chat_id: str) -> None:
+        """V084（v0.7.16）C9：刷新「进展证据」时间戳（`panel.activity_at`）。
+
+        四个来源里 adapter 侧只有两个：① 流式帧入口、③ 上游心跳。工具钩子与
+        `post_api_request` 在 panel 侧自己刷（都经 ``panel._touch_locked``）。
+        失败一律吞掉 —— 状态是装饰，绝不许把渲染搞失败（与 `_ld_view_status` 同纪律）。
+        """
+        try:
+            _panel.note_activity(str(chat_id or ""))
+        except Exception:      # pragma: no cover - 防御性
+            pass
+
+    def _ld_turn_alive(self, *, key: str = "", message_id: str = "") -> bool:
+        """V084：**正向**存活判据 —— 该卡对应的回合状态还在 `self._ld_streams` 里。
+
+        ⚠️ 不许用「没收到 `on_session_end`」当存活依据（A/B 路实测证伪）：钩子未注册、
+        迟到、或网关进程重启都会让一张**早已结束**的卡看起来还活着。
+
+        两条查法（A 路 9 / B 路 5 / C 路低：早先 `message_id` 是**死参**）：
+          * `key` 非空 ⇒ 直接查（native 用 `chat:turn_id` 键）；**并且**若两边都带
+            message_id，必须一致 —— 同 key 换卡（DEGRADE/切卡）后旧 mid 不许再算存活。
+          * `key` 为空但 `message_id` 非空 ⇒ 按 mid 反查（`_ld_stream_key_for_message`）：
+            这条给 `edit_message` 车道用（它只拿得到 mid）。
+        两者都没有 ⇒ False（非 native 降级 `send()` 没有 stream 状态，由调用方按
+        "非收尾整卡 = 中间态"另行判断）。
+        """
+        try:
+            mid = str(message_id or "")
+            if key:
+                with self._ld_lock:
+                    state = self._ld_streams.get(key)
+                if not isinstance(state, dict):
+                    return False
+                own = str(state.get("message_id") or "")
+                # 两边都有 mid 才比对（有一边为空说明这条流还没拿到卡片 id，不能据此否定）
+                return not (mid and own and own != mid)
+            if mid:
+                return self._ld_stream_key_for_message(mid) is not None
+            return False
+        except Exception:      # pragma: no cover - 状态是装饰，绝不许把渲染搞失败
+            return False
+
+    def _ld_live_status(self, *, chat_id: str = "", key: str = "",
+                        message_id: str = "", segment_final: bool = False) -> str:
+        """V084（v0.7.16）：**页脚首段（卡面状态词）的唯一判据**。
+
+        判据顺序与理由见 `docs/internal/plans/plan-v0.7.16-status.md` §1（P0 三路审计收敛版）：
+
+        0) `error`/`stopped` 最先判 —— 否则失败回合会被第 1 条的乐观 ✅ 抢走（C 路）；
+        1) `segment_final` ⇒ 乐观终态 ✅：**不许**再要求 `not alive`（正常 finalize 渲染时
+           流往往还没 pop，加了会把最常见的正常收尾写成"正在生成" —— A/B/C 三路同一处阻断）；
+        2) 澄清卡在等**人** ⇒ `⏸ 等待你的选择`；
+        3) 收尾型渲染 + running 工具 ⇒ `⏸ 等待中`（V082 语义，不回退）；
+        4) 存活 + running 工具 ⇒ `⚙️ 正在执行工具`；
+        5) 存活 + 无 running 工具 ⇒ `✍️ 正在生成`；
+        6) 无正向信号 ⇒ `""`（**不说假话**：宁可少说一句）。
+
+        降级（`⏳ 等待响应`）在 P2 接入 `stale_after_s`，只作用于第 5 条，且只认
+        `last_activity_at`（独立字段，四来源显式刷新，读路径绝不刷新）。
+        """
+        try:
+            snap = _panel.snapshot(chat_id) or {}
+            raw = str(snap.get("status") or "")
+        except Exception:      # pragma: no cover - 防御性：状态是装饰
+            raw = ""
+        alive = self._ld_turn_alive(key=key, message_id=message_id)
+        running_tool = False
+        running_clarify = False
+        if chat_id:
+            try:
+                running_tool = bool(_panel_running_tool(chat_id))
+                running_clarify = bool(_panel_has_running_clarify(chat_id))
+            except Exception:  # pragma: no cover - 防御性
+                running_tool = running_clarify = False
+        # 0) 结局词最先判（error/stopped 不许被乐观 ✅ 覆盖）
+        if raw == _panel.STATUS_ERROR and (segment_final or not alive):
+            return "error"
+        if raw == _panel.STATUS_STOPPED and (segment_final or not alive):
+            return "stopped"
+        # 1) 流段收尾 ⇒ 乐观终态（正常收尾就走这里，不依赖 on_session_end 的排队时序）
+        if segment_final and not running_tool and not running_clarify:
+            return "completed"
+        # 2) 等人类（澄清/选项）—— 与"等工具"区分
+        if running_clarify:
+            return _LD_STATUS_CLARIFY_WAITING
+        # 3) 收尾型渲染 + 工具还在跑 ⇒ 保守说"等待"（V082）
+        if segment_final and running_tool:
+            return _LD_STATUS_WAITING
+        # 4/5) 回合存活 ⇒ 显式"进行中"
+        if alive:
+            if running_tool:
+                return _LD_STATUS_TOOL_RUNNING
+            return _LD_STATUS_GENERATING
+        # 6) 无正向信号：不猜、不说假话
+        return ""
 
     @classmethod
     def _ld_footer(cls, chat_id: str = "", started: Optional[float] = None,
@@ -3759,6 +3890,9 @@ class LarkDeckMixin:
         if len(keys) != 1:
             self._ld_hb_log(chat, "无/多 active 主卡抑制")
             return self._ld_hb_result()
+        # V084 C9 来源③：上游心跳本身就是「这个回合还在动」的证据（心跳只写标题、
+        # 绝不写状态词；这里只刷新独立的活动时间戳）。
+        self._ld_note_activity(chat)
         key = keys[0]
         lock = self._ld_card_lock(key)
         if lock.locked():
@@ -3788,7 +3922,12 @@ class LarkDeckMixin:
                     return self._ld_hb_result()
                 view = self._ld_cardview(
                     chat, str(state.get("last_rendered_body") or ""),
-                    status="processing", started=state.get("t0"), message_id=mid)
+                    # V084：上游心跳也是**中间态**（`segment_final=False`）—— 状态词走唯一判据，
+                    # 不再硬编码 processing（心跳只写标题，但面板/页脚要跟判据一致）。
+                    status=self._ld_live_status(
+                        chat_id=chat, key=key, message_id=mid,
+                        segment_final=False) or "processing",
+                    started=state.get("t0"), message_id=mid)
                 if not getattr(view, "panel_enabled", False):
                     return self._ld_hb_result()
                 note = _ld_hb_note(content)
@@ -3920,8 +4059,12 @@ class LarkDeckMixin:
                 # 真回答）⇒ 本回合快照状态，缺省 completed（error/stopped 照常保留）。
                 _preview = (_md.get("expect_edits") is True
                             and _md.get("notify") is not True)
-                turn_status = ("processing" if _preview
-                               else _ld_view_status(chat_id, default="completed"))
+                # V084：**收尾整卡**走唯一判据（`segment_final=True` ⇒ 乐观 ✅ / ❌ / ⛔ /
+                # ⏸）；**非收尾整卡保持旧口径** processing —— 非 native 没有流状态，
+                # "存活"无从判定，读快照会把上一回合的 error/completed 漏进预览
+                # （A3-2/B3-2 的老纪律；非 native 车道本批只承诺不回归）。
+                turn_status = (self._ld_live_status(chat_id=chat_id, segment_final=True)
+                               or "completed") if not _preview else "processing"
                 turn_footer = self._ld_footer(chat_id=chat_id, status=turn_status,
                                              turn_card=True)
                 turn_panel = self._ld_panel(chat_id, report_empty=True)
@@ -4044,8 +4187,11 @@ class LarkDeckMixin:
             # 非收尾**不许**读快照（上一回合 completed 会漏进预览）；只有收尾才用
             # 快照状态并缺省 completed（A3-2/B3-2）。
             if turn_card:
-                turn_status = (_ld_view_status(chat_id, default="completed")
-                               if finalize else "processing")
+                # V084：收尾走唯一判据（`segment_final=True`）；非收尾保持旧口径 processing
+                # （非 native 无流状态可判存活 ⇒ 不读快照，免得上一回合 completed 漏进预览）。
+                turn_status = (self._ld_live_status(
+                    chat_id=chat_id, message_id=message_id, segment_final=True)
+                    or "completed") if finalize else "processing"
                 card = self._ld_render_card(
                     chat_id, content, streaming=not finalize,
                     status=turn_status,
@@ -4590,8 +4736,13 @@ class LarkDeckMixin:
         # ① 封旧卡：整卡 patch（那一刻流式本来就结束 —— 我们**绝不会**再往它写元素）
         sealed = text[offset:cut]
         if _ld_visual_engine() == "structured":
+            # V084（B′ 路高-1）：封旧卡**不许写 ✅** —— 触发封卡的条件是正文超字节预算，
+            # 而**同一回合还在新卡上继续跑**（B′ 实测：封旧卡 ✅、新卡 ✍️，同一回合两张卡
+            # 自相矛盾）。封卡只该表示"这张卡不再更新"，不该表示"回合结束了"。
+            # `entity_skeleton` 不带 `streaming_mode` ⇒ 改状态词**不影响**"终态/折叠"语义。
             sealed_view = self._ld_cardview(
-                chat, sealed + "\n\n" + _i18n.t("stream.continued"), status="completed",
+                chat, sealed + "\n\n" + _i18n.t("stream.continued"),
+                status=self._ld_live_status(chat_id=chat, segment_final=False) or "processing",
                 started=state.get("t0"), message_id=old_message_id)
             # ⚠️ 同上：封旧卡也保留面板（它带着这一张卡的中止/完成色）。
             card = _cards.apply_text_profile(_cardview.entity_skeleton(sealed_view),
@@ -4600,10 +4751,13 @@ class LarkDeckMixin:
             card = self._ld_build_card(sealed + "\n\n" + _i18n.t("stream.continued"),
                                        streaming=False,
                                        panel=self._ld_panel(chat, report_empty=True),
+                                       # V084（B′ 路高-1）：同上 —— 非结构化车道封旧卡
+                                       # 也不许写 ✅（回合还在新卡上继续）。
                                        footer=self._ld_frame_footer({
                                            "chat_id": chat, "t0": state.get("t0"),
-                                           "status": state.get("status")},
-                                           default_status="completed"))
+                                           "status": self._ld_live_status(
+                                               chat_id=chat, segment_final=False) or "processing"},
+                                           default_status="processing"))
         result = await self._ld_update_card(chat, old_message_id, card)
         if result is None or not getattr(result, "success", False):
             logger.warning("[larkdeck] 卡链：封旧卡失败（%s），本帧回落",
@@ -4659,6 +4813,10 @@ class LarkDeckMixin:
             "ck_dead": set(), "ck_decor": {}, "hb_title": "",
             # ⚠️ 元素级死法不能跨卡继承（审计 A/B）：旧卡 panel 判死，不代表新实体 panel 有问题。
             "ck_panel_dead": 0,
+            # ⚠️ 同理：页脚元素级死法（V084 `ck_footer_missing`）**绝不能跨卡继承** ——
+            # 新卡是全新实体、footer 元素刚刚建出来，继承标记会让新卡页脚永远不写
+            # （用户看到的就是"和完整回复生成时差不多"的原抱怨）。
+            "ck_footer_missing": False,
         }
         if structured:
             new_state["engine"] = "structured"
@@ -4944,13 +5102,17 @@ class LarkDeckMixin:
                 _LD_HEARTBEATS.pop(key, None)
 
     async def _ld_heartbeat_tick(self, chat: str, key: str) -> str:
-        """一拍心跳（返回值的四种取值就是这一拍的全部可能结局，测试直接钉这四档）:
+        """一拍心跳（返回值就是这一拍的全部可能结局，测试直接钉这几档）:
 
         * ``"skip"``      —— 帧路径正持着回合写锁（**不排队**：心跳只是补「模型不出字时
-          耗时跳秒」，晚一拍无害；排队反而会把写窗口拖长）。
+          耗时跳秒」，晚一拍无害；排队反而会把写窗口拖长），或 seed 后面板闸门还没开。
         * ``"stop"``      —— 回合状态没了 / 不是结构化 / 已降级 ⇒ 心跳该收工。
-        * ``"unchanged"`` —— 面板签名与已写成功的那份一致 ⇒ 这一拍没有值得发的写。
-        * ``"wrote"``     —— 真的写了一次 panel（序号从**锁内重读**的 state 里取）。
+        * ``"unchanged"`` —— 面板签名与页脚整串都与已写成功的那份一致 ⇒ 没有值得发的写。
+        * ``"wrote"``     —— 真的写了元素（**panel 与 footer 是两笔**，各自独立判定：
+          V084 起面板缺失不再连页脚一起跳过，所以 `"wrote"` 也可能是**只写了页脚**）。
+        * ``"failed"``    —— 写了但失败（非卡级死法）：**如实上报**，不伪装成 `"unchanged"`；
+          已消费的 `seq` 会落账，避免下一拍复用同号（飞书 300317）。
+        * ``"dead"``      —— 撞上卡级死法码 ⇒ 已标降级，帧路径会改走回落车道。
         """
         lock = self._ld_card_lock(key)
         if lock.locked():
@@ -4967,47 +5129,110 @@ class LarkDeckMixin:
                 return "stop"
             if state.get("ck_panel_dead"):
                 return "stop"               # V075：合卡写已判死，心跳收工（帧路径会 DEGRADE）
-            if state.get("ck_panel_missing") or not state.get("ck_has_panel"):
-                return "unchanged"          # V075：没有 panel 元素，心跳没有可写的东西
+            # V084（A 路 4）：面板缺失**不等于**页脚缺失 —— 过去这里直接 `return "unchanged"`
+            # 把页脚那一笔也跳过了，`unified_panel=false`（`ck_has_panel=False`）时模型不出字
+            # 就**没有任何东西在动**（状态词+耗时冻结），恰好废掉 C4 的"唯一还在动的东西"。
+            panel_usable = not (state.get("ck_panel_missing") or not state.get("ck_has_panel"))
+            if not panel_usable and _cards.CARDKIT_FOOTER_ID not in self._ld_ck_elems(state):
+                return "unchanged"          # 面板与页脚都没有 ⇒ 真的没东西可写
             if self._ld_panel_is_stale(chat, state):
                 return "skip"               # V075 P2：seed 后、新回合清空前不画旧 snapshot
+            # V084（v0.7.16）：状态词走**唯一判据** `_ld_live_status`，不再硬编码
+            # `status="processing"`。心跳只可能在回合存活期间跑（state 还在 `_ld_streams`
+            # 里），判据只会给出 live 词；`segment_final=False` —— 心跳**永远不许**自己写 ✅。
+            live_status = self._ld_live_status(
+                chat_id=chat, key=key, message_id=state.get("message_id"),
+                segment_final=False) or "processing"
             view = self._ld_cardview(
-                chat, str(state.get("last_rendered_body") or ""), status="processing",
+                chat, str(state.get("last_rendered_body") or ""), status=live_status,
                 started=state.get("t0"), message_id=state.get("message_id"))
             self._ld_apply_hb_title(view, state)
             # ⚠️ **不许**在这里自己拼标题：帧路径的标题由 `_ld_cardview` 按「回合墙钟 +
             # 真实步数」统一算（V4.5）。曾经这里用墙钟 + **trim 后**的步数另算一份，
             # 结果同一张卡的两帧在 30.0s/0 步 与 2.0s/0 步 之间互跳（审计 B 实测）。
-            if not view.panel_enabled:
-                return "unchanged"          # 面板被配置关掉 ⇒ 心跳没有可写的东西
+            panel_usable = panel_usable and bool(getattr(view, "panel_enabled", False))
             partial, signature, round_updates = _ck_panel_partial_for_state(view.panel, state)
-            if signature == state.get("ck_panel_sig"):
+            footer_text = view.footer or " "
+            panel_changed = bool(panel_usable and signature != state.get("ck_panel_sig"))
+            # V084：页脚也要跟着心跳走 —— 「模型不出字」时它是**唯一**还在动的东西
+            # （状态词 + 实时耗时）。⚠️ 判定必须在 `unchanged` 早退**之前**：否则面板
+            # 签名没变就把状态词/耗时一起跳过，用户看到的页脚会冻结（C 路审计点名）。
+            footer_changed = bool(
+                _cards.CARDKIT_FOOTER_ID in self._ld_ck_elems(state)
+                and not state.get("ck_footer_missing")      # A 路 3：元素已判死，别再重试
+                and state.get("ck_footer") != footer_text)
+            if not panel_changed and not footer_changed:
                 return "unchanged"
-            seq = _ck_seq(state) + 1
-            res = await self._ld_ck_partial(
-                str(state["card_id"]), "panel", partial, seq)
-            if not res.ok:
-                # ⚠️ 失败必须**说出来**（审计 A 中-3：旧写法把「写失败」伪装成 unchanged、
-                # 把「卡级死法」伪装成 stop，tick 里一行日志都不打、也不落账 ⇒
-                # 面板耗时冻结 + 每 3 秒静默重试同号，真机上完全无迹可寻）。
-                if int(res.code) == 300313:
-                    # 元素不存在：标死即可，别把它当车道死法、也别每 3 秒重试同号。
-                    self._ld_stream_put(key, dict(state, ck_panel_missing=True))
+            seq = _ck_seq(state)
+            updated = dict(state)
+            if panel_changed:
+                seq += 1
+                res = await self._ld_ck_partial(
+                    str(state["card_id"]), "panel", partial, seq)
+                if not res.ok:
+                    # ⚠️ 失败必须**说出来**（审计 A 中-3：旧写法把「写失败」伪装成 unchanged、
+                    # 把「卡级死法」伪装成 stop，tick 里一行日志都不打、也不落账 ⇒
+                    # 面板耗时冻结 + 每 3 秒静默重试同号，真机上完全无迹可寻）。
+                    if int(res.code) == 300313:
+                        # 元素不存在：标死即可，别把它当车道死法、也别每 3 秒重试同号。
+                        # ⚠️ 用 `updated`（**不是拍首的 state**）+ 落账已消费的 seq：
+                        # 否则会把同拍/前拍已经成功的 panel 签名与序号一起回滚 ⇒
+                        # 下一拍复用刚成功的同一个 (seq, uuid) ⇒ 200770 死循环 / 300317 降级。
+                        self._ld_stream_put(key, dict(
+                            updated, ck_panel_missing=True, ck_seq=seq))
+                        _log_ck_decor_write_failed_once(
+                            [_CkOp("panel", "", _CK_ROLE_PANEL)], res.code, msg=res.msg)
+                        return "failed"
+                    if res.code in _CARD_DEATH_DECOR_CODES:
+                        self._ld_stream_put(key, dict(
+                            updated, ck_degrade=res.code, engine_stamp="degraded",
+                            card_id="", ck_seq=seq))
+                        _log_ck_degrade_once(res.code)
+                        return "dead"
                     _log_ck_decor_write_failed_once(
                         [_CkOp("panel", "", _CK_ROLE_PANEL)], res.code, msg=res.msg)
+                    # ⚠️ 这一笔已经消费掉 seq ⇒ 必须落账（与页脚失败同一条纪律）：
+                    # 不落账 ⇒ 下一拍复用同号 ⇒ 飞书 300317 ⇒ 被当成卡级死法整卡降级。
+                    updated["ck_seq"] = seq
+                    _ck_window_note(updated, time.monotonic())
+                    self._ld_stream_put(key, updated)
                     return "failed"
-                if res.code in _CARD_DEATH_DECOR_CODES:
-                    self._ld_stream_put(key, dict(
-                        state, ck_degrade=res.code, engine_stamp="degraded", card_id=""))
-                    _log_ck_degrade_once(res.code)
-                    return "dead"
-                _log_ck_decor_write_failed_once(
-                    [_CkOp("panel", "", _CK_ROLE_PANEL)], res.code, msg=res.msg)
-                return "failed"
-            updated = dict(state)
-            updated["ck_panel_sig"] = signature
+                updated["ck_panel_sig"] = signature
+                updated.update(round_updates)
+            if footer_changed:
+                seq += 1
+                fres = await self._ld_ck_batch(
+                    str(state["card_id"]),
+                    [_CkOp(_cards.CARDKIT_FOOTER_ID, footer_text, _CK_ROLE_DECOR)], seq)
+                if fres.ok:
+                    updated["ck_footer"] = footer_text
+                else:
+                    _log_ck_decor_write_failed_once(
+                        [_CkOp(_cards.CARDKIT_FOOTER_ID, footer_text, _CK_ROLE_DECOR)],
+                        fres.code, msg=fres.msg)
+                    if int(fres.code) == 300313:
+                        # 元素不存在（A 路 3）：标死，别每 3 秒重试同一个不存在的元素 ——
+                        # 与面板那一拍**对称**（旧写法只记日志，落尾谎报 `wrote`、
+                        # 每拍还涨序号）。标死后本回合 tick 早退。
+                        self._ld_stream_put(key, dict(
+                            updated, ck_footer_missing=True, ck_seq=seq))
+                        return "failed"
+                    if fres.code in _CARD_DEATH_DECOR_CODES:
+                        # 只改页脚时撞上卡级死法（面板那一拍没变 ⇒ 上面那条分支没跑到）：
+                        # 与面板失败同一处置，别每 3 秒重试同一个死号。
+                        self._ld_stream_put(key, dict(
+                            updated, ck_degrade=fres.code, engine_stamp="degraded",
+                            card_id="", ck_seq=seq))
+                        _log_ck_degrade_once(fres.code)
+                        return "dead"
+                    # 其它失败（A 路 2）：**不许**落尾谎报 `wrote`，与面板那一拍一致；
+                    # 但**必须**把这一拍已经消费掉的 seq 落账（否则下一拍重发同一个
+                    # `seq` ⇒ 飞书 `300317 sequence number compare failed` ⇒ 误判卡级死法）。
+                    updated["ck_seq"] = seq
+                    _ck_window_note(updated, time.monotonic())
+                    self._ld_stream_put(key, updated)
+                    return "failed"
             updated["ck_seq"] = seq
-            updated.update(round_updates)
             _ck_window_note(updated, time.monotonic())
             self._ld_stream_put(key, updated)
             return "wrote"
@@ -5156,7 +5381,12 @@ class LarkDeckMixin:
             header_title=_i18n.i18n_text(
                 {"processing": "card.status_processing", "completed": "panel.status_ok",
                  "stopped": "panel.status_stopped", "error": "panel.status_error",
-                 _LD_STATUS_WAITING: "panel.status_waiting"}.get(
+                 _LD_STATUS_WAITING: "panel.status_waiting",
+                 # V084：进行中的四个新词（顶栏默认关，登记只为将来打开时不显示"处理中"）
+                 _LD_STATUS_GENERATING: "panel.status_generating",
+                 _LD_STATUS_TOOL_RUNNING: "panel.status_tool_running",
+                 _LD_STATUS_WAITING_UPSTREAM: "panel.status_waiting_upstream",
+                 _LD_STATUS_CLARIFY_WAITING: "panel.status_clarify_waiting"}.get(
                      status, "card.status_processing")))
 
     @staticmethod
@@ -5399,7 +5629,12 @@ class LarkDeckMixin:
             self._ld_stream_put(key, state)
             offset = int(state.get("ck_offset") or 0)
             visible = display[offset:]
-        status = _ld_view_status(chat, default="processing" if not finalize else "completed")
+        # V084：状态词走**唯一判据**。`segment_final=finalize` —— 收尾帧照旧乐观 ✅
+        # （**不许**要求"流已 pop"：正常 finalize 渲染时流往往还在，计划 §1 的阻断点）；
+        # 中间帧只会拿到 live 词或空串（空串时回落旧口径 processing）。
+        status = self._ld_live_status(
+            chat_id=chat, key=key, message_id=state.get("message_id"),
+            segment_final=bool(finalize)) or ("processing" if not finalize else "completed")
         # V075：finalize 或**真实可见正文**变化 ⇒ 清心跳标题；否则把 hb_title 合并进 panel。
         # ⚠️ 不能用 raw `text` 判定：own 模式下 core 帧会叠加工具进度行，进度变化会把
         # Working 标题误擦掉（审计 A 实测）。`last_rendered_body` 是这张卡上一次真正渲染的正文段。
@@ -5485,6 +5720,11 @@ class LarkDeckMixin:
                 live.update(round_updates)
         footer_text = self._ld_frame_footer({**state, "status": status}) or " "
         if (_cards.CARDKIT_FOOTER_ID in self._ld_ck_elems(state)
+                # V084（A′ 路 4）：元素级死法必须**跨路径一致** —— tick 标死之后，
+                # 帧路径不许再每帧重写一个不存在的元素（每帧 300313 + 日志）。
+                # 恢复路径是收尾帧的**整卡 patch**（它会把 footer 元素重新建出来，
+                # 随后本回合状态被丢弃 ⇒ 标记自然消失），不是元素级重试。
+                and not state.get("ck_footer_missing")
                 and state.get("ck_footer") != footer_text):
             seq += 1
             fres = await self._ld_ck_batch(
@@ -5564,12 +5804,17 @@ class LarkDeckMixin:
         chat = str(chat_id or "").strip()
         if not chat or not getattr(self, "_client", None):
             return self._ld_stream_fail("没有 chat / SDK 客户端")
+        # V084（v0.7.16）C9 来源①：上游给了我们一帧 = **进展证据**（成败都算 ——
+        # 写失败也说明模型确实在产出）。刷新独立字段 `activity_at`，供状态降级判据用。
+        self._ld_note_activity(chat)
         key = f"{chat}:{turn_id}" if turn_id else chat
         state = self._ld_stream_get(key)
         # Design D：帧状态在本帧入口解析一次；下面所有 footer 调用都显式带上它，
         # 不再依赖 on_session_end 的排队时序（收尾缺省 completed、运行中 processing）。
-        frame_status = _ld_view_status(
-            chat, default="processing" if not finalize else "completed")
+        # V084：状态词走**唯一判据**（`segment_final=finalize`；理由同 structured 车道）。
+        frame_status = self._ld_live_status(
+            chat_id=chat, key=key, message_id=(state or {}).get("message_id"),
+            segment_final=bool(finalize)) or ("processing" if not finalize else "completed")
         engine = _ld_visual_engine()  # V0：生产读取配置；V1 structured canary
         if engine == "structured" and not (state and state.get("engine_stamp") == "degraded"):
             return await self._ld_stream_frame_structured(
@@ -6785,7 +7030,13 @@ class LarkDeckMixin:
             if not card_id:
                 logger.info("[larkdeck] clarify 主卡刷新跳过：card_id 为空（chat=%s）", chat)
                 return False
-            view = self._ld_cardview(chat, body_text, status="processing",
+            view = self._ld_cardview(chat, body_text,
+                                     # V084：点击澄清后卡上要显示**当前**状态词
+                                     # （唯一判据；用户刚答完 ⇒ 通常是「正在生成」/「正在执行工具」）。
+                                     status=self._ld_live_status(
+                                         chat_id=chat, key=key,
+                                         message_id=state.get("message_id"),
+                                         segment_final=False) or "processing",
                                      started=state.get("t0"),
                                      message_id=state.get("message_id"))
             self._ld_apply_hb_title(view, state)
@@ -6816,6 +7067,29 @@ class LarkDeckMixin:
             if wrote.ok:
                 live["ck_seq"] = seq
                 live["last_rendered_body"] = body_text
+                # V084（A 路 1）：页脚也必须跟着刷新 —— 边界帧写的是「⏸ 等待你的选择」，
+                # 点击后 `mark_clarify_clicked` 已把工具置 ok，卡面却还挂着"等待你的选择"
+                # （真机阻塞工具返回前约 37s）。判据已经在上面算过，这里把同一结果写出去。
+                footer_text = view.footer or " "
+                if (_cards.CARDKIT_FOOTER_ID in self._ld_ck_elems(state)
+                        and live.get("ck_footer") != footer_text):
+                    seq += 1
+                    fres = await self._ld_ck_batch(
+                        card_id,
+                        [_CkOp(_cards.CARDKIT_FOOTER_ID, footer_text, _CK_ROLE_DECOR)], seq)
+                    if fres.ok:
+                        live["ck_seq"] = seq
+                        live["ck_footer"] = footer_text
+                    else:
+                        # 页脚是装饰：失败**不许**把已经成功的正文/面板刷新整体判失败
+                        # （正文已写出去、用户已经看到），只如实记一条日志。
+                        # ⚠️ 但这一笔已经**消费掉了 seq** ⇒ 必须落账（否则下一次写
+                        # 复用同号 ⇒ 飞书 300317「sequence number compare failed」⇒
+                        # 误判卡级死法）；与 `_ld_heartbeat_tick` 的页脚失败处置同一条纪律。
+                        live["ck_seq"] = seq
+                        _log_ck_decor_write_failed_once(
+                            [_CkOp(_cards.CARDKIT_FOOTER_ID, footer_text, _CK_ROLE_DECOR)],
+                            fres.code, msg=fres.msg)
                 # `ck_clarify_waiting` 保留：真正的下一帧到达时会清掉它；在到达之前，
                 # 再点、post_tool_call 后再次刷新仍能定位到这张卡。
                 self._ld_stream_put(key, live)
@@ -6826,7 +7100,12 @@ class LarkDeckMixin:
             logger.info("[larkdeck] clarify 主卡元素写入失败（code=%s），整卡 patch 兜底",
                         wrote.code)
             card = self._ld_render_card(
-                chat, body_text, streaming=False, status="processing",
+                chat, body_text, streaming=False,
+                # V084：`status_locked=True` 的调用方**必须**传唯一判据的结果
+                # （不是字面 processing）—— 否则这条兜底路径会把状态词写回旧口径。
+                status=self._ld_live_status(
+                    chat_id=chat, key=key, message_id=state.get("message_id"),
+                    segment_final=False) or "processing",
                 panel=self._ld_panel(chat, report_empty=True), footer=None,
                 started=state.get("t0"), message_id=state.get("message_id"),
                 turn_card=True, status_locked=True)
