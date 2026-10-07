@@ -4370,7 +4370,7 @@ class LarkDeckMixin:
         turn = str(kwargs.get("turn_id") or "")
         # V084 P2（C5）：**收尾之后同一回合又来帧** ⇒ 把暂存的原卡状态放回去，
         # 这一帧就写在原卡上、页脚按判据重算成进行中词（否则旧卡写了 ✅ 永不自纠）。
-        self._ld_resume_finalized_stream(str(chat_id or ""), turn)
+        resumed = self._ld_resume_finalized_stream(str(chat_id or ""), turn)
         try:
             ok = await self._ld_stream_frame(
                 text, finalize=finalize, chat_id=chat_id, reply_to=reply_to,
@@ -4381,12 +4381,16 @@ class LarkDeckMixin:
             # 而「native 被停用 → 输出回落 send/edit（可能变成多条纯文本）」这条最强诊断
             # 会缺失。走 `_ld_stream_fail` 让「为什么掉 native」始终留痕（限流 30s 一条）。
             logger.warning("[larkdeck] native 流式帧异常，交由核心回落", exc_info=True)
+            if resumed:
+                self._ld_unresume_finalized(chat_id, turn)
             self._ld_remember_failed_frame(chat_id, turn, text)
             return self._ld_stream_fail(f"帧处理异常：{exc}")
         if not ok and not finalize:
             # v0.7.0 P1：记下失败帧文本（own 模式 F4 识别用），并打开“native 回落窗口”。
             # 任何 non-finalize 帧失败（不只空 seed）都会让 core 可能 `_first_send(合成文本)`；
             # own 模式 send() 必须在这个短窗口内拒绝 core 合成进度/密钥当正文。
+            if resumed:
+                self._ld_unresume_finalized(chat_id, turn)
             self._ld_remember_failed_frame(chat_id, turn, text)
             self._ld_note_seed_failure(str(chat_id or ""), turn)
         elif ok and not finalize:
@@ -6526,7 +6530,10 @@ class LarkDeckMixin:
         state = entry.get("state")
         if not isinstance(state, dict) or not state.get("message_id"):
             return False
-        self._ld_stream_put(key, dict(state))
+        # 打一个"我是从收尾句柄恢复出来的"标记：续写帧一旦失败，调用方要能凭它把
+        # 这份状态弹掉（否则它既不是活跃回合、又留在 `_ld_streams` 里 ⇒ `/stop` 会把
+        # 那张**已经写着 ✅ 的卡**重绘成中止色，见 `_ld_unresume_finalized`）。
+        self._ld_stream_put(key, {**state, "ck_resumed_from_final": True})
         # ⚠️ **不重启心跳**（审计 B 的 B-3 结论）：收尾已经把整卡 patch 成非流式，续写只能走
         # 整卡 patch 车道（暂存状态已标 `engine_stamp="degraded"`），而心跳 tick 见 degraded
         # 立刻 `"stop"` —— 重启它等于起一个马上自杀的任务，还会让"页脚耗时继续跳"这个
@@ -6535,6 +6542,30 @@ class LarkDeckMixin:
         logger.info("[larkdeck] 收尾后同回合继续：回到原卡继续写，页脚将回写进行中词"
                     "（chat=%s turn=%s）", chat[:16], str(turn_id or "")[:16])
         return True
+
+    def _ld_unresume_finalized(self, chat_id: Optional[str], turn_id: str) -> None:
+        """续写帧**失败**时，把恢复出来的那份状态弹掉（审计 B 的 B-4）。
+
+        为什么必须弹：恢复出来的状态是"**已经收尾的卡**"的副本。续写帧一旦失败，它就
+        既不是活跃回合、又留在 `_ld_streams` 里 —— 而 `/stop` 的候选只从 `_ld_streams`
+        取（`_ld_redraw_stopped_keys`）⇒ 会把那张**已经写着 ✅ 的卡**当成"正在跑的回合"
+        重绘成中止色，直接违反"收尾行为不变"。弹掉后 `/stop` 找不到候选，与 C5 之前
+        的行为一致（宁可不重绘，也不把已完成卡改成中止色）。
+
+        只弹"确实是恢复出来的"那份（`ck_resumed_from_final`）：`ck_degrade` 的续写帧
+        返回 False 但**卡片仍在被整卡 patch 维护**，那份状态必须留着。
+        """
+        chat = str(chat_id or "").strip()
+        turn = str(turn_id or "").strip()
+        if not chat or not turn:
+            return
+        key = f"{chat}:{turn}"
+        state = self._ld_stream_get(key)
+        if not isinstance(state, dict) or not state.get("ck_resumed_from_final"):
+            return
+        if state.get("ck_degrade"):        # 降级但还在写同一张卡 ⇒ 是活跃状态，不能弹
+            return
+        self._ld_stream_pop(key)
 
     # ------------------------------------------------- 显示 chrome（工具行是否进正文）
     def format_tool_event(self, event: Any, *, mode: str = "all",

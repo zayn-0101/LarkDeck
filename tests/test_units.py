@@ -17151,6 +17151,31 @@ def test_v084_no_turn_id_never_resumes_finalized_card():
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
 
+def test_v084_failed_resume_frame_leaves_no_zombie():
+    """V084㉒（P2 C5 · 审计 B 第二遍的 B-4 反例）：续写帧**失败**时不许留僵尸状态。
+
+    恢复出来的那份状态是"**已经收尾的卡**"的副本。帧一旦失败，它既不是活跃回合、又留在
+    `_ld_streams` 里 —— 而 `/stop` 的候选只从 `_ld_streams` 取 ⇒ 会把那张**已经写着 ✅
+    的卡**当成"正在跑的回合"重绘成中止色（违反"收尾行为不变"）。修后必须弹掉。
+    """
+    chat, turn = "oc_v84zombie", "t-zombie"
+    key = f"{chat}:{turn}"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    try:
+        assert _run(raw.send_stream_frame("正文", chat_id=chat, turn_id=turn))
+        assert _run(raw.send_stream_frame("正文完", finalize=True,
+                                          chat_id=chat, turn_id=turn))
+        assert key in raw._ld_finalized, "收尾必须暂存"
+        # 让续写帧**必然失败**：抽掉 SDK 客户端（帧路径见不到 client 直接 `_ld_stream_fail`）
+        raw._client = None
+        assert not _run(raw.send_stream_frame("继续", chat_id=chat, turn_id=turn)), \
+            "没有客户端时续写帧必须返回 False（交给核心回落）"
+        assert key not in raw._ld_streams, \
+            "失败的续写帧不许把收尾状态留成僵尸（/stop 会把 ✅ 卡重绘成中止色）"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
 def main() -> int:    # `--only <子串>`：只跑名字里含该子串的用例。**专供变异判读**（审计 A：单条变异 idle 28s、
     # 重载 89s，秒级判读只能靠「preflight + 只跑受影响的那几条用例」）。不是发布门禁 ——
     # 它跑完打印的是 `N/M passed`，而 `mutate_check._classify` 要的正是这个收尾语。
