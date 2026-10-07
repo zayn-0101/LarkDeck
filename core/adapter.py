@@ -6674,8 +6674,8 @@ class LarkDeckMixin:
         # 整卡 patch 车道（暂存状态已标 `engine_stamp="degraded"`），而心跳 tick 见 degraded
         # 立刻 `"stop"` —— 重启它等于起一个马上自杀的任务，还会让"页脚耗时继续跳"这个
         # **做不到的承诺**留在代码里。耗时会在每一帧整卡 patch 时重算并写出去。
-        # 可 grep 的留痕（P3 C8 口径：固定 `key=value` 字段 + 值**不截断**，
-        # 与「状态决策」行同一套字段习惯 —— 截断会让"到底是哪张卡"变成猜谜）。
+        # 可 grep 的留痕（P3 C8 口径：固定 `key=value` 字段，值走 `_ld_log_value`
+        # —— 单行无空格、最多 48 字符，足够放下 key 与 mid）。
         logger.info("[larkdeck] 收尾后同回合继续 " + " ".join(
             f"{name}={_ld_log_value(value)}" for name, value in {
                 "key": key, "mid": str(state.get("message_id") or ""),

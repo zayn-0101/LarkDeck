@@ -17052,7 +17052,9 @@ def test_v084_stale_after_s_value_semantics():
     # 非法：布尔（bool 是 int 子类！）、非整数浮点、非数字字符串、容器 ⇒ 一律退回 200
     warned: list = []
     _orig_warn = adapter.logger.warning
-    _had_key = "stale_after_s" in adapter._CONFIG
+    # ⚠️ 必须**先**捕获原值再改：`_CONFIG` 由 `dict(_DEFAULTS)` 初始化，而
+    #    `stale_after_s` 就在 `_DEFAULTS` 里 ⇒ 它**恒在**（旧写法那个 `else: pop`
+    #    分支永远走不到，属不可达代码，审计 A 实测确认）。
     _prev = adapter._CONFIG.get("stale_after_s")
     adapter.logger.warning = lambda *a, **k: warned.append(a)   # type: ignore[assignment]
     try:
@@ -17076,10 +17078,7 @@ def test_v084_stale_after_s_value_semantics():
     finally:
         adapter.logger.warning = _orig_warn                  # type: ignore[assignment]
         # 绝不把状态留给后面的用例（本项目明令禁止的跨用例污染）
-        if _had_key:
-            adapter._CONFIG["stale_after_s"] = _prev
-        else:
-            adapter._CONFIG.pop("stale_after_s", None)
+        adapter._CONFIG["stale_after_s"] = _prev
 
 
 def test_v084_stale_after_s_degrades_only_the_generating_rule():
@@ -17193,8 +17192,9 @@ def test_v084_same_turn_frame_after_finalize_rewrites_footer_on_same_card():
     把页脚回写成进行中词。
 
     这正是用户报的原始场景（"选完卡片 Footer 显示已完成，其实工具调用还在继续"）。
-    断言三件事：① 没有新建卡（还是原 message_id）；② 页脚最后一次写的不再是「已完成」
-    而是进行中词；③ 暂存句柄被消费掉（不是留着反复恢复）。
+    断言三件事：① 没有新建卡（还是原 message_id）；② 同一张卡被**整卡 patch** 重写了一次
+    （M5 的回写；页脚内容这个假 CardKit 不记账 ⇒ 由真机判据 1 的截图取证）；
+    ③ 暂存句柄被消费掉（不是留着反复恢复）。
     """
     chat, turn = "oc_v84m5", "t-m5"
     key = f"{chat}:{turn}"
