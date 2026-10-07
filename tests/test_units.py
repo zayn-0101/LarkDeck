@@ -5207,6 +5207,7 @@ def test_markdown_hygiene_covers_every_whole_text_writer_not_just_native_finaliz
         # 它不是正文。判据 = **恰好两条 markdown**（正文 + 页脚），正文**逐字原样**、
         # 页脚必须是进行中词（审计 C：原来 `== [raw]` 会被新页脚打红；但放宽成
         # "列表里含 raw" 会让"正文被复制一份 / 被加料 / 多出别的 markdown"漏过）。
+        assert ck_updates, "中间帧没写出任何 CardKit 元素（测试前提不成立）"
         _ck_card = ck_updates[-1]["content"]
         _ck_card = json.loads(_ck_card) if isinstance(_ck_card, str) else _ck_card
         _mds = [e for e in _ck_card["body"]["elements"] if e.get("tag") == "markdown"]
@@ -15092,7 +15093,9 @@ def test_v075_heartbeat_merges_into_active_panel_without_new_card():
         # 所以改成核「最后一次写出的面板载荷」仍带 ⏳ 心跳标题（断言没有放宽，只换了载体）。
         tick_res = _run(raw._ld_heartbeat_tick(chat, key))
         assert tick_res in ("unchanged", "wrote"), tick_res
-        panel_blob_after_tick = json.dumps(_v075_panel_partials(calls)[-1], ensure_ascii=False)
+        partials_after_tick = _v075_panel_partials(calls)
+        assert partials_after_tick, "本拍之前没有任何 panel 载荷（测试前提不成立）"
+        panel_blob_after_tick = json.dumps(partials_after_tick[-1], ensure_ascii=False)
         assert "⏳" in panel_blob_after_tick, panel_blob_after_tick
 
         # 第二拍仍然只更新同卡 panel；上游拿不到 mid，所以只能继续 send。
@@ -15223,7 +15226,8 @@ def test_v075_heartbeat_panel_missing_is_noop_not_degrade():
         assert len(calls["batch"]) == batch_before + 1, "面板缺失时心跳没写页脚"
         wrote_elems = [a["params"]["element_id"] for a in calls["batch"][-1][0]]
         assert wrote_elems == ["footer"], f"无 panel 的卡上写了别的元素：{wrote_elems}"
-        assert "⚙️ 正在执行工具" in calls["batch"][-1][0][0]["params"]["partial_element"]["content"]
+        footer_content = calls["batch"][-1][0][0]["params"]["partial_element"]["content"]
+        assert "⚙️ 正在执行工具" in footer_content, footer_content
     finally:
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
@@ -15568,7 +15572,9 @@ def test_v075_progress_frame_keeps_hb_title():
         # 所以改成核「最后一次写出的面板载荷」仍带 ⏳ 心跳标题（断言没有放宽，只换了载体）。
         tick_res = _run(raw._ld_heartbeat_tick(chat, key))
         assert tick_res in ("unchanged", "wrote"), tick_res
-        panel_blob_after_tick = json.dumps(_v075_panel_partials(calls)[-1], ensure_ascii=False)
+        partials_after_tick = _v075_panel_partials(calls)
+        assert partials_after_tick, "本拍之前没有任何 panel 载荷（测试前提不成立）"
+        panel_blob_after_tick = json.dumps(partials_after_tick[-1], ensure_ascii=False)
         assert "⏳" in panel_blob_after_tick, panel_blob_after_tick
     finally:
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
@@ -16542,7 +16548,8 @@ def test_v084_frame_footer_carries_live_word_and_finalize_keeps_completed():
         # 工具开始 ⇒ 页脚换成「正在执行工具」
         panel.record_tool_started(chat, turn, "terminal", {"command": "ls"}, "tc1")
         assert _run(raw.send_stream_frame("第一段，工具开始", chat_id=chat, turn_id=turn))
-        assert "⚙️ 正在执行工具" in _v084_footer_writes(calls)[-1], _v084_footer_writes(calls)
+        footers = _v084_footer_writes(calls)
+        assert footers and "⚙️ 正在执行工具" in footers[-1], footers
         # 收尾帧：**流状态仍然在** 也必须 ✅（不许把正常收尾写成「正在生成」）
         assert raw._ld_stream_get(f"{chat}:{turn}"), "前提：收尾这一刻流状态还在"
         panel.record_tool_finished(chat, turn, "terminal", status="ok", duration_ms=10,
@@ -16581,12 +16588,13 @@ def test_v084_heartbeat_tick_writes_status_footer():
 
 
 def test_v084_activity_age_is_explicit_and_reads_never_refresh_it():
-    """V084⑤：`activity_at` 只由**四个来源**显式刷新；读路径绝不刷新（A 路 10 反例）。"""
+    """V084⑤：`activity_at` 只由**显式入口**刷新（帧 / 心跳 / 工具 / 推理 /
+    post_api_request）；读路径绝不刷新（A 路 10 反例）。"""
     panel.reset()
     chat = "oc_v84a"
     try:
         assert panel.activity_age(chat) is None, "没有记录必须返回 None（不得据此降级）"
-        # 桶在、但**没有** activity_at（模拟 V084 之前的旧桶 / 非四个来源建的桶）：
+        # 桶在、但**没有** activity_at（模拟 V084 之前的旧桶 / 非显式入口建的桶）：
         # 语义同样是「不知道」⇒ 必须返回 None（返回 0 会让每一张卡都被判降级）。
         with panel._LOCK:
             panel._STATE["s-v84-legacy"] = {
@@ -16735,7 +16743,8 @@ def test_v084_heartbeat_footer_failure_is_reported_not_hidden():
     try:
         assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
         state = raw._ld_stream_get(key) or {}
-        raw._ld_stream_put(key, {**state, "t0": time.monotonic() - 5.0, "ck_panel_sig": ""})
+        raw._ld_stream_put(key, {**state, "t0": time.monotonic() - 5.0,
+                                 "ck_panel_sig": "", "ck_footer": "OLD"})
 
         async def _fail_batch(card_id, ops, seq):
             return adapter._CkResult(False, 500, "ErrMsg: boom")
@@ -16744,7 +16753,7 @@ def test_v084_heartbeat_footer_failure_is_reported_not_hidden():
         seq0 = int(state.get("ck_seq") or 0)
         assert _run(raw._ld_heartbeat_tick(chat, key)) == "failed"
         st = raw._ld_stream_get(key) or {}
-        assert st.get("ck_footer") is None, "写失败不许把页脚记成已写"
+        assert st.get("ck_footer") == "OLD", "写失败把页脚记成了新值"
         assert st.get("ck_degrade") is None, "普通失败不是卡级死法"
         # A′ 路 MA：这一笔已消费的 seq 必须落账（不落账 ⇒ 下一拍复用同号 ⇒ 300317）
         assert int(st.get("ck_seq") or 0) == seq0 + 2, f"页脚失败没落账 seq：{st.get('ck_seq')}"
@@ -16814,7 +16823,6 @@ def test_v084_footer_300313_keeps_same_tick_panel_accounted():
         async def _not_found(card_id, ops, seq):
             return adapter._CkResult(False, 300313, "ErrMsg: not find elementID : footer; ")
 
-        _orig_batch = raw._ld_ck_batch
         raw._ld_ck_partial = _ok_partial       # type: ignore[assignment]
         raw._ld_ck_batch = _not_found          # type: ignore[assignment]
         assert _run(raw._ld_heartbeat_tick(chat, key)) == "failed"
