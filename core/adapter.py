@@ -6674,9 +6674,15 @@ class LarkDeckMixin:
         # 整卡 patch 车道（暂存状态已标 `engine_stamp="degraded"`），而心跳 tick 见 degraded
         # 立刻 `"stop"` —— 重启它等于起一个马上自杀的任务，还会让"页脚耗时继续跳"这个
         # **做不到的承诺**留在代码里。耗时会在每一帧整卡 patch 时重算并写出去。
-        # 可 grep 的留痕（P3 C8 会把这一类观测行统一成固定 key=value 字段）
-        logger.info("[larkdeck] 收尾后同回合继续：回到原卡继续写，页脚将回写进行中词"
-                    "（chat=%s turn=%s）", chat[:16], str(turn_id or "")[:16])
+        # 可 grep 的留痕（P3 C8 口径：固定 `key=value` 字段 + 值**不截断**，
+        # 与「状态决策」行同一套字段习惯 —— 截断会让"到底是哪张卡"变成猜谜）。
+        logger.info("[larkdeck] 收尾后同回合继续 " + " ".join(
+            f"{name}={_ld_log_value(value)}" for name, value in {
+                "key": key, "mid": str(state.get("message_id") or ""),
+                "seq": _ck_seq(state), "status": "resumed",
+                "footer": _ld_status_text(_LD_STATUS_GENERATING),
+                "reason": "finalized_handle_hit",
+            }.items()))
         return True
 
     def _ld_unresume_finalized(self, chat_id: Optional[str], turn_id: str) -> None:
