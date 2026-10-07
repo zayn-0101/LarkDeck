@@ -14,7 +14,7 @@ plugins:
         cards: true
 ```
 
-插件是否加载由 `plugins.enabled` 里的 `larkdeck` 决定，不属于下面 28 个配置键。键名、类型与默认值以 [`plugin.yaml`](../../plugin.yaml) 的 `config_schema` 为准，版本号也只从那里读。
+插件是否加载由 `plugins.enabled` 里的 `larkdeck` 决定，不属于下面 29 个配置键。键名、类型与默认值以 [`plugin.yaml`](../../plugin.yaml) 的 `config_schema` 为准，版本号也只从那里读。
 
 ### 优先级
 
@@ -134,6 +134,8 @@ plugins:
 
 - **footer** · `boolean` · 默认 `true`
   页脚：状态 → 耗时 → 模型 → 上下文用量。关掉后整条页脚不渲染。示例：`footer: false`。
+- **stale_after_s** · `integer` · 默认 `200`
+  「回合进行中」降级成「⏳ 等待响应」的陈旧阈值（秒）。只有「存活、没有 running 工具、也没有等待澄清」这一档会降级；工具在跑时**永不降级**（面板本来就有计时）。`0` 或负数关闭降级；布尔值 / 非整数（如 `1.9`）/ 无法解析的值会退回 `200` 并留一条 60 秒限流的 WARNING。示例：`stale_after_s: 300`。
 - **show_model** · `boolean` · 默认 `true`
   页脚里显示模型名。关掉后模型名不出现，面板标题本来也只放思考 / 工具摘要。示例：`show_model: false`。
 - **context_style** · `string` · 默认 `"text"`
@@ -162,7 +164,7 @@ plugins:
 
 ## 完整样例
 
-照抄后按需删除：下面是一份含全部 28 个键、且每个键都取默认值的样例；只保留你要改的行即可。
+照抄后按需删除：下面是一份含全部 29 个键、且每个键都取默认值的样例；只保留你要改的行即可。
 
 ```yaml
 plugins:
@@ -187,6 +189,7 @@ plugins:
         card_status_header: false
         show_reasoning: auto
         footer: true
+        stale_after_s: 200
         show_model: true
         context_style: "text"
         text_profile: "compact"

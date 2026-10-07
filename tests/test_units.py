@@ -16930,6 +16930,103 @@ def test_v084_heartbeat_footer_whole_string_dedupe():
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
 
+def test_v084_stale_after_s_value_semantics():
+    """V084⑰（P2 C6）：`stale_after_s` 取值语义 —— 默认/关闭/非法三条边界都要如实。"""
+    adapter.configure(stale_after_s=200)
+    assert adapter._stale_after_s() == 200
+    # 关闭降级：0 与负数都是**正常取值**（不报警）
+    for off in (0, -1, -999):
+        adapter.configure(stale_after_s=off)
+        assert adapter._stale_after_s() == off, off
+    # 合法整数（含数字字符串与整值浮点）
+    for ok, want in (("300", 300), (300, 300), (300.0, 300), (" 300 ", 300)):
+        adapter.configure(stale_after_s=ok)
+        assert adapter._stale_after_s() == want, (ok, adapter._stale_after_s())
+    # 非法：布尔（bool 是 int 子类！）、非整数浮点、非数字字符串、容器 ⇒ 一律退回 200
+    warned: list = []
+    _orig_warn = adapter.logger.warning
+    adapter.logger.warning = lambda *a, **k: warned.append(a)   # type: ignore[assignment]
+    try:
+        for bad in (True, False, 1.9, "1.9", "abc", "", [], {}, float("inf"),
+                    float("nan"), "1e999"):
+            adapter.configure(stale_after_s=bad)
+            adapter._log_stale_once._at = 0.0   # type: ignore[attr-defined]  每次都要真的报
+            got = adapter._stale_after_s()
+            assert got == adapter._STALE_AFTER_S_DEFAULT, f"{bad!r} ⇒ {got}"
+            assert warned, f"{bad!r} 非法却没报警"
+            warned.clear()
+    finally:
+        adapter.logger.warning = _orig_warn                  # type: ignore[assignment]
+    # 没配 ⇒ 默认值，且**不报警**
+    adapter.configure()
+    adapter._log_stale_once._at = 0.0       # type: ignore[attr-defined]
+    assert adapter._stale_after_s() == adapter._STALE_AFTER_S_DEFAULT
+    assert not warned, "没配也报警了"
+
+
+def test_v084_stale_after_s_degrades_only_the_generating_rule():
+    """V084⑱（P2 C6）：阈值**只**作用于判据第 5 条，且恰好等于阈值不降级、无记录不降级。"""
+    chat, turn = "oc_v84stale", "t-stale"
+    key = f"{chat}:{turn}"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    try:
+        adapter.configure(stale_after_s=200)
+        assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
+        panel.bind_chat_session(chat, "s-stale")
+        panel.note_turn("s-stale", turn)      # 建桶（有内容，_select_locked 才选得中）
+
+        def _age(seconds):
+            with panel._LOCK:
+                panel._STATE["s-stale"]["activity_at"] = time.monotonic() - seconds
+
+        # ① 陈旧（201s > 200s）⇒ 降级成「等待响应」
+        _age(201.0)
+        assert raw._ld_live_status(chat_id=chat, key=key, segment_final=False) == \
+            adapter._LD_STATUS_WAITING_UPSTREAM, "陈旧回合没降级"
+        # ② 边界：**恰好等于阈值不降级**（严格大于才算陈旧）。
+        #    真实时钟没法构造"恰好相等"（读的时刻总会走几毫秒）⇒ 直接把读函数钉住。
+        # ⚠️ 必须用 `staticmethod(...)` 包装后再赋回：直接赋裸函数会让它变成**绑定方法**
+        # （self 也传进来 ⇒ TypeError），而且**泄漏到后面的用例**（第一版实测打红 13 条）。
+        _orig_age = adapter.LarkDeckMixin.__dict__["_ld_activity_age"]
+        try:
+            adapter.LarkDeckMixin._ld_activity_age = staticmethod(  # type: ignore[assignment]
+                lambda *a, **k: 200.0)
+            assert raw._ld_live_status(chat_id=chat, key=key, segment_final=False) == \
+                adapter._LD_STATUS_GENERATING, "恰好等于阈值不该降级"
+            adapter.LarkDeckMixin._ld_activity_age = staticmethod(  # type: ignore[assignment]
+                lambda *a, **k: 200.0001)
+            assert raw._ld_live_status(chat_id=chat, key=key, segment_final=False) == \
+                adapter._LD_STATUS_WAITING_UPSTREAM, "刚过阈值就该降级"
+        finally:
+            adapter.LarkDeckMixin._ld_activity_age = _orig_age  # type: ignore[assignment]
+        # ③ 有 running 工具 ⇒ 永不降级（面板本来就有计时）
+        panel.record_tool_started("s-stale", turn, "terminal", {"command": "ls"},
+                                  tool_call_id="tc-stale")
+        _age(9999.0)
+        assert raw._ld_live_status(chat_id=chat, key=key, segment_final=False) == \
+            adapter._LD_STATUS_TOOL_RUNNING, "工具在跑却降级了"
+        panel.record_tool_finished("s-stale", turn, "terminal", status="ok", duration_ms=1,
+                                   tool_call_id="tc-stale")
+        # ④ 收尾型渲染 ⇒ 判据第 1 条先赢，不受阈值影响
+        _age(9999.0)
+        assert raw._ld_live_status(chat_id=chat, key=key, segment_final=True) == "completed", \
+            "收尾被降级抢走了"
+        # ⑤ 阈值 <= 0 ⇒ 关闭降级
+        adapter.configure(stale_after_s=0)
+        _age(9999.0)
+        assert raw._ld_live_status(chat_id=chat, key=key, segment_final=False) == \
+            adapter._LD_STATUS_GENERATING, "阈值 0 应该关闭降级"
+        # ⑥ 没有活动记录 ⇒ 绝不降级（宁可少说一句，也不把刚起步的回合说成等上游）
+        adapter.configure(stale_after_s=200)
+        with panel._LOCK:
+            panel._STATE["s-stale"].pop("activity_at", None)
+        assert raw._ld_live_status(chat_id=chat, key=key, segment_final=False) == \
+            adapter._LD_STATUS_GENERATING, "没有活动记录却降级了"
+    finally:
+        adapter.configure(stale_after_s=200)
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
 def main() -> int:
     # `--only <子串>`：只跑名字里含该子串的用例。**专供变异判读**（审计 A：单条变异 idle 28s、
     # 重载 89s，秒级判读只能靠「preflight + 只跑受影响的那几条用例」）。不是发布门禁 ——

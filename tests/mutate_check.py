@@ -3619,6 +3619,35 @@ MUTATIONS = [
      '                    updated["ck_seq"] = seq',
      '                    # `seq` ⇒ 飞书 `300317 sequence number compare failed` ⇒ 误判卡级死法）。',
      'test_units'),
+    # ---- P2 C6：`stale_after_s` 取值校验 + 降级只作用于判据第 5 条 ----
+    ('V0716-33-布尔值没被挡在 `_as_int` 之前（`true` 静默变成 1 秒）', 'core/adapter.py',
+     '    if isinstance(raw, bool):\n'
+     '        _log_stale_once(f"{raw!r} 是布尔值（要关降级请写 0 或负数）", default)',
+     '    if False:\n'
+     '        _log_stale_once(f"{raw!r} 是布尔值（要关降级请写 0 或负数）", default)',
+     'test_units'),
+    ('V0716-34-非整数秒没被挡在 `_as_int` 之前（`1.9` 截断成 1 秒）', 'core/adapter.py',
+     '    if isinstance(raw, float) and not float(raw).is_integer():',
+     '    if False:',
+     'test_units'),
+    ('V0716-35-降级整块被删（陈旧回合永远显示「正在生成」）', 'core/adapter.py',
+     '            threshold = _stale_after_s()\n'
+     '            if threshold > 0:\n'
+     '                age = self._ld_activity_age(chat_id)\n'
+     '                if age is not None and age > threshold:\n'
+     '                    return _LD_STATUS_WAITING_UPSTREAM',
+     '            pass',
+     'test_units'),
+    ('V0716-36-阈值边界写成 >=（恰好等于阈值也降级）', 'core/adapter.py',
+     '                if age is not None and age > threshold:',
+     '                if age is not None and age >= threshold:',
+     'test_units'),
+    ('V0716-37-`0` 不再等于「关闭降级」（0 秒阈值 ⇒ 一有活动就降级）', 'core/adapter.py',
+     '            threshold = _stale_after_s()\n'
+     '            if threshold > 0:',
+     '            threshold = _stale_after_s()\n'
+     '            if threshold >= 0:',
+     'test_units'),
 
 ]
 

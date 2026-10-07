@@ -883,6 +883,10 @@ _DEFAULTS: Dict[str, Any] = {
     # 时按关闭处理，并在 /larkdeck status 说明原因，见 `_ld_show_reasoning_state`。
     "show_reasoning": "auto",
     "footer": True,           # 页脚：状态 → 耗时 → 模型 → 上下文用量（v0.7.2 起**无短码**）
+    # V084（v0.7.16 P2）：「进行中」降级成「⏳ 等待响应」的**陈旧阈值**（秒）。
+    # 只作用于判据第 5 条（存活、无 running 工具、无 clarify）；`<=0` 关闭降级；
+    # 非法值（布尔 / 非整数 / 转不动）⇒ 退回 200 并留 60s 限流 WARNING。
+    "stale_after_s": 200,
     "show_model": True,       # 页脚里显示模型名（面板标题只放思考/工具摘要）
     "context_style": "text",  # 上下文用量样式：text（默认）| bar | both
     # P1b：CardKit 设备字号档位。off（不缩放）| mobile_friendly（PC 小、手机大，正文随设备）
@@ -1313,6 +1317,57 @@ def _print_frequency_ms() -> int:
         _log_print_ms_once(f"{raw!r} 超出 [1,{high}]ms", default)
         return default
     return value
+
+
+def _stale_after_s() -> int:
+    """``stale_after_s`` 的取值（秒）：**只有这一条降级判据的开关与阈值**。
+
+    语义（P0 收敛 + C6）：
+      * 没配 ⇒ 默认 :data:`_STALE_AFTER_S_DEFAULT`（200）；
+      * ``<= 0`` ⇒ **关闭降级**（正常取值，不报警）；
+      * 非法（``true``/``false`` 这类布尔、``1.9`` 这类非整数、``"abc"``/``[]``/
+        ``inf``/``nan`` 转不动）⇒ 退回默认 + 60 秒限流 WARNING，**绝不静默**。
+
+    ⚠️ 两道顺序很关键（否则校验形同虚设）：
+      1. **布尔必须在 `_as_int` 之前判掉** —— Python 里 ``bool`` 是 ``int`` 的子类，
+         ``_as_int(True) == 1`` ⇒ 用户写 ``stale_after_s: true`` 会被当成"1 秒"，
+         比默认值激进 200 倍，且**没有任何日志**；
+      2. **非整数浮点/字符串必须在 `_as_int` 之前判掉** —— ``_as_int("1.9") == 1``
+         （截断），同样会静默变成 1 秒。
+    """
+    default = _STALE_AFTER_S_DEFAULT
+    raw = _cfg_raw("stale_after_s")
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        _log_stale_once(f"{raw!r} 是布尔值（要关降级请写 0 或负数）", default)
+        return default
+    if isinstance(raw, float) and not float(raw).is_integer():
+        _log_stale_once(f"{raw!r} 不是整数秒", default)
+        return default
+    if isinstance(raw, str):
+        text = raw.strip()
+        # 只接受"看起来就是整数"的写法（"200" / " 200 "）；"1.9"/"abc" 一律非法
+        body = text[1:] if text[:1] in ("+", "-") else text
+        if not body.isdigit():
+            _log_stale_once(f"{raw!r} 不是整数秒", default)
+            return default
+    value = _as_int(raw)
+    if value is None:
+        _log_stale_once(f"{raw!r} 转不成整数秒", default)
+        return default
+    return value
+
+
+def _log_stale_once(why: str, fallback: int) -> None:
+    """`stale_after_s` 取值有问题的限流告警（60 秒一条，绝不静默）。"""
+    now = time.monotonic()
+    if now - getattr(_log_stale_once, "_at", 0.0) < 60.0:
+        return
+    _log_stale_once._at = now  # type: ignore[attr-defined]
+    logger.warning("[larkdeck] stale_after_s 配置有问题：%s —— 已退回 %d 秒"
+                   "（进行中降级成「等待响应」的阈值；0 或负数 = 关闭降级）",
+                   why, fallback)
 
 
 def _log_print_ms_once(why: str, fallback: int) -> None:
@@ -2535,6 +2590,11 @@ _LD_STATUS_WAITING = "waiting"
 #: 判据见 :func:`_ld_live_status`（唯一出口），文案见 `core/i18n.py` 的
 #: ``panel.status_generating`` / ``panel.status_tool_running`` / ``panel.status_waiting_upstream``。
 #: ⚠️ 页脚是 ``markdown`` 元素、不承载 ``i18n_content`` ⇒ 用户可见文案**固定中文**。
+#: `stale_after_s` 的默认值（秒）。200 秒 ≈ 上游心跳（180s）的一拍多一点：
+#: 正常情况下 `activity_at` 会被 3s 心跳/上游心跳/工具钩子不断刷新，只有
+#: **真的没有新活动**（上游卡住、进程被挂起）时才会走到降级。
+_STALE_AFTER_S_DEFAULT = 200
+
 _LD_STATUS_GENERATING = "generating"          # 回合存活、无 running 工具（模型在写）
 _LD_STATUS_TOOL_RUNNING = "tool_running"      # 回合存活、有 running 工具
 _LD_STATUS_WAITING_UPSTREAM = "waiting_upstream"  # 存活但长时间无任何活动证据（降级）
@@ -2920,6 +2980,18 @@ class LarkDeckMixin:
         except Exception:      # pragma: no cover - 防御性
             pass
 
+    @staticmethod
+    def _ld_activity_age(chat_id: str) -> Optional[float]:
+        """V084 P2：距上次「进展证据」的秒数；**没有记录返回 ``None``**。
+
+        与 :meth:`_ld_note_activity` 同一套纪律：只读、绝不刷新（读路径刷新会让
+        降级永不触发 —— 这正是 `alive_at` 不可用的原因），失败一律吞掉。
+        """
+        try:
+            return _panel.activity_age(str(chat_id or ""))
+        except Exception:      # pragma: no cover - 防御性
+            return None
+
     def _ld_turn_alive(self, *, key: str = "", message_id: str = "") -> bool:
         """V084：**正向**存活判据 —— 该卡对应的回合状态还在 `self._ld_streams` 里。
 
@@ -3000,6 +3072,17 @@ class LarkDeckMixin:
         if alive:
             if running_tool:
                 return _LD_STATUS_TOOL_RUNNING
+            # 5) 存活 + 无 running 工具：默认「正在生成」；**只有这一条**允许按
+            #    `stale_after_s` 降级成「等待响应」（P2 C6）。三条边界：
+            #      * 阈值 <= 0 ⇒ 关闭降级；
+            #      * `activity_age` 未知（面板里没有活动记录）⇒ **绝不降级** ——
+            #        宁可少说一句，也不能把刚起步的回合说成"在等上游"；
+            #      * 恰好等于阈值 ⇒ **不降级**（严格大于才算陈旧）。
+            threshold = _stale_after_s()
+            if threshold > 0:
+                age = self._ld_activity_age(chat_id)
+                if age is not None and age > threshold:
+                    return _LD_STATUS_WAITING_UPSTREAM
             return _LD_STATUS_GENERATING
         # 6) 无正向信号：不猜、不说假话
         return ""
