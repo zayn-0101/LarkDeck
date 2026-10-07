@@ -16422,6 +16422,49 @@ def _v084_seed_stream(raw, chat: str, turn: str = "t1") -> str:
     return key
 
 
+def test_v084_same_turn_error_beats_live_words_even_when_alive():
+    """V084㉓（P2 · 审计 A 第二遍的 F1 撒谎窗口）：**本回合**已经 error/stopped 时，
+    即使流还活着、这一帧也不是收尾帧，也必须先返回结局词。
+
+    旧条件（`segment_final or not alive`）下这条路径会返回「正在生成」：心跳 tick 正是
+    非收尾 + 存活，且**没有任何后续重绘纠正** ⇒ 失败回合永远写着"正在生成"（卡片撒谎，
+    本项目第一条纪律就是"卡片绝不说假话"）。
+
+    判据新增**回合身份比对**：面板快照的 `turn_id` 与流 key 的 turn 段相等 ⇒ 结局词赢；
+    任一侧取不到 ⇒ 退回旧条件（绝不把上一回合的 error 扣到本回合头上）。
+    """
+    chat = "oc_v84f1"
+    raw = _make()
+    _orig_snap = panel.snapshot
+    try:
+        key = _v084_seed_stream(raw, chat, turn="t1")
+        # ① 本回合 error + 存活 + 非收尾 ⇒ 必须 "error"（修前是 generating）
+        panel.snapshot = lambda chat_id="": {"status": panel.STATUS_ERROR,
+                                             "turn_id": "t1", "tools": []}
+        assert raw._ld_turn_alive(key=key, message_id="om_v084"), "前置：流必须还活着"
+        got = raw._ld_live_status(chat_id=chat, key=key, message_id="om_v084",
+                                  segment_final=False)
+        assert got == "error", f"本回合 error 必须最先判（实际 {got!r}）"
+        # ② 上一回合的 error 不许扣到本回合头上（身份对不上 ⇒ 退回旧条件 = live 词）
+        key2 = _v084_seed_stream(raw, chat, turn="t2")
+        got2 = raw._ld_live_status(chat_id=chat, key=key2, message_id="om_v084",
+                                   segment_final=False)
+        assert got2 == adapter._LD_STATUS_GENERATING, \
+            f"上一回合的 error 不许扣到本回合（实际 {got2!r}）"
+        # ③ stopped 同理
+        panel.snapshot = lambda chat_id="": {"status": panel.STATUS_STOPPED,
+                                             "turn_id": "t1", "tools": []}
+        assert raw._ld_live_status(chat_id=chat, key=key, message_id="om_v084",
+                                   segment_final=False) == "stopped"
+        # ④ 面板快照没记 turn_id ⇒ 身份取不到 ⇒ 退回旧条件（宁可不判，也不猜）
+        panel.snapshot = lambda chat_id="": {"status": panel.STATUS_ERROR, "tools": []}
+        assert raw._ld_live_status(chat_id=chat, key=key, message_id="om_v084",
+                                   segment_final=False) == adapter._LD_STATUS_GENERATING, \
+            "没身份就别猜"
+    finally:
+        panel.snapshot = _orig_snap
+
+
 def _v084_footer_writes(calls: Dict[str, Any]) -> list:
     """假 CardKit 账本里所有 `partial_update_element("footer")` 的 content。"""
     out: list = []

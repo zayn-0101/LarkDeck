@@ -103,7 +103,7 @@ config_schema:
   stale_after_s:
     type: integer
     default: 200
-    description: "「回合进行中」降级成「⏳ 等待响应」的陈旧阈值（秒）：只有「存活 + 没有 running 工具/澄清」这一档会降级；0 或负数关闭降级；布尔值/非整数/无法解析的值退回 200 并留 WARNING（60 秒限流）"
+    description: "「回合进行中」降级成「⏳ 等待响应」的陈旧阈值（秒）：只有「存活 + 没有 running 工具/澄清」这一档会降级；0 或负**整数**关闭降级；布尔值/非整数（含 -1.9 这类负的非整数）/无法解析的值一律退回 200 并留 WARNING（60 秒限流）"
   show_model:
     type: boolean
     default: true

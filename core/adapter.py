@@ -1327,12 +1327,28 @@ def _print_frequency_ms() -> int:
     return value
 
 
+def _turn_of_key(key: Any) -> str:
+    """流 key（``chat:turn``）里的 turn 段；取不到就回 ``""``（**绝不抛**）。"""
+    text = str(key or "")
+    _, _, turn = text.partition(":")
+    return turn.strip()
+
+
+def _panel_turn_of(snap: Any) -> str:
+    """面板快照里记的 ``turn_id``；取不到就回 ``""``（**绝不抛**）。"""
+    try:
+        return str((snap or {}).get("turn_id") or "").strip()
+    except Exception:      # pragma: no cover - 防御性：状态是装饰
+        return ""
+
+
 def _stale_after_s() -> int:
     """``stale_after_s`` 的取值（秒）：**只有这一条降级判据的开关与阈值**。
 
     语义（P0 收敛 + C6）：
       * 没配 ⇒ 默认 :data:`_STALE_AFTER_S_DEFAULT`（200）；
-      * ``<= 0`` ⇒ **关闭降级**（正常取值，不报警）；
+      * ``<= 0`` 的**整数** ⇒ **关闭降级**（正常取值，不报警）；负的**非整数**（``-1.9``）
+        属非法值 ⇒ 退回默认 + WARNING（口径统一：本键只认整数秒）；
       * 非法（``true``/``false`` 这类布尔、``1.9`` 这类非整数、``"abc"``/``[]``/
         ``inf``/``nan`` 转不动）⇒ 退回默认 + 60 秒限流 WARNING，**绝不静默**。
 
@@ -1356,7 +1372,7 @@ def _stale_after_s() -> int:
     if raw is None:
         return default
     if isinstance(raw, bool):
-        _log_stale_once(f"{raw!r} 是布尔值（要关降级请写 0 或负数）", default)
+        _log_stale_once(f"{raw!r} 是布尔值（要关降级请写 0 或负整数）", default)
         return default
     if isinstance(raw, float) and not float(raw).is_integer():
         _log_stale_once(f"{raw!r} 不是整数秒", default)
@@ -3058,6 +3074,11 @@ class LarkDeckMixin:
         判据顺序与理由见 `docs/internal/plans/plan-v0.7.16-status.md` §1（P0 三路审计收敛版）：
 
         0) `error`/`stopped` 最先判 —— 否则失败回合会被第 1 条的乐观 ✅ 抢走（C 路）；
+           条件 = `segment_final or not alive` **或"面板记的是本回合"**（审计 A 第二遍的
+           F1 撒谎窗口：回合失败但流还活着、这一帧又不是收尾帧时，旧条件会把失败回合写成
+           `✍️ 正在生成` —— 心跳 tick 就是这条路径，且没有任何后续重绘纠正它）。
+           "本回合"= 面板快照的 `turn_id` 与流 key 的 turn 段**完全相等**；任一侧取不到
+           就**退回旧条件**（宁可少说一句结局词，也不把上一回合的 error 扣到本回合头上）。
         1) `segment_final` ⇒ 乐观终态 ✅：**不许**再要求 `not alive`（正常 finalize 渲染时
            流往往还没 pop，加了会把最常见的正常收尾写成"正在生成" —— A/B/C 三路同一处阻断）；
         2) 澄清卡在等**人** ⇒ `⏸ 等待你的选择`；
@@ -3083,10 +3104,17 @@ class LarkDeckMixin:
                 running_clarify = bool(_panel_has_running_clarify(chat_id))
             except Exception:  # pragma: no cover - 防御性
                 running_tool = running_clarify = False
-        # 0) 结局词最先判（error/stopped 不许被乐观 ✅ 覆盖）
-        if raw == _panel.STATUS_ERROR and (segment_final or not alive):
+        # 0) 结局词最先判（error/stopped 不许被乐观 ✅ 覆盖）。
+        #    ⚠️ 审计 A 第二遍 F1：光看 `segment_final or not alive` 会留一个**撒谎窗口** ——
+        #    回合已经 error、但流还活着且这一帧不是收尾帧（心跳 tick 正是这条路径）⇒ 判据
+        #    落到第 4/5 条，把失败回合写成「正在生成」，而且**没有后续重绘纠正**。
+        #    所以补一条**回合身份比对**：面板快照记的 turn 就是本回合 ⇒ 结局词立刻赢。
+        #    两侧任一取不到 turn 就不算同一回合 ⇒ 退回旧条件（fail-closed：绝不把上一回合
+        #    的结局扣到本回合头上）。
+        same_turn = bool(_panel_turn_of(snap)) and _panel_turn_of(snap) == _turn_of_key(key)
+        if raw == _panel.STATUS_ERROR and (segment_final or not alive or same_turn):
             return "error"
-        if raw == _panel.STATUS_STOPPED and (segment_final or not alive):
+        if raw == _panel.STATUS_STOPPED and (segment_final or not alive or same_turn):
             return "stopped"
         # 1) 流段收尾 ⇒ 乐观终态（正常收尾就走这里，不依赖 on_session_end 的排队时序）
         if segment_final and not running_tool and not running_clarify:

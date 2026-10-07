@@ -3448,7 +3448,7 @@ MUTATIONS = [
      '        if segment_final and not running_tool and not running_clarify and not alive:',
      'test_units'),
     ('V0716-3-失败/中止不再最先判（失败回合被乐观 ✅ 变绿）', 'core/adapter.py',
-     '        if raw == _panel.STATUS_ERROR and (segment_final or not alive):\n'
+     '        if raw == _panel.STATUS_ERROR and (segment_final or not alive or same_turn):\n'
      '            return "error"',
      '        if False:  # V0716-3 mutated\n            return "error"',
      'test_units'),
@@ -3486,8 +3486,8 @@ MUTATIONS = [
      '        if (segment_final or raw == _panel.STATUS_OK) and not running_tool and not running_clarify:',
      'test_units'),
     ('V0716-11-陈旧 error 漏进存活回合（上一回合的 ❌ 染红正在跑的卡）', 'core/adapter.py',
-     '        if raw == _panel.STATUS_ERROR and (segment_final or not alive):',
-     '        if raw == _panel.STATUS_ERROR:',
+     '        if raw == _panel.STATUS_ERROR and (segment_final or not alive or same_turn):',
+     '        if raw == _panel.STATUS_ERROR:  # 变异：连身份比对一起去掉',
      'test_units'),
     ('V0716-12-未知 key 被当成存活（非收尾也敢说进行中）', 'core/adapter.py',
      '            if key:\n'
@@ -3626,9 +3626,9 @@ MUTATIONS = [
     # ---- P2 C6：`stale_after_s` 取值校验 + 降级只作用于判据第 5 条 ----
     ('V0716-33-布尔值没被挡在 `_as_int` 之前（`true` 静默变成 1 秒）', 'core/adapter.py',
      '    if isinstance(raw, bool):\n'
-     '        _log_stale_once(f"{raw!r} 是布尔值（要关降级请写 0 或负数）", default)',
+     '        _log_stale_once(f"{raw!r} 是布尔值（要关降级请写 0 或负整数）", default)',
      '    if False:\n'
-     '        _log_stale_once(f"{raw!r} 是布尔值（要关降级请写 0 或负数）", default)',
+     '        _log_stale_once(f"{raw!r} 是布尔值（要关降级请写 0 或负整数）", default)',
      'test_units'),
     ('V0716-34-非整数秒没被挡在 `_as_int` 之前（`1.9` 截断成 1 秒）', 'core/adapter.py',
      '    if isinstance(raw, float) and not float(raw).is_integer():',
@@ -3685,6 +3685,11 @@ MUTATIONS = [
      'core/adapter.py',
      '            if resumed:\n                self._ld_unresume_finalized(chat_id, turn)\n            self._ld_remember_failed_frame(chat_id, turn, text)\n            self._ld_note_seed_failure(str(chat_id or ""), turn)',
      '            self._ld_remember_failed_frame(chat_id, turn, text)\n            self._ld_note_seed_failure(str(chat_id or ""), turn)',
+     'test_units'),
+    ('V0716-47-结局词不做回合身份比对（本回合 error 被写成「正在生成」）',
+     'core/adapter.py',
+     '        same_turn = bool(_panel_turn_of(snap)) and _panel_turn_of(snap) == _turn_of_key(key)',
+     '        same_turn = False  # 变异：不做回合身份比对',
      'test_units'),
     ('V0716-41-没有 turn_id 也恢复（新回合被写进上一回合的旧卡）', 'core/adapter.py',
      '        if not chat or not turn:\n'
