@@ -17037,6 +17037,75 @@ def test_v084_stale_after_s_degrades_only_the_generating_rule():
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
 
+def test_v084_finalize_stashes_resume_handle_and_keeps_old_contract():
+    """V084⑲（P2 C5）：收尾仍按原样 pop 流状态，但留一份「同回合续写」句柄。
+
+    契约**两面**都要钉：
+    ① 既有口径一字不变 —— `_ld_streams` 里必须没有它（心跳收工、`/stop` 不误染中止色、
+       泄漏回收口径不动），卡片也照旧停止追踪；
+    ② 新增句柄在，且**带得走 message_id**（否则续写回不到原卡 ⇒ 又变成"另开一张卡"）。
+    """
+    chat, turn = "oc_v84resume", "t-rs"
+    key = f"{chat}:{turn}"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    try:
+        assert _run(raw.send_stream_frame("正文", chat_id=chat, turn_id=turn))
+        mid = str((raw._ld_stream_get(key) or {}).get("message_id") or "")
+        assert mid, "seed 必须建出卡"
+        assert _run(raw.send_stream_frame("正文完", finalize=True,
+                                          chat_id=chat, turn_id=turn))
+        assert key not in raw._ld_streams, "收尾后活跃流必须消失（既有口径不变）"
+        assert raw._ld_known(mid) is None, "收尾后卡片停止追踪（既有口径不变）"
+        handle = raw._ld_finalized.get(key) or {}
+        assert str((handle.get("state") or {}).get("message_id") or "") == mid, \
+            "必须留下能回到原卡的续写句柄"
+        assert float(handle.get("at") or 0.0) > 0.0, "句柄必须带收尾时刻（TTL 用）"
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
+def test_v084_same_turn_frame_after_finalize_rewrites_footer_on_same_card():
+    """V084⑳（P2 C5 · M5 主用例）：收尾写了 ✅ 之后同一回合又来帧 ⇒ **同一张卡**上
+    把页脚回写成进行中词。
+
+    这正是用户报的原始场景（"选完卡片 Footer 显示已完成，其实工具调用还在继续"）。
+    断言三件事：① 没有新建卡（还是原 message_id）；② 页脚最后一次写的不再是「已完成」
+    而是进行中词；③ 暂存句柄被消费掉（不是留着反复恢复）。
+    """
+    chat, turn = "oc_v84m5", "t-m5"
+    key = f"{chat}:{turn}"
+    raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
+    try:
+        assert _run(raw.send_stream_frame("第一段", chat_id=chat, turn_id=turn))
+        mid = str((raw._ld_stream_get(key) or {}).get("message_id") or "")
+        assert mid and calls["create"] == 1, (mid, calls["create"])
+        # 收尾：页脚必须写「✅ 已完成」（乐观终态，M5 的前提）
+        assert _run(raw.send_stream_frame("第一段完", finalize=True,
+                                          chat_id=chat, turn_id=turn))
+        footers = _v084_footer_writes(calls)
+        assert footers and "✅ 已完成" in str(footers[-1]), footers[-1:]
+        # 同一回合继续干活（同 key 再来一帧）
+        hb_started: list = []
+        _orig_hb_start = raw._ld_heartbeat_start
+        raw._ld_heartbeat_start = lambda *a, **k: (hb_started.append(a), _orig_hb_start(*a, **k))
+        try:
+            assert _run(raw.send_stream_frame("第一段完，继续", chat_id=chat, turn_id=turn))
+        finally:
+            raw._ld_heartbeat_start = _orig_hb_start
+        # 收尾那一刻心跳已经收工（tick 见流状态没了即 stop）⇒ 恢复时必须**重启**它，
+        # 否则页脚的耗时那一段又冻住了（用户看到的"卡住"）。
+        assert hb_started, "恢复收尾流必须重启心跳"
+        assert calls["create"] == 1, f"续写不许另开卡（新建了 {calls['create']} 张）"
+        assert key in raw._ld_streams, "续写帧必须把流状态放回去"
+        assert key not in raw._ld_finalized, "句柄必须被消费掉（否则会被反复恢复）"
+        footers = _v084_footer_writes(calls)
+        assert "✅ 已完成" not in str(footers[-1]), \
+            f"续写后页脚必须回写成进行中词，实际：{footers[-1]!r}"
+        assert "✍️ 正在生成" in str(footers[-1]), footers[-1]
+    finally:
+        _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
+
+
 def main() -> int:
     # `--only <子串>`：只跑名字里含该子串的用例。**专供变异判读**（审计 A：单条变异 idle 28s、
     # 重载 89s，秒级判读只能靠「preflight + 只跑受影响的那几条用例」）。不是发布门禁 ——

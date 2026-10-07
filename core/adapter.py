@@ -410,6 +410,14 @@ _TRANSIENT_BACKOFF = (0.1, 0.3, 0.6)
 #: 造成重复卡。这里只用来收「核心始终没发 finalize」的真正泄漏。
 _STREAM_LEAK_SECONDS = 3600.0
 
+#: V084 P2（C5）：**刚收尾**的卡还能暂存多久（秒）。收尾写了 ✅ 之后同一回合可能又继续
+#: 干活（用户抱怨的 M5 场景），那份流状态要留一小会儿好让后续帧回到**同一张卡**；
+#: 超过这个时长就丢掉（内存有上界）。取值要显著大于工具/上游心跳间隔。
+_STREAM_FINALIZED_TTL_S = 1800.0
+
+#: 暂存的「刚收尾的卡」最多留几条（超出按最旧淘汰）。
+_MAX_FINALIZED = 32
+
 #: 硬上限倍数：软上限只告警、不淘汰活跃流；到这个倍数才被迫淘汰（防内存）。
 _STREAM_HARD_CAP_FACTOR = 4
 
@@ -2691,6 +2699,12 @@ class LarkDeckMixin:
         #: V075：最近一次真实终态/`/stop` 时刻（chat -> monotonic），用于心跳安静窗口：
         #: finalize 之后仍在飞的 180s 心跳不得再补一张中间卡。
         self._ld_recent_final: Dict[str, float] = {}
+        #: V084 P2（C5）：**刚收尾**的回合卡（key -> {state, at}）。
+        #: 用户抱怨的 M5 场景是「页脚已写 ✅、同一回合又继续干活」—— 收尾时流状态仍按原样
+        #: pop 掉（心跳 / `/stop` / 泄漏回收的既有口径**一律不变**），但把那份状态**暂存**
+        #: 在这里；同一 key 的后续帧到来时放回 `_ld_streams` ⇒ 帧写在**同一张卡**上、
+        #: 页脚按判据重算成进行中词。有界（`_MAX_FINALIZED`）+ TTL（`_STREAM_FINALIZED_TTL_S`）。
+        self._ld_finalized: Dict[str, Dict[str, Any]] = {}
         #: V075 P2：最近一次成功 seed 的 `chat:consumer_turn_id`（chat -> (key, at)）。
         #: 只用于区分「同回合 boundary 重开」与「新回合」，绝不与 hook turn_id join。
         self._ld_seed_keys: Dict[str, Any] = {}
@@ -4339,6 +4353,9 @@ class LarkDeckMixin:
         核心自动禁用 native 并回落 send/edit —— 卡片失败绝不丢消息。
         """
         turn = str(kwargs.get("turn_id") or "")
+        # V084 P2（C5）：**收尾之后同一回合又来帧** ⇒ 把暂存的原卡状态放回去，
+        # 这一帧就写在原卡上、页脚按判据重算成进行中词（否则旧卡写了 ✅ 永不自纠）。
+        self._ld_resume_finalized_stream(str(chat_id or ""), turn)
         try:
             ok = await self._ld_stream_frame(
                 text, finalize=finalize, chat_id=chat_id, reply_to=reply_to,
@@ -5861,8 +5878,9 @@ class LarkDeckMixin:
             # V082：边界帧（面板里还有 running 工具）留一条续写登记 —— 回合还没结束，
             # 后续那条「审批后 got_done 的 send()」必须落回这张卡，而不是新开一张。
             self._ld_note_boundary_card(chat, state, status=status)
-            self._ld_stream_pop(key)
-            self._ld_forget(str(state.get("message_id") or ""))
+            # V084 P2（C5）：收尾按原样 pop，但暂存一份状态 —— 同一回合若继续干活，
+            # 后续帧要回到**同一张卡**把页脚回写成进行中词（见 `_ld_stream_finalize`）。
+            self._ld_stream_finalize(key, state, chat)
             self._ld_hb_note_final(chat)
             _context.note_frame_ok()
             return True
@@ -6075,8 +6093,8 @@ class LarkDeckMixin:
                     f"收尾帧失败（{getattr(result, 'error', 'unknown')}）")
             # V082：与 structured 同一口径 —— 边界帧（还有 running 工具）留续写登记。
             self._ld_note_boundary_card(chat, state, status=frame_status)
-            self._ld_stream_pop(key)
-            self._ld_forget(message_id)
+            # V084 P2（C5）：与 structured 车道同一口径（收尾 pop + 暂存，见上）。
+            self._ld_stream_finalize(key, state, chat)
             self._ld_hb_note_final(chat)
             # 能走到这一行 = 本回合 native 全程可用。这是**自证**：帧一旦失败，内核会
             # 关掉本回合的 native 并改走 send/edit，**不会再发 finalize 帧**（见
@@ -6400,6 +6418,62 @@ class LarkDeckMixin:
         # 回合结束 ⇒ 丢掉这一回合的写锁（锁对象若正被持有，`async with` 仍会正常释放它，
         # 只是从锁表里摘掉：下一回合重建一把新的，绝不与旧回合共用）。
         self._ld_card_lock_drop(key)
+
+    def _ld_stream_finalize(self, key: str, state: Dict[str, Any], chat: str) -> None:
+        """V084 P2（C5）：收尾按原样 pop，但把状态**暂存**一份，供同回合续写回到原卡。
+
+        为什么（B′ 路实测）：收尾帧乐观写了 ✅ 之后，同一回合**可能继续干活**（审批后
+        got_done 的 send、工具回调迟到等）。状态一旦丢干净，后续帧只能另开一张新卡，
+        那张写着 ✅ 的旧卡**永远不会自纠** —— 正是用户抱怨的"显示已完成但其实还在跑"。
+
+        口径（刻意做窄）：**既有行为一律不变** —— `_ld_streams` 里照样立刻消失
+        （所以心跳收工、`/stop` 不会把已完成的卡染成中止色、泄漏回收口径不动），
+        只是把那份状态挪进 `_ld_finalized` 暂存；同一 key 的后续帧
+        （见 `_ld_resume_finalized_stream`）把它放回去，帧就写在**同一张卡**上。
+        """
+        self._ld_stream_pop(key)
+        self._ld_forget(str(state.get("message_id") or ""))
+        now = time.monotonic()
+        with self._ld_lock:
+            self._ld_finalized[key] = {"state": dict(state), "at": now}
+            # 有界 + TTL：先丢过期的，再丢最旧的（防止长跑进程里越攒越多）。
+            for other, entry in list(self._ld_finalized.items()):
+                if now - float(entry.get("at") or 0.0) > _STREAM_FINALIZED_TTL_S:
+                    self._ld_finalized.pop(other, None)
+            while len(self._ld_finalized) > _MAX_FINALIZED:
+                oldest = min(self._ld_finalized.items(),
+                             key=lambda kv: kv[1].get("at", 0.0))[0]
+                self._ld_finalized.pop(oldest, None)
+
+    def _ld_resume_finalized_stream(self, chat_id: str, turn_id: str) -> bool:
+        """V084 P2（C5）：同一回合又来帧 ⇒ 把暂存的收尾卡状态放回去，回到**原卡**上写。
+
+        返回是否真的恢复了（调用方只用来留痕，不改变写路径）。注意**必须重启心跳**：
+        收尾那一刻心跳已经收工（tick 见流状态没了即 `"stop"`），不重启页脚的耗时又冻住。
+        """
+        chat = str(chat_id or "").strip()
+        if not chat:
+            return False
+        key = f"{chat}:{turn_id}" if turn_id else chat
+        now = time.monotonic()
+        with self._ld_lock:
+            entry = self._ld_finalized.pop(key, None)
+        if not isinstance(entry, dict):
+            return False
+        if now - float(entry.get("at") or 0.0) > _STREAM_FINALIZED_TTL_S:
+            return False          # 太旧：当新回合处理（宁可不恢复，也不串旧卡）
+        state = entry.get("state")
+        if not isinstance(state, dict) or not state.get("message_id"):
+            return False
+        self._ld_stream_put(key, dict(state))
+        try:
+            self._ld_heartbeat_start(chat, key, str(turn_id or ""))
+        except Exception:         # pragma: no cover - 心跳是装饰，绝不许把帧路径炸掉
+            logger.debug("[larkdeck] 恢复收尾流时重启心跳失败", exc_info=True)
+        # 可 grep 的留痕（P3 C8 会把这一类观测行统一成固定 key=value 字段）
+        logger.info("[larkdeck] 收尾后同回合继续：回到原卡继续写，页脚将回写进行中词"
+                    "（chat=%s turn=%s）", chat[:16], str(turn_id or "")[:16])
+        return True
 
     # ------------------------------------------------- 显示 chrome（工具行是否进正文）
     def format_tool_event(self, event: Any, *, mode: str = "all",

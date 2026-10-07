@@ -2410,8 +2410,11 @@ MUTATIONS = [
      "check_cardview"),
     ("V1-8-structured finalize 不清理回合状态（后续 /stop 误伤已完成卡）",
      "core/adapter.py",
-     '            self._ld_stream_pop(key)\n'
-     '            self._ld_forget(str(state.get("message_id") or ""))',
+     '            self._ld_note_boundary_card(chat, state, status=status)\n'
+     '            # V084 P2（C5）：收尾按原样 pop，但暂存一份状态 —— 同一回合若继续干活，\n'
+     '            # 后续帧要回到**同一张卡**把页脚回写成进行中词（见 `_ld_stream_finalize`）。\n'
+     '            self._ld_stream_finalize(key, state, chat)',
+     '            self._ld_note_boundary_card(chat, state, status=status)\n'
      '            pass  # V1-8 mutated',
      "test_units"),
     ("V1-9-structured finalize 不关闭 streaming_mode", "core/adapter.py",
@@ -3647,6 +3650,19 @@ MUTATIONS = [
      '            if threshold > 0:',
      '            threshold = _stale_after_s()\n'
      '            if threshold >= 0:',
+     'test_units'),
+    # ---- P2 C5：收尾暂存 + 同回合续写回到原卡 ----
+    ('V0716-38-续写帧不再恢复收尾卡（旧卡 ✅ 永不自纠）', 'core/adapter.py',
+     '        self._ld_resume_finalized_stream(str(chat_id or ""), turn)',
+     '        pass  # 变异：不再尝试恢复收尾卡',
+     'test_units'),
+    ('V0716-39-收尾不再暂存状态（续写只能另开一张卡）', 'core/adapter.py',
+     '            self._ld_finalized[key] = {"state": dict(state), "at": now}',
+     '            _ = dict(state), now',
+     'test_units'),
+    ('V0716-40-恢复收尾流时不重启心跳（页脚耗时冻住）', 'core/adapter.py',
+     '            self._ld_heartbeat_start(chat, key, str(turn_id or ""))',
+     '            pass  # 变异：不重启心跳',
      'test_units'),
 
 ]
