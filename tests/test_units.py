@@ -16907,26 +16907,36 @@ def test_v084_live_status_reads_running_state_of_that_chat_only():
 
 
 def test_v084_heartbeat_footer_whole_string_dedupe():
-    """V084⑯（C′ 路 7）：页脚**整串**没变就不许重写（写预算/限流），变了才写。"""
+    """V084⑯（C′ 路 7）：页脚**整串**没变就不许重写（写预算/限流），变了才写。
+
+    ⚠️ 必须钉住时钟（neat-freak 实测本用例 flaky 1/5~1/20）：页脚耗时是
+    ``f"{seconds:.1f}s"``，两拍之间真实时间只要跨过 0.1 秒边界整串就"变"了 ——
+    断言会以"整串没变却重写了"的假象变红。这里把手摇时钟装进 `time.monotonic`：
+    两次 tick 之间**时间不动** ⇒ 整串必然一致；想让它变就直接拨 `t0`。
+    """
     chat, turn = "oc_v84dedup", "t-dd"
     raw, calls, target_cls, old_reqs, saved, old_interval = _v41_setup(chat)
     key = f"{chat}:{turn}"
+    _real_mono = adapter.time.monotonic
+    clock = [1000.0]
     try:
+        adapter.time.monotonic = lambda: clock[0]      # type: ignore[assignment]
         assert _run(raw.send_stream_frame("", chat_id=chat, turn_id=turn))
         state = raw._ld_stream_get(key) or {}
-        raw._ld_stream_put(key, {**state, "t0": time.monotonic() - 5.0})
+        raw._ld_stream_put(key, {**state, "t0": clock[0] - 5.0})
         assert _run(raw._ld_heartbeat_tick(chat, key)) == "wrote"
         n = len(_v084_footer_writes(calls))
         assert n >= 1, "第一拍就该写页脚"
-        # 第二拍：t0 没动、面板没变 ⇒ 整串一致 ⇒ 不许再写
+        # 第二拍：时钟没动、t0 没动、面板没变 ⇒ 整串一致 ⇒ 不许再写
         assert _run(raw._ld_heartbeat_tick(chat, key)) == "unchanged", "整串没变却重写了"
         assert len(_v084_footer_writes(calls)) == n, "整串没变却重写了页脚"
         # 拨旧 t0（耗时那一段变了）⇒ 必须写
         st = raw._ld_stream_get(key) or {}
-        raw._ld_stream_put(key, {**st, "t0": time.monotonic() - 9.0})
+        raw._ld_stream_put(key, {**st, "t0": clock[0] - 9.0})
         assert _run(raw._ld_heartbeat_tick(chat, key)) == "wrote", "耗时变了却不写"
         assert len(_v084_footer_writes(calls)) > n, "耗时变了却不写页脚"
     finally:
+        adapter.time.monotonic = _real_mono           # type: ignore[assignment]
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
 
