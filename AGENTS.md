@@ -120,6 +120,18 @@ tests/        见「验证」
   `_is_core_progress_bubble` = 形状（`_looks_like_core_progress_only`）+ 面板里确实有同名工具
   在 running（工具名单统一走 `_panel_tool_names`，与正文净化同源）；命中就不出站、不碰原卡；
   证明不了照常出卡（fail-open，绝不吞模型正文）。改动这里请连带 `V083-1..3` 与 `test_v083_*` 一起看。
+  V084 补充（v0.7.16）：**回合进行中必须有明确的进行中状态词，且判据只有一个出口** ——
+  `_ld_live_status`（薄壳入口 + `_ld_live_status_impl` 判据本体）按写死的顺序判：结局词
+  （`error`/`stopped`，条件是 `segment_final or not alive` **或面板记的就是本回合**）→ 收尾乐观
+  终态 `✅`（**不要求 `not alive`**）→ 等人 `⏸ 等待你的选择` → 收尾但工具在跑 `⏸ 等待中` →
+  `⚙️ 正在执行工具` → `✍️ 正在生成`（**只有这一档**会因 `stale_after_s` 降级成 `⏳ 等待响应`）
+  → 说不出来就留空。页脚是 `markdown` 元素、不承载 `i18n_content` ⇒ 用户可见文案**固定中文**。
+  同一条纪律的两半：**收尾之后同回合继续**必须回到同一张卡（`_ld_finalized` 暂存句柄 +
+  `send_stream_frame` 唯一恢复入口），且恢复时**必须**把用掉的 `seq` 落账、清 `card_id`/`ck_footer`
+  并标 `engine_stamp="degraded"`（收尾整卡 patch 已关掉逐字通道，续写只能走整卡 patch 车道）；
+  没有 `turn_id` 时**绝不**恢复（否则新回合会写进上一回合的旧卡）。失败帧不许把恢复出来的状态
+  留成僵尸（`/stop` 会把已完成的卡重绘成中止色）。改动这里请连带 `V0716-*` 变异与
+  `test_v084_*` 一起看，并跑 `mutate_check --preflight`（锚点唯一性）。
 - 插件配置路径是 `plugins.entries.larkdeck.settings.<key>`，由 `register()` 里的
   `_apply_ctx_settings()` 经官方 `ctx.get_config()` 读入。Hermes **从不**调用
   `configure()`（它只是自有运行时入口，单测在用）。取值优先级：环境变量

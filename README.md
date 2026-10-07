@@ -5,7 +5,7 @@
 > CardKit 2.0 的 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 插件，不修改
 > Hermes 源码。主回复在卡内流式更新；长回答会接续到后续卡片，澄清问题使用独立交互卡。
 
-[![version](https://img.shields.io/badge/version-0.7.15-blue.svg)](https://github.com/zayn-0101/LarkDeck/releases)
+[![version](https://img.shields.io/badge/version-0.7.16-blue.svg)](https://github.com/zayn-0101/LarkDeck/releases)
 [![AH (Hermes Agent) 0.21.x](https://img.shields.io/badge/AH-0.21.x-blueviolet.svg)](https://github.com/NousResearch/hermes-agent)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -18,7 +18,7 @@
 - **流式回复与长回答续写**：正文在主卡内逐字增长；单卡装不下时自动续到新卡，不重放已显示内容。
 - **过程面板（panel）**：工具步骤收在底部，可折叠并按轮计时；启用推理显示且 Hermes 提供推理增量时，也会显示推理内容。参数预览会截短并遮盖明显的凭据片段。
 - **澄清交互卡（clarify）**：用下拉、多选、输入框或按钮直接作答；澄清卡独立于主回复卡。
-- **状态与用量**：完成 / 失败 / 中止对应绿 / 红 / 黄边框；页脚显示耗时、模型与上下文用量。
+- **状态与用量**：完成 / 失败 / 中止对应绿 / 红 / 黄边框；回合进行中时页脚显示 `✍️ 正在生成`（模型在写）或 `⚙️ 正在执行工具`（工具在跑），长时间没有进展证据时降级成 `⏳ 等待响应`（阈值 `stale_after_s`，默认 200 秒）；页脚同时显示耗时、模型与上下文用量。
 - **双语界面**：支持本地化的卡片界面文案跟随飞书客户端语言；AI 生成的正文不翻译。
 - **失败回退**：卡片路径无法继续时交回 Hermes 官方纯文本发送或编辑；部分 CardKit 错误可
   降级为同卡整卡替换。消息被撤回或删除后，是否补发由 Hermes 核心决定。
