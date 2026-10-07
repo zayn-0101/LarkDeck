@@ -991,7 +991,12 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
         _ctx_mod.record_api_call(model="probe-model",
                                  usage={"input_tokens": 4321, "output_tokens": 10})
         _ctx_mod.set_context_override(20000)
-        footer_at_start = adapter._ld_footer(turn_card=True) or ""
+        # ⚠️ v0.7.16：页脚首段现在带**进行中状态词**。这一帧是 seed 帧（非收尾、
+        #    回合刚建、面板无 running 工具）⇒ 判据必然给出 `✍️ 正在生成`；
+        #    这里必须把同一个状态词喂给 `_ld_footer()`，否则比对的是"没有状态段"
+        #    的旧页脚，`footer_is_current` 会永远为假（假失败）。
+        footer_at_start = adapter._ld_footer(
+            turn_card=True, status=adapter._LD_STATUS_GENERATING) or ""
         print(f"   探针页脚（建实体前灌进去的） = {footer_at_start!r}")
         try:
             ok_seed = loop.run_until_complete(adapter.send_stream_frame(
@@ -1114,6 +1119,7 @@ def probe_cardkit_transport(client, chat: str, cards) -> int:
           f"脚本场景固定 7）· 失败 {_snap.get('frame_fail_count')} 次 "
           f"{_snap.get('frame_fail_reason')!r}")
     footer_written = [b[3].get("footer") for b in batches]
+    # 首帧必须写出「那一刻 `_ld_footer()` 的结果」——v0.7.16 起含进行中状态词
     footer_is_current = bool(footer_at_start) and footer_written[0] == footer_at_start
     print(f"   首帧写出的页脚 = {footer_written[0]!r} · 那一刻 `_ld_footer()` = {footer_at_start!r}"
           f"（必须相等；为空串说明探针没把页脚灌进去 ⇒ 这一条没验，按失败处理）")
