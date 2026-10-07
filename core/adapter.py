@@ -1327,6 +1327,45 @@ def _print_frequency_ms() -> int:
     return value
 
 
+#: C8 观测留痕的限流表：``(key, status) -> 上次记录时刻``。有界（见 `_MAX_STATUS_LOGS`），
+#: 防止长跑进程里随回合数无界增长。
+_LD_STATUS_LOGS: Dict[Tuple[str, str], float] = {}
+#: 每个 key **上次记录的结论**：结论一变立刻记（"状态变化必记"）。
+_LD_STATUS_LAST: Dict[str, str] = {}
+_MAX_STATUS_LOGS = 256
+_LD_STATUS_LOG_INTERVAL_S = 60.0
+
+
+def _ld_log_value(value: Any) -> str:
+    """把字段值洗成**单行无空格**的 ``key=value`` 值（否则日志没法按空格切字段）。"""
+    text = str(value)
+    for bad in (" ", "\t", "\n", "\r"):
+        text = text.replace(bad, "_")
+    return text[:48] or "-"
+
+
+def _ld_status_should_log(key: str, status: str) -> bool:
+    """C8 节流：**结论变了立刻记**，否则同一个 `(key, status)` 60 秒最多一条。
+
+    为什么两条都要：只按 60s 限流会丢掉"它什么时候开始撒谎"（真机排障最要紧的一条）；
+    只按变化记又会被心跳每 3s 一拍的**同结论**刷屏（心跳路径每次都会重算判据）。
+    """
+    now = time.monotonic()
+    changed = _LD_STATUS_LAST.get(key) != status
+    at = _LD_STATUS_LOGS.get((key, status), 0.0)
+    if not changed and now - at < _LD_STATUS_LOG_INTERVAL_S:
+        return False
+    _LD_STATUS_LAST[key] = status
+    _LD_STATUS_LOGS[(key, status)] = now
+    if len(_LD_STATUS_LOGS) > _MAX_STATUS_LOGS:
+        oldest = min(_LD_STATUS_LOGS.items(), key=lambda kv: kv[1])[0]
+        _LD_STATUS_LOGS.pop(oldest, None)
+    if len(_LD_STATUS_LAST) > _MAX_STATUS_LOGS:
+        for stale_key in list(_LD_STATUS_LAST)[:-_MAX_STATUS_LOGS]:
+            _LD_STATUS_LAST.pop(stale_key, None)
+    return True
+
+
 def _turn_of_key(key: Any) -> str:
     """流 key（``chat:turn``）里的 turn 段；取不到就回 ``""``（**绝不抛**）。"""
     text = str(key or "")
@@ -3069,6 +3108,75 @@ class LarkDeckMixin:
 
     def _ld_live_status(self, *, chat_id: str = "", key: str = "",
                         message_id: str = "", segment_final: bool = False) -> str:
+        """页脚首段判据的**唯一入口**：算完状态后补一条可机械核对的观测留痕（C8）。
+
+        留痕只在**有 key**（真回合）时写，且按"**状态变化必记 + 同 `(key, status)` 60 秒
+        限流**"节流 —— 心跳每 3s 一拍，不节流会把日志冲垮；而状态**变化**必须立刻留痕，
+        否则真机排障时最关键的"它什么时候开始撒谎"这一条会丢。
+        """
+        status = self._ld_live_status_impl(chat_id=chat_id, key=key,
+                                           message_id=message_id,
+                                           segment_final=segment_final)
+        if key:
+            try:
+                self._ld_note_status_decision(
+                    key=key, message_id=message_id, segment_final=segment_final,
+                    status=status)
+            except Exception:      # pragma: no cover - 观测是装饰，绝不许影响判据
+                logger.debug("[larkdeck] 状态决策留痕失败", exc_info=True)
+        return status
+
+    def _ld_note_status_decision(self, *, key: str, message_id: str = "",
+                                 segment_final: bool = False,
+                                 status: str = "") -> None:
+        """C8：卡面状态决策行（固定 `key=value` 字段，便于 grep / 机械核对）。
+
+        字段口径（P3 计划写死，改字段名等于改验收口径）：
+        ``key`` 流 key · ``mid`` 卡片 message_id · ``seq`` 当前 ck_seq ·
+        ``segment_final`` 是否收尾帧 · ``turn_alive`` 回合是否存活 ·
+        ``running_tool`` / ``running_clarify`` 面板快照里的 running 项 ·
+        ``panel_status`` 面板原始 status · ``age`` 活动年龄（秒） ·
+        ``stale_after`` 降级阈值（秒） · ``status`` 判据结论 ·
+        ``footer`` 页脚首段文案（就是 status 的对外文案） · ``reason`` 命中的规则。
+        """
+        state = self._ld_stream_get(key) or {}
+        chat = key.partition(":")[0]
+        try:
+            snap = _panel.snapshot(chat) or {}
+        except Exception:          # pragma: no cover - 防御性
+            snap = {}
+        age = self._ld_activity_age(chat)
+        threshold = _stale_after_s()
+        reason = {
+            "error": "terminal_error", "stopped": "terminal_stopped",
+            "completed": "segment_final",
+            _LD_STATUS_CLARIFY_WAITING: "waiting_human",
+            _LD_STATUS_WAITING: "segment_final_running_tool",
+            _LD_STATUS_TOOL_RUNNING: "alive_running_tool",
+            _LD_STATUS_WAITING_UPSTREAM: "stale_no_activity",
+            _LD_STATUS_GENERATING: "alive_generating",
+        }.get(status, "no_signal")
+        fields = {
+            "key": key, "mid": str(state.get("message_id") or message_id or ""),
+            "seq": _ck_seq(state),
+            "segment_final": int(bool(segment_final)),
+            "turn_alive": int(bool(self._ld_turn_alive(key=key, message_id=message_id))),
+            "running_tool": int(bool(_panel_running_tool(chat))),
+            "running_clarify": int(bool(_panel_has_running_clarify(chat))),
+            "panel_status": str(snap.get("status") or ""),
+            "age": "" if age is None else f"{float(age):.1f}",
+            "stale_after": threshold,
+            "status": status or "-",
+            "footer": _ld_status_text(status) or "-",
+            "reason": reason,
+        }
+        if not _ld_status_should_log(key, status):
+            return
+        logger.info("[larkdeck] 状态决策 " + " ".join(
+            f"{name}={_ld_log_value(value)}" for name, value in fields.items()))
+
+    def _ld_live_status_impl(self, *, chat_id: str = "", key: str = "",
+                             message_id: str = "", segment_final: bool = False) -> str:
         """V084（v0.7.16）：**页脚首段（卡面状态词）的唯一判据**。
 
         判据顺序与理由见 `docs/internal/plans/plan-v0.7.16-status.md` §1（P0 三路审计收敛版）：

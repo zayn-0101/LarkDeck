@@ -3691,6 +3691,11 @@ MUTATIONS = [
      '        same_turn = bool(_panel_turn_of(snap)) and _panel_turn_of(snap) == _turn_of_key(key)',
      '        same_turn = False  # 变异：不做回合身份比对',
      'test_units'),
+    ('V0716-48-状态决策结论变化不立刻留痕（只按 60s 限流 ⇒ 查不出何时开始撒谎）',
+     'core/adapter.py',
+     '    changed = _LD_STATUS_LAST.get(key) != status',
+     '    changed = False  # 变异：结论变了也不立刻记',
+     'test_units'),
     ('V0716-41-没有 turn_id 也恢复（新回合被写进上一回合的旧卡）', 'core/adapter.py',
      '        if not chat or not turn:\n'
      '            # ⚠️ **没有 turn_id 时绝不恢复**',

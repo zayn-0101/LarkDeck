@@ -1715,9 +1715,12 @@ def test_cardkit_transport_writes_elements_and_falls_open():
         # R3 收窄版：面板是**两块**（`panel_body` + `panel_tools`），所以整批标死时
         # 三个装饰元素都在名单里 —— 这条断言的字面量**必须跟着结构更新**
         # （而不是改成 `>= 2` 那种「随便几个都行」的写法：那样「少标死一个」就抓不住了）。
-        assert all(x in r.getMessage() for r in records
+        # ⚠️ 只看 WARNING 级（`records` 是全量捕获，P3 C8 起同一条链路上还有一条
+        #    INFO 级的「状态决策」行 —— 断言的字面量针对的是那条**告警**）。
+        _warned = [r.getMessage() for r in records if r.levelno >= logging.WARNING]
+        assert all(x in msg for msg in _warned
                    for x in ("panel_body", "panel_tools", "footer")), \
-            f"装饰失败的告警必须列出受影响的元素 id：{[r.getMessage() for r in records]}"
+            f"装饰失败的告警必须列出受影响的元素 id：{_warned}"
         state2b = raw2b._ld_stream_get("oc_ck2b:t-2b") or {}
         assert state2b.get("ck_dead") == {"panel_body", "panel_tools", "footer"}, \
             f"失败过的装饰元素必须被标死（后续不再尝试）：{state2b.get('ck_dead')}"
@@ -16463,6 +16466,57 @@ def test_v084_same_turn_error_beats_live_words_even_when_alive():
             "没身份就别猜"
     finally:
         panel.snapshot = _orig_snap
+
+
+def test_v084_status_decision_log_is_fixed_fields_and_throttled():
+    """V084㉔（P3 C8）：卡面状态决策行的字段口径 + 节流语义。
+
+    真机排障全靠这一行：字段名是**验收口径**（计划里写死），节流是"结论变了立刻记、
+    同结论 60 秒最多一条" —— 心跳每 3s 一拍，不节流会把日志冲垮；但只按时间限流又会
+    丢掉"它什么时候开始撒谎"（最关键的一条）。
+    """
+    raw = _make()
+    mod = sys.modules[type(raw).__module__]
+    key = "oc_c8log:t1"
+    raw._ld_stream_put(key, {"engine": "structured", "t0": time.monotonic(),
+                             "message_id": "om_c8log", "chat_id": "oc_c8log",
+                             "ck_seq": 7})
+    seen: list = []
+    _orig_info = mod.logger.info
+    mod.logger.info = lambda *a, **k: seen.append(str(a[0]) if a else "")   # type: ignore
+    try:
+        mod._LD_STATUS_LOGS.clear()
+        mod._LD_STATUS_LAST.clear()
+        # ① 存活 + 非收尾 ⇒ generating，必须留痕，且字段齐全
+        raw._ld_live_status(chat_id="oc_c8log", key=key, message_id="om_c8log")
+        assert len(seen) == 1, f"状态决策必须留痕，实际 {len(seen)} 条"
+        line = seen[0]
+        for field in ("key=", "mid=", "seq=", "segment_final=", "turn_alive=",
+                      "running_tool=", "running_clarify=", "panel_status=", "age=",
+                      "stale_after=", "status=", "footer=", "reason="):
+            assert field in line, f"字段口径缺 {field}：{line}"
+        assert f"key={key}" in line, line
+        assert "status=generating" in line and "reason=alive_generating" in line, line
+        # ② 同结论（60 秒内）⇒ 被限流（心跳每 3s 一拍，不节流会刷屏）
+        raw._ld_live_status(chat_id="oc_c8log", key=key, message_id="om_c8log")
+        assert len(seen) == 1, "同结论必须被 60s 限流"
+        # ③ 结论一变 ⇒ **立刻**留痕（不许等限流窗口）
+        raw._ld_live_status(chat_id="oc_c8log", key=key, message_id="om_c8log",
+                            segment_final=True)
+        assert len(seen) == 2, "结论变化必须立刻留痕（否则真机查不出它何时开始撒谎）"
+        assert "status=completed" in seen[1], seen[1]
+        # ③′ 再变回 generating ⇒ **又**要立刻留痕。
+        #     ⚠️ 这一条是「变化必记」的**判别力来源**：`generating` 刚在 60s 窗口内记过，
+        #     `(key, status)` 限流表里还热着 —— 只有"看结论变没变"这一支才能让它记出来。
+        raw._ld_live_status(chat_id="oc_c8log", key=key, message_id="om_c8log")
+        assert len(seen) == 3, "结论变回旧值同样算变化，必须立刻留痕（限流表还热着）"
+        # ④ 没有 key（非回合卡）⇒ 不留痕，别污染日志
+        raw._ld_live_status(chat_id="oc_c8log", segment_final=False)
+        assert len(seen) == 3, "没有 key 不该留痕"
+    finally:
+        mod.logger.info = _orig_info            # type: ignore[assignment]
+        mod._LD_STATUS_LOGS.clear()
+        mod._LD_STATUS_LAST.clear()
 
 
 def _v084_footer_writes(calls: Dict[str, Any]) -> list:
