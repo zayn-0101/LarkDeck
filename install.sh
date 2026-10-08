@@ -248,9 +248,9 @@ _scan_shadow_dirs() {
       if [ -z "$_PY" ]; then
         _SHADOW_UNK_NAMES+=("$_dn"); continue    # 没有 python3 ⇒ 无法判定（P2-1-2）
       fi
-      if python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if isinstance(d,dict) and d.get("$schema") else 1)' "$_d/plugin.json" 2>/dev/null; then
-        _mf="$_d/plugin.json"
-      fi
+      # 合法性（是不是 Hermes 认的 portable 清单）**只在 _manifest_field 里判一次** ——
+      # 两处都判的话，任何单点变异都变成等价改动（门禁测不出来），也没必要。
+      _mf="$_d/plugin.json"
     fi
     [ -n "$_mf" ] || continue        # 连清单都没有 ⇒ 不是插件目录（Hermes 也跳过它）
     if [ ! -r "$_mf" ]; then _SHADOW_UNK_NAMES+=("$_dn"); continue; fi

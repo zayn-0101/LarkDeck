@@ -64,8 +64,8 @@ MUTATIONS = [
      '      _nm="$_dn"',
      '      _SHADOW_UNK_NAMES+=("$_dn"); continue', "test_units"),
     ("V085-P2b-非法 portable 清单也当插件（Hermes 会跳过它）", "install.sh",
-     """      if python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if isinstance(d,dict) and d.get("$schema") else 1)' "$_d/plugin.json" 2>/dev/null; then""",
-     '      if true; then', "test_units"),
+     'if not isinstance(d, dict) or not d.get("$schema"):\n    sys.exit(3)',
+     'if not isinstance(d, dict):\n    sys.exit(3)', "test_units"),
     # ---- V085（v0.7.17）：插件目录同名遮蔽 ------------------------------------ #
     # 真机事故：旧目录改名留在 plugins/ 里 ⇒ Hermes 按清单 name 记账、目录名字典序更大的赢
     # ⇒ 实际加载旧版本、升级静默失效。这批变异钉「门禁真的拦得住」：
