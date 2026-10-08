@@ -90,7 +90,7 @@ hermes gateway restart
 2. 启动日志有自检通过：
 
    ```bash
-   grep '\[larkdeck\] 启动自检' ~/.hermes/logs/agent.log | tail -1
+   grep '\[larkdeck\] 启动自检' "${HERMES_HOME:-$HOME/.hermes}/logs/agent.log" | tail -1
    ```
 
    预期（版本、Hermes 版本与钩子列表随环境变化）：
