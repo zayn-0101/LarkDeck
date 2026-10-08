@@ -92,6 +92,121 @@ mkdir -p "$PLUGINS_DIR"
 # ⚠️ 扫描结果**装进数组**，不做 TSV/字符串序列化：目录名里可能有制表符、换行、全角括号
 # （`larkdeck（v2`）—— 任何分隔符都能被目录名伪造，也会把反解目录名弄错（P2-3 审计实测：
 # 带制表符的 WIN 行会被 awk 丢掉 ⇒ 静默装上；带 `（v` 的目录会被 sed 截断成 larkdeck ⇒ mv 失败）。
+# 读清单字段：真 YAML / json（与运行时 adapter 侧**同源**）。退出码是语义，不是随手值：
+#   0 = 读到了（输出为空 ⇒ 这个键确实不存在 ⇒ 调用方按 Hermes 语义回退目录名）
+#   2 = **无法判定**（文件读不到 / 没有 yaml 库 / 没有 python3）⇒ 调用方归 UNKNOWN（fail-closed）
+#   3 = 不是插件（解析失败 / 顶层不是映射 / json 不是合法 portable 清单）⇒ 调用方跳过
+# 为什么不能用 sed 猜（P2-1 审计实测 8 类静默漏判）：锚点 `&a`、别名 `*n`、重复 name、
+# 块标量 `|-`/`>-`、标签 `!!str`、BOM、单引号键、整份缩进 —— 都会让 sed 读不出/读错，
+# 而读不出时若回退目录名，就会被当成「不是本插件」**静默放行**（Hermes 其实加载了它）。
+# 找一个**带 PyYAML** 的 python3（真 YAML 解析只认它）：先 PATH 上的，再 Hermes 自带 venv。
+# 没有它时**不猜**：退回到「严格兜底」读法，任何可疑写法一律 exit 2（无法判定 ⇒ 拒绝安装）。
+_PY=""
+command -v python3 >/dev/null 2>&1 && _PY="python3"
+_PY_YAML=""
+if [ -n "$_PY" ] && "$_PY" -c 'import yaml' >/dev/null 2>&1; then _PY_YAML="$_PY"; fi
+for _cand in "$HERMES_HOME/hermes-agent/venv/bin/python3" "/opt/hermes/.venv/bin/python3"; do
+  if [ -z "$_PY_YAML" ] && [ -x "$_cand" ] && "$_cand" -c 'import yaml' >/dev/null 2>&1; then
+    _PY_YAML="$_cand"
+  fi
+done
+
+# 读清单字段。退出码是语义，不是随手值：
+#   0 = 读到了（输出为空 ⇒ 这个键确实不存在 ⇒ 调用方按 Hermes 语义回退目录名）
+#   2 = **无法判定**（读不到 / 没有 python3 / 没有 PyYAML 且写法可疑）⇒ 调用方归 UNKNOWN（fail-closed）
+#   3 = 不是插件（解析失败 / 顶层不是映射 / json 不是合法 portable 清单）⇒ 调用方跳过
+# 为什么不用 sed 猜（P2-1 实测 8 类静默漏判）：锚点 `&a`、别名 `*n`、重复 name、块标量 `|-`/`>-`、
+# 标签 `!!str`、BOM、单引号键、整份缩进 —— sed 读不出时若回退目录名，就变成「不是本插件」**静默放行**。
+_manifest_field() {
+  if [ -z "$_PY" ]; then return 2; fi
+  case "$1" in
+    *plugin.json) "$_PY" -c '
+import json, sys
+try:
+    d = json.loads(open(sys.argv[1], "rb").read().decode("utf-8-sig"))
+except OSError:
+    sys.exit(2)
+except Exception:
+    sys.exit(3)
+if not isinstance(d, dict) or not d.get("$schema"):
+    sys.exit(3)
+v = d.get(sys.argv[2])
+print(v if isinstance(v, str) else ("" if v is None else str(v)))
+' "$1" "$2" 2>/dev/null ;;
+    *)
+      if [ -n "$_PY_YAML" ]; then
+        "$_PY_YAML" -c '
+import sys
+try:
+    raw = open(sys.argv[1], "rb").read()
+except OSError:
+    sys.exit(2)
+try:
+    import yaml
+    d = yaml.safe_load(raw.decode("utf-8-sig"))
+except ImportError:
+    sys.exit(2)
+except Exception:
+    sys.exit(3)
+if not isinstance(d, dict):
+    sys.exit(3)
+v = d.get(sys.argv[2])
+print(v if isinstance(v, str) else ("" if v is None else str(v)))
+' "$1" "$2" 2>/dev/null
+      else
+        # 严格兜底：只认列 0 的 `key: value` 简单标量；可疑写法（锚点/别名/标签/块标量/引号/
+        # 重复键/BOM/缩进/值在下一行）一律 exit 2 —— **宁可拒绝安装，也不静默放过一个遮蔽**。
+        "$_PY" -c '
+import sys
+try:
+    raw = open(sys.argv[1], "rb").read()
+except OSError:
+    sys.exit(2)
+if raw.startswith(b"\xef\xbb\xbf"):
+    sys.exit(2)
+try:
+    text = raw.decode("utf-8")
+except UnicodeDecodeError:
+    sys.exit(2)
+key = sys.argv[2]
+found = None
+for line in text.splitlines():
+    if not line.strip() or line.lstrip().startswith("#"):
+        continue
+    if line[0] in " \t":
+        # 缩进行：可能是嵌套映射（Hermes 不算 name），也可能是**整份缩进的合法清单**
+        # （Hermes 会算 name）—— 分辨不了 ⇒ 只要出现 name 键就报「无法判定」（fail-closed，
+        # 且 UNKNOWN 只会拒绝、绝不会被 --fix-shadow 搬走）。P2-1-3。
+        stripped = line.strip()
+        if (stripped.startswith("name:") or stripped.startswith(chr(34) + "name" + chr(34))
+                or stripped.startswith(chr(39) + "name" + chr(39))):
+            sys.exit(2)
+        continue
+    if line.startswith("---") or line.startswith("..."):
+        sys.exit(2)
+    if ":" not in line:
+        sys.exit(2)
+    k, sep, v = line.partition(":")
+    k = k.strip()
+    if k[:1] in (chr(34), chr(39), "&", "*", "!", "|", ">", "[", "{"):
+        sys.exit(2)
+    if not sep or (v[:1] not in ("", " ")):
+        sys.exit(2)
+    if k != key:
+        continue
+    if found is not None:
+        sys.exit(2)
+    v = v.strip()
+    if v[:1] in ("&", "*", "!", "|", ">", "[", "{", chr(34), chr(39)) or v.startswith("#"):
+        sys.exit(2)
+    found = v.split(" #", 1)[0].strip()
+print(found if found is not None else "")
+' "$1" "$2" 2>/dev/null
+      fi
+      ;;
+  esac
+}
+
 _REPO_NAME=""
 for _c in "$REPO_DIR/plugin.yaml" "$REPO_DIR/plugin.yml"; do
   if [ -f "$_c" ]; then
@@ -128,28 +243,30 @@ _scan_shadow_dirs() {
     if [ -z "$_mf" ] && [ -f "$_d/plugin.json" ]; then
       # Hermes 只认**合法 portable 清单**（要有 $schema）：非法 json 它直接跳过 ⇒ 不能当插件处理，
       # 否则 `--fix-shadow` 会把一个 Hermes 根本不加载的目录搬走（P2-2 必-3b）。
+      # `$schema` 只查**非空**（不查精确 URL）：宁可把 Hermes 会跳过的目录当插件拦住（fail-closed），
+      # 也不能因为将来 schema URL 变了就静默放过一个真遮蔽（fail-open 正是本版要修的病）。
+      if [ -z "$_PY" ]; then
+        _SHADOW_UNK_NAMES+=("$_dn"); continue    # 没有 python3 ⇒ 无法判定（P2-1-2）
+      fi
       if python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if isinstance(d,dict) and d.get("$schema") else 1)' "$_d/plugin.json" 2>/dev/null; then
         _mf="$_d/plugin.json"
       fi
     fi
     [ -n "$_mf" ] || continue        # 连清单都没有 ⇒ 不是插件目录（Hermes 也跳过它）
     if [ ! -r "$_mf" ]; then _SHADOW_UNK_NAMES+=("$_dn"); continue; fi
-    _vr=""
-    case "$_mf" in
-      *plugin.json)
-        _nm="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d.get("name") or "")' "$_mf" 2>/dev/null || true)"
-        _vr="$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d.get("version") or "")' "$_mf" 2>/dev/null || true)"
-        ;;
-      *)
-        _nm="$(sed -n 's/^name[[:space:]]*:[[:space:]]*//p' "$_mf" 2>/dev/null | head -1)"
-        [ -n "$_nm" ] || _nm="$(sed -n 's/^[[:space:]]\+name[[:space:]]*:[[:space:]]*//p' "$_mf" 2>/dev/null | head -1)"
-        _nm="$(printf '%s' "$_nm" | tr -d '\r' | sed 's/[[:space:]]*#.*$//' | sed 's/^["'"'"']//; s/["'"'"']$//' | sed 's/[[:space:]]*$//')"
-        _vr="$(sed -n 's/^version[[:space:]]*:[[:space:]]*//p' "$_mf" 2>/dev/null | head -1 | tr -d '\r' | sed 's/[[:space:]]*#.*$//' | sed 's/^["'"'"']//; s/["'"'"']$//' | sed 's/[[:space:]]*$//')"
-        ;;
-    esac
+    _rc_nm=0
+    _nm="$(_manifest_field "$_mf" name)" || _rc_nm=$?
+    _rc_vr=0
+    _vr="$(_manifest_field "$_mf" version)" || _rc_vr=$?
+    if [ "$_rc_nm" = "3" ] || [ "$_rc_vr" = "3" ]; then
+      continue                     # 不是插件（解析失败 / 顶层非映射 / json 缺 $schema）
+    fi
+    if [ "$_rc_nm" != "0" ] || [ "$_rc_vr" != "0" ]; then
+      _SHADOW_UNK_NAMES+=("$_dn"); continue    # 读不到 / 没有 yaml 库 / 没有 python3 ⇒ 无法判定
+    fi
     if [ -z "$_nm" ]; then
-      # Hermes 的清单解析在缺 name 时**回退目录名**（实测 `zlark/plugin.yaml` 无 name 也能注册），
-      # 所以这里也必须回退目录名 —— 判成「无法判定」会把合法插件拦下来（P2-2 必-3a）。
+      # **键确实不存在**时 Hermes 才回退目录名（实测 `zlark/plugin.yaml` 无 name 也能注册）；
+      # 键存在但读不出已经在上面的退出码里归入「无法判定」了（P2-1-1：那是 fail-open 的入口）。
       _nm="$_dn"
     fi
     if [ "$_nm" != "$_REPO_NAME" ]; then

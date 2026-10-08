@@ -17801,6 +17801,54 @@ def test_v085_install_sh_category_target_skips_the_flat_gate():
         assert (home / "plugins" / "sub" / "larkdeck" / "plugin.yaml").exists()
 
 
+def test_v085_install_sh_yaml_edges_are_unknown_not_silently_passed():
+    """P2-1-1：清单里 name 键**存在但读不出**时必须拒绝，不能回退目录名当成「不是本插件」。
+
+    这 8 类写法 Hermes 的 YAML 解析器都认（真加载那个目录），而 sed 版读不出 —— 一旦回退目录名，
+    install.sh 就会 exit 0 零提示地放行一个**真遮蔽**（端到端 repro：plugins list 显示旧版本）。
+    """
+    import shutil as _shutil
+    import tempfile as _tempfile
+    if not _shutil.which("bash"):
+        return
+    cases = {
+        "anchor": "name: &a larkdeck\nversion: 0.0.1\n",
+        "alias": "x: &n larkdeck\nname: *n\nversion: 0.0.1\n",
+        "dup": "name: other\nname: larkdeck\n",
+        "block": "name: |-\n  larkdeck\nversion: 0.0.1\n",
+        "tag": "name: !!str larkdeck\n",
+        "bom": "\ufeffname: larkdeck\n",
+        "sqkey": "'name': larkdeck\n",
+        "indent": "  name: larkdeck\n",
+    }
+    for label, text in cases.items():
+        with _tempfile.TemporaryDirectory() as tmp:
+            home = _pathlib.Path(tmp)
+            d = home / "plugins" / "larkdeck.bak-edge"
+            d.mkdir(parents=True)
+            (d / "plugin.yaml").write_text(text, encoding="utf-8")
+            rc, out = _v085_run_install(home, "--copy")
+            assert rc == 3, f"{label}: 读不出的 name 必须拒绝（3），实际 {rc}：{out[-200:]}"
+
+
+def test_v085_install_sh_yaml_normal_manifests_still_pass():
+    """反向：正常清单（含引号值 / 行尾注释 / 无 name 回退目录名）不能被上面的严格兜底误伤。"""
+    import shutil as _shutil
+    import tempfile as _tempfile
+    if not _shutil.which("bash"):
+        return
+    with _tempfile.TemporaryDirectory() as tmp:
+        home = _pathlib.Path(tmp)
+        d = home / "plugins" / "other-plugin"
+        d.mkdir(parents=True)
+        (d / "plugin.yaml").write_text("name: other\nversion: 1.0  # 行尾注释\n", encoding="utf-8")
+        nameless = home / "plugins" / "zlark"
+        nameless.mkdir()
+        (nameless / "plugin.yaml").write_text("version: 1.0.0\n", encoding="utf-8")
+        rc, out = _v085_run_install(home, "--copy")
+        assert rc == 0, f"正常/无 name 的清单不该被拦（0），实际 {rc}：{out[-200:]}"
+
+
 def main() -> int:    # `--only <子串>`：只跑名字里含该子串的用例。**专供变异判读**（审计 A：单条变异 idle 28s、
     # 重载 89s，秒级判读只能靠「preflight + 只跑受影响的那几条用例」）。不是发布门禁 ——
     # 它跑完打印的是 `N/M passed`，而 `mutate_check._classify` 要的正是这个收尾语。
