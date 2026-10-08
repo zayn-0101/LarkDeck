@@ -2940,8 +2940,22 @@ MUTATIONS = [
      'test_units'),
     ('V4-77-回合结束不定稿当前推理轮（终态/中止卡里嵌套轮仍展开、耗时继续涨）', 'core/panel.py',
      '        _finalize_round_locked(state, now)\n'
+     '        if interrupted:\n'
+     '            # 官方收尾判据说「本回合被中止」⇒ 在飞的工具行也必须跟着中止\n'
+     '            # （与 `mark_stopped` 同一条口径；两条中止路径都要覆盖）。\n'
+     '            _abandon_running_tools_locked(state, now)\n'
      '        _LAST_ACTIVE_BOX[0] = sid',
+     '        if interrupted:\n'
+     '            # 官方收尾判据说「本回合被中止」⇒ 在飞的工具行也必须跟着中止\n'
+     '            # （与 `mark_stopped` 同一条口径；两条中止路径都要覆盖）。\n'
+     '            _abandon_running_tools_locked(state, now)\n'
      '        _LAST_ACTIVE_BOX[0] = sid',
+     'test_units'),
+    ('V0718-中止时不收尾在飞的工具行（面板还挂着 Running，用户 2026-10-08 截图）', 'core/panel.py',
+     '        if str(item.get("status") or "") == "running":\n'
+     '            item["status"] = "cancelled"',
+     '        if str(item.get("status") or "") == "running":\n'
+     '            item["status"] = "running"',
      'test_units'),
     ('V4-78-`/stop` 不定稿当前推理轮（中止卡里嵌套轮仍展开）', 'core/panel.py',
      '        # `/stop` 同样是一个「回合结束」（而且它**永远没有收尾帧**：stream consumer 直接\n'

@@ -17849,6 +17849,46 @@ def test_v085_install_sh_yaml_normal_manifests_still_pass():
         assert rc == 0, f"正常/无 name 的清单不该被拦（0），实际 {rc}：{out[-200:]}"
 
 
+def test_v0718_stop_marks_running_tool_rows_cancelled():
+    """用户 2026-10-08 截图：`/stop` 之后页脚已写「已中止 · 1m32s」，面板里却还挂着
+    `vision_analyze · Running` —— 卡片自相矛盾，看起来还有动作在跑。
+
+    根因：`/stop` 让 stream consumer 直接 abandon ⇒ 在飞的那个工具**永远等不到**
+    `post_tool_call`，`status` 就永远停在 `running`。所以必须由中止路径自己收尾。
+    """
+    panel.reset()
+    panel.bind_chat_session("oc_stop_a", "s-stop-a")
+    panel.record_tool_started("s-stop-a", "t-stop-a", "vision_analyze",
+                              {"image_url": "/opt/data/cache/x.jpg"}, "c-stop-a")
+    snap = panel.snapshot("oc_stop_a")
+    assert snap and snap["tools"][0]["status"] == "running", snap
+    panel.mark_stopped("oc_stop_a")
+    snap = panel.snapshot("oc_stop_a")
+    assert snap["status"] == panel.STATUS_STOPPED, snap.get("status")
+    assert snap["tools"][0]["status"] == "cancelled", snap["tools"][0]
+    # 渲染层跟着换词：`Running` → `Cancelled`（两条车道的表都在，这里查 legacy 表 + 结构化表同键）。
+    assert cards._TOOL_STATUS_STYLES["cancelled"][0] == "Cancelled"
+    # 两条车道的状态表都要有 `cancelled` 键（结构化车道取 `status_style`，见 cardview）。
+    assert "cancelled" in cards._TOOL_STATUS_STYLES
+    # 已跑完的工具行是**事实**，中止不许改写它。
+    panel.reset()
+    panel.bind_chat_session("oc_stop_b", "s-stop-b")
+    panel.record_tool_started("s-stop-b", "t-stop-b", "bash", {"cmd": "ls"}, "c-stop-b")
+    panel.record_tool_finished("s-stop-b", "t-stop-b", "bash", "ok", 12, "c-stop-b")
+    panel.mark_stopped("oc_stop_b")
+    assert panel.snapshot("oc_stop_b")["tools"][0]["status"] == "ok"
+
+
+def test_v0718_interrupted_turn_end_also_cancels_running_tools():
+    """另一条中止路径（官方 `on_session_end` 报 interrupted）也要收尾在飞的工具行。"""
+    panel.reset()
+    panel.bind_chat_session("oc_stop_c", "s-stop-c")
+    panel.record_tool_started("s-stop-c", "t-stop-c", "terminal", {"cmd": "ls"}, "c-stop-c")
+    panel.record_turn_end("s-stop-c", "t-stop-c", interrupted=True)
+    snap = panel.snapshot("oc_stop_c")
+    assert snap["tools"][0]["status"] == "cancelled", snap["tools"][0]
+
+
 def main() -> int:    # `--only <子串>`：只跑名字里含该子串的用例。**专供变异判读**（审计 A：单条变异 idle 28s、
     # 重载 89s，秒级判读只能靠「preflight + 只跑受影响的那几条用例」）。不是发布门禁 ——
     # 它跑完打印的是 `N/M passed`，而 `mutate_check._classify` 要的正是这个收尾语。

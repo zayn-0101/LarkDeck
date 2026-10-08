@@ -706,8 +706,36 @@ def record_turn_end(session_id: str, turn_id: str, *, completed: bool = False,
         # 而且它与嵌套轮的耗时都还会继续涨（snapshot 对未定稿轮按「到现在为止」算）。
         # 定稿是幂等的（没有当前轮时直接返回），所以放在两个分支合流处。
         _finalize_round_locked(state, now)
+        if interrupted:
+            # 官方收尾判据说「本回合被中止」⇒ 在飞的工具行也必须跟着中止
+            # （与 `mark_stopped` 同一条口径；两条中止路径都要覆盖）。
+            _abandon_running_tools_locked(state, now)
         _LAST_ACTIVE_BOX[0] = sid
         _purge_locked(now)
+
+
+def _abandon_running_tools_locked(state: Dict[str, Any], now: float) -> int:
+    """中止时把**还在跑的工具行**标成 ``cancelled``（返回改了几行）。
+
+    为什么必须有：``/stop`` 会让 stream consumer 直接 abandon ⇒ 在飞的那个工具
+    **永远等不到** ``post_tool_call``，于是那一行会一直挂着 ``Running``。
+    2026-10-08 用户截图：页脚已经写着「已中止 · 1m32s」，面板里却还有
+    ``vision_analyze · Running`` —— 卡片自相矛盾，用户以为还有动作在跑。
+
+    只动 ``running`` 的行：已 ``ok``/``error``/``skipped`` 的行是事实，不许改写。
+    ``optimistic_clarify`` 标记同时清掉 —— 那是「点击已受理、等工具返回」的临时态，
+    回合都中止了就不该再按等待渲染。
+    """
+    changed = 0
+    for item in (state.get("tools") or []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("status") or "") == "running":
+            item["status"] = "cancelled"
+            item["optimistic_clarify"] = False
+            item["duration_ms"] = None   # 没跑完就没有耗时，别编一个
+            changed += 1
+    return changed
 
 
 def mark_stopped(chat_id: str = "") -> str:
@@ -743,6 +771,8 @@ def mark_stopped(chat_id: str = "") -> str:
         # `/stop` 同样是一个「回合结束」（而且它**永远没有收尾帧**：stream consumer 直接
         # abandon）⇒ 当前推理轮必须在这里定稿，否则中止卡的嵌套轮仍是展开态 + 耗时继续涨。
         _finalize_round_locked(state, now)
+        # 在飞的工具行跟着中止：否则面板一直挂着 `Running`（2026-10-08 用户截图）。
+        _abandon_running_tools_locked(state, now)
         # 唯一的写入口里也要顺手淘汰：`mark_stopped` 会为「绑定但还没建桶」的会话建桶，
         # 不淘汰的话这些刚建的空桶会挤掉真实会话的槽位（审计实测：`_MAX_SESSIONS`
         # 按 `updated` 淘汰，刚建的空桶更新、掉的是有内容的老会话）。
