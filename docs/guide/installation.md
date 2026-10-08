@@ -21,7 +21,7 @@ hermes gateway setup
 
 ## 安装
 
-`install.sh` 只做三件事：把插件放进 `$HERMES_HOME/plugins/larkdeck`、校验运行文件清单、打印下一步。它不会删除或覆盖任何已有目标。
+`install.sh` 只做四件事：把插件放进 `$HERMES_HOME/plugins/larkdeck`、校验运行文件清单、**检查 `plugins/` 下有没有会遮蔽它的同名目录**、打印下一步。它不会删除或覆盖任何已有目标。
 
 ### 路径一：一行脚本
 
@@ -41,7 +41,7 @@ cd larkdeck
 ./install.sh --copy          # NAS / 容器：复制运行文件
 ```
 
-可用参数只有 `--link`、`--copy`、`--target <dir>`、`-h/--help`。自定义 Hermes 目录用 `HERMES_HOME=/path/to/.hermes ./install.sh --copy`。脚本检测到目标已存在时会停下，请你自行处理。
+可用参数只有 `--link`、`--copy`、`--target <dir>`、`--fix-shadow`、`--allow-shadow`、`-h/--help`。自定义 Hermes 目录用 `HERMES_HOME=/path/to/.hermes ./install.sh --copy`。脚本检测到目标已存在时会停下，请你自行处理。
 
 ### 路径三：交给 AI Agent
 
@@ -96,8 +96,10 @@ hermes gateway restart
    预期（版本、Hermes 版本与钩子列表随环境变化）：
 
    ```text
-   [larkdeck] 启动自检通过：Hermes 0.21.x · feishu 平台已由 larkdeck 接管 · native 传输 cardkit · 钩子 post_api_request/on_stream_start/on_stream_delta/on_stream_end/pre_tool_call/post_tool_call/pre_gateway_dispatch/on_session_end · /larkdeck 命令已注册
+   [larkdeck] 启动自检通过：Hermes 0.21.x · feishu 平台已由 larkdeck 接管 · native 传输 cardkit · 钩子 post_api_request/on_stream_start/on_stream_delta/on_stream_end/pre_tool_call/post_tool_call/pre_gateway_dispatch/on_session_end · /larkdeck 命令已注册 · 插件 v0.7.x @ /path/to/plugins/larkdeck
    ```
+
+   行末的 `插件 v<版本> @ <目录>` 回答「**现在跑的到底是哪一份代码**」—— 排障时先看这一段。
 
 3. 在飞书里私聊机器人 `/larkdeck status`，预期收到自检卡，首行类似：
 
@@ -105,7 +107,7 @@ hermes gateway restart
    🃏 larkdeck v<当前版本> · 传输 cardkit
    ```
 
-   默认卡片给出七行运行概览；完整的聚合诊断、能力探测与六条进程级记录用
+   默认卡片给出七行运行概览（检测到同名遮蔽目录时顶部多一行 ⚠️）；完整的聚合诊断、能力探测与六条进程级记录用
    `/larkdeck status --detail` 查看。出现 `⚠️` 时按卡片读数处理，详见 [命令](commands.md)。
 
 4. 给机器人发一句“你好”。预期只有一张卡片，回答在原地流式出现；回合结束后面板边框变绿，页脚显示状态、耗时、模型与上下文用量。
@@ -122,22 +124,45 @@ git -C <仓库目录> pull && hermes gateway restart
 ```
 
 ```bash
-# 复制安装：README 的升级命令是 git pull 后重跑 ./install.sh --copy；
-# 当前脚本不覆盖已有目标，所以要先备份并移开旧目录，再重跑。
+# 复制安装：先 git pull，再把旧目录**移出 plugins/**（不是改名留在原地），最后重跑安装
 git -C <仓库目录> pull
-mv ~/.hermes/plugins/larkdeck ~/.hermes/plugins/larkdeck.bak-$(date +%Y%m%d%H%M%S)
+mkdir -p "${HERMES_HOME:-$HOME/.hermes}/plugin-backups"
+mv "${HERMES_HOME:-$HOME/.hermes}/plugins/larkdeck" "${HERMES_HOME:-$HOME/.hermes}/plugin-backups/larkdeck-$(date +%Y%m%d%H%M%S)"
 cd <仓库目录> && ./install.sh --copy
 hermes gateway restart
 ```
 
-升级不会动 `~/.hermes/config.yaml`。升级后按上面的“验证”再走一遍。
+> ⚠️ **备份必须放到 `plugins/` 之外**。Hermes 会扫描 `~/.hermes/plugins/` 下的每个目录，按插件清单里的 `name`
+> 记账：**顶层同名目录互相遮蔽，目录名字典序更大的那个赢**（分类子目录如 `plugins/platforms/<x>` 的键是
+> `<分类>/<目录名>`，不参与这条遮蔽）。只要目录名排在 `larkdeck` 之后（`larkdeck.bak-…`、`larkdeck-old` 都是），
+> 把旧目录改名留在 `plugins/` 里（例如
+> `larkdeck.bak-20261008`）会让**旧版本**继续被加载 —— 升级看起来成功了，实际新代码一行都没跑，而且**默认没有任何自动告警**（`hermes plugins list` 仍会安静地显示生效的那个版本）—— 这次就是要把它变成「装不上就说装不上」。
+> `install.sh` 现在会检查这种情况：发现“会赢的同名目录”就拒绝安装（退出码 3），并给出两条出路 ——
+> `./install.sh --copy --fix-shadow`（自动把它们搬到 `~/.hermes/plugin-backups/`）或自己 `mv`。
+
+升级不会动 `~/.hermes/config.yaml`。升级后按上面的“验证”再走一遍，并额外做一次 **30 秒自查**：
+
+```bash
+# ① 实际加载的是哪一份（版本必须是刚装的那版）
+hermes plugins list | grep larkdeck
+# ② 插件自己的自检行（行末带版本与目录）
+grep '\[larkdeck\] 启动自检' "${HERMES_HOME:-$HOME/.hermes}/logs/agent.log" | tail -1
+# ③ 在飞书里发 /larkdeck status：卡片首行的版本必须一致
+```
+
+（开了 `HERMES_ENABLE_PROJECT_PLUGINS=1` 时，网关还会先加载 `<工作目录>/.hermes/plugins` 里的同名插件，
+它的优先级高于用户插件 —— 那种情况下以**启动自检行**和 `/larkdeck status` 为准，它们来自真正跑起来的进程。）
+
+三条都要在**网关同一环境、同一用户、同一 `HERMES_HOME`** 下执行（装在容器里就在容器里跑）——
+换用户或换 `HERMES_HOME` 看到的是另一个插件目录的结论，会得出“没问题”的假象。
 
 ## 卸载
 
 ```bash
 # 1) 从 ~/.hermes/config.yaml 的 plugins.enabled 里删掉 larkdeck
-# 2) 备份后移除插件目录
-mv ~/.hermes/plugins/larkdeck ~/.hermes/plugins/larkdeck.removed-$(date +%Y%m%d%H%M%S)
+# 2) 把插件目录移出 plugins/（同样别留在原地，否则下次安装会被它遮蔽）
+mkdir -p "${HERMES_HOME:-$HOME/.hermes}/plugin-backups"
+mv "${HERMES_HOME:-$HOME/.hermes}/plugins/larkdeck" "${HERMES_HOME:-$HOME/.hermes}/plugin-backups/larkdeck-removed-$(date +%Y%m%d%H%M%S)"
 hermes gateway restart
 ```
 
@@ -153,7 +178,7 @@ git -C <仓库目录> checkout <tag>
 hermes gateway restart
 ```
 
-复制安装回滚时，checkout 后在仓库目录重跑 `./install.sh --copy`（先按“升级”一节备份并移开旧目录），再重启网关。回滚只改插件代码；`~/.hermes/config.yaml` 里的 LarkDeck 配置保留，新版本新增的键会被旧版忽略。
+复制安装回滚时，checkout 后在仓库目录重跑 `./install.sh --copy`：先把当前目录**移出 `plugins/`**（按“升级”一节：`mkdir -p "${HERMES_HOME:-$HOME/.hermes}/plugin-backups" && mv "${HERMES_HOME:-$HOME/.hermes}/plugins/larkdeck" "${HERMES_HOME:-$HOME/.hermes}/plugin-backups/larkdeck-$(date +%Y%m%d%H%M%S)"`），再重跑安装，最后重启网关。回滚同样不能把旧目录改名留在 `plugins/` 里。回滚只改插件代码；`~/.hermes/config.yaml` 里的 LarkDeck 配置保留，新版本新增的键会被旧版忽略。
 
 ## 常见安装错误
 

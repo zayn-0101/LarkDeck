@@ -51,6 +51,67 @@ def _skip_local_archive(rel: str, name: str, kind: str, skipped: list) -> bool:
 #: (名字, 相对文件, 原文, 替换成, 期望其中哪个门禁变红)
 #: 期望值只用于打印对照；判定标准是「至少一门红」。
 MUTATIONS = [
+    ("V085-P2b-出路命令丢掉用户参数（照抄会装错模式）", "install.sh",
+     '_ORIG_ARGS="$*"        # 出路命令要照抄用户原来的参数（解析后 $* 已被 shift 空）',
+     '_ORIG_ARGS=""', "test_units"),
+    ("V085-P2b-搬完遮蔽后即使目标不存在也早退（不装了）", "install.sh",
+     'if [ "${_SHADOW_MOVED:-0}" = "1" ] && [ -e "$TARGET" ]; then',
+     'if [ "${_SHADOW_MOVED:-0}" = "1" ]; then', "test_units"),
+    ("V085-P2b-门禁不再限定顶层（分类目录/plugins 之外也被拦）", "install.sh",
+     '  [ "$_TARGET_BASE" = "$PLUGINS_DIR" ] || return 0',
+     '  [ -n "$_TARGET_BASE" ] || return 0', "test_units"),
+    ("V085-P2b-清单缺 name 时判成无法判定（Hermes 实际回退目录名）", "install.sh",
+     '      _nm="$_dn"',
+     '      _SHADOW_UNK_NAMES+=("$_dn"); continue', "test_units"),
+    ("V085-P2b-非法 portable 清单也当插件（Hermes 会跳过它）", "install.sh",
+     """      if python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if isinstance(d,dict) and d.get("$schema") else 1)' "$_d/plugin.json" 2>/dev/null; then""",
+     '      if true; then', "test_units"),
+    # ---- V085（v0.7.17）：插件目录同名遮蔽 ------------------------------------ #
+    # 真机事故：旧目录改名留在 plugins/ 里 ⇒ Hermes 按清单 name 记账、目录名字典序更大的赢
+    # ⇒ 实际加载旧版本、升级静默失效。这批变异钉「门禁真的拦得住」：
+    # P2 侧（install.sh）与 P3 侧（运行时告警）各有独立的判据，任何一条被改坏都必须有门禁变红。
+    ("V085-P2-遮蔽判据反向（排序在前的反而被当成会遮蔽）", "install.sh",
+     '    elif [[ "$_dn" > "$_TARGET_NAME" ]]; then', '    elif [[ "$_dn" < "$_TARGET_NAME" ]]; then',
+     "test_units"),
+    ("V085-P2-扫描器早退（同级目录一个都不看）", "install.sh",
+     '  [ -d "$_TARGET_BASE" ] || return 0\n', '  return 0\n', "test_units"),
+    ("V085-P2-无法判定时不再拒绝（UNKNOWN 静默放行）", "install.sh",
+     'if [ "${#_SHADOW_UNK_NAMES[@]}" -gt 0 ] && [ "$ALLOW_SHADOW" != "1" ]; then',
+     'if false; then', "test_units"),
+    ("V085-P2---fix-shadow 改成复制（旧目录留在原地继续遮蔽）", "install.sh",
+     '      mv "$_TARGET_BASE/$_dn" "$_dest"\n', '      cp -a "$_TARGET_BASE/$_dn" "$_dest"\n',
+     "test_units"),
+    ("V085-P3-遮蔽判据反向（win/lose 互换）", "core/adapter.py",
+     '                if child > self_name:\n'
+     '                    out["win"].append(row)\n'
+     '                else:\n'
+     '                    out["lose"].append(row)',
+     '                if child < self_name:\n'
+     '                    out["win"].append(row)\n'
+     '                else:\n'
+     '                    out["lose"].append(row)',
+     "test_units"),
+    ("V085-P3-无法判定被静默丢弃（第三态消失）", "core/adapter.py",
+     '            except OSError:\n                out["unknown"].append(child)      # 读不到 ⇒ 无法判定（不是「没有」）',
+     '            except OSError:\n                pass', "test_units"),
+    ("V085-P3-清单解析退回正则猜 YAML（嵌套 name 假阳性）", "core/adapter.py",
+     '        data = yaml.safe_load(text)\n        except Exception:\n            return None',
+     '        data = {"name": (re.search(r"name[ \\t]*:[ \\t]*([^\\n]+)", text).group(1).strip() if re.search(r"name[ \\t]*:[ \\t]*([^\\n]+)", text) else "")}\n        except Exception:\n            return None',
+     "test_units"),
+    ("V085-P3-自检行不再自报版本与目录", "core/adapter.py",
+     '        detail += f" · 插件 {_ld_plugin_self_descriptor()}"\n', '', "test_units"),
+    ("V085-P3-状态卡不再置顶遮蔽提示", "core/adapter.py",
+     '        _shadow_prefix = _ld_shadow_card_line(detail=detail)\n'
+     '        if _shadow_prefix:\n'
+     '            _shadow_prefix += "\\n\\n"\n',
+     '        _shadow_prefix = ""\n', "test_units"),
+    ("V085-P3-单测注入被绕过（用例会去翻真 ~/.hermes）", "core/adapter.py",
+     '    if _LD_SHADOW_HOME_OVERRIDE is not None:\n        home = str(_LD_SHADOW_HOME_OVERRIDE)',
+     '    if False:\n        home = str(_LD_SHADOW_HOME_OVERRIDE)', "test_units"),
+    ("V085-i18n-遮蔽提示丢掉条数占位符（用户看不到有几个目录）", "core/i18n.py",
+     '        ZH: "⚠️ 检测到 {n} 个会遮蔽本插件的同名目录（{items}）：**重启网关后**由它们接管，"',
+     '        ZH: "⚠️ 检测到会遮蔽本插件的同名目录（{items}）：**重启网关后**由它们接管，"',
+     "test_units"),
     # ---- HK：钩子→指标层的字段透传（页脚窗口靠它解析） ---------------------- #
     # 2026-09-14 线上：页脚恒显示 `ctx x/128k`（真实 1M）。判据是「撤掉透传就必须红」——
     # 注意 `check_hooks.py` **抓不到**这条：它自己把 base_url 塞进派发载荷，
@@ -1319,7 +1380,7 @@ MUTATIONS = [
      '_CK_INNER_CODE_RE = re.compile(r"\\bcode\\s*:\\s*(\\d+)", re.IGNORECASE)',
      '_CK_INNER_CODE_RE = re.compile(r"code\\s*:\\s*(\\d+)", re.IGNORECASE)',
      "test_units"),
-    ("B2-6-内层码取第一个匹配（尾部那个权威码被前面的描述码顶掉）", "core/adapter.py",
+    ("B2-6-内层码取第一个匹配（尾部那个权威码被前面的描述码遮蔽）", "core/adapter.py",
      '        return int(found[-1]) or None',
      '        return int(found[0]) or None',
      "test_units"),
@@ -2251,7 +2312,7 @@ MUTATIONS = [
      '    state = "live"\n'
      '    return f"reasoning_{round_view.index}_{state}_panel"',
      "test_units"),
-    ("V076-2-已有轮每帧重放 expanded（用户手动状态被顶掉）", "core/adapter.py",
+    ("V076-2-已有轮每帧重放 expanded（用户手动状态被遮蔽）", "core/adapter.py",
      '            if element_id in sent:\n'
      '                element.pop("expanded", None)',
      '            if element_id in sent:\n'

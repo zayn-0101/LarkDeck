@@ -5,7 +5,7 @@
 > CardKit 2.0 的 [Hermes Agent](https://github.com/NousResearch/hermes-agent) 插件，不修改
 > Hermes 源码。主回复在卡内流式更新；长回答会接续到后续卡片，澄清问题使用独立交互卡。
 
-[![version](https://img.shields.io/badge/version-0.7.16-blue.svg)](https://github.com/zayn-0101/LarkDeck/releases)
+[![version](https://img.shields.io/badge/version-0.7.17-blue.svg)](https://github.com/zayn-0101/LarkDeck/releases)
 [![AH (Hermes Agent) 0.21.x](https://img.shields.io/badge/AH-0.21.x-blueviolet.svg)](https://github.com/NousResearch/hermes-agent)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -60,9 +60,9 @@ hermes gateway restart
 
 启动日志里会出现一行 `[larkdeck] 启动自检通过`。自检失败会打 `ERROR`，并保持官方适配器原样工作：卡片不生效，但飞书不会被弄坏。
 
-升级：软链安装执行 `git pull && hermes gateway restart`。`--copy` 安装先 `git pull`，再把旧目录移开、重跑 `./install.sh --copy`，最后重启网关；脚本不会覆盖已有目标，完整命令见[安装指南](docs/guide/installation.md#升级)。模块不会热重载，必须重启网关。
+升级：软链安装执行 `git pull && hermes gateway restart`。`--copy` 安装先 `git pull`，把旧目录**移出 `plugins/`**（例如 `~/.hermes/plugin-backups/`，容器里是 `$HERMES_HOME/plugin-backups/` —— 留在原地改名会让旧版本继续被加载），重跑 `./install.sh --copy`，最后重启网关；脚本不会覆盖已有目标，发现会遮蔽的同名目录会直接拒绝安装（`--fix-shadow` 只搬走、不删除），完整命令见[安装指南](docs/guide/installation.md#升级)。升级后确认真的生效：`hermes plugins list | grep larkdeck` 与 `/larkdeck status` 首行都应显示新版本。模块不会热重载，必须重启网关。
 
-卸载：从 `plugins.enabled` 删除 `larkdeck`，再删除 `~/.hermes/plugins/larkdeck/`。插件没有改写 Hermes 源码，不存在残留注入。
+卸载：从 `plugins.enabled` 删除 `larkdeck`，再把插件目录**移出 `plugins/`**（如 `~/.hermes/plugin-backups/larkdeck-removed-<时间戳>`，同样别留在原地），重启网关。插件没有改写 Hermes 源码，不存在残留注入。
 
 ## 配置概览
 

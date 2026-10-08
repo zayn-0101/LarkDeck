@@ -84,12 +84,17 @@ NAS / 容器用 `./install.sh --copy`，其 `FILES` 清单手写，新增运行�
 
    重启后确认 `启动自检通过`，再发一条真实消息；`/larkdeck status` 应报回退后的版本与传输。
 
-2. **回退安装软链**：如果发布时改过软链，可用部署脚本恢复备份：
+2. **回退安装软链**：如果发布时改过软链，可用部署脚本恢复备份（备份在
+   `${HERMES_HOME:-$HOME/.hermes}/plugin-backups/`，**不在 `plugins/` 里**）：
 
    ```bash
    tools/setup_deploy_worktree.sh --rollback
    hermes gateway restart
    ```
+
+   ⚠️ 任何软链/目录备份都**不能留在 `plugins/` 里**：Hermes 按插件清单的 `name` 记账，同名目录里
+   目录名字典序靠后的会**遮蔽**靠前的 —— 旧备份留原地会让新部署静默失效（2026-10-08 真机事故）。
+   `--apply` 现在会主动警告 `plugins/` 里残留的旧备份。
 
 3. **已发布的 tag / Release 不回写**：不要覆盖已推送的 tag。修复走新的补丁版本；
    确需删除远端 tag 或 Release 时，先说明范围、影响与回滚点，再执行破坏性命令。

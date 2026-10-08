@@ -35,6 +35,10 @@ if _REPO_PARENT not in sys.path:
     sys.path.insert(0, _REPO_PARENT)
 
 from larkdeck.core import adapter, cards, compat, context, hooks, i18n, panel  # noqa: E402
+#: R8（v0.7.17）：遮蔽扫描**默认不读真机** —— 否则「跑测试的人家目录里有没有同名目录」
+#: 会决定状态卡的行数（`test_v085_*` 与既有 10276 的行数断言都会变成看环境的用例）。
+#: `""` = 明确「没有 home」；单条用例要测扫描时会自己临时设成某个临时 home。
+adapter._LD_SHADOW_HOME_OVERRIDE = ""
 
 
 #: 本仓库根目录（`.../larkdeck`，测试文件在它下面的 `tests/` 里）。
@@ -17273,6 +17277,530 @@ def test_v084_failed_resume_frame_leaves_no_zombie():
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
 
 
+# --------------------------------------------------------------------------- #
+# V085（v0.7.17）：插件目录同名遮蔽
+# 2026-10-08 真机事故：磁盘上是 v0.7.16，实际加载的却是 plugins/larkdeck.bak-<ts>（v0.7.15）——
+# Hermes 扫 plugins/*/ 的插件清单、按清单里的 name 记账，**后扫到的同名顶层目录覆盖先扫到的**
+# （目录名字典序更大的赢）。这几条用例把「装不上就说装不上 / 活着的那份能自证」钉住。
+# --------------------------------------------------------------------------- #
+
+def test_v085_docs_never_tell_users_to_leave_backups_in_plugins():
+    """用户文档里**不许**再出现「把备份改名留在 plugins/ 里」的教法（R9）。
+
+    判据不是「出现关键词」而是「在 plugins/ 里造同名备份」：允许**清理**动作
+    （`mv plugins/larkdeck.bak-* plugins/../plugin-backups/`，那行同时提到 plugin-backups），
+    禁止任何「目标仍在 plugins/ 内」的写法 —— 那正是本事故的成因。
+    """
+    paths = sorted((_REPO_ROOT / "docs" / "guide").rglob("*.md"))
+    paths += [_REPO_ROOT / "README.md", _REPO_ROOT / "README.en.md", _REPO_ROOT / "CHANGELOG.md"]
+    offenders = []
+    for path in paths:
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if ("plugins/larkdeck.bak-" in line or "plugins/larkdeck.removed-" in line
+                    or "plugins/larkdeck-link.bak." in line) and "plugin-backups" not in line:
+                offenders.append(f"{path.relative_to(_REPO_ROOT)}:{lineno}")
+            if re.search(r"rm\s+-rf\s+[^\n]*plugins/larkdeck", line):
+                offenders.append(f"{path.relative_to(_REPO_ROOT)}:{lineno}（教用户删数据）")
+    assert not offenders, f"这些文档仍在教用户把备份留在 plugins/ 里：{offenders}"
+    # 代码围栏必须成对：`check_docs.py` 不查围栏配对，而一个孤立 ``` 会让 Python-Markdown
+    # 把后面整段示例吞进代码块（v0.7.17 文档阶段真发生过一次，靠人眼才发现）。
+    unbalanced = [str(p.relative_to(_REPO_ROOT)) for p in paths
+                  if p.read_text(encoding="utf-8").count("```") % 2]
+    assert not unbalanced, f"这些文档的代码围栏不成对（``` 计数为奇数）：{unbalanced}"
+
+
+def test_v085_shadow_scan_three_states_and_winner_rule():
+    """三态判定：会遮蔽（排序在后）/ 不遮蔽（排序在前）/ 无法判定（读不到 name）。
+
+    「同名就报」是错的：Hermes 用 `sorted()` 扫，**目录名字典序更大的赢** —— 只有排在
+    自己后面的同名目录才真的遮蔽我们；排在前面的留着迟早出事，但本次不影响加载。
+    """
+    import tempfile as _tempfile
+    with _tempfile.TemporaryDirectory() as tmp:
+        plugins = _pathlib.Path(tmp) / "plugins"
+        ours = plugins / "larkdeck"
+        ours.mkdir(parents=True)
+        (ours / "plugin.yaml").write_text("name: larkdeck\nversion: 0.7.17\n", encoding="utf-8")
+        for name, ver in (("larkdeck.bak-20260101000000", "0.7.15"),
+                          ("larkdeck-portable", "0.9.9")):
+            d = plugins / name
+            d.mkdir()
+            (d / "plugin.yaml").write_text(f"name: larkdeck\nversion: {ver}\n", encoding="utf-8")
+        (plugins / "aaa-larkdeck").mkdir()
+        (plugins / "aaa-larkdeck" / "plugin.yaml").write_text(
+            "name: larkdeck\nversion: 0.0.1\n", encoding="utf-8")
+        (plugins / "larkdeck-unknown").mkdir()
+        (plugins / "larkdeck-unknown" / "plugin.yaml").write_text("version: 1.0\n", encoding="utf-8")
+        (plugins / "larkdeck-unknown" / "plugin.yaml").chmod(0o000)   # 读不到 ⇒ 无法判定
+        (plugins / "larkdeck-noname").mkdir()          # 缺 name ⇒ Hermes 回退目录名 ⇒ 不是遮蔽
+        (plugins / "larkdeck-noname" / "plugin.yaml").write_text("version: 1.0\n", encoding="utf-8")
+        (plugins / "other-plugin").mkdir()
+        (plugins / "other-plugin" / "plugin.yaml").write_text("name: other\nversion: 1.0\n",
+                                                             encoding="utf-8")
+        rep = adapter._ld_shadow_dirs(str(plugins), str(ours))
+        assert sorted(n for n, _ in rep["win"]) == ["larkdeck-portable",
+                                                   "larkdeck.bak-20260101000000"], rep
+        assert [n for n, _ in rep["lose"]] == ["aaa-larkdeck"], rep
+        assert rep["unknown"] == ["larkdeck-unknown"], rep
+        assert not any("noname" in n for n, _ in rep["win"] + rep["lose"]), rep
+        assert dict(rep["win"])["larkdeck.bak-20260101000000"] == "0.7.15", rep
+        # 自排除：自己不算遮蔽；异名目录不参与
+        assert "larkdeck" not in [n for n, _ in rep["win"] + rep["lose"]] + rep["unknown"]
+
+
+def test_v085_manifest_parsing_tolerates_quotes_crlf_and_comments():
+    """清单解析要认得出「实际存在的那种写法」：引号、CRLF、行尾注释、`plugin.json`。"""
+    import tempfile as _tempfile
+    with _tempfile.TemporaryDirectory() as tmp:
+        root = _pathlib.Path(tmp)
+        quoted = root / "q.yaml"
+        quoted.write_bytes(b'name: "larkdeck"   # comment\r\nversion: "0.7.15"\r\n')
+        assert adapter._ld_manifest_name(str(quoted)) == "larkdeck"
+        assert adapter._ld_manifest_version(str(quoted)) == "0.7.15"
+        portable = root / "p.json"
+        portable.write_text(
+            '{"$schema": "https://hermes.dev/plugin.schema.json", "name": "larkdeck", '
+            '"version": "0.8.8"}', encoding="utf-8")
+        assert adapter._ld_manifest_name(str(portable)) == "larkdeck"
+        assert adapter._ld_manifest_version(str(portable)) == "0.8.8"
+        bare = root / "bare.json"        # 缺 $schema ⇒ Hermes 跳过这个目录，我们也不认它
+        bare.write_text('{"name": "larkdeck"}', encoding="utf-8")
+        assert adapter._ld_manifest_name(str(bare)) == ""
+        nested = root / "nested.yaml"    # 嵌套的 name 不是插件名（正则猜会假阳性）
+        nested.write_text("author:\n  name: larkdeck\n", encoding="utf-8")
+        assert adapter._ld_manifest_name(str(nested)) == ""
+        nameless = root / "n.yaml"
+        nameless.write_text("version: 1.0\n", encoding="utf-8")
+        assert adapter._ld_manifest_name(str(nameless)) == ""
+        assert adapter._ld_manifest_name(str(root / "missing.yaml")) == ""
+
+
+def test_v085_self_descriptor_pins_version_and_dir_segments():
+    """自检行末的「我是哪一份」必须**两段都钉住**（只断言整串会让「读不到」互相掩盖）。"""
+    text = adapter._ld_plugin_self_descriptor()
+    assert " @ " in text, text
+    version, where = text.split(" @ ", 1)
+    read = adapter._ld_plugin_version()
+    assert version == (f"v{read}" if read else i18n.t("cmd.version_unknown")), text
+    assert where == adapter._ld_plugin_dir(), text
+    assert where.endswith("larkdeck"), text
+
+
+def test_v085_card_line_only_when_shadowed_and_no_mechanism_in_default_view():
+    """卡片置顶 ⚠️ 行：干净环境**一行都不多**；有遮蔽时默认视图只给结论与出路（V080）。"""
+    import tempfile as _tempfile
+    old = adapter._LD_SHADOW_HOME_OVERRIDE
+    try:
+        with _tempfile.TemporaryDirectory() as tmp:
+            home = _pathlib.Path(tmp)
+            ours = home / "plugins" / "larkdeck"
+            ours.mkdir(parents=True)
+            (ours / "plugin.yaml").write_text("name: larkdeck\nversion: 0.7.17\n", encoding="utf-8")
+            adapter._LD_SHADOW_HOME_OVERRIDE = str(home)
+            assert adapter._ld_shadow_card_line() == "", "干净环境不该出现 ⚠️ 行"
+            d = home / "plugins" / "larkdeck.bak-20260101000000"
+            d.mkdir()
+            (d / "plugin.yaml").write_text("name: larkdeck\nversion: 0.7.15\n", encoding="utf-8")
+            short = adapter._ld_shadow_card_line()
+            detail = adapter._ld_shadow_card_line(detail=True)
+            assert short.startswith("⚠️"), short
+            assert "0.7.15" in short and "larkdeck.bak-20260101000000" in short, short
+            assert "字典序" not in short, f"默认视图不该讲机制：{short}"
+            assert "字典序" in detail and "plugin-backups" in detail, detail
+            assert "重启" in short, f"win 文案要说清是「重启后接管」而不是「现在被遮蔽」：{short}"
+            # 第三态（读不到清单）**只在 --detail**：默认卡不加行，措辞也不许让用户去搬它
+            # 清单**读不到**（权限）⇒ 第三态（缺 name 不算：Hermes 会回退目录名）
+            (d / "plugin.yaml").chmod(0o000)
+            assert adapter._ld_shadow_card_line() == "", "unknown 不该进默认视图（R3）"
+            unk = adapter._ld_shadow_card_line(detail=True)
+            assert "无法判定" in unk and "人工确认" in unk, unk
+            assert "--fix-shadow" not in unk, f"认不出的目录不许让用户去 --fix-shadow：{unk}"
+            # win 与 unknown **同时存在**时，--detail 必须两个都说（R3；neat-freak 必-1）
+            w2 = home / "plugins" / "larkdeck.bak-20260102000000"
+            w2.mkdir()
+            (w2 / "plugin.yaml").write_text("name: larkdeck\nversion: 0.7.14\n", encoding="utf-8")
+            both = adapter._ld_shadow_card_line(detail=True)
+            assert "遮蔽" in both and "无法判定" in both, both
+            # 单测注入必须隔断真机：显式「没有 home」时一律不扫。
+            # ⚠️ 还要关掉 project 插件分支：它按 cwd 取路径，**不看 home** ——
+            # 本机若设了 HERMES_ENABLE_PROJECT_PLUGINS=1，这条断言就会假红（neat-freak 中-4）。
+            adapter._LD_SHADOW_HOME_OVERRIDE = ""
+            _proj = os.environ.pop("HERMES_ENABLE_PROJECT_PLUGINS", None)
+            try:
+                assert adapter._ld_shadow_roots() == []
+                assert adapter._ld_shadow_card_line() == ""
+            finally:
+                if _proj is not None:
+                    os.environ["HERMES_ENABLE_PROJECT_PLUGINS"] = _proj
+    finally:
+        adapter._LD_SHADOW_HOME_OVERRIDE = old
+
+
+def test_v085_i18n_shadow_keys_bilingual():
+    """新增文案必须 zh/en 成对（i18n 没有键表检查，只有这条用例钉它）。"""
+    for key in ("cmd.shadow_warn", "cmd.shadow_warn_detail", "cmd.shadow_unknown_detail",
+                "cmd.dir_unknown"):
+        zh = i18n.t(key, locale=i18n.ZH)
+        en = i18n.t(key, locale=i18n.EN)
+        assert zh and en and zh != en, (key, zh, en)
+    assert "{n}" in i18n.t("cmd.shadow_warn", locale=i18n.ZH)
+    assert "1" in i18n.t("cmd.shadow_warn", n=1, items="x", locale=i18n.ZH)
+
+
+def _v085_run_install(home: "_pathlib.Path", *args: str):
+    """在隔离的 HERMES_HOME 里跑真 `install.sh`（**绝不碰真 ~/.hermes**）。"""
+    import subprocess
+    env = dict(os.environ, HERMES_HOME=str(home))
+    proc = subprocess.run(["/bin/bash", str(_REPO_ROOT / "install.sh"), *args],
+                          capture_output=True, text=True, env=env, cwd=str(_REPO_ROOT),
+                          timeout=60)
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def _v085_make_shadow(home: "_pathlib.Path", name: str, version: str = "0.7.15"):
+    d = home / "plugins" / name
+    d.mkdir(parents=True, exist_ok=True)
+    text = (_REPO_ROOT / "plugin.yaml").read_text(encoding="utf-8")
+    text = re.sub(r"^version:.*$", f"version: {version}", text, count=1, flags=re.M)
+    (d / "plugin.yaml").write_text(text, encoding="utf-8")
+    return d
+
+
+def test_v085_install_sh_refuses_same_name_shadow():
+    """会遮蔽本次安装的同名目录 ⇒ **拒绝安装**（退出码 3），并且不落地新文件。
+
+    这是本事故的第一道门：用户按文档升级时，旧备份还留在 plugins/ 里 —— 装下去也不会生效，
+    所以宁可拒绝，也不能「装成功、实际跑旧代码、零告警」。
+    """
+    import shutil as _shutil
+    import tempfile as _tempfile
+    if not _shutil.which("bash"):
+        return
+    with _tempfile.TemporaryDirectory() as tmp:
+        home = _pathlib.Path(tmp)
+        shadow = _v085_make_shadow(home, "larkdeck.bak-20260101000000")
+        rc, out = _v085_run_install(home, "--copy")
+        assert rc == 3, f"应拒绝（3），实际 {rc}：{out[-400:]}"
+        assert "0.7.15" in out, out[-400:]
+        assert "--fix-shadow" in out, out[-400:]
+        assert not (home / "plugins" / "larkdeck" / "plugin.yaml").exists(), "拒绝时不该落地"
+        assert shadow.exists(), "拒绝时不许动用户的目录"
+
+
+def test_v085_install_sh_fix_shadow_moves_out_of_plugins_and_installs():
+    """`--fix-shadow`：把会遮蔽的同名目录**搬出 plugins/**（只 mv、不删），然后正常安装。"""
+    import shutil as _shutil
+    import tempfile as _tempfile
+    if not _shutil.which("bash"):
+        return
+    with _tempfile.TemporaryDirectory() as tmp:
+        home = _pathlib.Path(tmp)
+        shadow = _v085_make_shadow(home, "larkdeck.bak-20260101000000")
+        rc, out = _v085_run_install(home, "--copy", "--fix-shadow")
+        assert rc == 0, f"应装上（0），实际 {rc}：{out[-400:]}"
+        assert not shadow.exists(), "旧目录应已搬走"
+        moved = list((home / "plugin-backups").glob("larkdeck.bak-*"))
+        assert moved, "应落到 $HERMES_HOME/plugin-backups/"
+        assert moved[0].is_dir(), "搬走的是目录（不是删除）"
+        assert (home / "plugins" / "larkdeck" / "plugin.yaml").is_file(), "新文件应就位"
+
+
+def test_v085_install_sh_allow_shadow_warns_but_continues():
+    """`--allow-shadow` 是显式知情：仍要**响亮**警告，但退出码 0。"""
+    import shutil as _shutil
+    import tempfile as _tempfile
+    if not _shutil.which("bash"):
+        return
+    with _tempfile.TemporaryDirectory() as tmp:
+        home = _pathlib.Path(tmp)
+        _v085_make_shadow(home, "larkdeck.bak-20260101000000")
+        rc, out = _v085_run_install(home, "--copy", "--allow-shadow")
+        assert rc == 0, f"应继续（0），实际 {rc}：{out[-400:]}"
+        assert "⚠️" in out and "--allow-shadow" in out, out[-400:]
+
+
+def test_v085_install_sh_earlier_same_name_only_warns():
+    """排序**在前**的同名目录不会遮蔽本次安装 ⇒ 只提示、照装（判据是「会不会赢」不是「有没有同名」）。"""
+    import shutil as _shutil
+    import tempfile as _tempfile
+    if not _shutil.which("bash"):
+        return
+    with _tempfile.TemporaryDirectory() as tmp:
+        home = _pathlib.Path(tmp)
+        _v085_make_shadow(home, "aaa-larkdeck", version="0.0.1")
+        rc, out = _v085_run_install(home, "--copy")
+        assert rc == 0, f"应照装（0），实际 {rc}：{out[-400:]}"
+        assert "aaa-larkdeck" in out, out[-400:]
+        assert (home / "plugins" / "larkdeck" / "plugin.yaml").is_file()
+
+
+def test_v085_install_sh_unknown_manifest_refuses_without_moving():
+    """读不到 `name` 的目录 = **无法判定** ⇒ 拒绝，而且**不搬**（不许动认不出来的东西）。"""
+    import shutil as _shutil
+    import tempfile as _tempfile
+    if not _shutil.which("bash"):
+        return
+    with _tempfile.TemporaryDirectory() as tmp:
+        home = _pathlib.Path(tmp)
+        d = home / "plugins" / "larkdeck.bak-broken"
+        d.mkdir(parents=True)
+        (d / "plugin.yaml").write_text("name: larkdeck\nversion: 1.0\n", encoding="utf-8")
+        (d / "plugin.yaml").chmod(0o000)      # 读不到 ⇒ 无法判定（缺 name 会按 Hermes 语义回退目录名）
+        rc, out = _v085_run_install(home, "--copy", "--fix-shadow")
+        assert rc == 3, f"无法判定应拒绝（3），实际 {rc}：{out[-400:]}"
+        assert d.exists(), "认不出名字的目录不许搬"
+        assert not (home / "plugin-backups").exists(), "不许留下空备份目录当「处理过了」"
+
+
+def test_v085_install_sh_clean_home_installs_and_prints_verify_commands():
+    """干净环境：正常装上，并且**主动给出验证命令**（装完必须能自查实际生效的是哪一份）。"""
+    import shutil as _shutil
+    import tempfile as _tempfile
+    if not _shutil.which("bash"):
+        return
+    with _tempfile.TemporaryDirectory() as tmp:
+        home = _pathlib.Path(tmp)
+        rc, out = _v085_run_install(home, "--copy")
+        assert rc == 0, f"应装上（0），实际 {rc}：{out[-400:]}"
+        assert "hermes plugins list | grep larkdeck" in out, out[-500:]
+        assert (home / "plugins" / "larkdeck" / "core" / "adapter.py").is_file()
+
+
+def test_v085_selfcheck_and_card_composition_contracts():
+    """自检行与卡片的**组合点**必须钉住：helper 单测全绿 ≠ 真的接上了。
+
+    2026-10-08 事故最贵的一课是「磁盘对了、进程里是旧代码」—— 所以这里直接钉源码里的组合点
+    （本项目既有先例：`test_units.py` 也扫 `.py` 源码做契约）：
+      ① 自检行末**确实**追加了 `· 插件 <描述符>`，且在命令注册段**之后**；
+      ② 状态卡两个视图**共用**同一个前缀变量（默认视图与 `--detail` 不能各写一套）。
+    只测 helper 的话，「段没接上」这类变异会活下来。
+    """
+    src = (_REPO_ROOT / "core" / "adapter.py").read_text(encoding="utf-8")
+    seg = 'detail += f" · 插件 {_ld_plugin_self_descriptor()}"'
+    assert seg in src, "自检行必须追加「插件 <版本> @ <目录>」段"
+    assert src.index(seg) > src.index("/{LARKDECK_COMMAND} 命令已注册"), "该段必须在行末"
+    assert src.count("_shadow_prefix = _ld_shadow_card_line(detail=detail)") == 1
+    assert "if _shadow_prefix:" in src, "前缀必须真的被使用"
+    assert "return _shadow_prefix + short" in src, "默认视图必须带前缀"
+    assert "return _shadow_prefix + _ld_status_markdown(" in src, "完整视图必须带前缀"
+
+
+def test_v085_install_sh_dirname_with_tab_still_refuses():
+    """目录名里带**制表符**也不能漏判：TSV + `awk -F'\t'` 会被它破坏（P2-3 审计实测漏判）。
+
+    所以扫描结果不序列化，直接进 bash 数组 —— 任何分隔符都能被目录名伪造。
+    """
+    import shutil as _shutil
+    import tempfile as _tempfile
+    if not _shutil.which("bash"):
+        return
+    with _tempfile.TemporaryDirectory() as tmp:
+        home = _pathlib.Path(tmp)
+        _v085_make_shadow(home, "larkdeck.bak-\twith-tab")
+        rc, out = _v085_run_install(home, "--copy")
+        assert rc == 3, f"带制表符的同名目录也必须拒绝（3），实际 {rc}：{out[-400:]}"
+        assert not (home / "plugins" / "larkdeck" / "plugin.yaml").exists()
+
+
+def test_v085_install_sh_dirname_with_fullwidth_paren_v_fix_shadow_works():
+    """目录名里带全角 `（v` 时，`--fix-shadow` 不能靠反解显示串来找目录（会截断成 larkdeck）。"""
+    import shutil as _shutil
+    import tempfile as _tempfile
+    if not _shutil.which("bash"):
+        return
+    with _tempfile.TemporaryDirectory() as tmp:
+        home = _pathlib.Path(tmp)
+        shadow = _v085_make_shadow(home, "larkdeck（v2")
+        rc, out = _v085_run_install(home, "--copy")
+        assert rc == 3, f"默认应拒绝（3），实际 {rc}：{out[-400:]}"
+        rc, out = _v085_run_install(home, "--copy", "--fix-shadow")
+        assert rc == 0, f"--fix-shadow 应装上（0），实际 {rc}：{out[-400:]}"
+        assert not shadow.exists(), "该目录应被搬走"
+        assert list((home / "plugin-backups").glob("larkdeck（v2*")), "落点应是原名+时间戳"
+
+
+def test_v085_install_sh_recognizes_yml_and_json_manifests():
+    """同名兄弟目录的清单可能是 `plugin.yml` 或 portable `plugin.json` —— 只认 `plugin.yaml` 会漏判。"""
+    import shutil as _shutil
+    import tempfile as _tempfile
+    if not _shutil.which("bash"):
+        return
+    with _tempfile.TemporaryDirectory() as tmp:
+        home = _pathlib.Path(tmp)
+        yml = _v085_make_shadow(home, "larkdeck-yml")
+        (yml / "plugin.yaml").rename(yml / "plugin.yml")
+        js = home / "plugins" / "larkdeck-portable"
+        js.mkdir(parents=True)
+        (js / "plugin.json").write_text(
+            '{"$schema": "https://hermes.dev/plugin.schema.json", "name": "larkdeck", "version": "0.8.8"}',
+            encoding="utf-8")
+        rc, out = _v085_run_install(home, "--copy")
+        assert rc == 3, f"yml/json 变体也必须拦住（3），实际 {rc}：{out[-400:]}"
+        assert "larkdeck-yml" in out and "larkdeck-portable" in out, out[-400:]
+
+
+def test_v085_install_sh_unreadable_dir_is_unknown_and_refuses():
+    """读不到的目录 = **无法判定** ⇒ 拒绝（我们读不到不代表网关读不到，NAS 上属主常常不同）。"""
+    import shutil as _shutil
+    import tempfile as _tempfile
+    if not _shutil.which("bash") or os.geteuid() == 0:
+        return          # root 会绕过权限位，这条用例在 root 下没有判别力
+    with _tempfile.TemporaryDirectory() as tmp:
+        home = _pathlib.Path(tmp)
+        d = _v085_make_shadow(home, "larkdeck.bak-noperm")
+        (d / "plugin.yaml").chmod(0o000)
+        try:
+            rc, out = _v085_run_install(home, "--copy")
+            assert rc == 3, f"无法判定应拒绝（3），实际 {rc}：{out[-400:]}"
+            assert "无法" in out, out[-400:]
+        finally:
+            (d / "plugin.yaml").chmod(0o600)
+
+
+def test_v085_samefile_self_exclusion_covers_symlinked_sibling():
+    """自排除必须按 **inode**（`os.path.samefile`）：软链兄弟目录指向自己时不算遮蔽。"""
+    import tempfile as _tempfile
+    with _tempfile.TemporaryDirectory() as tmp:
+        plugins = _pathlib.Path(tmp) / "plugins"
+        ours = plugins / "larkdeck"
+        ours.mkdir(parents=True)
+        (ours / "plugin.yaml").write_text("name: larkdeck\nversion: 0.7.17\n", encoding="utf-8")
+        alias = plugins / "larkdeck-alias"
+        alias.symlink_to(ours, target_is_directory=True)
+        rep = adapter._ld_shadow_dirs(str(plugins), str(ours))
+        assert rep["win"] == [] and rep["lose"] == [] and rep["unknown"] == [], rep
+
+
+def test_v085_unreadable_plugins_dir_reports_unknown():
+    """`plugins/` 整个读不到（权限）⇒ 必须报**无法判定**，不能静默返回空（那等于说「没事」）。"""
+    import tempfile as _tempfile
+    if os.geteuid() == 0:
+        return
+    with _tempfile.TemporaryDirectory() as tmp:
+        plugins = _pathlib.Path(tmp) / "plugins"
+        (plugins / "larkdeck").mkdir(parents=True)
+        (plugins / "larkdeck" / "plugin.yaml").write_text("name: larkdeck\n", encoding="utf-8")
+        plugins.chmod(0o000)
+        try:
+            rep = adapter._ld_shadow_dirs(str(plugins), str(plugins / "larkdeck"))
+            assert rep["unknown"], f"读不到就报无法判定，不能当没事：{rep}"
+        finally:
+            plugins.chmod(0o700)
+
+
+def test_v085_log_scan_is_silent_when_clean_and_warns_when_shadowed():
+    """启动扫描：干净 ⇒ **一条日志都不写**（不制造噪音）；有遮蔽 ⇒ WARNING（这是真机上唯一的留痕）。"""
+    import tempfile as _tempfile
+    old = adapter._LD_SHADOW_HOME_OVERRIDE
+    records = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Collect()
+    adapter.logger.addHandler(handler)
+    try:
+        with _tempfile.TemporaryDirectory() as tmp:
+            home = _pathlib.Path(tmp)
+            ours = home / "plugins" / "larkdeck"
+            ours.mkdir(parents=True)
+            (ours / "plugin.yaml").write_text("name: larkdeck\nversion: 0.7.17\n", encoding="utf-8")
+            adapter._LD_SHADOW_HOME_OVERRIDE = str(home)
+            adapter._log_shadow_scan()
+            assert not [r for r in records if r.levelno >= logging.WARNING], "干净环境不该有 WARNING"
+            d = home / "plugins" / "larkdeck.bak-20260101000000"
+            d.mkdir()
+            (d / "plugin.yaml").write_text("name: larkdeck\nversion: 0.7.15\n", encoding="utf-8")
+            adapter._log_shadow_scan()
+            warns = [r for r in records if r.levelno == logging.WARNING]
+            assert warns, "有遮蔽必须打 WARNING"
+            assert "0.7.15" in warns[0].getMessage(), warns[0].getMessage()
+    finally:
+        adapter.logger.removeHandler(handler)
+        adapter._LD_SHADOW_HOME_OVERRIDE = old
+
+
+def test_v085_install_sh_remedy_command_keeps_user_flags():
+    """拒绝块的出路命令必须**照抄用户原来的参数**：`$*` 解析后已被 shift 空（P2-2 必-1）。
+
+    老受害者跑的是 `./install.sh --copy`，照抄的出路命令若丢了 `--copy` 会装成软链模式。
+    """
+    import shutil as _shutil
+    import tempfile as _tempfile
+    if not _shutil.which("bash"):
+        return
+    with _tempfile.TemporaryDirectory() as tmp:
+        home = _pathlib.Path(tmp)
+        _v085_make_shadow(home, "larkdeck.bak-x")
+        rc, out = _v085_run_install(home, "--copy")
+        assert rc == 3
+        assert "--copy --fix-shadow" in out, f"出路命令必须保留 --copy：{out[-300:]}"
+        assert "--copy --allow-shadow" in out, out[-300:]
+
+
+def test_v085_install_sh_fix_shadow_on_incident_site_is_not_a_failure():
+    """真实事故现场：`plugins/larkdeck` 已在、遮蔽来自 `larkdeck.bak-…`。
+
+    搬走遮蔽后**不能**再报「目标已存在 ⇒ 失败」（新进程其实已经是新版），
+    要明确说「遮蔽已解除 + 重启网关 + 按验证步骤确认」（P2-2 必-2）。
+    """
+    import shutil as _shutil
+    import tempfile as _tempfile
+    if not _shutil.which("bash"):
+        return
+    with _tempfile.TemporaryDirectory() as tmp:
+        home = _pathlib.Path(tmp)
+        ours = home / "plugins" / "larkdeck"
+        ours.mkdir(parents=True)
+        (ours / "plugin.yaml").write_text("name: larkdeck\nversion: 0.7.16\n", encoding="utf-8")
+        _v085_make_shadow(home, "larkdeck.bak-202610041311", version="0.7.15")
+        rc, out = _v085_run_install(home, "--copy", "--fix-shadow")
+        assert rc == 0, f"搬走遮蔽后应成功（0），实际 {rc}：{out[-300:]}"
+        assert "遮蔽已解除" in out, out[-300:]
+        assert not (home / "plugins" / "larkdeck.bak-202610041311").exists()
+        assert (ours / "plugin.yaml").exists(), "已有目标不该被动"
+
+
+def test_v085_install_sh_ignores_non_plugin_dirs_and_hermes_semantics():
+    """跟 Hermes 的清单语义对齐（P2-2 必-3）：
+
+    - 缺 `name` ⇒ Hermes 回退**目录名** ⇒ 不是遮蔽（判 UNKNOWN 会把合法插件拦下）；
+    - 非法 portable `plugin.json`（缺 `$schema`）⇒ Hermes 直接跳过 ⇒ 不能当遮蔽搬走。
+    """
+    import shutil as _shutil
+    import tempfile as _tempfile
+    if not _shutil.which("bash"):
+        return
+    with _tempfile.TemporaryDirectory() as tmp:
+        home = _pathlib.Path(tmp)
+        d1 = home / "plugins" / "zlark"
+        d1.mkdir(parents=True)
+        (d1 / "plugin.yaml").write_text("version: 1.0.0\n", encoding="utf-8")   # 缺 name
+        d2 = home / "plugins" / "zfakeport"
+        d2.mkdir()
+        (d2 / "plugin.json").write_text('{"name": "larkdeck"}', encoding="utf-8")  # 缺 $schema
+        rc, out = _v085_run_install(home, "--copy")
+        assert rc == 0, f"这两类都不该拦（0），实际 {rc}：{out[-300:]}"
+        assert "zlark" not in out and "zfakeport" not in out, out[-300:]
+
+
+def test_v085_install_sh_category_target_skips_the_flat_gate():
+    """分类子目录 `plugins/<分类>/<目录>` 的注册键是 `<分类>/<目录名>`，不参与扁平遮蔽（P2-2 必-4）。"""
+    import shutil as _shutil
+    import tempfile as _tempfile
+    if not _shutil.which("bash"):
+        return
+    with _tempfile.TemporaryDirectory() as tmp:
+        home = _pathlib.Path(tmp)
+        _v085_make_shadow(home, "larkdeck.bak-x")          # 顶层遮蔽：分类目标不该受它影响
+        _v085_make_shadow(home, "sub/larkdeck.bak-x")      # 分类目录内的同名：键是 sub/… ⇒ 也不遮蔽
+        # 必须用**绝对路径**：相对路径会落在测试进程的 cwd（仓库）里，污染工作树
+        rc, out = _v085_run_install(home, "--copy", "--target", str(home / "plugins/sub/larkdeck"))
+        assert rc == 0, f"分类目标不该被扁平遮蔽门禁拦住（0），实际 {rc}：{out[-300:]}"
+        assert (home / "plugins" / "sub" / "larkdeck" / "plugin.yaml").exists()
+
+
 def main() -> int:    # `--only <子串>`：只跑名字里含该子串的用例。**专供变异判读**（审计 A：单条变异 idle 28s、
     # 重载 89s，秒级判读只能靠「preflight + 只跑受影响的那几条用例」）。不是发布门禁 ——
     # 它跑完打印的是 `N/M passed`，而 `mutate_check._classify` 要的正是这个收尾语。
@@ -17299,6 +17827,7 @@ def main() -> int:    # `--only <子串>`：只跑名字里含该子串的用例
             adapter.configure(body_source="legacy", show_reasoning=False)
             adapter._LD_ENGINE_OVERRIDE = ("legacy" if name in _LEGACY_LANE_TESTS
                                            else None)
+            adapter._LD_SHADOW_HOME_OVERRIDE = ""     # 每用例重钉：别让上一条用例的临时 home 泄漏
             fn()
         except AssertionError as exc:
             failed += 1

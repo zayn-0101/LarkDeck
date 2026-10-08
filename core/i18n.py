@@ -181,6 +181,34 @@ _STRINGS: Dict[str, Dict[str, str]] = {
                            EN: "{name} · transport {transport}"},
     # ⚠️ 版本读不到时**必须看得出来**（R9 审计低-2）：以前版本段整段消失，卡片看起来跟一切正常一样。
     "cmd.version_unknown": {ZH: "版本读不到", EN: "version unreadable"},
+    # V085（v0.7.17）：插件目录同名遮蔽。默认视图**只给结论与出路**（机制句进 --detail 与日志，V080），
+    # 不含时间戳；`items` 由 adapter 侧渲染（目录名 + 版本，读不到版本就说读不到）。
+    "cmd.shadow_warn": {
+        ZH: "⚠️ 检测到 {n} 个会遮蔽本插件的同名目录（{items}）：**重启网关后**由它们接管，"
+            "新版本就不会生效。修法：把它们移出 plugins/ 后重启，或跑 "
+            "`./install.sh --copy --fix-shadow`（只搬不删）。",
+        EN: "⚠️ {n} same-named plugin directories found ({items}): after a gateway restart they shadow "
+            "and the new version will not run. Fix: move them out of plugins/ and restart, or run "
+            "`./install.sh --copy --fix-shadow` (moves only)."},
+    "cmd.shadow_unknown_detail": {
+        ZH: "⚠️ 无法判定 {n} 个同级目录（{items}）：读不到它们的插件清单（可能是权限或属主不同）。"
+            "我们读不到不代表网关读不到 —— 它们可能遮蔽本插件。请**人工确认**它们是什么；"
+            "认不出来的目录 `install.sh` 也不会动，不要直接搬走。",
+        EN: "⚠️ Cannot tell for {n} sibling directories ({items}): their manifests are unreadable "
+            "(permissions or ownership?). What we cannot read, the gateway may still load, so they "
+            "could take over this plugin. Please check them by hand; `install.sh` will not touch "
+            "directories it cannot identify, so do not just move them away."},
+    "cmd.shadow_warn_detail": {
+        ZH: "⚠️ 同名插件目录（Hermes 按插件清单里的 name 记账，目录名字典序更大的赢）：{items}。"
+            "修法：搬到插件目录同级的 `plugin-backups/`（即 `$HERMES_HOME/plugin-backups/`）后重启网关，"
+            "或重跑 `./install.sh --copy --fix-shadow`"
+            "（只搬不删）。",
+        EN: "⚠️ Same-named plugin directories (Hermes keys plugins by manifest `name`; the "
+            "lexicographically greater directory wins): {items}. Fix: move them into "
+            "`plugin-backups/` next to the plugins directory (i.e. `$HERMES_HOME/plugin-backups/`) "
+            "and restart the gateway, or re-run `./install.sh --copy --fix-shadow` "
+            "(moves only, never deletes)."},
+    "cmd.dir_unknown": {ZH: "目录读不到", EN: "directory unreadable"},
     # ⚠️ 口径说明（R9 审计中-4）：三条记录是**进程级**全局，与页脚指标同源。
     # 不写清楚，多会话并发时用户会拿**别人会话**的失败原因来查自己的卡。
     # V079：改成系统口径的正式表述（旧句「不只你这一条对话」太口语）。

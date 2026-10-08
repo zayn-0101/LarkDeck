@@ -2,6 +2,14 @@
 
 本文面向遇到卡片异常的用户：按“症状 → 根因 → 排查 → 修复 → 预防”定位插件加载、卡片更新、错误码、思考显示、点击与长回复分卡问题。
 
+## 升级后行为没变 / 升级没生效 / 新功能不出现（页脚状态词也不出现）
+
+- **症状**：升级到新版本、日志里也打了自检通过，但卡片行为与升级前一模一样（例如新版本才有的页脚状态词一直不出现），重启网关也没用。
+- **根因**：`~/.hermes/plugins/` 下存在**同名目录互相遮蔽**。Hermes 扫描该目录下的每个**顶层**插件目录、按插件清单里的 `name` 记账，**后扫到的（目录名字典序更大）覆盖先扫到的** —— 把旧版本改名留在原地（`larkdeck.bak-20261008` 这类）就会继续被加载，新装的 `larkdeck` 反而成了死文件，而且不会有任何提示。
+- **排查**：`grep -H '^name:' "${HERMES_HOME:-$HOME/.hermes}"/plugins/*/plugin.yaml`（一眼看出**哪些目录**声明了 `name: larkdeck`；只看目录名会漏掉改名的那份）；`hermes plugins list | grep larkdeck`（**实际加载**的版本，必须与刚装的一致）；`grep '\[larkdeck\] 启动自检' ~/.hermes/logs/agent.log | tail -1`（行末 `插件 v<版本> @ <目录>` 指出活着的是哪一份）；`/larkdeck status` 首行版本同样能看出来（**版本对不上就是没跑新代码**）。注意：0.7.16 及更早的自检行**行末没有** `插件 v… @ …` 这一段 —— 看不到这一段，就说明你跑的仍是旧版。装在容器里时，这些命令必须在**容器内、网关同一用户、同一 `HERMES_HOME`** 下执行。
+- **修复**：优先 `./install.sh --copy --fix-shadow` —— 它把「会遮蔽本次安装的同名目录」自动搬到 `${HERMES_HOME:-$HOME/.hermes}/plugin-backups/`（**只 `mv`、不删除**，认不出名字的目录它不会碰）；也可以手动 `mkdir -p "${HERMES_HOME:-$HOME/.hermes}/plugin-backups" && mv "${HERMES_HOME:-$HOME/.hermes}/plugins/<同名目录>" "${HERMES_HOME:-$HOME/.hermes}/plugin-backups/"`。手动搬完**必须重跑 `./install.sh --copy`**（`mv` 只是搬走旧目录，不会替你安装新版；同秒重复执行会嵌套出新目录，别连按）。然后 `hermes gateway restart`，再按上面的排查确认版本。
+- **预防**：任何备份、回滚、卸载都**只往 `plugins/` 之外放**（`~/.hermes/plugin-backups/`）；`install.sh` 发现会赢的同名目录时会拒绝安装并提示。
+
 ## 插件加载超时 / 飞书退回纯文本
 
 - **症状**：启动日志有 `[larkdeck] 启动自检失败` 或插件加载超时；所有回复都是官方纯文本，没有卡片。

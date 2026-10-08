@@ -967,6 +967,290 @@ _PLUGIN_MANIFEST = os.path.join(
 _PLUGIN_VERSION_RE = re.compile(r"^version\s*:\s*([^\s#]+)", re.M)
 
 
+# ── 同名插件目录遮蔽（V085 / v0.7.17）────────────────────────────────────────
+# 2026-10-08 真机事故：磁盘上是 v0.7.16，实际加载的却是 `plugins/larkdeck.bak-<ts>`（v0.7.15）——
+# Hermes 扫 `plugins/*/` 的插件清单、按清单里的 **name** 记账，**后扫到的同名顶层目录覆盖先扫到的**
+# （`sorted(path.iterdir())` ⇒ 目录名字典序更大的赢）。把旧版本改名留在 `plugins/` 里 = 新代码永不生效，
+# 而且**没有任何自动告警**（`hermes plugins list` 会安静地显示生效的那个版本）。
+# 这里做三件事：启动时留痕、自检行自报「我是哪一份」、状态卡置顶提示。
+# 纪律：只读、绝不抛、绝不猜 —— 读不到就说「读不到」（第三态），不许静默当没事。
+_SHADOW_MANIFESTS = ("plugin.yaml", "plugin.yml", "plugin.json")
+
+#: 单测注入点：``""`` = 明确「没有 home」（不扫、不碰真 ``~/.hermes``）；``None`` = 真机取数。
+#: 为什么需要它：测试进程里 Hermes 往往**装在同一台机器上**，``manager_snapshot()`` 会真的返回
+#: ``~/.hermes`` —— 那样状态卡的行数就取决于「跑测试的人家目录里有没有遮蔽目录」，用例会变得看环境。
+_LD_SHADOW_HOME_OVERRIDE: Any = None
+
+
+def _ld_plugin_dir() -> str:
+    """本插件所在目录（清单的目录名）。读不到返回空串（不编）。"""
+    try:
+        return os.path.dirname(_PLUGIN_MANIFEST)
+    except Exception:  # pragma: no cover - 防御性
+        return ""
+
+
+def _ld_plugin_self_descriptor() -> str:
+    """自检行末的「我是哪一份」：``v<版本> @ <目录>``；任一段读不到就如实写读不到。
+
+    版本读到时带 ``v`` 前缀（与卡片抬头 ``🃏 larkdeck v0.7.17`` 同形，用户一眼能对上）；
+    读不到时**不加** ``v``，直接写「版本读不到」（``v版本读不到`` 只会更糊涂）。
+    """
+    version = _ld_plugin_version()
+    shown = f"v{version}" if version else _i18n.t("cmd.version_unknown")
+    where = _ld_plugin_dir() or _i18n.t("cmd.dir_unknown")
+    return f"{shown} @ {where}"
+
+
+def _ld_load_manifest(path: str) -> Any:
+    """按 **Hermes 的语义**读插件清单，返回 dict；解析失败/顶层不是映射返回 ``None``。
+
+    为什么不能再用正则猜 YAML（P3-1 F1）：正则既有假阴性（BOM、引号键 `"name":`、
+    `name: # 注释` + 下一行值、`!!str`/锚点 ⇒ Hermes 认遮蔽而我们报「无法判定」⇒ 默认卡静默），
+    也有假阳性（嵌套 `author:\n  name:`、`description: |` 块、非法 YAML ⇒ 我们报遮蔽、
+    `--fix-shadow` 会把 Hermes 根本不加载的目录搬走）。**读不到**（OSError）会抛出，由调用方
+    归入「无法判定」；解析不了则等于 Hermes 也不认它（跳过）。
+    """
+    raw = open(path, "rb").read()            # OSError 交给调用方（⇒ 无法判定）
+    text = raw.decode("utf-8-sig")           # 去 BOM
+    if path.endswith(".json"):
+        import json
+        try:
+            data = json.loads(text)
+        except Exception:
+            return None
+        # Hermes 只认合法 portable 清单（必须有 $schema），否则直接跳过这个目录（P2-2 必-3b）。
+        if not (isinstance(data, dict) and data.get("$schema")):
+            return None
+        return data
+    try:
+        import yaml                            # Hermes 自己就是 PyYAML 读法
+    except ImportError:
+        yaml = None
+    if yaml is not None:
+        try:
+            data = yaml.safe_load(text)
+        except Exception:
+            return None
+        return data if isinstance(data, dict) else None
+    # 没有 PyYAML 时的**保守**兜底：只认列 0 的简单键（宁缺勿猜 —— 缩进键可能是嵌套映射）。
+    out = {}
+    for key in ("name", "version"):
+        m = re.search(r"^" + key + r"[ \t]*:[ \t]*([^\n]*)", text, re.M)
+        if m:
+            val = m.group(1).split("#", 1)[0].strip().strip("\"'").strip()
+            if val:
+                out[key] = val
+    return out or None
+
+
+def _ld_manifest_name(path: str) -> str:
+    """清单里的 ``name``；**缺省返回空串**（调用方按 Hermes 语义回退目录名）。"""
+    try:
+        data = _ld_load_manifest(path)
+    except OSError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    val = data.get("name")
+    return str(val).strip() if isinstance(val, (str, int, float)) else ""
+
+
+def _ld_manifest_version(path: str) -> str:
+    """清单里的 ``version``（只用于展示）。"""
+    try:
+        data = _ld_load_manifest(path)
+    except OSError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    val = data.get("version")
+    return str(val).strip() if isinstance(val, (str, int, float)) else ""
+
+
+def _ld_same_file(a: str, b: str) -> bool:
+    """自排除判据：**比 inode**（``os.path.samefile``），不比字符串 —— macOS 大小写不敏感、
+    软链写法多样，字符串比较会误判（``install.sh`` 里同一条纪律用 ``-ef``）。"""
+    try:
+        return os.path.samefile(a, b)
+    except Exception:
+        try:
+            return os.path.abspath(a) == os.path.abspath(b)
+        except Exception:
+            return False
+
+
+def _ld_shadow_dirs(plugins_dir: str, self_dir: str) -> Dict[str, Any]:
+    """扫 ``plugins_dir`` 里与 ``self_dir`` **同名**的顶层兄弟目录（只读、绝不抛）。
+
+    返回 ``{"win": [(目录名, 版本)], "lose": [...], "unknown": [目录名], "checked": n}``：
+
+    * ``win``     —— 目录名排序**晚于**自己 ⇒ Hermes 注册表会被它覆盖（真遮蔽，要响亮）；
+    * ``lose``    —— 排序早于自己 ⇒ 本次不影响加载，但留着迟早出事（登记）；
+    * ``unknown`` —— 读不到清单里的 name ⇒ **无法判定**（第三态，不许当没事）。
+
+    判据与 Hermes 一致：它用 ``sorted(path.iterdir())`` 扫，同名顶层目录里**目录名字典序更大的赢**。
+    分类子目录（``plugins/<分类>/<目录>``）的键是 ``<分类>/<目录名>``，不参与这条遮蔽。
+    """
+    out: Dict[str, Any] = {"win": [], "lose": [], "unknown": [], "checked": 0}
+    try:
+        self_dir = str(self_dir or "").rstrip("/")
+        self_name = os.path.basename(self_dir)
+        want = _ld_manifest_name(_PLUGIN_MANIFEST) or self_name
+        if not want or not os.path.isdir(plugins_dir):
+            return out
+        for child in sorted(os.listdir(plugins_dir)):
+            path = os.path.join(plugins_dir, child)
+            if not os.path.isdir(path):
+                continue
+            if self_dir and _ld_same_file(path, self_dir):
+                continue
+            out["checked"] += 1
+            manifest = ""
+            for cand in _SHADOW_MANIFESTS:
+                full = os.path.join(path, cand)
+                if os.path.isfile(full):
+                    manifest = full
+                    break
+            if not manifest:
+                # 目录在、清单找不到：可能只是**不是插件目录**，也可能是**权限**（`os.path.isfile`
+                # 会把 PermissionError 吞成 False）。用 `listdir` 探一下：读不到 ⇒ 无法判定（R3），
+                # 不能静默跳过 —— `install.sh` 侧对读不到的目录是拒绝安装，两边口径必须一致。
+                try:
+                    os.listdir(path)
+                except OSError:
+                    out["unknown"].append(child)
+                continue
+            try:
+                data = _ld_load_manifest(manifest)
+            except OSError:
+                out["unknown"].append(child)      # 读不到 ⇒ 无法判定（不是「没有」）
+                continue
+            if data is None:
+                continue                          # 解析不了 ⇒ Hermes 也不认它，不猜
+            name = str(data.get("name") or "").strip() or child   # 缺 name ⇒ Hermes 回退目录名
+            if name == want:
+                row = (child, _ld_manifest_version(manifest))
+                if child > self_name:
+                    out["win"].append(row)
+                else:
+                    out["lose"].append(row)
+    except Exception:
+        logger.debug("[larkdeck] 同名插件目录扫描失败", exc_info=True)
+        out["unknown"].append(plugins_dir)   # 整个目录读不了：报目录本身，别伪造目录名
+    return out
+
+
+def _ld_shadow_roots() -> List[str]:
+    """要扫的 ``plugins`` 根目录（去重保序）。取不到 home 就返回空 —— **绝不猜**。
+
+    优先 Hermes 管理器自报的 home（真机唯一权威；私有名只允许在 :mod:`compat` 里读），
+    其次 ``$HERMES_HOME``；两者都没有 ⇒ 空（单测 / 非 Hermes 环境，不许去翻真 ``~/.hermes``）。
+    ``HERMES_ENABLE_PROJECT_PLUGINS`` 打开时补 ``<cwd>/.hermes/plugins``：那条路径**优先于**
+    用户插件，所以它里面的同名目录比 user 的更能遮蔽（R6）。
+    """
+    roots: List[str] = []
+    home = ""
+    if _LD_SHADOW_HOME_OVERRIDE is not None:
+        home = str(_LD_SHADOW_HOME_OVERRIDE)
+    else:
+        try:
+            snap = _compat.manager_snapshot()
+            home = str((snap or {}).get("home") or "")
+        except Exception:
+            home = ""
+        if not home:
+            home = os.environ.get("HERMES_HOME", "") or ""
+    if home:
+        roots.append(os.path.join(home, "plugins"))
+    try:
+        if str(os.environ.get("HERMES_ENABLE_PROJECT_PLUGINS") or "") in ("1", "true", "True"):
+            roots.append(os.path.join(os.getcwd(), ".hermes", "plugins"))
+    except Exception:
+        pass
+    seen: set = set()
+    uniq: List[str] = []
+    for root in roots:
+        if root not in seen:
+            seen.add(root)
+            uniq.append(root)
+    return uniq
+
+
+def _ld_shadow_report() -> Dict[str, Any]:
+    """把各 plugins 根的扫描结果合成一份（只读、绝不抛）。``scanned=False`` = 没地方可扫。"""
+    roots = _ld_shadow_roots()
+    win: List[Any] = []
+    lose: List[Any] = []
+    unknown: List[Any] = []
+    self_dir = _ld_plugin_dir()
+    for root in roots:
+        rep = _ld_shadow_dirs(root, self_dir)
+        win += rep["win"]
+        lose += rep["lose"]
+        unknown += rep["unknown"]
+    return {"scanned": bool(roots), "roots": roots, "win": win, "lose": lose, "unknown": unknown}
+
+
+def _ld_shadow_items(rows: List[Any]) -> str:
+    """把 ``[(目录名, 版本)]`` 渲染成「a（v1）、b（v2）」；版本读不到就说读不到。"""
+    # 分隔符必须**语言中立**：这条渲染同时服务 zh/en 卡片，硬编码「、」会让英文卡出现中文标点。
+    return " · ".join(
+        f"{name}（{version or _i18n.t('cmd.version_unknown')}）" for name, version in rows)
+
+
+def _ld_shadow_card_line(*, detail: bool = False) -> str:
+    """`/larkdeck status` 置顶的一行：只在**有遮蔽或无法判定**时返回非空（只读、绝不抛）。"""
+    try:
+        rep = _ld_shadow_report()
+        if not rep["scanned"]:
+            return ""
+        if rep["win"]:
+            # 默认视图与 --detail 都只说「会遮蔽本插件」的目录；`win` 的语义是
+            # 「**重启网关后**由它接管」——不是「现在正被遮蔽」（卡片由本进程发出，
+            # 真被遮蔽时本进程根本不会存在；P3-2 审计中-2）。
+            key = "cmd.shadow_warn_detail" if detail else "cmd.shadow_warn"
+            line = _i18n.t(key, n=len(rep["win"]), items=_ld_shadow_items(rep["win"]))
+            if detail and rep["unknown"]:
+                # 第三态不能因为「已经有 win 了」就被丢掉（R3；neat-freak 必-1）。
+                line += "\n" + _i18n.t("cmd.shadow_unknown_detail", n=len(rep["unknown"]),
+                                        items=" · ".join(str(x) for x in rep["unknown"]))
+            return line
+        if detail and rep["unknown"]:
+            # 第三态**只在 --detail**（默认卡不加行，R3）：而且要说清「不要直接搬走」——
+            # `install.sh` 对认不出来的目录是拒绝且不动（两边口径必须一致，P3-2 审计阻断-1）。
+            return _i18n.t("cmd.shadow_unknown_detail", n=len(rep["unknown"]),
+                           items=" · ".join(str(x) for x in rep["unknown"]))
+        return ""
+    except Exception:
+        logger.debug("[larkdeck] 遮蔽提示生成失败", exc_info=True)
+        return ""
+
+
+def _log_shadow_scan() -> None:
+    """启动自检旁的一行：**有遮蔽就响亮，没有就闭嘴**（不制造噪音）。绝不抛。"""
+    try:
+        rep = _ld_shadow_report()
+        if not rep["scanned"]:
+            return
+        if rep["win"]:
+            logger.warning(
+                "[larkdeck] 同名插件目录遮蔽：%s 也声明 name=%s 且排序在后 —— 重启网关后由它们接管，"
+                "本插件的新版本就不会生效（本插件目录：%s）。请把它们移出 plugins/ 后重启网关"
+                "（或 ./install.sh --copy --fix-shadow）。",
+                _ld_shadow_items(rep["win"]),
+                _ld_manifest_name(_PLUGIN_MANIFEST) or "larkdeck",
+                _ld_plugin_dir() or "?")
+        elif rep["lose"]:
+            logger.info("[larkdeck] 同级还有同名插件目录（排序在前，本次不遮蔽）：%s —— 建议搬出 plugins/。",
+                        _ld_shadow_items(rep["lose"]))
+        if rep["unknown"]:
+            logger.warning("[larkdeck] 无法判定这些同级插件目录（读不到清单里的 name）：%s —— "
+                           "它们可能遮蔽本插件，请人工确认。", "、".join(str(x) for x in rep["unknown"]))
+    except Exception:  # pragma: no cover - 防御性
+        logger.debug("[larkdeck] 遮蔽自检失败", exc_info=True)
+
+
 def _apply_metrics_config() -> None:
     """把「别名 + 上下文上限覆盖」推给 :mod:`larkdeck.core.context`（幂等）。"""
     aliases = _cfg_raw("model_aliases")
@@ -1656,7 +1940,7 @@ def _ck_panel_partial_for_state(panel: "_cardview.PanelView",
 
     * ``partial`` —— 真正发给 ``partial_update_element`` 的载荷。嵌套轮里只有
       「这一轮第一次以该 element_id 出现」才带 ``expanded``；已在 ``state["ck_round_ids"]``
-      里记过的 id 一律省略 ⇒ 用户手动收起/展开不会被后续帧顶掉。
+      里记过的 id 一律省略 ⇒ 用户手动收起/展开不会被后续帧遮蔽。
     * ``signature`` —— **发送成功后**这张卡的稳定形态签名：所有嵌套轮的 ``expanded`` 都已
       省略。下一帧若内容不变就能直接跳过；不会为了补一个「省略 expanded」而多发一次写。
     * ``updates`` —— 成功后要并回回合状态的字段（当前是 ``ck_round_ids``）。调用方**必须
@@ -2342,6 +2626,8 @@ def _remember_selfcheck(ok: bool, detail: str) -> None:
         # 自检失败必须响亮：否则用户会以为卡片在跑，实际还是内置纯文本。
         logger.error("[larkdeck] 启动自检失败：%s（卡片不会生效，飞书仍是纯文本）", detail)
     _log_generation_snapshot()
+    # V085：启动时就把「有没有同名目录在遮蔽我」说出来（没有遮蔽时完全安静）。
+    _log_shadow_scan()
 
 
 # --------------------------------------------------------------------------- #
@@ -3480,7 +3766,7 @@ class LarkDeckMixin:
                     # 同上：只在终局帧报（seed / 中间帧的面板为空是**正常**的）
                     _log_empty_panel_once(chat_id)
                 return None
-            # v0.7.4 P1：终局帧若快照已无过程数据（长任务多回合交错被顶掉），
+            # v0.7.4 P1：终局帧若快照已无过程数据（长任务多回合交错被遮蔽），
             # 不再渲染「有标题、展开却空白」的空 shell；状态色由页脚承载。
             _has_process = bool(snap.get("tools") or snap.get("rounds")
                                 or str(snap.get("reasoning") or "").strip())
@@ -8429,6 +8715,11 @@ def _ld_command_card(raw_args: str) -> str:
         probe = _probe_status_lines()
         records = _context.status_lines()
         _ld_log_status_snapshot(header_short, diagnosis, probe, records)
+        # V085：有同名目录在遮蔽（或无法判定）时**置顶一行**。默认视图只给结论与出路，
+        # 机制句进 `--detail` 与日志（V080：不把内部机制堆给默认视图）。
+        _shadow_prefix = _ld_shadow_card_line(detail=detail)
+        if _shadow_prefix:
+            _shadow_prefix += "\n\n"
         if not detail:
             short = _ld_status_short_markdown(
                 header=header_short,
@@ -8438,9 +8729,9 @@ def _ld_command_card(raw_args: str) -> str:
                 records=records,
             )
             if short is not None:
-                return short
+                return _shadow_prefix + short
             # 解析不出某条应有的事实时**退回完整视图**：宁可长一点，也不静默少一行。
-        return _ld_status_markdown(
+        return _shadow_prefix + _ld_status_markdown(
             header=header,
             scope=scope,
             diagnosis=diagnosis,
@@ -8723,6 +9014,10 @@ def register(ctx: Any) -> None:
         detail += (f" · /{LARKDECK_COMMAND} 命令已注册" if _cmd_registered
                    else f" · /{LARKDECK_COMMAND} 命令未注册"
                         f"（{COMMAND.get('why') or '未知原因'}）")
+        # V085：自证「活着的是哪一份」—— 磁盘对了、内存里是旧代码，是 2026-10-08 真机事故里最难查的
+        # 一类（`hermes plugins list` 与磁盘都对不上）。版本现读清单、目录取自本模块清单路径；读不到就
+        # 写「读不到」，绝不编。段**追加在行末**：既有断言/解析只认前缀，破坏面最小。
+        detail += f" · 插件 {_ld_plugin_self_descriptor()}"
         _remember_selfcheck(True, detail)
     else:
         _remember_selfcheck(False, "注册表里 feishu 仍指向别处，卡片不会生效")

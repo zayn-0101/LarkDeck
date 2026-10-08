@@ -8,7 +8,7 @@
 #   tools/setup_deploy_worktree.sh --check                 # 只检查并打印计划（默认）
 #   tools/setup_deploy_worktree.sh --create                # 创建 worktree（不动软链）
 #   tools/setup_deploy_worktree.sh --apply                 # 创建 + 重指软链（需你确认）
-#   tools/setup_deploy_worktree.sh --rollback              # 恢复上次软链备份
+#   tools/setup_deploy_worktree.sh --rollback              # 恢复上次软链备份（备份在 $HERMES_HOME/plugin-backups/）
 #
 # 默认部署路径：${HOME}/.hermes/deploy/larkdeck，release ref：origin/main
 set -euo pipefail
@@ -16,8 +16,13 @@ set -euo pipefail
 DEV_REPO="${LARKDECK_DEV_REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
 DEPLOY_DIR="${LARKDECK_DEPLOY_DIR:-${HOME}/.hermes/deploy/larkdeck}"
 RELEASE_REF="${LARKDECK_RELEASE_REF:-origin/main}"
-PLUGIN_LINK="${HOME}/.hermes/plugins/larkdeck"
-BACKUP_LINK="${PLUGIN_LINK}.bak.$(date +%Y%m%d%H%M%S)"
+PLUGIN_LINK="${HERMES_HOME:-${HOME}/.hermes}/plugins/larkdeck"
+# 备份**必须放在 plugins/ 之外**：Hermes 扫 plugins/*/ 时按插件清单里的 name 记账，同名目录
+# 里目录名排序靠后的会**遮蔽**靠前的 —— 旧备份改名留在 plugins/ 里，新部署的软链就永远不生效，
+# 而且没有任何自动告警（2026-10-08 真机事故，这个脚本正是成因之一：它以前造 <link>.bak.<ts>）。
+BACKUP_ROOT="${HERMES_HOME:-${HOME}/.hermes}/plugin-backups"
+BACKUP_LINK="${BACKUP_ROOT}/larkdeck-link.$(date +%Y%m%d%H%M%S)"
+LEGACY_BACKUP_PREFIX="${PLUGIN_LINK}.bak."
 MODE="${1:---check}"
 
 log() { printf '[deploy] %s\n' "$*"; }
@@ -55,9 +60,16 @@ case "$MODE" in
       die "部署 worktree 不存在，先运行 --create：$DEPLOY_DIR"
     fi
     if [ -L "$PLUGIN_LINK" ] || [ -e "$PLUGIN_LINK" ]; then
+      mkdir -p "$BACKUP_ROOT"
       cp -a "$PLUGIN_LINK" "$BACKUP_LINK" 2>/dev/null || true
-      log "已备份原软链/路径到：$BACKUP_LINK"
+      log "已备份原软链/路径到：$BACKUP_LINK（在 plugins/ 之外）"
     fi
+    # 旧版脚本留在 plugins/ 里的备份是**活的遮蔽源**：它们与 larkdeck 同名，排序靠后的会赢。
+    for stale in "${LEGACY_BACKUP_PREFIX}"*; do
+      if [ -e "$stale" ]; then
+        log "警告：plugins/ 里残留同名备份 $stale —— 它会遮蔽新部署！请搬到 $BACKUP_ROOT/ 后重启网关。"
+      fi
+    done
     ln -sfn "$DEPLOY_DIR" "$PLUGIN_LINK"
     log "软链已重指：$PLUGIN_LINK -> $DEPLOY_DIR"
     log "部署树版本：$(git -C "$DEPLOY_DIR" rev-parse --short HEAD)"
@@ -65,8 +77,12 @@ case "$MODE" in
     log "回滚：$0 --rollback 或 ln -sfn '$BACKUP_LINK' '$PLUGIN_LINK'"
     ;;
   --rollback)
-    backup="$(ls -1t "${PLUGIN_LINK}.bak."* 2>/dev/null | head -1 || true)"
-    [ -n "$backup" ] || die "找不到软链备份：${PLUGIN_LINK}.bak.*"
+    backup="$(ls -1t "${BACKUP_ROOT}/larkdeck-link."* 2>/dev/null | head -1 || true)"
+    if [ -z "$backup" ]; then
+      backup="$(ls -1t "${LEGACY_BACKUP_PREFIX}"* 2>/dev/null | head -1 || true)"
+      [ -n "$backup" ] && log "警告：回滚用的是旧版脚本留在 plugins/ 里的备份 $backup —— 回滚后请把它移出 plugins/（同名目录会遮蔽插件）。"
+    fi
+    [ -n "$backup" ] || die "找不到软链备份：${BACKUP_ROOT}/larkdeck-link.*"
     ln -sfn "$(readlink "$backup")" "$PLUGIN_LINK"
     log "已回滚：$PLUGIN_LINK -> $(readlink "$PLUGIN_LINK")（来自 $backup）"
     log "按计划重启网关生效。"
