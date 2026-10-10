@@ -17889,6 +17889,72 @@ def test_v0718_interrupted_turn_end_also_cancels_running_tools():
     assert snap["tools"][0]["status"] == "cancelled", snap["tools"][0]
 
 
+def test_v0719_turn_model_is_kept_per_turn_and_cleared_on_new_turn():
+    """本回合的模型按会话桶存、换回合清空（页脚要的是「当下这个回合」的模型）。"""
+    panel.reset()
+    panel.bind_chat_session("oc-model-unit", "s-model")
+    panel.begin_turn("s-model", "t-model-1")
+    panel.note_turn_model("s-model", "t-model-1", "deepseek-v4.1-flash", "deepseek")
+    got = panel.turn_model("oc-model-unit")
+    assert got == ("deepseek-v4.1-flash", "deepseek"), got
+    # 换回合必须清空：新回合首帧不能带着上一回合的模型
+    panel.begin_turn("s-model", "t-model-2")
+    assert panel.turn_model("oc-model-unit") == ("", ""), "换回合没清掉上一回合的模型"
+    # 迟到（已作废）的 turn 不许把模型写回去
+    panel.note_turn_model("s-model", "t-model-1", "agnes-3.0-flash", "agnes")
+    assert panel.turn_model("oc-model-unit") == ("", ""), "作废回合的模型不许写回"
+    # 载荷缺 model 时不许把已有的清掉（老版本 Hermes 不给这个字段）
+    panel.note_turn_model("s-model", "t-model-2", "m2", "p2")
+    panel.note_turn_model("s-model", "t-model-2", "", "")
+    assert panel.turn_model("oc-model-unit") == ("m2", "p2"), "空载荷不许清掉已有模型"
+
+
+def test_v0719_footer_model_does_not_leak_from_another_session():
+    """用户 2026-10-10 真机截图：新回合开头页脚显示的是**别的会话**（日报定时任务）的模型
+    「Agnes 3.0 Flash」，等本回合第一轮 API 收尾后才变回自己的模型。
+
+    根因：页脚读 `context` 的**进程级**快照（全进程最后一条收尾的 API 请求）。
+    """
+    defaults = dict(adapter._DEFAULTS)
+    try:
+        adapter.configure(footer=True, show_model=True, context_style="text",
+                          footer_metrics="off")
+        context.reset()
+        # 别的会话（日报任务）刚收尾 ⇒ 进程级快照里是它的模型与用量
+        context.record_api_call(model="agnes-3.0-flash", provider="agnes",
+                                session_id="s-reminder",
+                                usage={"input_tokens": 900, "prompt_tokens": 12345})
+        panel.reset()
+        panel.bind_chat_session("oc_model", "s-mine")
+        # ① 本回合 `on_stream_start` 已经报了模型 ⇒ 页脚必须是它
+        panel.begin_turn("s-mine", "t-mine")
+        panel.note_turn_model("s-mine", "t-mine", "deepseek-v4.1-flash", "deepseek")
+        line = adapter.LarkDeckMixin._ld_footer(chat_id="oc_model",
+                                               started=time.monotonic(), turn_card=True) or ""
+        assert "agnes" not in line.lower(), f"不许显示别的会话的模型：{line!r}"
+        assert "deepseek" in line.lower(), f"必须显示本回合的模型：{line!r}"
+        # ② 本回合还没模型、而快照属于别的会话 ⇒ **整段不用**（模型与 ctx 用量都是别人的）
+        panel.begin_turn("s-mine", "t-mine-2")
+        line = adapter.LarkDeckMixin._ld_footer(chat_id="oc_model",
+                                               started=time.monotonic(), turn_card=True) or ""
+        assert "agnes" not in line.lower(), f"跨会话快照不许兜底：{line!r}"
+        assert "ctx" not in line, f"跨会话的 ctx 用量也不许显示：{line!r}"
+        # ③ 快照与绑定会话一致时照旧兜底（非流式车道 `on_stream_start` 不触发）
+        context.record_api_call(model="deepseek-v4.1-flash", provider="deepseek",
+                                session_id="s-mine",
+                                usage={"input_tokens": 1000, "prompt_tokens": 4000})
+        context.set_context_override(20000)   # ctx 段要能算出百分比才渲染（同既有用例）
+        line = adapter.LarkDeckMixin._ld_footer(chat_id="oc_model",
+                                               started=time.monotonic(), turn_card=True) or ""
+        assert "deepseek" in line.lower(), f"同会话快照必须照旧可用：{line!r}"
+        assert "ctx" in line, f"同会话 ctx 用量照旧必须在：{line!r}"
+    finally:
+        adapter._DEFAULTS.clear()
+        adapter._DEFAULTS.update(defaults)
+        context.reset()
+        panel.reset()
+
+
 def main() -> int:    # `--only <子串>`：只跑名字里含该子串的用例。**专供变异判读**（审计 A：单条变异 idle 28s、
     # 重载 89s，秒级判读只能靠「preflight + 只跑受影响的那几条用例」）。不是发布门禁 ——
     # 它跑完打印的是 `N/M passed`，而 `mutate_check._classify` 要的正是这个收尾语。

@@ -274,6 +274,9 @@ def _new_state_locked(sid: str, now: float) -> Dict[str, Any]:
     state: Dict[str, Any] = {
         "turn_id": "", "rounds": [], "current_round": None, "reasoning_len": 0,
         "tools": [], "started": now, "updated": now, "status": None,
+        # V0719：**本回合**的模型（`on_stream_start` 载荷里就有）。换回合清空 ⇒
+        # 页脚宁可少一段，也不显示别的会话（定时任务 / 后台 review）的模型。
+        "model": "", "provider": "",
         # V084（v0.7.16）：**进展证据**时间戳（状态降级专用）。与 ``updated`` 刻意分开：
         # ``updated`` 管 TTL / 最近活跃路由，``activity_at`` 只管「这张卡最近有没有动过」。
         "activity_at": now,
@@ -338,6 +341,10 @@ def _touch_locked(session_id: str, turn_id: str, now: float) -> Optional[Dict[st
             # 新回合必须把上一回合的结局清掉 —— 否则新卡片会带着上一回合的颜色
             # （尤其「上一回合报错、这一回合正常」时，一个红边会一直挂着）。
             state["status"] = None
+            # 同理：上一回合的模型也必须清掉。否则新回合首帧页脚会显示上一回合的
+            # 模型（用户 2026-10-10 真机截图：显示的是**另一个会话**日报任务的模型）。
+            state["model"] = ""
+            state["provider"] = ""
         state["turn_id"] = tid
     state["updated"] = now
     # V084（v0.7.16）：同一次「本回合真的在动」也刷新**进展证据**。
@@ -625,6 +632,32 @@ def begin_turn(session_id: str, turn_id: str) -> None:
     with _LOCK:
         _touch_locked(sid, tid, now)
         _reset_answers_for_new_turn_locked(sid, tid)
+        _purge_locked(now)
+
+
+def note_turn_model(session_id: str, turn_id: str, model: str = "",
+                    provider: str = "") -> None:
+    """``on_stream_start`` 钩子回调：记下**本回合**的模型（页脚显示用）。
+
+    为什么不能只吃 ``context`` 的进程级快照（用户 2026-10-10 真机截图）：那份快照记的是
+    **全进程最后一条收尾的 API 请求**，别的会话（定时任务 / 后台 review）一跑就会把它改掉
+    ⇒ 新回合开头页脚显示的是**别的会话的模型**，要等本回合自己第一条请求收尾才纠正。
+    ``on_stream_start`` 的载荷里就带 ``model`` / ``provider``（见 Hermes
+    ``agent/stream_delivery.py::_stream_hook_base_payload``），按会话桶存、换回合清空，
+    页脚就只会看到本回合的模型；还没有就空着 —— 宁缺勿错。
+    """
+    sid = str(session_id or "")
+    tid = str(turn_id or "")
+    text = str(model or "").strip()
+    if not sid or not tid or not text:
+        return
+    now = _now()
+    with _LOCK:
+        state = _touch_locked(sid, tid, now)
+        if state is None:
+            return
+        state["model"] = text
+        state["provider"] = str(provider or "")
         _purge_locked(now)
 
 
@@ -1092,6 +1125,22 @@ def activity_age(chat_id: str = "") -> Optional[float]:
         return None
 
 
+def turn_model(chat_id: str = "") -> tuple:
+    """这个 chat 当前回合的 ``(模型, 供应商)``；没有就返回 ``("", "")``。
+
+    为什么不复用 :func:`snapshot`：那个函数有「没有过程数据 + 没有结局 ⇒ 返回 None」的
+    规则（不渲染空面板）。而页脚**只要模型名** —— 回合刚开始、第一条推理还没到的**那一帧**
+    正是用户 2026-10-10 截图里的帧，此时什么过程数据都没有。
+    """
+    now = _now()
+    with _LOCK:
+        _purge_locked(now)
+        _sid, state = _select_locked(str(chat_id or ""), now)
+        if state is None:
+            return ("", "")
+        return (str(state.get("model") or ""), str(state.get("provider") or ""))
+
+
 def snapshot(chat_id: str = "") -> Optional[Dict[str, Any]]:
     """最近活跃会话的面板数据；没有内容返回 ``None``（调用方据此不渲染）。
 
@@ -1128,6 +1177,8 @@ def snapshot(chat_id: str = "") -> Optional[Dict[str, Any]]:
         tools = [dict(item) for item in (state.get("tools") or [])]
         turn_id = state.get("turn_id", "")
         status = state.get("status")
+        model = str(state.get("model") or "")
+        provider = str(state.get("provider") or "")
         updated = state.get("updated", now)
     # 拼接放到锁外 —— 推理最长可达 _MAX_REASONING_CHARS，锁里做会拖慢
     # fail-closed 的 pre_tool_call 回调（见模块 docstring 线程模型）。
@@ -1152,6 +1203,8 @@ def snapshot(chat_id: str = "") -> Optional[Dict[str, Any]]:
         return None
     return {
         "session_id": sid,
+        "model": model,
+        "provider": provider,
         "turn_id": turn_id,
         "reasoning": reasoning,
         "rounds": rounds,
@@ -1550,7 +1603,7 @@ def reset() -> None:
 
 __all__ = [  # noqa: RUF022 - 按功能分组列出，便于对照文档
     "STATUS_OK", "STATUS_ERROR", "STATUS_STOPPED",
-    "record_turn_end", "note_turn", "mark_stopped",
+    "record_turn_end", "note_turn", "note_turn_model", "turn_model", "mark_stopped",
     "begin_turn",
     "bind_chat_session",
     "bound_session_id",

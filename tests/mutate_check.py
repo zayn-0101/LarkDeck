@@ -2938,6 +2938,10 @@ MUTATIONS = [
      '        _finalize_round_locked(state, now)   # V4-76 mutated：闸门之前切轮\n'
      '        # ⚠️ **同一 `tool_call_id` 只记一次**（2026-09-14 真机根因的另一面）：同一进程里插件会被\n',
      'test_units'),
+    ('V0719-页脚不再优先本回合模型（跨会话快照会漏出来）', 'core/adapter.py',
+     '                if panel_model:',
+     '                if False:',
+     'test_units'),
     ('V4-77-回合结束不定稿当前推理轮（终态/中止卡里嵌套轮仍展开、耗时继续涨）', 'core/panel.py',
      '        _finalize_round_locked(state, now)\n'
      '        if interrupted:\n'

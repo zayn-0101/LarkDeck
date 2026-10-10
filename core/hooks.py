@@ -45,6 +45,10 @@ def _on_stream_start(**payload: Any) -> None:
     """
     try:
         _panel.begin_turn(payload.get("session_id", ""), payload.get("turn_id", ""))
+        # 本回合的模型（页脚要用）。载荷里就带 model/provider，见 Hermes
+        # `agent/stream_delivery.py::_stream_hook_base_payload`。
+        _panel.note_turn_model(payload.get("session_id", ""), payload.get("turn_id", ""),
+                               payload.get("model", ""), payload.get("provider", ""))
     except Exception:  # pragma: no cover - 防御性：钩子绝不能抛
         logger.debug("[larkdeck] on_stream_start 采集忽略了一次异常", exc_info=True)
 

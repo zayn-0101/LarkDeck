@@ -3573,8 +3573,33 @@ class LarkDeckMixin:
             # 缺失就只出耗时/模型/ctx，绝不自己发明「已完成」。
             status_text = _ld_status_text(status)
             model = ""
+            same_session = True
             if _cfg("show_model"):
-                model = str(ctx_snap.get("model_display") or "")
+                # 模型优先取**本回合**的（`on_stream_start` 载荷 ⇒ panel 会话桶）。
+                # 只有拿不到时，才退回 `context` 的进程级快照 —— 而且必须**同一个会话**，
+                # 否则显示的是别的会话（定时任务 / 后台 review）的模型（用户 2026-10-10 截图）。
+                panel_model = ""
+                panel_provider = ""
+                bound = ""
+                try:
+                    panel_model, panel_provider = _panel.turn_model(chat_id)
+                    bound = _panel.bound_session_id(chat_id)
+                except Exception:      # pragma: no cover - 装饰性数据，绝不因它失败
+                    panel_model = ""
+                if panel_model:
+                    try:
+                        model = str(_context.display_model(panel_model,
+                                                           provider=panel_provider) or panel_model)
+                    except Exception:      # pragma: no cover - 防御性
+                        model = panel_model
+                else:
+                    ctx_sid = str(ctx_snap.get("session_id") or "")
+                    if bound and ctx_sid and ctx_sid != bound:
+                        # 快照属于**另一个会话** ⇒ 模型与 ctx 用量都是别人的，整段不用。
+                        same_session = False
+                        ctx_snap = {}
+                    else:
+                        model = str(ctx_snap.get("model_display") or "")
             duration = None
             # ⚠️ truthy 判据：``started=0`` 不是合法回合起点（monotonic 不会为 0），
             # 当「有起点」会算出机器 uptime 级别的假耗时（2026-09-17 审计 M6）。
@@ -3583,7 +3608,7 @@ class LarkDeckMixin:
                     duration = max(0.0, time.monotonic() - float(started))
                 except (TypeError, ValueError, OverflowError):
                     duration = None
-            metric_snap = ctx_snap if mode != "off" else {}
+            metric_snap = ctx_snap if (mode != "off" and same_session) else {}
             return _cards.footer_line(
                 status=status_text,
                 duration=duration,
