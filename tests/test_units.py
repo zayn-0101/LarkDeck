@@ -12156,7 +12156,11 @@ def test_v1_structured_seed_and_panel_update():
 
 
 def test_v1_structured_degrade_patches_same_card():
-    """V1：结构化面板写遇卡级死法时，必须同卡 patch 回退，不另建卡。"""
+    """V1：结构化面板写遇卡级死法时，必须**同卡**处理，不另建卡。
+
+    v0.7.20 起第一反应是**续命**（真机 V2b：到期后整卡 patch 结构化卡 ⇒ 元素通道复活），
+    降级只在续命失败时发生（见 `test_v0720_revive_failure_falls_back_to_degrade`）。
+    """
     panel.reset()
     context.reset()
     saved_config = dict(adapter._CONFIG)
@@ -12175,7 +12179,9 @@ def test_v1_structured_degrade_patches_same_card():
         panel.record_tool_started("sess1d", "turn1d", "read_file", {"path": "/tmp/a.txt"})
         assert _run(raw.send_stream_frame("hello world", chat_id="oc_v1d", turn_id="t1"))
         state = raw._ld_stream_get("oc_v1d:t1") or {}
-        assert state.get("engine_stamp") == "degraded", state
+        assert state.get("ck_expired_code") == 300309, state
+        assert state.get("engine_stamp") != "degraded", f"续命成功就不该降级：{state}"
+        assert state.get("card_id") == "ck_1", f"续命要留着元素通道（card_id 不动）：{state}"
         assert calls["create"] == 1, calls["create"]
         assert calls["patch"] >= 1, calls["patch"]
     finally:
@@ -12832,7 +12838,10 @@ def test_v4_6_structured_own_body_streams_mid_turn():
 
 
 def test_v4_6_structured_body_death_degrades_same_card():
-    """V4.6：正文（提交点）拿到卡级死法时必须**同卡 DEGRADE**，不许直接掉 native（审计 A 高-4）。"""
+    """V4.6：正文（提交点）拿到卡级死法时必须**同卡**处理，不许直接掉 native（审计 A 高-4）。
+
+    v0.7.20 起：先续命（整卡 patch 结构化卡）；续命失败才 DEGRADE 成 legacy。
+    """
     defaults = dict(adapter._DEFAULTS)
     old_interval = adapter._STREAM_MIN_INTERVAL
     panel.reset()
@@ -12850,9 +12859,10 @@ def test_v4_6_structured_body_death_degrades_same_card():
         assert _run(raw.send_stream_frame("正文在长", chat_id="oc_v46d", turn_id="t46d")), \
             "死法必须被 DEGRADE 接住（帧仍然算成功），而不是 fail-open 掉 native"
         state = raw._ld_stream_get("oc_v46d:t46d") or {}
-        assert state.get("engine_stamp") == "degraded", state
-        assert state.get("ck_degrade") == 300309, state
-        assert state.get("card_id") == "", f"账本要切到 patch 车道：{state}"
+        assert state.get("ck_expired_code") == 300309, state
+        assert state.get("engine_stamp") != "degraded", f"续命成功就不该降级：{state}"
+        assert state.get("ck_degrade") is None, state
+        assert state.get("card_id") == "ck_1", f"续命要留着元素通道：{state}"
         assert calls["patch"] >= 1, calls["patch"]
     finally:
         raw._ld_heartbeat_cancel_chat("oc_v46d")
@@ -17953,6 +17963,48 @@ def test_v0719_footer_model_does_not_leak_from_another_session():
         adapter._DEFAULTS.update(defaults)
         context.reset()
         panel.reset()
+
+
+
+def test_v0720_revive_failure_falls_back_to_degrade():
+    """v0.7.20：**续命失败 ⇒ 回落今天的 DEGRADE**（不许更差、也不许卡死）。
+
+    这里用「结构化卡降载后没有面板」制造续命失败（`unified_panel=false` ⇒ 卡片里没有
+    `collapsible_panel`）—— 面板是状态色的唯一载体，B 路把它列为阻断项：
+    「面板被摘掉」比 legacy 更差，所以这种卡**不许**当续命成功。
+    """
+    panel.reset()
+    context.reset()
+    saved_config = dict(adapter._CONFIG)
+    old_interval = adapter._STREAM_MIN_INTERVAL
+    raw = _make()
+    calls, client = _mk_cardkit_fake(fail_batch=True, fail_batch_code=300309)
+    raw._client = client
+    target_cls = type(raw)
+    old_reqs = target_cls.__dict__.get("_ld_ck_requests")
+    adapter.configure(visual_engine="structured", native_transport="cardkit",
+                      unified_panel=False)
+    adapter._STREAM_MIN_INTERVAL = 0.0
+    target_cls._ld_ck_requests = staticmethod(_fake_ck_requests)
+    try:
+        assert _run(raw.send_stream_frame("hello", chat_id="oc_rev_f", turn_id="t-rev-f"))
+        panel.bind_chat_session("oc_rev_f", "sess-rev-f")
+        panel.record_tool_started("sess-rev-f", "turn-rev-f", "read_file", {"path": "/tmp/a.txt"})
+        assert _run(raw.send_stream_frame("hello world", chat_id="oc_rev_f", turn_id="t-rev-f"))
+        state = raw._ld_stream_get("oc_rev_f:t-rev-f") or {}
+        assert state.get("engine_stamp") == "degraded", f"续命失败必须回落 DEGRADE：{state}"
+        assert state.get("ck_degrade") == 300309, state
+        assert state.get("card_id") == "", f"账本要切到 patch 车道：{state}"
+        assert calls["create"] == 1, calls["create"]
+    finally:
+        raw._ld_heartbeat_cancel_chat("oc_rev_f")
+        if old_reqs is None:
+            delattr(target_cls, "_ld_ck_requests")
+        adapter._CONFIG.clear()
+        adapter._CONFIG.update(saved_config)
+        adapter._STREAM_MIN_INTERVAL = old_interval
+        panel.reset()
+        context.reset()
 
 
 def main() -> int:    # `--only <子串>`：只跑名字里含该子串的用例。**专供变异判读**（审计 A：单条变异 idle 28s、

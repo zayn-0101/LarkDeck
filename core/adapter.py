@@ -2394,6 +2394,20 @@ def _log_ck_summary_failed_once(code: int) -> None:
                    "卡片内容不受影响，只是会话列表里那行预览停在旧文字", code)
 
 
+def _log_ck_revive_once(code: int) -> None:
+    """「到期续命成功」的限流告警（60 秒一条）——**绝不静默**（v0.7.20）。
+
+    续命之后用户看到的东西**几乎不变**（面板、子面板、打字机都在），只有日志能证明
+    这一帧曾经走到过「元素通道到期 ⇒ 整卡 patch 救回」。没有这条，出问题时无从下手。
+    """
+    now = time.monotonic()
+    if now - getattr(_log_ck_revive_once, "_at", 0.0) < 60.0:
+        return
+    _log_ck_revive_once._at = now  # type: ignore[attr-defined]
+    logger.warning("[larkdeck] 元素通道到期（code=%s）⇒ 已用**结构化整卡 patch 续命**"
+                   "（面板/子面板/打字机保留，继续走元素车道）", code)
+
+
 def _log_ck_degrade_once(code: int) -> None:
     """「卡级死法 ⇒ 转 patch 车道」的限流告警（60 秒一条）——绝不静默。
 
@@ -6031,6 +6045,53 @@ class LarkDeckMixin:
             lock = locks[key] = asyncio.Lock()
         return lock
 
+    async def _ld_revive_card(self, chat: str, state: Dict[str, Any], live: Dict[str, Any],
+                              visible: str, code: int, *, status: str) -> bool:
+        """**到期续命**：用结构化渲染器整卡 patch 同一张卡，把元素通道救回来（v0.7.20）。
+
+        真机依据（2026-10-12 · `tests/probe_degrade_lane.py`，记录见
+        `docs/internal/audits/v0.7.20/consensus.md`）：
+          * **V2**：飞书侧流式会话约 **606 秒**到期，之后元素写吃 `300309`（全程只写元素也一样）；
+          * **V2b**：到期后发一次**结构化整卡 patch（`streaming_mode=true`）** ⇒ 元素写**复活**；
+          * **V1b**：带 `streaming_mode=true` 的整卡 patch **不关**元素通道
+            （旧结论「整卡 patch 之后写元素必 300309」只成立于把流式位关掉的那种 patch）；
+          * **V1/V3**：整卡 patch 能带嵌套子面板，且**不会顶开**用户手动收起的面板。
+        ⇒ 到期**不必**降级成 legacy markdown（那会把面板拍平）——续命后继续走元素车道。
+
+        **失败方向只做加法**：任何一步不成立都返回 `False`，由调用方回落今天的 DEGRADE 行为
+        （B 路阻断项：不许出现「续命之后比 legacy 更差」——尤其**面板被摘掉**）。
+        """
+        message_id = str(state.get("message_id") or "")
+        if not message_id:
+            return False
+        try:
+            view = self._ld_cardview(chat, _sanitize_for_send(visible) or " ",
+                                     status=status or _LD_STATUS_GENERATING)
+            card = self._ld_fit_structured_card(view)
+        except Exception:      # pragma: no cover - 防御性
+            logger.debug("[larkdeck] 续命：结构化整卡构造失败", exc_info=True)
+            return False
+        # 「不许比 legacy 更差」：面板是状态色的唯一载体 ⇒ 被摘掉就不算续命成功；
+        # 超元素/字节墙的卡也不发（`_ck_create_wall` 是本地闸门，与服务端同口径）。
+        blob = json.dumps(card, ensure_ascii=False)
+        if '"collapsible_panel"' not in blob:
+            logger.info("[larkdeck] 续命放弃：整卡降载后没有面板（面板是状态色唯一载体）")
+            return False
+        wall = _ck_create_wall(card)
+        if wall is not None:
+            logger.info("[larkdeck] 续命放弃：整卡超墙（%s）", wall)
+            return False
+        card.setdefault("config", {})["streaming_mode"] = True   # 重新声明流式态（V1b/V2b 前提）
+        updated = await self._ld_update_card(chat, message_id, card)
+        if updated is None or not getattr(updated, "success", False):
+            logger.warning("[larkdeck] 续命失败：整卡 patch 未成功（原码=%s）", code)
+            return False
+        live["ck_expired_code"] = code          # 留痕（状态里可查、/larkdeck status --detail 用）
+        live["last_rendered_body"] = visible
+        # ⚠️ 不动 `card_id`、不标 `engine_stamp="degraded"`：元素通道已经救回来了。
+        _log_ck_revive_once(code)
+        return True
+
     async def _ld_structured_degrade(self, chat: str, state: Dict[str, Any],
                                      live: Dict[str, Any], visible: str, code: int, *,
                                      status: str) -> bool:
@@ -6041,6 +6102,10 @@ class LarkDeckMixin:
         用户掉纯文本、卡冻住），而面板那条缝虽然会 patch，却**不把 `ck_seq`/`card_id` 落账**
         ⇒ 下一帧又从旧序号起重发一次、再 patch 一遍。这里把三处收成同一个动作。
         """
+        # v0.7.20：程到期的第一反应是**续命**，不是降级（V2b 真机：整卡 patch 之后元素通道复活）。
+        # 续命成功 ⇒ 面板/子面板/打字机全保住，本帧照旧走元素车道。
+        if await self._ld_revive_card(chat, state, live, visible, code, status=status):
+            return True
         live["ck_degrade"] = code
         live["engine_stamp"] = "degraded"
         _log_ck_degrade_once(code)
