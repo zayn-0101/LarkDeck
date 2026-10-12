@@ -154,9 +154,34 @@ def probe_keepalive(interval: int = 30, limit_s: int = 1500) -> int:
     return 0
 
 
+def probe_v3(message_id: str, expanded: bool) -> int:
+    """V3：对**已有**那条消息再发一次整卡 patch，看用户手动收起的面板会不会被顶开。
+
+    为什么只有眼睛能判：整卡 patch **必然**带 `expanded` 字段，而元素车道的成文契约是
+    「中间帧不重放展开态、用户手动收起不被顶开」。如果 patch 会把收起的面板顶开，
+    续命/降级那一帧就不能无条件写 `expanded=True`。
+    """
+    client, _chat = _base._connect()
+    payload = _nested_production_card(rounds=3, tools=3, expanded=expanded)
+    payload["body"]["elements"][0]["content"] = (
+        "**V3 探针**：刚刚发了第二次整卡 patch（expanded=%s）。\n"
+        "请看**外层面板**现在是「保持你收起的样子」还是「被重新展开了」。" % expanded)
+    blob = json.dumps(payload, ensure_ascii=False)
+    r = client.im.v1.message.patch(
+        PatchMessageRequest.builder().message_id(message_id)
+        .request_body(PatchMessageRequestBody.builder().content(blob).build()).build())
+    print(f"V3 整卡 patch（expanded={expanded}）→ code={int(getattr(r, 'code', -1) or 0)}"
+          f" · msg={str(getattr(r, 'msg', ''))[:80]!r}")
+    print(f"   message_id={message_id}")
+    return 0
+
+
 def main(argv: list) -> int:
     if "--keepalive" in argv:
         return probe_keepalive()
+    if "--v3" in argv:
+        return probe_v3(argv[argv.index("--v3") + 1],
+                        expanded=("--collapsed" not in argv))
     return probe_degrade_lane(keep=("--delete" not in argv))
 
 
