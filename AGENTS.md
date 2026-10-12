@@ -426,3 +426,14 @@ $PY tests/mutate_check.py --ledger-status
   `git checkout v0.7.8` 之类会把它们恢复成旧版，切回 `main` 时又会从工作树删掉。要切旧 tag 前先备份
   （例如 `cp tests/mutation-verdicts.json /tmp/`），或事后用 `git show <tag>:<path> > <path>` 还原。
 - 不在生产 / 容器环境做写操作而不先确认；破坏性操作前先说清范围与回滚点。
+
+## v0.7.20 起：DEGRADE 的**第一反应不再是 legacy 渲染**
+
+真机实测（`tests/probe_degrade_lane.py`，记录见 `docs/internal/audits/v0.7.20/consensus.md`）：
+飞书流式会话约 **606 秒**到期，之后元素写吃 `300309`；此时对同一张卡做一次
+**结构化整卡 patch（`streaming_mode=true`）** ⇒ 元素通道**复活**。
+
+所以 `_ld_structured_degrade` 现在是 **续命优先**：
+① 续命（结构化整卡，保住面板/子面板）→ ② 失败才 DEGRADE 成 legacy markdown → ③ 再失败才裸卡。
+旧口径「DEGRADE 保留 legacy 渲染」只在 ① 失败之后才成立；`engine_stamp="degraded"` 也只在
+① 失败时才写。守两条：**面板绝不许被摘掉**（「不许比 legacy 更差」）、**续命/降级都必须留痕**。
