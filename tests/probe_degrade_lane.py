@@ -136,6 +136,19 @@ def probe_keepalive(interval: int = 30, limit_s: int = 1500) -> int:
             print(f"⏹ 到 {limit_s}s 仍未失败（寿命大于本次上限）")
             break
         time.sleep(interval)
+
+    # --- V2b：到期之后，能不能用「整卡 patch（生产结构化卡，streaming_mode=true）」续命？ ---
+    print("—— V2b：到期后发一次生产结构化整卡 patch，然后看元素写能不能复活 ——")
+    payload = _nested_production_card(rounds=1, tools=1, expanded=False)
+    blob = json.dumps(payload, ensure_ascii=False)
+    r = client.im.v1.message.patch(
+        PatchMessageRequest.builder().message_id(card.message_id)
+        .request_body(PatchMessageRequestBody.builder().content(blob).build()).build())
+    code_patch = card._code(r)
+    revived = card.write("到期后整卡 patch + 再写元素", "v2b-revive")
+    lines.append(f"# V2b：到期后整卡 patch code={code_patch} · 之后元素写存活={revived}")
+    log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"   V2b 整卡 patch → code={code_patch} · 之后元素写存活={revived}")
     card.delete()
     print(f"日志：{log}")
     return 0
