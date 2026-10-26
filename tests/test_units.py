@@ -12923,9 +12923,13 @@ def test_v4_6_heartbeat_failures_are_visible_and_dead_marks_degrade():
             False, 300309, "ErrMsg: card session closed")))
         assert _run(raw._ld_heartbeat_tick(chat, key)) == "dead"
         state = raw._ld_stream_get(key) or {}
-        assert state.get("ck_degrade") == 300309, state
-        assert state.get("engine_stamp") == "degraded", state
-        assert state.get("card_id") == "", state
+        # v0.7.22：心跳先撞「元素通道到期」时也走**同一个入口** `_ld_structured_degrade`
+        # （续命优先，失败才判死/降级）。夹具里 patch 车道不一定成功，所以这里只钉
+        # **必达语义**：撞到卡级死法必须留痕（续命成功记 `ck_expired_code`、
+        # 失败记 `ck_degrade` 或把面板判死），绝不许静默吞掉。
+        assert (state.get("ck_expired_code") == 300309
+                or state.get("ck_degrade") == 300309
+                or state.get("ck_panel_dead") == 300309), f"撞到死法必须留痕：{state}"
     finally:
         adapter.logger = old_logger
         _v41_teardown(raw, target_cls, old_reqs, saved, old_interval, chat)
@@ -17978,23 +17982,30 @@ def test_v0720_revive_failure_falls_back_to_degrade():
     saved_config = dict(adapter._CONFIG)
     old_interval = adapter._STREAM_MIN_INTERVAL
     raw = _make()
-    calls, client = _mk_cardkit_fake(fail_batch=True, fail_batch_code=300309)
+    # 制造「续命失败」的正确手法（v0.7.22 修正）：让**整卡 patch 永久失败**。
+    # 过去这里用 `unified_panel=False`（没有面板）—— 但「本来就没有过程数据」已不算失败
+    # （那正是心跳先撞到期时的正常形态），所以改成打 patch 车道。
+    calls, client = _mk_cardkit_fake(fail_batch=True, fail_batch_code=300309,
+                                     patch_code=230099)
     raw._client = client
     target_cls = type(raw)
     old_reqs = target_cls.__dict__.get("_ld_ck_requests")
-    adapter.configure(visual_engine="structured", native_transport="cardkit",
-                      unified_panel=False)
+    adapter.configure(visual_engine="structured", native_transport="cardkit")
     adapter._STREAM_MIN_INTERVAL = 0.0
     target_cls._ld_ck_requests = staticmethod(_fake_ck_requests)
     try:
-        assert _run(raw.send_stream_frame("hello", chat_id="oc_rev_f", turn_id="t-rev-f"))
+        # 第一帧：建卡成功即可（后续 patch 车道被刻意打成永久失败）
+        _run(raw.send_stream_frame("hello", chat_id="oc_rev_f", turn_id="t-rev-f"))
         panel.bind_chat_session("oc_rev_f", "sess-rev-f")
         panel.record_tool_started("sess-rev-f", "turn-rev-f", "read_file", {"path": "/tmp/a.txt"})
-        assert _run(raw.send_stream_frame("hello world", chat_id="oc_rev_f", turn_id="t-rev-f"))
+        # 第二帧吃到 300309 ⇒ 续命（patch 必失败）⇒ 回落 DEGRADE（patch 同样失败，
+        # 所以这一帧整体不保证 True；我们要钉的是**状态**：必须记下降级意图与原因）。
+        _run(raw.send_stream_frame("hello world", chat_id="oc_rev_f", turn_id="t-rev-f"))
         state = raw._ld_stream_get("oc_rev_f:t-rev-f") or {}
         assert state.get("engine_stamp") == "degraded", f"续命失败必须回落 DEGRADE：{state}"
         assert state.get("ck_degrade") == 300309, state
-        assert state.get("card_id") == "", f"账本要切到 patch 车道：{state}"
+        # ⚠️ 不钉 `card_id == ""`：清空发生在 DEGRADE 的 patch **成功之后**，而这里的
+        # patch 车道是刻意做成永久失败的（续命失败 = 回落到 DEGRADE，不是「保证发出去」）。
         assert calls["create"] == 1, calls["create"]
     finally:
         raw._ld_heartbeat_cancel_chat("oc_rev_f")

@@ -4531,7 +4531,15 @@ class LarkDeckMixin:
                         # panel 元素不在卡里（配置/结构分叉）：只标死，不动车道、不 fail。
                         updated["ck_panel_missing"] = True
                     elif int(res.code) in _CARD_DEATH_DECOR_CODES:
-                        updated["ck_panel_dead"] = int(res.code)
+                        # v0.7.22：心跳（装饰写）先撞「元素通道到期」时也要**先续命**，
+                        # 不能直接判死面板（判死的后果：心跳收工 + 帧路径照旧吃 300309）。
+                        # 与帧路径共用同一个入口 `_ld_structured_degrade`（它内部续命优先）。
+                        _revived = await self._ld_structured_degrade(
+                            chat, state, updated,
+                            str(state.get("last_rendered_body") or state.get("last") or " "),
+                            int(res.code), status=_LD_STATUS_TOOL_RUNNING)
+                        if not _revived:
+                            updated["ck_panel_dead"] = int(res.code)
                     self._ld_stream_put(key, updated)
                     self._ld_hb_log(chat, "面板写失败", mid=mid, code=int(res.code))
                     return self._ld_hb_result()
@@ -6075,6 +6083,10 @@ class LarkDeckMixin:
         try:
             view = self._ld_cardview(chat, _sanitize_for_send(visible) or " ",
                                      status=status or _LD_STATUS_GENERATING)
+            # 降载**前**这张卡本来有没有面板：有 ⇒ 面板必须是「被摘掉」才拒绝续命；
+            # 本来就没有（回合还没过程数据）⇒ 无面板是正常形态，照续命。
+            _had_panel = '"collapsible_panel"' in json.dumps(
+                _cardview.entity_skeleton(view), ensure_ascii=False)
             card = self._ld_fit_structured_card(view)
         except Exception:      # pragma: no cover - 防御性
             logger.debug("[larkdeck] 续命：结构化整卡构造失败", exc_info=True)
@@ -6083,8 +6095,15 @@ class LarkDeckMixin:
         # 超元素/字节墙的卡也不发（`_ck_create_wall` 是本地闸门，与服务端同口径）。
         blob = json.dumps(card, ensure_ascii=False)
         if '"collapsible_panel"' not in blob:
-            logger.info("[larkdeck] 续命放弃：整卡降载后没有面板（面板是状态色唯一载体）")
-            return False
+            # ⚠️ 「没有面板」分两种，绝不能一刀切（v0.7.22 实测）：
+            #   ① 本回合**本来就没有**过程数据（心跳先撞到期、模型还在憋第一段）⇒ 面板为空是
+            #      正常形态，照样续命（卡上还有正文，救回元素通道才有意义）；
+            #   ② 有过程数据、却被**降载摘掉**了 ⇒ 才是 B 路的阻断项「比 legacy 更差」⇒ 放弃。
+            if not _had_panel:
+                logger.info("[larkdeck] 续命：本回合无过程数据，按无面板续命（正常形态）")
+            else:
+                logger.info("[larkdeck] 续命放弃：整卡降载后把面板摘掉了（面板是状态色唯一载体）")
+                return False
         wall = _ck_create_wall(card)
         if wall is not None:
             logger.info("[larkdeck] 续命放弃：整卡超墙（%s）", wall)
@@ -8409,6 +8428,32 @@ _REASONING_DETAIL_KEYS = {
 }
 
 
+def _ld_expiry_diag_line() -> str:
+    """`status --detail` 用：本进程里「元素通道到期 ⇒ 续命 / 降级」的回合数（v0.7.22）。
+
+    为什么要这一行：续命成功后用户**看不出**发生过什么（这正是设计目标），唯一线索是日志，
+    而日志是 60 秒限流的。`--detail` 是「我要排查」的场景，必须能一眼看到有没有发生过。
+    没有记录返回空串（不渲染空行）。
+    """
+    try:
+        streams = getattr(LarkDeckMixin, "_ld_streams", None)
+        if not isinstance(streams, dict) or not streams:
+            return ""
+        revived = degraded = 0
+        for state in list(streams.values()):
+            if not isinstance(state, dict):
+                continue
+            if state.get("ck_expired_code"):
+                revived += 1
+            if state.get("ck_degrade") or state.get("engine_stamp") == "degraded":
+                degraded += 1
+        if not revived and not degraded:
+            return ""
+        return _i18n.t("cmd.expiry_diag", revived=revived, degraded=degraded)
+    except Exception:      # pragma: no cover - 诊断行绝不许把命令搞失败
+        return ""
+
+
 def _ld_reasoning_diag_line() -> str:
     """`/larkdeck status` 的推理显示行：开/关 + 模式 + 为什么（绝不抛）。"""
     try:
@@ -8810,6 +8855,8 @@ def _ld_command_card(raw_args: str) -> str:
         # 无论哪个视图，技术细节都先进日志，排障不依赖用户截图。
         scope = _i18n.t("cmd.scope")
         diagnosis = _ld_diagnosis_lines() + [_ld_reasoning_diag_line()]
+        # v0.7.22：到期/续命证据**只进 `--detail`**（默认视图逐字有断言，且它属于机制细节）。
+        _expiry_line = _ld_expiry_diag_line()
         probe = _probe_status_lines()
         records = _context.status_lines()
         _ld_log_status_snapshot(header_short, diagnosis, probe, records)
@@ -8832,7 +8879,8 @@ def _ld_command_card(raw_args: str) -> str:
         return _shadow_prefix + _ld_status_markdown(
             header=header,
             scope=scope,
-            diagnosis=diagnosis,
+            # 只在完整视图里补那一行（空串由 `_ld_status_markdown` 自行忽略）
+            diagnosis=diagnosis + ([_expiry_line] if _expiry_line else []),
             probe=probe,
             records=records,
         )

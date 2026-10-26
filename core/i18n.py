@@ -52,6 +52,9 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     # 溢出保护：内容被截断 / 步骤被裁掉时补一行说明，让用户知道「还有东西但没显示」
     "panel.overflow":     {ZH: "…已省略 {n} 字符", EN: "…{n} chars omitted"},
     # v0.7.21：内核「自我改进回顾」那条通知的重排标题（`cards.reformat_review_summary`）。
+    # v0.7.22：`status --detail` 的「元素通道到期」证据行。
+    "cmd.expiry_diag":    {ZH: "元素通道到期：续命 {revived} 个回合 · 降级 {degraded} 个回合",
+                           EN: "Element channel expired: {revived} turn(s) revived · {degraded} degraded"},
     "review.grouped_title": {ZH: "💾 自我改进回顾 · {n} 个技能", EN: "💾 Self-improvement review · {n} skills"},
     "review.unparsed_heading": {ZH: "其余：", EN: "Other:"},
     # 2026-09-24 用户口径：折叠提示自己不带前导省略号（它是提示，不是被截断的尾巴）。
