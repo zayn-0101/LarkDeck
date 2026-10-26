@@ -2938,6 +2938,12 @@ MUTATIONS = [
      '        _finalize_round_locked(state, now)   # V4-76 mutated：闸门之前切轮\n'
      '        # ⚠️ **同一 `tool_call_id` 只记一次**（2026-09-14 真机根因的另一面）：同一进程里插件会被\n',
      'test_units'),
+    ('V0721-非回合卡不再重排自我改进回顾（又变回一行到底）', 'core/adapter.py',
+     "        if not turn_card:\n"
+     "            content = _cards.reformat_review_summary(content)",
+     "        if not turn_card:\n"
+     "            content = content",
+     'test_units'),
     ('V0720-续命失败不回落 DEGRADE（面板摘掉后直接卡住）', 'core/adapter.py',
      '        if await self._ld_revive_card(chat, state, live, visible, code, status=status):\n'
      '            return True',

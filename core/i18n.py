@@ -51,6 +51,9 @@ _STRINGS: Dict[str, Dict[str, str]] = {
     "hb.line_plain":      {ZH: "⏳ {phase}", EN: "⏳ {phase}"},
     # 溢出保护：内容被截断 / 步骤被裁掉时补一行说明，让用户知道「还有东西但没显示」
     "panel.overflow":     {ZH: "…已省略 {n} 字符", EN: "…{n} chars omitted"},
+    # v0.7.21：内核「自我改进回顾」那条通知的重排标题（`cards.reformat_review_summary`）。
+    "review.grouped_title": {ZH: "💾 自我改进回顾 · {n} 个技能", EN: "💾 Self-improvement review · {n} skills"},
+    "review.unparsed_heading": {ZH: "其余：", EN: "Other:"},
     # 2026-09-24 用户口径：折叠提示自己不带前导省略号（它是提示，不是被截断的尾巴）。
     "panel.trimmed":      {ZH: "已折叠 {n} 条早期思考/工具记录", EN: "{n} earlier steps folded"},
     # 推理轮标题。注意「轮」= 一段连续推理（被正文或工具打断），不是 API 调用次数。

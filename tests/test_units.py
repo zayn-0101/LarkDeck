@@ -18007,6 +18007,68 @@ def test_v0720_revive_failure_falls_back_to_degrade():
         context.reset()
 
 
+
+def test_v0721_reformat_review_summary_groups_actions():
+    """用户 2026-10-17：内核那条「自我改进回顾」是一串 ` · ` 连到底，读不动。
+
+    内核结构其实规整（``技能 'X' 动作[(路径)]``，见 `display.review.skill_result`）⇒
+    插件只做**重排**：按技能分组、每条一行、同一个技能的动作合并。
+    """
+    sample = (
+        "💾 自我改进回顾：技能 'jav-openaver-management' 已修补 · "
+        "技能 'repair-quote-review' 已创建 · "
+        "技能 'repair-quote-review' 已写入 (references/joycon-repair.md) · "
+        "技能 'repair-quote-review' 已修补"
+    )
+    out = cards.reformat_review_summary(sample)
+    assert "2 个技能" in out, out
+    assert "**jav-openaver-management**" in out and "**repair-quote-review**" in out, out
+    # 同一个技能的三个动作都合并到它名下，且路径保留
+    assert "· 已写入 (references/joycon-repair.md)" in out, out
+    # 4 条动作，一条不少（按行首统计，避免标题行的 ` · ` 混进来）
+    assert sum(1 for ln in out.splitlines() if ln.startswith("· ")) == 4, out
+    assert "已修补 · 技能" not in out, f"不该再有一行到底的长串：{out!r}"
+
+
+def test_v0721_reformat_review_summary_is_fail_open():
+    """重排必须 fail-open：不是这条通知 ⇒ 原样；认不出的条目 ⇒ 一条都不丢。"""
+    plain = "这是普通回复：技能已修补 · 技能已创建"
+    assert cards.reformat_review_summary(plain) == plain, "非本通知必须原样返回"
+    single = "💾 自我改进回顾：技能 'only' 已修补"
+    assert cards.reformat_review_summary(single) == single, "单条（没有分隔符）原样返回"
+    mixed = "💾 自我改进回顾：技能 'a' 已创建 · 记忆已更新 · 技能 'a' 已修补"
+    out = cards.reformat_review_summary(mixed)
+    assert "记忆已更新" in out, f"认不出的条目不许丢：{out!r}"
+    assert "· 已创建" in out and "· 已修补" in out, out
+    # 一条都认不出 ⇒ 至少拆成多行（不再是一行到底）
+    all_unknown = "💾 自我改进回顾：甲已更新 · 乙已更新"
+    out2 = cards.reformat_review_summary(all_unknown)
+    assert "\n· 甲已更新" in out2 and "\n· 乙已更新" in out2, out2
+
+
+def test_v0721_review_notice_is_notice_and_card_renders_grouped():
+    """这条通知：① 命中系统提示负清单（纵深防御）；② 非回合卡正文用重排后的版本。"""
+    sample = (
+        "💾 自我改进回顾：技能 'jav-openaver-management' 已修补 · "
+        "技能 'repair-quote-review' 已创建"
+    )
+    assert adapter._ld_is_system_notice(sample) is True
+    raw = _make()                       # `_ld_send_is_turn` 是实例方法
+    assert raw._ld_send_is_turn("oc_rev", sample, {"_interim_send": True}, False) is False
+    panel.reset()
+    card = raw._ld_render_card(
+        "oc_rev", sample, streaming=False, status="completed",
+        panel=None, footer=None, turn_card=False)
+    body = json.dumps(card, ensure_ascii=False)
+    assert "2 个技能" in body, body[:400]
+    assert "已修补 · 技能" not in body, "卡片正文不该还是一行到底"
+    # 真回合正文一个字都不动
+    card2 = raw._ld_render_card(
+        "oc_rev", "普通回答：甲 · 乙 · 丙", streaming=False, status="completed",
+        panel=None, footer=None, turn_card=True)
+    assert "普通回答：甲 · 乙 · 丙" in json.dumps(card2, ensure_ascii=False)
+
+
 def main() -> int:    # `--only <子串>`：只跑名字里含该子串的用例。**专供变异判读**（审计 A：单条变异 idle 28s、
     # 重载 89s，秒级判读只能靠「preflight + 只跑受影响的那几条用例」）。不是发布门禁 ——
     # 它跑完打印的是 `N/M passed`，而 `mutate_check._classify` 要的正是这个收尾语。

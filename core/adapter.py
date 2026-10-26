@@ -2803,6 +2803,10 @@ _LD_SYSTEM_NOTICE_PREFIXES: Tuple[str, ...] = (
     "⚠️ 不支持 `/reasoning", "⚠️ `/reasoning reset --global`",
     "⏳ 正在等待", "⏳ Draining", "⏳ 网关重启", "⏳ Gateway restart",
     "✏️ 已设置会话标题", "✏️ Session title set",
+    # v0.7.21 纵深防御：内核「后台自我改进回顾」通知（`display.review.summary_callback`）。
+    # 它正常带 `_interim_send=True`（第 1 条判据就拦住），但这条前缀是**第二道闸**：
+    # 万一上游改版不再带标记，它也不会被误判成回合卡（否则卡上会多出一个 ✅ 页脚）。
+    "💾 自我改进回顾", "💾 Self-improvement review",
     "📎 运行时页脚：", "📎 Runtime footer:",
     "已切换模型为 `", "Model switched to `",
     "当前：`", "Current: `",
@@ -3890,6 +3894,10 @@ class LarkDeckMixin:
             这里宁可退回旧观感，也不能让整条消息发不出去。
           * 旧渲染器同时负责 ``visual_engine`` 未接管的路径（DEGRADE 车道）。
         """
+        # v0.7.21：内核「自我改进回顾」通知是一串 ` · ` 拼到底（用户 2026-10-17 反馈"读不动"）。
+        # 只对**非回合**消息做重排：回合正文一个字都不许动。纯函数、非本通知原样返回。
+        if not turn_card:
+            content = _cards.reformat_review_summary(content)
         if _ld_visual_engine() == "structured":
             try:
                 if turn_card and not status_locked:

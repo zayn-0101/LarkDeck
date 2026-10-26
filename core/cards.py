@@ -1162,6 +1162,90 @@ def _outside_code(text: str, spans) -> str:
     return "".join(out)
 
 
+#: 内核「后台自我改进回顾」通知的两种 header（zh / en，见 Hermes
+#: `locales/{zh,en}.yaml` 的 `display.review.summary_callback`）。
+_REVIEW_SUMMARY_HEADERS = (
+    "💾 自我改进回顾：", "💾 Self-improvement review:",
+)
+
+#: 一条动作的两种写法（zh / en，见 `display.review.skill_result` + `skill_verb`）：
+#:   技能 'X' 已修补            Skill 'X' patched
+#:   技能 'X' 已写入 (a/b.md)   Skill 'X' written (a/b.md)
+_REVIEW_ACTION_ZH = _re.compile(
+    r"^\s*技能\s*'(.+?)'\s*(已创建|已重写|已修补|已写入|已移除|已删除)\s*(?:\((.+)\))?\s*$")
+_REVIEW_ACTION_EN = _re.compile(
+    r"^\s*Skill\s*'(.+?)'\s*(created|rewritten|patched|written|removed|deleted)\s*(?:\((.+)\))?\s*$")
+
+
+def reformat_review_summary(text: str) -> str:
+    """把内核那条「一串 ` · ` 连到底」的自我改进回顾**重排成可读的分组列表**（纯函数）。
+
+    用户 2026-10-17 反馈：``💾 自我改进回顾：技能 'A' 已修补 · 技能 'B' 已创建 · 技能 'B'
+    已写入 (references/x.md) · 技能 'B' 已修补`` —— 一行到底、没有换行、没有分组，读不动。
+
+    内核那边是 :func:`agent.background_review._publish_review_summary` 用
+    ``" · ".join(...)`` 拼的，结构其实非常规整：每条都是 ``技能 '名字' 动作[(路径)]``。
+    所以这里**只重排、不改语义**：
+
+      * 不是这条通知（前缀不匹配）⇒ **原样返回**（一个字都不动）；
+      * 一条都解析不出来 ⇒ 退化成「按 ` · ` 换行」，至少不再是长长一行；
+      * 解析出来的按**首次出现顺序**分组，同一技能的多个动作合并到它下面；
+      * **绝不丢内容**：解析失败的条目原样保留为一行。
+    """
+    raw = str(text or "")
+    stripped = raw.lstrip()
+    header = ""
+    for candidate in _REVIEW_SUMMARY_HEADERS:
+        if stripped.startswith(candidate):
+            header = candidate
+            break
+    if not header:
+        return raw
+
+    body = stripped[len(header):].strip()
+    if not body:
+        return raw
+    # 分隔符：内核是 " · "，但容忍空格变体（用户的现场数据可能被其它层挤过）。
+    parts = [p.strip() for p in _re.split(r"\s*·\s*", body) if p.strip()]
+    if len(parts) <= 1:
+        return raw
+
+    grouped: List[Tuple[str, List[str]]] = []
+    index: Dict[str, int] = {}
+    unknown: List[str] = []
+    for part in parts:
+        m = _REVIEW_ACTION_ZH.match(part) or _REVIEW_ACTION_EN.match(part)
+        if not m:
+            unknown.append(part)
+            continue
+        name, verb, path = m.group(1).strip(), m.group(2).strip(), (m.group(3) or "").strip()
+        line = f"· {verb}" + (f" ({path})" if path else "")
+        if name in index:
+            grouped[index[name]][1].append(line)
+        else:
+            index[name] = len(grouped)
+            grouped.append((name, [line]))
+
+    if not grouped:
+        # 一条都认不出 ⇒ 至少把一行拆成多行（不丢任何条目）。
+        return header + "\n\n" + "\n".join(f"· {p}" for p in parts)
+
+    # 语言跟随**这条通知本身**（内核按用户语言渲染 header）：用英文 header 就出英文标题，
+    # 绝不把中文标题套在英文内容上。
+    _locale = _i18n.EN if header == "💾 Self-improvement review:" else _i18n.ZH
+    title = _i18n.t("review.grouped_title", locale=_locale, n=len(grouped))
+    out = [title, ""]
+    for name, lines in grouped:
+        out.append(f"**{name}**")
+        out.extend(lines)
+        out.append("")
+    if unknown:
+        out.append(_i18n.t("review.unparsed_heading", locale=_locale))
+        out.extend(f"· {p}" for p in unknown)
+        out.append("")
+    return "\n".join(out).rstrip()
+
+
 def sanitize_markdown(text: str) -> str:
     """markdown 卫生（**纯函数**；只在**完整文本**的写入上用，绝不用在流式中间帧上）。
 

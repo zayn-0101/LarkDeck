@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import pathlib
 import sys
 import types
 
@@ -17,6 +18,19 @@ _REPO_PARENT = os.path.dirname(_REPO)
 for _p in (_REPO_PARENT, _HERE):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+# ⚠️ 必须把 **Hermes 本体目录**也放进 sys.path：`_compose()` 要 import
+# `gateway.stream_consumer`，而它链式依赖 `utils` → `hermes_yaml`（在 Hermes 根下）。
+# 只放仓库父目录时，旧版 Hermes 恰好不需要 hud 模块所以能过；Hermes 侧一加依赖
+# （`utils.py` 现在 import hermes_yaml）这一步就红 —— 这是**门禁环境假设**的问题，
+# 与插件代码无关（2026-10-17 实测：`ModuleNotFoundError: No module named 'hermes_yaml'`）。
+_HERMES_HOME = pathlib.Path(os.environ.get("HERMES_HOME", str(pathlib.Path.home() / ".hermes")))
+for _p in (str(_HERMES_HOME / "hermes-agent"),):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+for _sp in sorted((_HERMES_HOME / "hermes-agent" / "venv" / "lib").glob("python3*/site-packages")):
+    if str(_sp) not in sys.path:
+        sys.path.insert(0, str(_sp))
 
 from larkdeck.core import adapter  # noqa: E402
 from larkdeck.core import panel  # noqa: E402
