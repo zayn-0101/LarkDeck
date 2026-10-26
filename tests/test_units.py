@@ -18080,6 +18080,123 @@ def test_v0721_review_notice_is_notice_and_card_renders_grouped():
     assert "普通回答：甲 · 乙 · 丙" in json.dumps(card2, ensure_ascii=False)
 
 
+
+def test_v0723_clarify_fallback_keeps_streaming_mode():
+    """v0.7.23：clarify 主卡的元素写失败 ⇒ 整卡 patch 兜底时**必须保持流式位**。
+
+    真机依据（2026-10-12 V1b/V2b）：带 `streaming_mode=true` 的整卡 patch **不关**元素通道；
+    关掉流式位的那种才会让后续元素写吃 300309。过去兜底传 `streaming=False` ⇒ 兜底成功后
+    `card_id` 仍指向这张卡，下一帧白挨一次 300309。
+    """
+    chat, key = "oc_clar_fb", "oc_clar_fb:t1"
+    raw = _make()
+    _calls, client = _mk_cardkit_fake()
+    raw._client = client                 # 兜底路径要建结构化整卡（需要 cardkit 客户端）
+    panel.reset()
+    try:
+        raw._ld_stream_put(key, {
+            "chat_id": chat, "message_id": "om_clar_fb", "card_id": "ck_clar_fb",
+            "turn_id": "t1", "engine": "structured", "engine_stamp": "structured",
+            "ck_clarify_waiting": True, "ck_seq": 3,
+            "ck_elems": ["answer", "footer"], "ck_has_panel": False,
+            "last_rendered_body": "点击前正文",
+        })
+        sent: list = []
+
+        async def _write_fails(*a, **k):
+            return adapter._CkResult(False, 300309, "ErrMsg: card session closed")
+
+        async def _update_ok(chat_id, message_id, card):
+            sent.append(card)
+            return types.SimpleNamespace(success=True)
+
+        raw._ld_ck_write = _write_fails
+        raw._ld_update_card = _update_ok
+        ok = _run(raw._ld_clarify_refresh_card(chat, "点击后正文"))
+        assert ok is True, "兜底 patch 成功应返回 True"
+        assert len(sent) == 1, sent
+        assert sent[0]["config"]["streaming_mode"] is True, (
+            f"兜底必须保持流式位（否则下一帧白挨 300309）：{sent[0]['config']}")
+    finally:
+        raw._ld_streams.pop(key, None)
+        panel.reset()
+
+
+
+def test_v0723_heartbeat_death_goes_through_revive_entry():
+    """v0.7.23：心跳（装饰写）撞到卡级死法时**必须走统一入口**（续命优先），不许自己判死。
+
+    为什么需要这条：v0.7.22 把心跳接进了续命入口，但当时没有能走到那条分支的夹具，
+    等于**没被证明**。这里用最小状态把心跳推到「要写面板」那一步，再让写入返回 300309。
+    """
+    chat, key = "oc_hb_entry", "oc_hb_entry:t1"
+    raw = _make()
+    _calls, client = _mk_cardkit_fake()
+    raw._client = client
+    panel.reset()
+    raw._ld_stream_put(key, {
+        "chat_id": chat, "message_id": "om_hb_entry", "card_id": "ck_hb_entry",
+        "turn_id": "t1", "engine": "structured", "engine_stamp": "structured",
+        "ck_has_panel": True, "ck_panel_sig": "stale",   # 逼这一拍真去写
+        "ck_elems": ["answer", "footer"], "ck_seq": 2, "t0": time.monotonic(),
+        "last_rendered_body": "正文",
+    })
+    hits: list = []
+
+    async def _partial_fails(*a, **k):
+        return adapter._CkResult(False, 300309, "ErrMsg: card session closed")
+
+    _orig = raw._ld_structured_degrade
+
+    async def _spy(*args, **kwargs):
+        hits.append(args[4] if len(args) > 4 else kwargs.get("code"))
+        return False                     # 模拟续命失败 ⇒ 才允许判死
+    try:
+        raw._ld_ck_partial = _partial_fails
+        raw._ld_structured_degrade = _spy
+        # seed 门禁与面板新鲜度是**另一套**机制（V075 P2），本用例只测「撞到死法后走哪条路」。
+        raw._ld_panel_is_stale = (lambda *a, **k: False)
+        raw._ld_hb_candidates = (lambda *a, **k: [key])
+        rc = _run(raw._ld_heartbeat_tick(chat, key))
+        assert rc == "dead", f"卡级死法这一拍应收工：{rc}"
+        assert hits == [300309], f"必须先走统一入口（续命优先）：{hits}"
+        state = raw._ld_stream_get(key) or {}
+        # 续命失败 ⇒ 与帧路径同一套降级记账（`ck_degrade` + degraded + 清 card_id），
+        # 而不是只把面板判死 —— 那样会变成「心跳收工、后续帧继续吃 300309」。
+        assert state.get("ck_degrade") == 300309, f"续命失败才降级：{state}"
+        assert state.get("engine_stamp") == "degraded", state
+        assert state.get("card_id") == "", state
+
+        # ② 续命**成功** ⇒ 绝不许降级（这条才钉得住「先续命」这个顺序）
+        raw._ld_stream_put(key, {
+            "chat_id": chat, "message_id": "om_hb_entry", "card_id": "ck_hb_entry",
+            "turn_id": "t1", "engine": "structured", "engine_stamp": "structured",
+            "ck_has_panel": True, "ck_panel_sig": "stale",
+            "ck_elems": ["answer", "footer"], "ck_seq": 5, "t0": time.monotonic(),
+            "last_rendered_body": "正文",
+        })
+        hits.clear()
+
+        async def _spy_ok(*args, **kwargs):
+            hits.append(args[4] if len(args) > 4 else kwargs.get("code"))
+            # 模拟真实 `_ld_revive_card`：它把 `ck_expired_code` 写在传进去的 live 字典上
+            # （tick 传的是 `updated`，即第 3 个位置参数）。
+            args[2]["ck_expired_code"] = 300309
+            return True
+        raw._ld_structured_degrade = _spy_ok
+        assert _run(raw._ld_heartbeat_tick(chat, key)) == "dead"
+        assert hits == [300309], hits
+        state2 = raw._ld_stream_get(key) or {}
+        assert state2.get("ck_expired_code") == 300309, f"续命成功必须留痕：{state2}"
+        assert not state2.get("ck_degrade"), f"续命成功绝不许降级：{state2}"
+        assert state2.get("engine_stamp") != "degraded", state2
+        assert state2.get("card_id") == "ck_hb_entry", f"续命成功要保留元素通道：{state2}"
+    finally:
+        raw._ld_structured_degrade = _orig
+        raw._ld_streams.pop(key, None)
+        panel.reset()
+
+
 def main() -> int:    # `--only <子串>`：只跑名字里含该子串的用例。**专供变异判读**（审计 A：单条变异 idle 28s、
     # 重载 89s，秒级判读只能靠「preflight + 只跑受影响的那几条用例」）。不是发布门禁 ——
     # 它跑完打印的是 `N/M passed`，而 `mutate_check._classify` 要的正是这个收尾语。

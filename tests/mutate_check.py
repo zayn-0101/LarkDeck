@@ -2625,9 +2625,8 @@ MUTATIONS = [
      '        if False:  # V4-19 mutated',
      "test_units"),
     ("V4-20-心跳把写失败伪装成 unchanged/stop", "core/adapter.py",
-     '                    if res.code in _CARD_DEATH_DECOR_CODES:\n'
-     '                        self._ld_stream_put(key, dict(',
-     '                    if False:\n                        self._ld_stream_put(key, dict(',
+     '                        if _revived:',
+     '                        if False:',
      "test_units"),
     ("V4-21-面板 partial 与 settings 共用 uuid 命名空间", "core/adapter.py",
      'f"ld-{card_id}-p{seq}"',
@@ -2937,6 +2936,12 @@ MUTATIONS = [
      '        tools: List[Dict[str, Any]] = state["tools"]\n'
      '        _finalize_round_locked(state, now)   # V4-76 mutated：闸门之前切轮\n'
      '        # ⚠️ **同一 `tool_call_id` 只记一次**（2026-09-14 真机根因的另一面）：同一进程里插件会被\n',
+     'test_units'),
+    ('V0723-clarify 兜底不保持流式位（下一帧白挨 300309）', 'core/adapter.py',
+     "                streaming=True,\n"
+     "                # V084：`status_locked=True` 的调用方**必须**传唯一判据的结果",
+     "                streaming=False,\n"
+     "                # V084：`status_locked=True` 的调用方**必须**传唯一判据的结果",
      'test_units'),
     ('V0721-非回合卡不再重排自我改进回顾（又变回一行到底）', 'core/adapter.py',
      "        if not turn_card:\n"

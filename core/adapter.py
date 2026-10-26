@@ -5781,10 +5781,22 @@ class LarkDeckMixin:
                             [_CkOp("panel", "", _CK_ROLE_PANEL)], res.code, msg=res.msg)
                         return "failed"
                     if res.code in _CARD_DEATH_DECOR_CODES:
-                        self._ld_stream_put(key, dict(
-                            updated, ck_degrade=res.code, engine_stamp="degraded",
-                            card_id="", ck_seq=seq))
-                        _log_ck_degrade_once(res.code)
+                        # v0.7.23：心跳这条**同步**路径撞到卡级死法时也**先续命**
+                        # （与帧路径共用单入口）；续命失败才降级。0.7.22 只改到了
+                        # `_ld_hb_merge_stream` 那条分支，这里是 tick 实际走的那条。
+                        _revived = await self._ld_structured_degrade(
+                            chat, updated, updated,
+                            str(updated.get("last_rendered_body") or updated.get("last") or " "),
+                            int(res.code), status=_LD_STATUS_TOOL_RUNNING)
+                        if _revived:
+                            # 续命成功也要落账：`ck_expired_code` 是 `/larkdeck status --detail`
+                            # 唯一的证据来源（不写回就等于没发生过）。
+                            self._ld_stream_put(key, dict(updated, ck_seq=seq))
+                        else:
+                            self._ld_stream_put(key, dict(
+                                updated, ck_degrade=res.code, engine_stamp="degraded",
+                                card_id="", ck_seq=seq))
+                            _log_ck_degrade_once(res.code)
                         return "dead"
                     _log_ck_decor_write_failed_once(
                         [_CkOp("panel", "", _CK_ROLE_PANEL)], res.code, msg=res.msg)
@@ -7895,7 +7907,14 @@ class LarkDeckMixin:
             logger.info("[larkdeck] clarify 主卡元素写入失败（code=%s），整卡 patch 兜底",
                         wrote.code)
             card = self._ld_render_card(
-                chat, body_text, streaming=False,
+                chat, body_text,
+                # v0.7.23：**保持流式位**（`streaming=True` ⇒ `config.streaming_mode=true`）。
+                # 真机实测（2026-10-12，`tests/probe_degrade_lane.py` V1b/V2b）：带
+                # `streaming_mode=true` 的整卡 patch **不关**元素通道；关掉流式位的那种
+                # 整卡 patch 才会让后续元素写吃 300309。这条兜底过去传 `False` ⇒ 兜底成功
+                # 之后 `card_id` 仍指着这张卡，下一帧又白挨一次 300309（虽然 0.7.20 起会
+                # 自动续命，但那是白折腾）。保持流式位后，`card_id` 继续有效是**对的**。
+                streaming=True,
                 # V084：`status_locked=True` 的调用方**必须**传唯一判据的结果
                 # （不是字面 processing）—— 否则这条兜底路径会把状态词写回旧口径。
                 status=self._ld_live_status(
