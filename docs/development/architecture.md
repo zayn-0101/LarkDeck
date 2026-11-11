@@ -118,15 +118,22 @@ send_stream_frame("") ──► 中间帧（累积全文）──► send_stream
 分支，新卡直接建 CardKit 实体；**这一步不按 `native_transport` 分流**。旧传输选择函数
 仍被配置展示与兼容路径使用，因此配置 / 状态标题里的 `patch` 不等于新回合实际走 patch。
 
-| | 现役结构化 CardKit | 同卡 patch 降级 |
-|---|---|---|
-| 进入方式 | 新的 native 回合 | 卡级错误触发 `_ld_structured_degrade()` |
-| 流式更新 | 局部替换面板、更新页脚与正文，**不整卡替换** | 清 `card_id`、标记 degraded，再整卡续写同一消息 |
-| 收尾 | 取消心跳后整卡 patch，关闭流式并补状态色 | 整卡 patch |
-| 失败 | 可降级则同卡续写；正文无法恢复时交回核心 | 瞬态码退避重试；无法恢复时交回核心 |
+飞书给一张流式卡的元素通道约 **606 秒**（实测）后失效，之后元素写吃 `300309`。卡级死法
+触发 `_ld_structured_degrade()` 时**第一反应是续命**，不是降级：
 
-要保留 CardKit 流式会话，就不能做整卡替换；它会关闭流式，后续元素写会得到 `300309`。
-**元素级局部更新可以改变面板子树**，现役结构化面板就是这样更新的；不能再把旧版
+```text
+① 续命：结构化整卡 patch 同一张卡（streaming_mode=true）⇒ 元素通道复活，面板 / 子面板 / 打字机保住
+② 续命失败才 DEGRADE：改用 legacy markdown 渲染，标 engine_stamp="degraded"，清 card_id
+③ 再失败才裸卡；正文无法恢复时交回核心 send/edit 回落
+```
+
+「整卡降载后把面板摘掉」不算续命成功（面板是状态色的唯一载体）；但「回合刚开始本来就没有
+过程数据」不算失败，照样续命。三条写路径（流式帧、心跳合并 `_ld_hb_merge_stream`、心跳 tick
+`_ld_heartbeat_tick`）必须共用 `_ld_structured_degrade` 这一个入口 —— 漏接任何一条，长回合仍会拍平。
+
+常规更新不能做整卡替换（`message.patch` / `card.update` 会关流式，后续元素写 `300309`）；
+**到期续命是例外**：`streaming_mode=true` 的结构化整卡 patch 会让元素通道复活（真机 V1b/V2b
+实测）。元素级局部更新可以改变面板子树，现役结构化面板就是这样更新的；不能再把旧版
 `panel_body` / `panel_tools` 两块 markdown 的固定骨架当作现役约束。
 
 正文 / 页脚 id 从建卡 JSON 提取；外层 `panel` 与加载提示另记存在性。超长正文按

@@ -8,7 +8,7 @@
 |---|---|---|
 | `/larkdeck` | LarkDeck | 等同 `/larkdeck status` |
 | `/larkdeck status` | LarkDeck | 运行概览：版本、传输配置、接管、钩子、推理显示与失败计数 |
-| `/larkdeck status --detail` | LarkDeck | 完整诊断：能力探测、适配器与契约细节、六条进程级记录 |
+| `/larkdeck status --detail` | LarkDeck | 完整诊断：能力探测、适配器与契约细节、六条进程级记录；有到期续命/降级时另加一行计数 |
 | `/larkdeck config` | LarkDeck | 只读查看本进程生效配置与来源 |
 | `/larkdeck config reload` | LarkDeck | 从 Hermes 官方设置重读全部插件配置键 |
 | `/larkdeck help` | LarkDeck | 用法与执行时机提醒 |
@@ -36,6 +36,7 @@
 - 能力与链路：能力探测、钩子、命令注册、模块世代，有明确异常才带 `⚠️`。
 - 能力探测：适配器接管、Hermes 版本、会话归属、缺失接口与契约细节。
 - 六条记录：入站心跳、最近写卡、最近写卡失败、已运行、掉回纯文本、错误码，带时刻、次数与失败原因。
+- 元素通道到期：续命 / 降级回合数（`元素通道到期：续命 N 个回合 · 降级 N 个回合`）——续命成功后观感没有变化，这是唯一的自查入口；没有记录时不显示这一行。
 
 这些数字是**进程级累计**，多会话并发时包含其他会话，不是本对话统计。没有记录时卡片写“无记录”，不会写“正常”。默认卡不展示的技术细节会同时写入 `~/.hermes/logs/agent.log`，排障时可用 `grep -F '[larkdeck] status' ~/.hermes/logs/agent.log`。
 

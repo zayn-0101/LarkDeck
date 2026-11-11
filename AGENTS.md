@@ -211,6 +211,9 @@ tests/        见「验证」
     不能再把它写成现役去色开关。这个限制已在 README / 配置参考 / 清单描述对齐。
   - 已知系统提示与命令回执不渲染回合面板 / 状态头 / 页脚。header 匹配与整段相等清单
     见 `_LD_SYSTEM_NOTICE_PREFIXES` / `_LD_SYSTEM_NOTICE_LINES`；纯句模板只允许整段相等。
+    v0.7.21 起「💾 自我改进回顾 / Self-improvement review」通知也在这里：渲染层用
+    `cards.reformat_review_summary` 按技能把它重排成多行，**只改这一条**（正常回答不动），
+    认不出的条目原样保留；同时登记进上面两个清单做纵深防御（内核哪天不再打标记也不误判成回合卡）。
     `notify=True` 也用于真实模型终稿，不能据此判非回合；负清单仍可能漏回执，真实回答
     首行误命中 header 则可能被误判。排查用 `send 判定 turn=` 日志，不能扩大匹配来掩盖问题。
 - **markdown 卫生只作用在「完整文本」的写入上**（`cards.sanitize_markdown`，R6a）。核心契约是
@@ -236,7 +239,7 @@ tests/        见「验证」
   判据与守卫必须同口径，否则两个都对、合起来还是漏（`docs/internal/lessons.md` 推论 13）。
 - **`/larkdeck status` 是自检入口**（`ctx.register_command`，公开 API）。默认七行概览：
   接管、钩子、推理显示、最近写卡、失败 / 回落、错误码与运行时长；`--detail` 展开能力 / 链路、
-  契约与六条完整记录。两种视图同源，每次查询都把详细事实写日志；解析不到概览所需字段时
+  契约、六条完整记录与**元素通道到期续命/降级计数**（有记录才显示，见文末 v0.7.20–v0.7.23 一节）。两种视图同源，每次查询都把详细事实写日志；解析不到概览所需字段时
   回退完整视图。版本现读 `plugin.yaml`，读不到就明说，不能复制常量或让版本段消失。
   未知参数明确报错；有明确异常才带 `⚠️`，无记录与零计数分开，绝不写“正常 / 健康”。
   `/larkdeck config` 是同一条命令里的**只读**配置视图（见上面的配置刷新纪律）。四条纪律：
@@ -427,7 +430,7 @@ $PY tests/mutate_check.py --ledger-status
   （例如 `cp tests/mutation-verdicts.json /tmp/`），或事后用 `git show <tag>:<path> > <path>` 还原。
 - 不在生产 / 容器环境做写操作而不先确认；破坏性操作前先说清范围与回滚点。
 
-## v0.7.20 起：DEGRADE 的**第一反应不再是 legacy 渲染**
+## v0.7.20–v0.7.23 起：DEGRADE 的**第一反应是续命，不是 legacy 渲染**
 
 真机实测（`tests/probe_degrade_lane.py`，记录见 `docs/internal/audits/v0.7.20/consensus.md`）：
 飞书流式会话约 **606 秒**到期，之后元素写吃 `300309`；此时对同一张卡做一次
@@ -437,3 +440,10 @@ $PY tests/mutate_check.py --ledger-status
 ① 续命（结构化整卡，保住面板/子面板）→ ② 失败才 DEGRADE 成 legacy markdown → ③ 再失败才裸卡。
 旧口径「DEGRADE 保留 legacy 渲染」只在 ① 失败之后才成立；`engine_stamp="degraded"` 也只在
 ① 失败时才写。守两条：**面板绝不许被摘掉**（「不许比 legacy 更差」）、**续命/降级都必须留痕**。
+三条写路径（流式帧、心跳合并 `_ld_hb_merge_stream`、心跳 tick `_ld_heartbeat_tick`）**必须共用
+`_ld_structured_degrade` 这个入口** —— v0.7.22 只接了合并分支、v0.7.23 才接上 tick 实际走的那条；
+漏接任何一条，长回合仍会被拍平。两个边界别写反：**「回合刚开始本来没有过程数据」不算续命失败**
+（只有「本来有面板、却被整卡降载摘掉」才算，面板是状态色唯一载体）；**澄清/审批边界的整卡兜底
+必须保持 `streaming_mode=true`**（v0.7.23；关掉流式位会关元素通道，下一帧白挨一次 `300309`）。
+续命成功后用户**观感无变化**（这是设计目标）⇒ `/larkdeck status --detail` 里那一行
+`元素通道到期：续命 N 个回合 · 降级 N 个回合` 是唯一的自查入口（默认视图不显示，无记录不渲染）。

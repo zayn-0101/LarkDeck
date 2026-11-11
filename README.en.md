@@ -24,7 +24,8 @@
 - **Status and usage** — green / red / yellow border for done / failed / stopped; the footer shows elapsed time, model and context usage.
 - **Bilingual UI** — localized card labels follow the Feishu client language; model output is never translated.
 - **Fallback** — when card updates cannot continue, send/edit operations return to Hermes' official
-  implementation; some CardKit errors can degrade to full-card replacement on the same message. If
+  implementation; when the element channel expires (~10 min) it first revives the same card with a
+  structured whole-card patch, and only degrades to full-card replacement if revival fails. If
   a message is withdrawn or deleted, Hermes decides whether to resend it.
 - **Text formatting** — unmatched `**` markers are removed and H1–H3 headings are converted to bold text to avoid oversized headings in cards.
 
@@ -93,8 +94,9 @@ See [Commands](docs/guide/commands.md).
 
 - **Environment**: Hermes Agent 0.21.x (verified on 0.21.1 / 0.21.4), with the official `feishu` platform available in the same process; cannot coexist with plugins that also take over the same `feishu` platform or patch Hermes source.
 - **Fallback and client differences**: cards are an enhancement. When card updates cannot continue,
-  send/edit operations return to Hermes' official implementation; some CardKit errors degrade to
-  full-card replacement on the same message. If a message is withdrawn or deleted, Hermes decides
+  send/edit operations return to Hermes' official implementation; when the element channel expires
+  (~10 min) it first revives the same card with a structured whole-card patch, and only degrades to
+  full-card replacement if revival fails. If a message is withdrawn or deleted, Hermes decides
   whether to resend it. Clients that do not support card 2.0 may render fewer components or simpler
   forms; card chrome follows the client language, while model output and some markdown labels are
   language-fixed. See [Card capabilities](docs/guide/card-capabilities.md).
